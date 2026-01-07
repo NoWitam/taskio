@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-primary: hsl(325 60% 45%);
+  --color-primary-foreground: hsl(0 0% 100%);
+  --color-primary-glow: hsl(325 60% 55%);
+  --color-primary-dark: hsl(325 60% 35%);
+
+  --color-secondary: hsl(240 5% 96%);
+  --color-secondary-foreground: hsl(240 10% 10%);
+
+  --color-background: hsl(0 0% 99%);
+  --color-foreground: hsl(240 10% 10%);
+
+  /* 👇 polecane dodatki (spójność UI) */
+  --color-card: hsl(0 0% 100%);
+  --color-border: hsl(240 6% 90%);
+  --color-muted: hsl(240 5% 97%);
+  --color-muted-foreground: hsl(240 4% 46%);
+
+  --color-danger: hsl(0 84% 60%);
+  --color-danger-foreground: hsl(0 0% 100%);
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  :root.dark {
+    --color-background: hsl(240 10% 10%);
+    --color-foreground: hsl(0 0% 99%);
+    --color-card: hsl(240 8% 18%);
+    --color-border: hsl(240 6% 25%);
+    --color-muted: hsl(240 5% 25%);
+    --color-muted-foreground: hsl(240 4% 60%);
+    --color-secondary: hsl(240 5% 20%);
+    --color-secondary-foreground: hsl(240 10% 95%);
+    color-scheme: dark;
+  }
+
+  html { @apply antialiased; }
+  body { @apply bg-background text-foreground; }
+}
