@@ -537,6 +537,7 @@
         <Card class="mt-2">
             <TextInput v-model="q" label="Szukaj" placeholder="np. campaign, post..." class="w-72" />
             <SelectInput
+            class="h-full"
                 v-model="status"
                 :options="[
                     { label: 'Wszystkie', value: '' },

@@ -4,13 +4,13 @@
     <Sidebar :isOpen="sidebarOpen" @toggle="toggleSidebar" />
 
     <!-- Main content -->
-    <div class="flex-1 flex flex-col overflow-hidden">
+    <div class="h-screen flex-1 flex flex-col overflow-hidden">
       <!-- Navbar -->
       <Navbar @toggle-sidebar="toggleSidebar" />
 
       <!-- Page content -->
-      <main class="flex-1 overflow-auto bg-background">
-        <div class="p-6">
+      <main class="flex flex-col h-full bg-background">
+        <div class="flex-1">
           <router-view />
         </div>
       </main>

@@ -40,8 +40,8 @@
       {{ label }}
     </label>
 
-    <div class="relative">
-      <div v-if="hasLeft" class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-auto">
+    <div class="relative flex-1 flex">
+      <div v-if="hasLeft" class="absolute inset-y-0 left-0 flex items-center justify-center w-10 pointer-events-none">
         <slot name="left" />
       </div>
 
@@ -56,7 +56,7 @@
         :aria-invalid="!!error || undefined"
         :aria-describedby="describedBy"
         :class="cn(
-          'h-10 w-full rounded-lg border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground/70',
+          'flex-1 w-full rounded-lg border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground/70',
           hasLeft && 'pl-10',
           hasRight && 'pr-10',
           'border-border hover:border-border/80',

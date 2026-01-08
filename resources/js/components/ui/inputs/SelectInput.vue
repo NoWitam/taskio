@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, useSlots, onMounted, onBeforeUnmount } from "vue";
 import { cn } from "@/lib/helpers";
 import DropdownMenu from "@/components/ui/DropdownMenu.vue";
+import Icon from "@/components/ui/Icon.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 
 type Option = { [k: string]: any } & { label: string; value: any; disabled?: boolean };
 
@@ -28,6 +30,8 @@ const props = withDefaults(
 const emit = defineEmits<{ (e: "update:modelValue", value: any): void }>();
 
 const inputId = props.id ?? `sel_${Math.random().toString(16).slice(2)}`;
+const slots = useSlots();
+const hasLeft = computed(() => !!slots.left);
 
 const internalItems = ref<Option[]>([]);
 const nextUrl = ref<string | null>(typeof props.options === "string" ? (props.options as string) : null);
@@ -171,6 +175,128 @@ function handleOpened() {
     fetchNext();
   }
 }
+
+const badgesViewportRef = ref<HTMLElement | null>(null);
+
+// Refs do "ukrytej" listy pomiarowej (renderujemy wszystkie badge poza ekranem)
+const measureBadgeRefs = ref<HTMLElement[]>([]);
+const moreMeasureRef = ref<HTMLElement | null>(null);
+
+const visibleCount = ref<number>(Number.POSITIVE_INFINITY);
+const moreText = ref("+0");
+
+function setMeasureBadgeRef(el: HTMLElement | null, idx: number) {
+  if (!el) return;
+  measureBadgeRefs.value[idx] = el;
+}
+
+function getGapPx(el: HTMLElement) {
+  const cs = getComputedStyle(el);
+  // tailwindowy gap zwykle wpada w `columnGap`/`gap`
+  const g = parseFloat(cs.columnGap || cs.gap || "0");
+  return Number.isFinite(g) && g > 0 ? g : 8;
+}
+
+async function recalcVisibleBadges() {
+  // działa tylko dla multi i gdy nie używasz custom slotu "selected"
+  if (!isMultiple.value) return;
+  if (!!slots.selected) return;
+
+  await nextTick();
+
+  const viewport = badgesViewportRef.value;
+  if (!viewport) return;
+
+  const wrapW = viewport.clientWidth;
+  const gap = getGapPx(viewport);
+
+  // Upewnij się, że mamy refy dla wszystkich badge
+  const widths = selectedItems.value.map((_, i) => measureBadgeRefs.value[i]?.offsetWidth ?? 0);
+
+  const totalWidth = (n: number) => {
+    if (n <= 0) return 0;
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += widths[i] ?? 0;
+    return sum + gap * (n - 1);
+  };
+
+  let vis = widths.length;
+
+  // Najpierw spróbuj wszystkie bez "+N"
+  if (totalWidth(vis) <= wrapW) {
+    visibleCount.value = vis;
+    moreText.value = "+0";
+    return;
+  }
+
+  // Jeśli nie mieści się wszystko, iteracyjnie zmniejszaj vis
+  while (vis >= 0) {
+    const hidden = widths.length - vis;
+
+    if (hidden > 0) {
+      moreText.value = `+${hidden}`;
+      await nextTick();
+    }
+
+    const moreW = hidden > 0 ? (moreMeasureRef.value?.offsetWidth ?? 0) : 0;
+    const needed = totalWidth(vis) + (hidden > 0 ? gap + moreW : 0);
+
+    if (needed <= wrapW) {
+      visibleCount.value = vis;
+      return;
+    }
+
+    vis--;
+  }
+
+  // fallback: nic nie wchodzi, pokaż tylko +N
+  visibleCount.value = 0;
+  moreText.value = `+${widths.length}`;
+}
+
+const visibleSelectedItems = computed(() => {
+  if (!isMultiple.value) return selectedItems.value;
+  const n = Number.isFinite(visibleCount.value) ? visibleCount.value : selectedItems.value.length;
+  return selectedItems.value.slice(0, Math.max(0, n));
+});
+
+const hiddenSelectedItems = computed(() => {
+  if (!isMultiple.value) return [];
+  const n = Number.isFinite(visibleCount.value) ? visibleCount.value : selectedItems.value.length;
+  return selectedItems.value.slice(Math.max(0, n));
+});
+
+const hiddenCount = computed(() => hiddenSelectedItems.value.length);
+
+const hiddenTooltip = computed(() =>
+  hiddenSelectedItems.value.map((it) => String(it[props.optionLabelKey])).join(", ")
+);
+
+// Recalc przy zmianie selekcji / options / rozmiaru
+watch(
+  () => [selectedItems.value, isMultiple.value, props.optionLabelKey, props.optionValueKey],
+  async () => {
+    // reset refs (bo liczba badge mogła się zmienić)
+    measureBadgeRefs.value = [];
+    visibleCount.value = selectedItems.value.length;
+    await recalcVisibleBadges();
+  },
+  { deep: true, immediate: true }
+);
+
+let ro: ResizeObserver | null = null;
+
+onMounted(() => {
+  ro = new ResizeObserver(() => recalcVisibleBadges());
+  if (badgesViewportRef.value) ro.observe(badgesViewportRef.value);
+  window.addEventListener("resize", recalcVisibleBadges, { passive: true });
+});
+
+onBeforeUnmount(() => {
+  if (ro && badgesViewportRef.value) ro.unobserve(badgesViewportRef.value);
+  ro = null;
+  window.removeEventListener("resize", recalcVisibleBadges as any);
+});
 </script>
 
 <template>
@@ -181,12 +307,49 @@ function handleOpened() {
 
     <DropdownMenu :class="class" align="start" :matchTriggerWidth="true" @opened="handleOpened">
       <template #activator="{ open, toggle }">
-        <div
-          :id="inputId"
-          @click.stop="toggle()"
-          class="min-h-[44px] w-full flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-foreground"
-        >
-          <div class="flex flex-1 flex-wrap gap-2 items-center">
+        <!-- do mierzania szerokości badge -->
+        <div class="relative flex">
+          <div
+            class="absolute -left-[9999px] top-0 h-0 overflow-hidden whitespace-nowrap pointer-events-none opacity-0"
+            aria-hidden="true"
+          >
+            <div class="flex gap-2 items-center">
+              <template v-for="(it, idx) in selectedItems" :key="it[props.optionValueKey]">
+                <span
+                  :ref="(el) => setMeasureBadgeRef(el as any, idx)"
+                  class="inline-flex items-center gap-2 rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium"
+                >
+                  <span class="truncate">{{ it[props.optionLabelKey] }}</span>
+                  <span class="text-muted-foreground">✕</span>
+                </span>
+              </template>
+
+              <span
+                ref="moreMeasureRef"
+                class="inline-flex items-center rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium"
+              >
+                {{ moreText }}
+              </span>
+            </div>
+          </div>
+
+          <div v-if="hasLeft" class="absolute inset-y-0 left-0 flex items-center justify-center w-10 pointer-events-none">
+            <slot name="left" />
+          </div>
+
+          <div
+            :id="inputId"
+            @click.stop="toggle()"
+            :class="cn(
+              'min-h-[44px] w-full flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-foreground cursor-pointer',
+              hasLeft && 'pl-10',
+              'border-border hover:border-border/80',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:border-primary/40',
+              disabled && 'opacity-60 cursor-not-allowed',
+              error && 'border-danger focus-visible:ring-danger/25 focus-visible:border-danger'
+            )"
+          >
+          <div ref="badgesViewportRef" class="flex flex-1 min-w-0 gap-2 items-center overflow-hidden">
             <template v-if="$slots.selected">
               <template v-for="(it, idx) in selectedItems" :key="idx">
                 <slot name="selected" :item="it" :remove="() => removeValue(it[props.optionValueKey] ?? it.value)" />
@@ -196,20 +359,43 @@ function handleOpened() {
 
             <template v-else>
               <template v-if="selectedItems.length">
-                <template v-for="it in selectedItems" :key="it[props.optionValueKey]">
-                  <span
-                    class="inline-flex items-center gap-2 rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium"
-                  >
-                    <span class="truncate">{{ it[props.optionLabelKey] }}</span>
-                    <button class="text-muted-foreground" type="button" @click.stop="removeValue(it[props.optionValueKey])">✕</button>
-                  </span>
+                <!-- Multi select: badges -->
+                <template v-if="isMultiple">
+                  <div class="flex flex-nowrap gap-2 items-center min-w-0 overflow-hidden">
+                    <template v-for="it in visibleSelectedItems" :key="it[props.optionValueKey]">
+                      <span class="inline-flex items-center gap-2 rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium">
+                        <span class="truncate">{{ it[props.optionLabelKey] }}</span>
+                        <button
+                          class="text-muted-foreground"
+                          type="button"
+                          @click.stop="removeValue(it[props.optionValueKey])"
+                        >✕</button>
+                      </span>
+                    </template>
+
+                    <!-- +N badge -->
+                    <span
+                      v-if="hiddenCount"
+                      class="inline-flex items-center rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium"
+                      :title="hiddenTooltip"
+                    >
+                      {{ moreText }}
+                    </span>
+                  </div>
+                </template>
+                <!-- Single select: plain text -->
+                <template v-else>
+                  <span class="truncate">{{ selectedItems[0][props.optionLabelKey] }}</span>
                 </template>
               </template>
               <span v-else class="text-muted-foreground">{{ placeholder }}</span>
             </template>
           </div>
 
-          <div class="ml-2 text-muted-foreground">{{ open ? "▲" : "▼" }}</div>
+            <div class="ml-2 text-muted-foreground flex items-center">
+              <Icon name="chevron-down" :size="16" />
+            </div>
+          </div>
         </div>
       </template>
 
@@ -217,10 +403,14 @@ function handleOpened() {
         <div class="p-2">
           <slot name="panel-top" :query="query" :setQuery="setQuery" :loading="loading" :loadMore="fetchNext" :hasMore="hasMore" />
 
-          <div class="max-h-60 overflow-auto" @scroll="onScroll">
+          <div class="flex flex-col gap-2 max-h-60 overflow-auto" @scroll="onScroll">
             <template v-if="$slots.item">
               <template v-for="(it, idx) in filteredItems" :key="it[props.optionValueKey]">
-                <slot name="item" :item="it" :index="idx" :select="() => selectItem(it, closeMenu)" :isSelected="isSelected(it)" />
+                <div class="flex items-center gap-2" @click="selectItem(it, closeMenu)">
+                  <!-- Checkbox dla multi select -->
+                  <Checkbox v-if="isMultiple" :checked="isSelected(it)" />
+                  <slot name="item" :item="it" :index="idx" :select="() => selectItem(it, closeMenu)" :isSelected="isSelected(it)" />
+                </div>
               </template>
             </template>
 
@@ -229,13 +419,18 @@ function handleOpened() {
                 v-for="(it, idx) in filteredItems"
                 :key="it[props.optionValueKey]"
                 type="button"
-                class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition"
-                :class="it.disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-secondary/60 focus:bg-secondary/60'"
+                class="flex w-full items-center gap-3 px-3 py-2 font-semibold text-left text-sm transition"
+                :class="[
+                  it.disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer rounded-sm hover:text-background hover:bg-primary/80',
+                  !it.disabled && !isMultiple && 'focus:bg-primary/80',
+                  !isMultiple && isSelected(it) && 'bg-primary text-background'
+                ]"
                 :disabled="it.disabled"
                 @click="selectItem(it, closeMenu)"
               >
+                <!-- Checkbox dla multi select -->
+                <Checkbox v-if="isMultiple" :checked="isSelected(it)" />
                 <span class="truncate">{{ it[props.optionLabelKey] }}</span>
-                <span v-if="isSelected(it)" class="text-primary">✔</span>
               </button>
             </template>
           </div>

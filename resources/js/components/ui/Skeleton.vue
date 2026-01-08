@@ -42,13 +42,16 @@
   >
     <!-- shimmer -->
     <span
-      class="absolute inset-0 -translate-x-full animate-[uiShimmer_1.2s_infinite] bg-gradient-to-r from-transparent via-white/35 to-transparent"
+      class="absolute inset-0 -translate-x-full animate-[uiShimmer_1.5s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-white/50 to-transparent"
     />
   </component>
 </template>
 
 <style scoped>
     @keyframes uiShimmer {
+        0% {
+            transform: translateX(-100%);
+        }
         100% {
             transform: translateX(100%);
         }

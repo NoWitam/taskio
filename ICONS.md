@@ -28,6 +28,10 @@
 - `x` - Zamknięcie
 - `chevron-down` - Strzałka w dół
 - `logout` - Wylogowanie
+- `archive` - Archiwum
+- `trash` - Kosz
+- `calendar` - Kalendarz
+- `message` - Komentarz/Wiadomość
 - `question-mark` - Nieznana ikona
 
 ## Jak dodać nową ikonę
