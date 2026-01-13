@@ -165,7 +165,7 @@
       <slot name="panel" :activeId="activeId" :activeIndex="activeIndex" />
     </div>
     <div
-      v-else
+      v-else-if="$slots['panel-'+activeId]"
       class="mt-4"
       role="tabpanel"
       :id="panelId(activeId)"

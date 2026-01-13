@@ -9,12 +9,14 @@
       <Navbar @toggle-sidebar="toggleSidebar" />
 
       <!-- Page content -->
-      <main class="flex flex-col h-full bg-background">
-        <div class="flex-1">
+      <main class="flex flex-col h-full min-h-0 bg-background overflow-x-hidden overflow-y-auto">
+        <div class="flex-1 min-h-0">
           <router-view />
         </div>
       </main>
     </div>
+
+    <ToastViewport />
   </div>
 </template>
 
@@ -22,6 +24,7 @@
 import { ref } from 'vue';
 import Sidebar from '@/components/ui/Sidebar.vue';
 import Navbar from '@/components/ui/Navbar.vue';
+import ToastViewport from '@/components/ui/ToastViewport.vue';
 
 const sidebarOpen = ref(true);
 

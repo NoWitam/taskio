@@ -1,12 +1,26 @@
 import { onBeforeUnmount, onMounted, Ref } from "vue";
 
-export function useClickOutside(target: Ref<HTMLElement | null>, onOutside: (ev: MouseEvent) => void) {
+type MaybeRefEl = Ref<HTMLElement | null>;
+
+export function useClickOutside(
+  target: MaybeRefEl | MaybeRefEl[],
+  onOutside: (ev: MouseEvent) => void
+) {
+  const getTargets = () => (Array.isArray(target) ? target : [target]);
+
   const handler = (ev: MouseEvent) => {
-    const el = target.value;
-    if (!el) return;
-    if (ev.target instanceof Node && !el.contains(ev.target)) onOutside(ev);
+    const targets = getTargets()
+      .map((t) => t.value)
+      .filter(Boolean) as HTMLElement[];
+    if (!targets.length) return;
+
+    if (!(ev.target instanceof Node)) return;
+    const clickedInside = targets.some((el) => el.contains(ev.target as Node));
+    if (!clickedInside) onOutside(ev);
   };
 
-  onMounted(() => document.addEventListener("mousedown", handler));
-  onBeforeUnmount(() => document.removeEventListener("mousedown", handler));
+  // Use capture so events stopped inside dropdown panels still trigger outside detection.
+  // This is important for nested/teleported dropdowns (e.g. DateRangeSelect -> DateInput).
+  onMounted(() => document.addEventListener("mousedown", handler, true));
+  onBeforeUnmount(() => document.removeEventListener("mousedown", handler, true));
 }

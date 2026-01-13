@@ -20,19 +20,113 @@
 - Liczba - dowolny rozmiar w pikselach
 
 ### Dostępne ikony
-- `home` - Ikona domu (Dashboard)
-- `check-circle` - Zaznaczony krąg (Tasks)
-- `users` - Użytkownicy
-- `settings` - Ustawienia
-- `menu` - Hamburgera menu
-- `x` - Zamknięcie
-- `chevron-down` - Strzałka w dół
-- `logout` - Wylogowanie
-- `archive` - Archiwum
-- `trash` - Kosz
-- `calendar` - Kalendarz
-- `message` - Komentarz/Wiadomość
-- `question-mark` - Nieznana ikona
+
+Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
+
+- `alert-triangle`
+- `archive`
+- `at-sign`
+- `badge-check`
+- `bell`
+- `bell-off`
+- `branch`
+- `calendar`
+- `calendar-clock`
+- `chart-bar`
+- `chart-line`
+- `check`
+- `check-circle`
+- `chevron-down`
+- `chevron-left`
+- `chevron-right`
+- `chevron-up`
+- `circle-help`
+- `clipboard`
+- `clock`
+- `cloud`
+- `cloud-download`
+- `cloud-upload`
+- `columns`
+- `copy`
+- `database`
+- `dots-horizontal`
+- `dots-vertical`
+- `download`
+- `external-link`
+- `eye`
+- `eye-off`
+- `file`
+- `file-plus`
+- `file-search`
+- `file-text`
+- `file-x`
+- `filter`
+- `flag`
+- `folder`
+- `folder-open`
+- `folder-plus`
+- `forward`
+- `globe`
+- `grid`
+- `hash`
+- `home`
+- `image`
+- `inbox`
+- `info-circle`
+- `key`
+- `label`
+- `link`
+- `loader`
+- `lock`
+- `logout`
+- `mail`
+- `mail-open`
+- `megaphone`
+- `menu`
+- `message`
+- `minus-circle`
+- `moon`
+- `paperclip`
+- `pause`
+- `pause-circle`
+- `pencil`
+- `plus`
+- `plug`
+- `question-mark`
+- `refresh`
+- `redo`
+- `repeat`
+- `reply`
+- `restore`
+- `save`
+- `search`
+- `send`
+- `server`
+- `settings`
+- `shield`
+- `shield-check`
+- `sliders-horizontal`
+- `sort-ascending`
+- `sort-descending`
+- `sparkles`
+- `signature`
+- `stop`
+- `stopwatch`
+- `sun`
+- `table`
+- `tag`
+- `timer`
+- `trash`
+- `trash-restore`
+- `undo`
+- `upload`
+- `user`
+- `users`
+- `video`
+- `webhook`
+- `workflow`
+- `x`
+- `x-circle`
 
 ## Jak dodać nową ikonę
 
@@ -60,6 +154,7 @@ Stwórz nowy plik w `resources/js/assets/icons/nazwa-ikony.vue`:
 - Zdefiniuj kształty bez `fill` (domyślnie używamy `stroke`)
 - ViewBox jest zawsze `0 0 24 24`
 - Ikony dziedziczą aktualny kolor (`currentColor`)
+- Nazwa pliku musi być w `kebab-case` i odpowiadać `name` (np. `dots-horizontal.vue` → `name="dots-horizontal"`)
 
 ## Przykład zaawansowanego użycia
 

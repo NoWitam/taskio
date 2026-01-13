@@ -4,6 +4,10 @@ import { cn } from "@/lib/helpers";
 import DropdownMenu from "@/components/ui/DropdownMenu.vue";
 import Icon from "@/components/ui/Icon.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
+import Badge from "@/components/ui/Badge.vue";
+import Tooltip from "@/components/ui/Tooltip.vue";
+import Skeleton from "@/components/ui/Skeleton.vue";
+import Button from "../Button.vue";
 
 type Option = { [k: string]: any } & { label: string; value: any; disabled?: boolean };
 
@@ -16,6 +20,12 @@ const props = withDefaults(
     options?: Option[] | string; // array or url
     loader?: (url?: string, query?: string) => Promise<{ data: Option[]; next?: string }>;
     multiple?: boolean;
+    clearable?: boolean;
+    /**
+     * Resolver dla zaznaczonych wartości (np. po deep-linku), gdy nie ma ich w internalItems.
+     * Powinien zwrócić obiekt kompatybilny z Option (musi mieć przynajmniej optionLabelKey/optionValueKey).
+     */
+    resolveSelected?: (value: any) => Option | null | undefined;
     optionLabelKey?: string;
     optionValueKey?: string;
     disabled?: boolean;
@@ -24,7 +34,7 @@ const props = withDefaults(
     class?: string;
     fetchPageSize?: number;
   }>(),
-  { multiple: false, optionLabelKey: "label", optionValueKey: "value", fetchPageSize: 20 }
+  { multiple: false, clearable: false, optionLabelKey: "label", optionValueKey: "value", fetchPageSize: 20 }
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", value: any): void }>();
@@ -37,6 +47,10 @@ const internalItems = ref<Option[]>([]);
 const nextUrl = ref<string | null>(typeof props.options === "string" ? (props.options as string) : null);
 const loading = ref(false);
 const query = ref("");
+const hasFetched = ref(false);
+const menuOpen = ref(false);
+
+const disabled = computed(() => !!props.disabled);
 
 const isRemote = computed(() => typeof props.options === "string" || !!props.loader);
 const hasMore = computed(() => !!nextUrl.value);
@@ -48,9 +62,11 @@ watch(
     if (Array.isArray(v)) {
       internalItems.value = v.slice();
       nextUrl.value = null;
+      hasFetched.value = true;
     } else if (typeof v === "string") {
       internalItems.value = [];
       nextUrl.value = v;
+      hasFetched.value = false;
     }
   },
   { immediate: true }
@@ -73,7 +89,6 @@ async function fetchNext() {
     }
 
     if (res && Array.isArray(res.data)) {
-      // if query changed and we have items, reset before appending
       internalItems.value = internalItems.value.concat(res.data);
       nextUrl.value = res.next ?? null;
     } else {
@@ -84,6 +99,7 @@ async function fetchNext() {
     nextUrl.value = null;
   } finally {
     loading.value = false;
+    if (isRemote.value) hasFetched.value = true;
   }
 }
 
@@ -91,7 +107,7 @@ async function fetchNext() {
 function setQuery(q: string) {
   query.value = q;
   if (isRemote.value) {
-    // reset pagination
+    hasFetched.value = false;
     nextUrl.value = typeof props.options === "string" ? (props.options as string) : null;
     internalItems.value = [];
     fetchNext();
@@ -155,8 +171,29 @@ function removeValue(val: any) {
   }
 }
 
+function clearSelection(closeMenu?: () => void) {
+  if (props.disabled) return;
+  selectedValues.value = isMultiple.value ? [] : null;
+  if (closeMenu) closeMenu();
+}
+
 const selectedItems = computed(() => {
-  const mapVal = (v: any) => internalItems.value.find((it) => valueOf(it) === v) || { [props.optionLabelKey]: String(v), [props.optionValueKey]: v };
+  const mapVal = (v: any): Option => {
+    const found = internalItems.value.find((it) => valueOf(it) === v);
+    if (found) return found;
+
+    const resolved = props.resolveSelected ? props.resolveSelected(v) : null;
+    if (resolved) return resolved;
+
+    const label = String(v);
+    return {
+      label,
+      value: v,
+      [props.optionLabelKey]: label,
+      [props.optionValueKey]: v,
+    } as Option;
+  };
+
   if (isMultiple.value) return (selectedValues.value as any[]).map(mapVal);
   return selectedValues.value == null ? [] : [mapVal(selectedValues.value)];
 });
@@ -170,37 +207,65 @@ function onScroll(e: Event) {
 }
 
 function handleOpened() {
-  // when dropdown opens, ensure remote options are fetched on first open
   if (isRemote.value && !internalItems.value.length && !loading.value) {
     fetchNext();
   }
 }
 
+async function refreshItems() {
+  // Only refresh live when the menu is currently open.
+  if (!menuOpen.value) return;
+  if (!isRemote.value) return;
+
+  internalItems.value = [];
+  hasFetched.value = false;
+  nextUrl.value = typeof props.options === "string" ? (props.options as string) : null;
+  await fetchNext();
+}
+
+defineExpose({ refreshItems, menuOpen });
+
+/**
+ * -----------------------------
+ * Overflow badges (+N) handling
+ * -----------------------------
+ */
+
 const badgesViewportRef = ref<HTMLElement | null>(null);
 
-// Refs do "ukrytej" listy pomiarowej (renderujemy wszystkie badge poza ekranem)
-const measureBadgeRefs = ref<HTMLElement[]>([]);
-const moreMeasureRef = ref<HTMLElement | null>(null);
+// trzymamy refy do "czegokolwiek" (HTMLElement albo instancja komponentu)
+const measureBadgeRefs = ref<any[]>([]);
+const moreMeasureRef = ref<any | null>(null);
 
 const visibleCount = ref<number>(Number.POSITIVE_INFINITY);
 const moreText = ref("+0");
 
-function setMeasureBadgeRef(el: HTMLElement | null, idx: number) {
+function toEl(x: any): HTMLElement | null {
+  if (!x) return null;
+  // gdy ref jest na natywny element
+  if (x instanceof HTMLElement) return x;
+  // gdy ref jest na komponent (Badge/Tooltip etc.)
+  if (x?.$el instanceof HTMLElement) return x.$el;
+  // czasem bywa { value: ... } w zależności od wrapperów
+  if (x?.value instanceof HTMLElement) return x.value;
+  if (x?.value?.$el instanceof HTMLElement) return x.value.$el;
+  return null;
+}
+
+function setMeasureBadgeRef(el: any | null, idx: number) {
   if (!el) return;
   measureBadgeRefs.value[idx] = el;
 }
 
 function getGapPx(el: HTMLElement) {
   const cs = getComputedStyle(el);
-  // tailwindowy gap zwykle wpada w `columnGap`/`gap`
-  const g = parseFloat(cs.columnGap || cs.gap || "0");
+  const g = parseFloat((cs.columnGap || cs.gap || "0") as string);
   return Number.isFinite(g) && g > 0 ? g : 8;
 }
 
 async function recalcVisibleBadges() {
-  // działa tylko dla multi i gdy nie używasz custom slotu "selected"
+  // tylko multi
   if (!isMultiple.value) return;
-  if (!!slots.selected) return;
 
   await nextTick();
 
@@ -208,10 +273,13 @@ async function recalcVisibleBadges() {
   if (!viewport) return;
 
   const wrapW = viewport.clientWidth;
+  if (!wrapW) return;
+
+  // gap bierzemy z najbliższego flexa z gap-2 (u Ciebie viewport ma gap-2)
   const gap = getGapPx(viewport);
 
-  // Upewnij się, że mamy refy dla wszystkich badge
-  const widths = selectedItems.value.map((_, i) => measureBadgeRefs.value[i]?.offsetWidth ?? 0);
+  // szerokości wszystkich badge (mierzone na ukrytej linii)
+  const widths = selectedItems.value.map((_, i) => toEl(measureBadgeRefs.value[i])?.offsetWidth ?? 0);
 
   const totalWidth = (n: number) => {
     if (n <= 0) return 0;
@@ -222,14 +290,13 @@ async function recalcVisibleBadges() {
 
   let vis = widths.length;
 
-  // Najpierw spróbuj wszystkie bez "+N"
+  // wszystkie bez "+N"
   if (totalWidth(vis) <= wrapW) {
     visibleCount.value = vis;
     moreText.value = "+0";
     return;
   }
 
-  // Jeśli nie mieści się wszystko, iteracyjnie zmniejszaj vis
   while (vis >= 0) {
     const hidden = widths.length - vis;
 
@@ -238,7 +305,7 @@ async function recalcVisibleBadges() {
       await nextTick();
     }
 
-    const moreW = hidden > 0 ? (moreMeasureRef.value?.offsetWidth ?? 0) : 0;
+    const moreW = hidden > 0 ? (toEl(moreMeasureRef.value)?.offsetWidth ?? 0) : 0;
     const needed = totalWidth(vis) + (hidden > 0 ? gap + moreW : 0);
 
     if (needed <= wrapW) {
@@ -249,7 +316,7 @@ async function recalcVisibleBadges() {
     vis--;
   }
 
-  // fallback: nic nie wchodzi, pokaż tylko +N
+  // nic nie wchodzi, tylko +N
   visibleCount.value = 0;
   moreText.value = `+${widths.length}`;
 }
@@ -272,11 +339,25 @@ const hiddenTooltip = computed(() =>
   hiddenSelectedItems.value.map((it) => String(it[props.optionLabelKey])).join(", ")
 );
 
-// Recalc przy zmianie selekcji / options / rozmiaru
+const showEmptyState = computed(() => {
+  if (loading.value) return false;
+  if (isRemote.value) return hasFetched.value && filteredItems.value.length === 0;
+  return filteredItems.value.length === 0;
+});
+
+const emptyIcon = computed(() => (query.value ? "search" : "circle-help"));
+const emptyTitle = computed(() => (query.value ? "Brak wyników" : "Brak opcji"));
+const emptyDescription = computed(() =>
+  query.value
+    ? "Nie znaleziono opcji pasujących do wyszukiwania."
+    : "Na ten moment nie ma nic do wybrania."
+);
+
+// Recalc przy zmianie selekcji / labelKey / valueKey
 watch(
   () => [selectedItems.value, isMultiple.value, props.optionLabelKey, props.optionValueKey],
   async () => {
-    // reset refs (bo liczba badge mogła się zmienić)
+    // reset refs (bo kolejność/ilość badge mogła się zmienić)
     measureBadgeRefs.value = [];
     visibleCount.value = selectedItems.value.length;
     await recalcVisibleBadges();
@@ -286,7 +367,8 @@ watch(
 
 let ro: ResizeObserver | null = null;
 
-onMounted(() => {
+onMounted(async () => {
+  await nextTick();
   ro = new ResizeObserver(() => recalcVisibleBadges());
   if (badgesViewportRef.value) ro.observe(badgesViewportRef.value);
   window.addEventListener("resize", recalcVisibleBadges, { passive: true });
@@ -305,31 +387,39 @@ onBeforeUnmount(() => {
       {{ label }}
     </label>
 
-    <DropdownMenu :class="class" align="start" :matchTriggerWidth="true" @opened="handleOpened">
+    <DropdownMenu v-model:open="menuOpen" :class="class" align="start" :matchTriggerWidth="true" @opened="handleOpened">
       <template #activator="{ open, toggle }">
-        <!-- do mierzania szerokości badge -->
         <div class="relative flex">
+          <!-- Hidden measuring row (off-screen) -->
           <div
-            class="absolute -left-[9999px] top-0 h-0 overflow-hidden whitespace-nowrap pointer-events-none opacity-0"
+            class="absolute -left-2499.75 top-0 h-0 overflow-hidden whitespace-nowrap pointer-events-none opacity-0"
             aria-hidden="true"
           >
             <div class="flex gap-2 items-center">
-              <template v-for="(it, idx) in selectedItems" :key="it[props.optionValueKey]">
-                <span
-                  :ref="(el) => setMeasureBadgeRef(el as any, idx)"
-                  class="inline-flex items-center gap-2 rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium"
-                >
-                  <span class="truncate">{{ it[props.optionLabelKey] }}</span>
-                  <span class="text-muted-foreground">✕</span>
-                </span>
+              <template v-for="(it, idx) in selectedItems" :key="it[props.optionValueKey] ?? idx">
+                <template v-if="$slots.selected">
+                  <div :ref="(el: any) => setMeasureBadgeRef(el, idx)" class="inline-flex">
+                    <slot name="selected" :item="it" :remove="() => {}" :measuring="true" />
+                  </div>
+                </template>
+
+                <template v-else>
+                  <Badge
+                    :ref="(el: any) => setMeasureBadgeRef(el, idx)"
+                    class="bg-secondary/40 border-transparent font-medium gap-2"
+                  >
+                    <span class="truncate">{{ it[props.optionLabelKey] }}</span>
+                    <span class="text-muted-foreground">✕</span>
+                  </Badge>
+                </template>
               </template>
 
-              <span
-                ref="moreMeasureRef"
-                class="inline-flex items-center rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium"
+              <Badge
+                :ref="(el: any) => (moreMeasureRef = el)"
+                class="bg-secondary/40 border-transparent font-medium"
               >
                 {{ moreText }}
-              </span>
+              </Badge>
             </div>
           </div>
 
@@ -341,7 +431,7 @@ onBeforeUnmount(() => {
             :id="inputId"
             @click.stop="toggle()"
             :class="cn(
-              'min-h-[44px] w-full flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-foreground cursor-pointer',
+              'min-h-11 w-full font-semibold flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-sm text-foreground cursor-pointer',
               hasLeft && 'pl-10',
               'border-border hover:border-border/80',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:border-primary/40',
@@ -349,48 +439,85 @@ onBeforeUnmount(() => {
               error && 'border-danger focus-visible:ring-danger/25 focus-visible:border-danger'
             )"
           >
-          <div ref="badgesViewportRef" class="flex flex-1 min-w-0 gap-2 items-center overflow-hidden">
-            <template v-if="$slots.selected">
-              <template v-for="(it, idx) in selectedItems" :key="idx">
-                <slot name="selected" :item="it" :remove="() => removeValue(it[props.optionValueKey] ?? it.value)" />
-              </template>
-              <span v-if="!selectedItems.length && placeholder" class="text-muted-foreground">{{ placeholder }}</span>
-            </template>
+            <div ref="badgesViewportRef" class="flex flex-1 min-w-0 gap-2 items-center overflow-hidden">
+              <template v-if="$slots.selected">
+                <template v-if="selectedItems.length">
+                  <template v-if="isMultiple">
+                    <div class="flex flex-nowrap gap-2 items-center min-w-0 overflow-hidden">
+                      <template v-for="(it, idx) in visibleSelectedItems" :key="it[props.optionValueKey] ?? idx">
+                        <slot
+                          name="selected"
+                          :item="it"
+                          :remove="() => removeValue(it[props.optionValueKey] ?? it.value)"
+                          :measuring="false"
+                        />
+                      </template>
 
-            <template v-else>
-              <template v-if="selectedItems.length">
-                <!-- Multi select: badges -->
-                <template v-if="isMultiple">
-                  <div class="flex flex-nowrap gap-2 items-center min-w-0 overflow-hidden">
-                    <template v-for="it in visibleSelectedItems" :key="it[props.optionValueKey]">
-                      <span class="inline-flex items-center gap-2 rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium">
-                        <span class="truncate">{{ it[props.optionLabelKey] }}</span>
-                        <button
-                          class="text-muted-foreground"
-                          type="button"
-                          @click.stop="removeValue(it[props.optionValueKey])"
-                        >✕</button>
-                      </span>
-                    </template>
+                      <Tooltip v-if="hiddenCount" side="top">
+                        <Badge class="bg-secondary/40 border-transparent font-medium">
+                          {{ moreText }}
+                        </Badge>
 
-                    <!-- +N badge -->
-                    <span
-                      v-if="hiddenCount"
-                      class="inline-flex items-center rounded-full bg-secondary/40 px-2 py-0.5 text-xs font-medium"
-                      :title="hiddenTooltip"
-                    >
-                      {{ moreText }}
-                    </span>
-                  </div>
+                        <template #content>
+                          <span class="whitespace-pre-wrap">{{ hiddenTooltip }}</span>
+                        </template>
+                      </Tooltip>
+                    </div>
+                  </template>
+
+                  <template v-else>
+                    <slot
+                      name="selected"
+                      :item="selectedItems[0]"
+                      :remove="() => removeValue(selectedItems[0]?.[props.optionValueKey] ?? selectedItems[0]?.value)"
+                      :measuring="false"
+                    />
+                  </template>
                 </template>
-                <!-- Single select: plain text -->
-                <template v-else>
-                  <span class="truncate">{{ selectedItems[0][props.optionLabelKey] }}</span>
-                </template>
+
+                <span v-else-if="placeholder" class="text-muted-foreground">{{ placeholder }}</span>
               </template>
-              <span v-else class="text-muted-foreground">{{ placeholder }}</span>
-            </template>
-          </div>
+
+              <template v-else>
+                <template v-if="selectedItems.length">
+                  <!-- Multi select: badges -->
+                  <template v-if="isMultiple">
+                    <div class="flex flex-nowrap gap-2 items-center min-w-0 overflow-hidden">
+                      <template v-for="it in visibleSelectedItems" :key="it[props.optionValueKey]">
+                        <Badge class="bg-secondary/40 border-transparent font-medium gap-2">
+                          <span class="truncate">{{ it[props.optionLabelKey] }}</span>
+                          <button
+                            class="text-muted-foreground"
+                            type="button"
+                            @click.stop="removeValue(it[props.optionValueKey])"
+                          >
+                            ✕
+                          </button>
+                        </Badge>
+                      </template>
+
+                      <!-- +N badge -->
+                      <Tooltip v-if="hiddenCount" side="top">
+                        <Badge class="bg-secondary/40 border-transparent font-medium">
+                          {{ moreText }}
+                        </Badge>
+
+                        <template #content>
+                          <span class="whitespace-pre-wrap">{{ hiddenTooltip }}</span>
+                        </template>
+                      </Tooltip>
+                    </div>
+                  </template>
+
+                  <!-- Single select: plain text -->
+                  <template v-else>
+                    <span class="truncate">{{ selectedItems[0][props.optionLabelKey] }}</span>
+                  </template>
+                </template>
+
+                <span v-else class="text-muted-foreground">{{ placeholder }}</span>
+              </template>
+            </div>
 
             <div class="ml-2 text-muted-foreground flex items-center">
               <Icon name="chevron-down" :size="16" />
@@ -400,45 +527,98 @@ onBeforeUnmount(() => {
       </template>
 
       <template #default="{ closeMenu }">
-        <div class="p-2">
+        <div>
           <slot name="panel-top" :query="query" :setQuery="setQuery" :loading="loading" :loadMore="fetchNext" :hasMore="hasMore" />
 
-          <div class="flex flex-col gap-2 max-h-60 overflow-auto" @scroll="onScroll">
-            <template v-if="$slots.item">
-              <template v-for="(it, idx) in filteredItems" :key="it[props.optionValueKey]">
-                <div class="flex items-center gap-2" @click="selectItem(it, closeMenu)">
-                  <!-- Checkbox dla multi select -->
-                  <Checkbox v-if="isMultiple" :checked="isSelected(it)" />
-                  <slot name="item" :item="it" :index="idx" :select="() => selectItem(it, closeMenu)" :isSelected="isSelected(it)" />
+          <div class="flex flex-col p-2 gap-2 max-h-60 overflow-auto" @scroll="onScroll">
+            <template v-if="showEmptyState">
+              <slot
+                name="empty"
+                :query="query"
+                :isRemote="isRemote"
+                :title="emptyTitle"
+                :description="emptyDescription"
+                :icon="emptyIcon"
+              >
+                <div class="py-8 px-3 text-center">
+                  <div class="mx-auto mb-2 h-10 w-10 rounded-full bg-secondary flex items-center justify-center text-foreground/60">
+                    <Icon :name="emptyIcon" :size="18" />
+                  </div>
+                  <div class="text-sm font-semibold text-foreground/80">{{ emptyTitle }}</div>
+                  <div class="mt-1 text-xs text-muted-foreground">{{ emptyDescription }}</div>
                 </div>
-              </template>
+              </slot>
             </template>
 
             <template v-else>
-              <button
-                v-for="(it, idx) in filteredItems"
-                :key="it[props.optionValueKey]"
-                type="button"
-                class="flex w-full items-center gap-3 px-3 py-2 font-semibold text-left text-sm transition"
-                :class="[
-                  it.disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer rounded-sm hover:text-background hover:bg-primary/80',
-                  !it.disabled && !isMultiple && 'focus:bg-primary/80',
-                  !isMultiple && isSelected(it) && 'bg-primary text-background'
-                ]"
-                :disabled="it.disabled"
-                @click="selectItem(it, closeMenu)"
-              >
-                <!-- Checkbox dla multi select -->
-                <Checkbox v-if="isMultiple" :checked="isSelected(it)" />
-                <span class="truncate">{{ it[props.optionLabelKey] }}</span>
-              </button>
+              <template v-if="$slots.item">
+                <template v-for="(it, idx) in filteredItems" :key="it[props.optionValueKey]">
+                  <button
+                    type="button"
+                    class="flex w-full items-center gap-3 px-3 py-2 font-semibold text-left text-sm transition"
+                    :class="[
+                      it.disabled
+                        ? 'cursor-not-allowed opacity-50'
+                        : 'cursor-pointer rounded-sm hover:text-background hover:bg-primary/80',
+                      !it.disabled && !isMultiple && 'focus:bg-primary/80',
+                      !isMultiple && isSelected(it) && 'bg-primary text-background'
+                    ]"
+                    :disabled="it.disabled"
+                    @click="selectItem(it, closeMenu)"
+                  >
+                    <Checkbox v-if="isMultiple" :checked="isSelected(it)" />
+                    <slot
+                      name="item"
+                      :item="it"
+                      :index="idx"
+                      :select="() => selectItem(it, closeMenu)"
+                      :isSelected="isSelected(it)"
+                    />
+                  </button>
+                </template>
+              </template>
+
+              <template v-else>
+                <button
+                  v-for="(it, idx) in filteredItems"
+                  :key="it[props.optionValueKey]"
+                  type="button"
+                  class="flex w-full items-center gap-3 px-3 py-2 font-semibold text-left text-sm transition"
+                  :class="[
+                    it.disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer rounded-sm hover:text-background hover:bg-primary/80',
+                    !it.disabled && !isMultiple && 'focus:bg-primary/80',
+                    !isMultiple && isSelected(it) && 'bg-primary text-background'
+                  ]"
+                  :disabled="it.disabled"
+                  @click="selectItem(it, closeMenu)"
+                >
+                  <Checkbox v-if="isMultiple" :checked="isSelected(it)" />
+                  <span class="truncate">{{ it[props.optionLabelKey] }}</span>
+                </button>
+              </template>
+
+              <template v-if="loading && isRemote">
+                <div v-for="i in 3" :key="`sk_${i}`" class="flex items-center gap-3 px-3 py-2">
+                  <Skeleton v-if="isMultiple" width="16px" height="16px" rounded="sm" class="shrink-0" />
+                  <Skeleton class="flex-1" height="16px" rounded="full" />
+                </div>
+              </template>
             </template>
           </div>
 
-          <div v-if="loading" class="p-2 text-center text-sm text-muted-foreground">Loading...</div>
-
-          <div v-if="hasMore && !loading" class="p-2 text-center">
-            <button class="text-sm" type="button" @click="fetchNext">Load more</button>
+          <div 
+            v-if="clearable"
+            class="border-t border-border p-2 flex w-full justify-center"
+          >
+            <Button
+              variant="ghost"
+              class="w-full text-muted-foreground"
+              :disabled="disabled"
+              type="button"
+              @click="clearSelection(closeMenu)"
+            >
+              Wyczyść
+            </Button>
           </div>
         </div>
       </template>

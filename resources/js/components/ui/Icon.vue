@@ -11,12 +11,12 @@
     stroke-linejoin="round"
     v-bind="$attrs"
   >
-    <component :is="iconComponent" />
+    <component :is="iconComponent" :key="name" />
   </svg>
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, defineAsyncComponent } from 'vue';
 
 const props = defineProps({
   name: {
@@ -65,17 +65,26 @@ const viewBox = '0 0 24 24';
 const fillValue = computed(() => (props.variant === 'fill' || props.variant === 'both' ? 'currentColor' : 'none'));
 const strokeValue = computed(() => (props.variant === 'stroke' || props.variant === 'both' ? 'currentColor' : 'none'));
 
-// Dynamiczny import ikony
-const iconComponent = computed(() => {
-  return defineAsyncComponent(() =>
-    import(`../../assets/icons/${props.name}.vue`).catch(() => {
-      console.warn(`Icon not found: ${props.name}`);
-      return import('../../assets/icons/question-mark.vue');
-    })
-  );
-});
+// Lazy-load wszystkie ikony (Vite) i wybieraj po nazwie.
+// To zapewnia, że zmiana `name` tworzy NOWY async komponent i przeładowuje SVG.
+const iconLoaders = import.meta.glob('../../assets/icons/*.vue');
 
-import { defineAsyncComponent } from 'vue';
+const iconComponent = computed(() => {
+  const requested = props.name;
+  const key = `../../assets/icons/${requested}.vue`;
+
+  const loader = iconLoaders[key] ?? iconLoaders['../../assets/icons/question-mark.vue'];
+
+  if (!iconLoaders[key]) {
+    console.warn(`Icon not found: ${requested}`);
+  }
+
+  return defineAsyncComponent(async () => {
+    // loader zawsze istnieje (fallback)
+    const mod = await loader();
+    return mod;
+  });
+});
 </script>
 
 <style scoped>

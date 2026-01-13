@@ -9,7 +9,10 @@ export interface Task {
     description?: string;
     status: string;
     priority: 'high' | 'medium' | 'low';
-    date: string;
+    // Human-readable date used by UI list; can be null when task has no deadline.
+    date: string | null;
+    // ISO deadline (YYYY-MM-DD) for filtering/sorting (optional for backward compatibility).
+    due_date?: string | null;
     user: User;
     comments: number;
     labels: Label[];
@@ -19,8 +22,14 @@ export interface TaskFilters {
     status?: string;
     priority?: string;
     search?: string;
-    user_id?: number;
+    user_id?: string | number | Array<string | number>;
     label?: string;
+    labels?: string[];
+    labelOperator?: 'AND' | 'OR';
+    date_from?: string | null;
+    date_to?: string | null;
+    date_preset?: '' | 'today' | 'this_week' | 'last_week' | 'this_month';
+    hide_without_deadline?: boolean | number | '0' | '1';
 }
 
 export interface TasksResponse {
@@ -56,9 +65,15 @@ export const useTasksStore = defineStore('tasks', () => {
             }
 
             Object.entries(filters).forEach(([key, value]) => {
-                if (value !== undefined && value !== null && value !== '') {
-                    params.append(key, value.toString());
+                if (value === undefined || value === null || value === '') return;
+
+                if (Array.isArray(value)) {
+                    if (!value.length) return;
+                    params.append(key, value.join(','));
+                    return;
                 }
+
+                params.append(key, value.toString());
             });
 
             const response: TasksResponse = await api.get(`/tasks?${params.toString()}`);
@@ -71,7 +86,9 @@ export const useTasksStore = defineStore('tasks', () => {
             
             cursors.value[status] = response.meta.next_cursor;
             hasMoreByStatus.value[status] = response.meta.next_cursor !== null;
-            totalByStatus.value[status] = response.meta.total ?? 0;
+            if(response.meta.hasOwnProperty('total') && response.meta.total !== null) {
+                totalByStatus.value[status] = response.meta.total ?? 0;
+            }
             
             return response;
         } catch (err: any) {
@@ -82,12 +99,22 @@ export const useTasksStore = defineStore('tasks', () => {
         }
     };
 
-    const createTask = async (taskData: Partial<Task>) => {
+    const createTask = async (taskData: any) => {
         error.value = null;
 
         try {
             const response = await api.post('/tasks', taskData);
             tasks.value.unshift(response);
+
+            const created: any = response as any;
+            const status = created?.status ?? (taskData && typeof taskData === 'object' ? (taskData as any).status : undefined);
+            if (status) {
+                const current = tasksByStatus.value[status] || [];
+                tasksByStatus.value[status] = [created, ...current];
+                if (typeof totalByStatus.value[status] === 'number') {
+                    totalByStatus.value[status] = (totalByStatus.value[status] || 0) + 1;
+                }
+            }
             return response;
         } catch (err: any) {
             error.value = err.response?.data?.message || 'Błąd podczas tworzenia zadania';
@@ -95,12 +122,13 @@ export const useTasksStore = defineStore('tasks', () => {
         }
     };
 
-    const updateTask = async (id: number, taskData: Partial<Task>) => {
+    const updateTask = async (id: string | number, taskData: Partial<Task>) => {
         error.value = null;
 
         try {
+            const idStr = String(id);
             const response = await api.put(`/tasks/${id}`, taskData);
-            const index = tasks.value.findIndex(t => t.id === id);
+            const index = tasks.value.findIndex(t => t.id === idStr);
             if (index !== -1) {
                 tasks.value[index] = response;
             }
@@ -111,12 +139,13 @@ export const useTasksStore = defineStore('tasks', () => {
         }
     };
 
-    const deleteTask = async (id: number) => {
+    const deleteTask = async (id: string | number) => {
         error.value = null;
 
         try {
+            const idStr = String(id);
             await api.delete(`/tasks/${id}`);
-            tasks.value = tasks.value.filter(t => t.id !== id);
+            tasks.value = tasks.value.filter(t => t.id !== idStr);
         } catch (err: any) {
             error.value = err.response?.data?.message || 'Błąd podczas usuwania zadania';
             throw err;

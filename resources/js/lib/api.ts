@@ -7,7 +7,6 @@ class ApiClient {
         this.client = axios.create({
             baseURL: '/api',
             headers: {
-                'Content-Type': 'application/json',
                 'Accept': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest',
             },
@@ -25,6 +24,16 @@ class ApiClient {
                 const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
                 if (token) {
                     config.headers['X-CSRF-TOKEN'] = token;
+                }
+
+                // When sending multipart/form-data, let the browser/axios set proper boundary.
+                // Our axios defaults should not force JSON content-type for FormData.
+                if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+                    const headers: any = config.headers as any;
+                    if (headers) {
+                        delete headers['Content-Type'];
+                        delete headers['content-type'];
+                    }
                 }
                 return config;
             },

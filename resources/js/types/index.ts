@@ -8,9 +8,10 @@ export interface User {
 }
 
 export interface Label {
-    id?: number;
+    id?: string;
     text: string;
     color?: string;
+    icon?: string | null;
 }
 
 export interface ApiMeta {
@@ -28,4 +29,5 @@ export interface ApiResponse<T> {
 export interface CursorPaginationParams {
     cursor?: string | null;
     per_page?: number;
+    q?: string;
 }

@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, useSlots, onBeforeUnmount } from "vue";
 import { cn } from "@/lib/helpers";
 import DropdownMenu from "@/components/ui/DropdownMenu.vue";
 import Button from "@/components/ui/Button.vue";
+import Icon from "@/components/ui/Icon.vue";
 
 // API: modelValue is an ISO date string (YYYY-MM-DD) or empty string/null when unset.
 // Display in input uses Polish mask dd.mm.rrrr (dd.mm.yyyy)
@@ -22,8 +23,17 @@ const props = withDefaults(
     max?: string | null; // max date in YYYY-MM-DD
     disabledDates?: string[]; // array of YYYY-MM-DD that are not selectable
     onlyDates?: string[]; // if provided, ONLY these dates are selectable
+    clearable?: boolean;
   }>(),
-  { placeholder: "dd.mm.rrrr", disabled: false, min: null, max: null, disabledDates: [] as string[], onlyDates: [] as string[] }
+  {
+    placeholder: "dd.mm.rrrr",
+    disabled: false,
+    min: null,
+    max: null,
+    disabledDates: () => [],
+    onlyDates: () => [],
+    clearable: false,
+  }
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string | null): void }>();
@@ -34,6 +44,7 @@ const inputRef = ref<HTMLInputElement | null>(null);
 const slots = useSlots();
 const hasLeft = computed(() => !!slots.left);
 const hasRight = computed(() => !!slots.right);
+const showClear = computed(() => !!props.clearable && !!(props.modelValue || localValue.value));
 const describedBy = computed(() => {
   const ids: string[] = [];
   if (props.hint) ids.push(`${inputId}_hint`);
@@ -99,7 +110,8 @@ function normalizeOnBlur() {
   } else {
     // keep partial value but do not emit invalid full value
     if (!localValue.value) {
-      emit('update:modelValue', null);
+      // Avoid emitting when value is already null (prevents needless refreshes in filters)
+      if (props.modelValue !== null) emit('update:modelValue', null);
       selectedDate.value = null;
     }
   }
@@ -123,7 +135,12 @@ function onInput(e: Event) {
       emit('update:modelValue', null);
     }
   } else {
-    emit('update:modelValue', localValue.value);
+    // API contract: emit only ISO (YYYY-MM-DD) or null.
+    // Keep partial typing local; only emit null when the field is cleared.
+    if (!d.length) {
+      emit('update:modelValue', null);
+      selectedDate.value = null;
+    }
   }
 }
 
@@ -163,6 +180,17 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function onBlur() { normalizeOnBlur(); }
+
+function clearValue(e?: Event) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  if (props.disabled) return;
+  localValue.value = "";
+  selectedDate.value = null;
+  emit('update:modelValue', null);
+}
 
 // Calendar state
 const viewYear = ref<number>((new Date()).getFullYear());
@@ -353,8 +381,10 @@ function onPanelKeydown(e: KeyboardEvent, close?: () => void) {
 
 watch(() => panelMode.value, (m) => { if (m === 'year') scrollYearIntoView(); });
 
-// Keep localValue in sync with external changes
-watch(() => props.modelValue, (v) => {
+// Keep localValue in sync with external changes (also on mount)
+watch(
+  () => props.modelValue,
+  (v) => {
   if (!v) {
     localValue.value = '';
     selectedDate.value = null;
@@ -371,7 +401,9 @@ watch(() => props.modelValue, (v) => {
 
   // Otherwise treat value as a partial display string (preserve what user typed)
   localValue.value = String(v);
-});
+  },
+  { immediate: true }
+);
 
 </script>
 
@@ -381,7 +413,7 @@ watch(() => props.modelValue, (v) => {
       {{ label }}
     </label>
 
-    <DropdownMenu v-model:open="menuOpen" :class="props.class" align="start" :matchTriggerWidth="true" @opened="handleOpened">
+    <DropdownMenu v-model:open="menuOpen" :class="props.class" align="auto" width="xl" :matchTriggerWidth="false" @opened="handleOpened">
       <template #activator="{ open, toggle }">
         <div class="relative">
           <input
@@ -400,9 +432,9 @@ watch(() => props.modelValue, (v) => {
             :aria-expanded="menuOpen ? 'true' : 'false'"
             :aria-controls="panelId"
             :class="cn(
-              'h-10 w-full rounded-lg border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground/70',
+              'min-h-11 w-full rounded-lg border bg-card px-3 text-sm text-foreground placeholder:text-muted-foreground/70',
               hasLeft && 'pl-10',
-              hasRight && 'pr-10',
+              (hasRight || showClear) && 'pr-10',
               'border-border hover:border-border/80',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:border-primary/40',
               props.class
@@ -422,13 +454,25 @@ watch(() => props.modelValue, (v) => {
           <div v-if="hasRight" class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-auto">
             <slot name="right" />
           </div>
+
+          <Button
+            v-else-if="showClear"
+            variant="ghost"
+            class="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground min-h-11"
+            @click="clearValue"
+            :disabled="disabled"
+            tabindex="-1"
+            aria-label="Wyczyść datę"
+          >
+            <Icon name="x" :size="16" />
+          </Button>
         </div>
       </template>
 
       <template #default="{ closeMenu }">
-        <div class="p-3 w-full">
-          <div class="flex items-center justify-between mb-3">
-            <div class="flex items-center gap-4 justify-between w-full">
+        <div class="p-4 w-full">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center justify-between w-full gap-4">
             <div class="flex items-center gap-2">
               <Button variant="ghost" size="sm" @click="prevMonth" aria-label="Poprzedni miesiąc">‹</Button>
               <Button variant="ghost" :id="`${panelId}_month`" class="text-sm font-medium" @click="panelMode = 'month'" :aria-pressed="panelMode === 'month' ? 'true' : 'false'">{{ new Date(viewYear, viewMonth).toLocaleString('pl-PL', { month: 'long' }) }}</Button> 
@@ -445,7 +489,7 @@ watch(() => props.modelValue, (v) => {
 
           <div :id="panelId" role="dialog" :aria-labelledby="`${panelId}_heading`" tabindex="0" @keydown="onPanelKeydown($event, closeMenu)" class="w-full min-h-56">
             <div :id="`${panelId}_heading`" class="sr-only">{{ new Date(viewYear, viewMonth).toLocaleString('pl-PL', { month: 'long', year: 'numeric' }) }}</div>
-            <div v-if="panelMode === 'day'" class="grid grid-cols-7 gap-1 text-xs text-center mb-2">
+            <div v-if="panelMode === 'day'" class="grid grid-cols-7 gap-2 text-xs text-center mb-3">
               <div class="text-sm font-medium text-primary">S</div>
               <div class="text-sm font-medium text-primary">M</div>
               <div class="text-sm font-medium text-primary">T</div>
@@ -504,7 +548,7 @@ watch(() => props.modelValue, (v) => {
             </div>  
 
             <!-- day grid -->
-            <div v-else role="grid" :aria-labelledby="`${panelId}_heading`" class="grid grid-cols-7 gap-1">
+            <div v-else role="grid" :aria-labelledby="`${panelId}_heading`" class="grid grid-cols-7 gap-2">
               <button
                 v-for="d in daysForMonth(viewYear, viewMonth)"
                 :key="d.toISOString()"
@@ -514,7 +558,7 @@ watch(() => props.modelValue, (v) => {
                 :aria-selected="selectedDate && selectedDate.getFullYear() === d.getFullYear() && selectedDate.getMonth() === d.getMonth() && selectedDate.getDate() === d.getDate() ? 'true' : 'false'"
                 :aria-disabled="!isSelectable(d) ? 'true' : 'false'"
                 :class="cn(
-                  'py-2 rounded-md text-sm font-semibold',
+                  'py-2.5 rounded-md text-sm font-semibold',
                   d.getMonth() !== viewMonth ? 'text-muted-foreground' : 'text-foreground',
                   !isSelectable(d)
                     ? 'opacity-40 cursor-not-allowed line-through'
@@ -534,7 +578,17 @@ watch(() => props.modelValue, (v) => {
 
           <div aria-live="polite" class="sr-only" role="status">{{ liveAnnouncement }}</div>
 
-          <div class="mt-3 flex justify-end">
+          <div class="mt-4 flex justify-end gap-2">
+            <Button
+              v-if="clearable"
+              variant="ghost"
+              size="sm"
+              type="button"
+              :disabled="disabled"
+              @click="(e: any) => { clearValue(e); }"
+            >
+              Wyczyść
+            </Button>
             <Button variant="primary" size="sm" @click="closeMenu(); menuOpen = false">Wybierz</Button>
           </div> 
         </div>

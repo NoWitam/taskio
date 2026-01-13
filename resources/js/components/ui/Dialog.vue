@@ -3,6 +3,7 @@
     import { cn } from "@/lib/helpers";
     import Button from "./Button.vue";
     import { useFocusTrap } from "@/composables/useFocusTrap"; 
+  import { useOverlayStack } from "@/composables/useOverlayStack";
 
     const props = withDefaults(
         defineProps<{
@@ -23,6 +24,7 @@
     const panelRef = ref<HTMLElement | null>(null);
     const enabled = computed(() => props.modelValue);
     const { activate, restore } = useFocusTrap(panelRef, enabled);
+    const { zIndex } = useOverlayStack(enabled, 'dialog');
 
     const close = () => {
         emit("update:modelValue", false);
@@ -68,7 +70,8 @@
     >
       <div
         v-if="modelValue"
-        class="fixed inset-0 z-50 bg-black/40"
+        class="fixed inset-0 bg-black/40"
+        :style="{ zIndex }"
         role="presentation"
         @mousedown.self="closeOnOverlay ? close() : undefined"
       >
@@ -84,7 +87,7 @@
             <div
               ref="panelRef"
               :class="cn(
-                'w-full rounded-2xl border border-border bg-card shadow-xl outline-none',
+                'flex flex-col w-full rounded-2xl max-h-[80vh] border border-border bg-card shadow-xl outline-none',
                 widthCls[width]
               )"
               role="dialog"
@@ -111,7 +114,7 @@
                 </Button> 
               </div>
 
-              <div class="p-6">
+              <div class="flex-1 overflow-auto p-6">
                 <slot />
               </div>
 

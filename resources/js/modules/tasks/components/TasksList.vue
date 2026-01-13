@@ -24,7 +24,7 @@ const loading = computed(() => tasksStore.getLoadingByStatus(props.status).value
 const hasMore = computed(() => tasksStore.getHasMoreByStatus(props.status).value);
 const total = computed(() => tasksStore.getTotalByStatus(props.status).value);
 
-const priorityObject: Record<string, object> = {
+const priorityObject: Record<string, { tone: 'danger' | 'warning' | 'neutral'; label: string }> = {
     "high": { tone: 'danger', label: 'Wysoki' },
     "medium": { tone: 'warning', label: 'Średni' },
     "low": { tone: 'neutral', label: 'Niski' }
@@ -103,31 +103,8 @@ watch(() => props.filters, () => {
     </div>
 
     <div 
-        class="flex-1 flex flex-col gap-5 overflow-y-scroll pr-4"
+        class="flex-1 flex flex-col gap-5 overflow-y-scroll pr-4 pb-4"
     >
-        <template v-if="loading && tasks.length === 0">
-            <Card
-                v-for="i in 3"
-                :key="`skeleton-${i}`"
-            >
-                <div>
-                    <Skeleton width="340px" height="22px" />
-
-                    <div class="flex gap-2 mt-2">
-                        <Skeleton rounded="lg" width="60px" height="18px" />
-                        <Skeleton rounded="lg" width="50px" height="18px" />
-                    </div>
-                </div>
-
-                <div class="flex items-center justify-between mt-2 pt-2 border-t border-border/50">
-                    <div class="flex items-center gap-2 text-muted-foreground">
-                        <Skeleton rounded="lg" width="110px" height="40px" />
-                    </div>
-                    <Skeleton rounded="full" width="40px" height="40px" />
-                </div>
-            </Card>
-        </template>
-
         <Card
             v-for="task in tasks"
             :key="task.id"
@@ -167,7 +144,7 @@ watch(() => props.filters, () => {
             <div class="flex items-center justify-between mt-2 pt-2 border-t border-border/50">
                 <div class="flex items-center gap-2 text-muted-foreground">
                     <Icon name="calendar" size="sm" />
-                    <span class="font-semibold text-sm"> {{ task.date }} </span>
+                    <span class="font-semibold text-sm"> {{ task.date || 'Brak terminu' }} </span>
                 </div>
 
                 <Avatar 
@@ -180,7 +157,7 @@ watch(() => props.filters, () => {
 
         <template v-if="loading || hasMore">
             <Card
-                v-for="i in 2"
+                v-for="i in 3"
                 :key="`loading-skeleton-${i}`"
                 :ref="i === 1 ? (el: any) => { if (el?.$el) loadMoreTrigger = el.$el; else if (el) loadMoreTrigger = el; } : undefined"
             >

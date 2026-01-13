@@ -12,23 +12,36 @@
             class?: string;        // wrapper
             contentClass?: string; // tooltip wrapper
             arrowClass?: string;
+            zIndexClass?: string;
         }>(),
-        { side: "top", disabled: false }
+        { side: "top", disabled: false, zIndexClass: "z-50" }
     );
 
     const slots = useSlots();
     const open = ref(false);
     const id = `tt_${Math.random().toString(16).slice(2)}`;
-    const triggerRef = ref<HTMLElement | null>(null);
+    const triggerRef = ref<any | null>(null);
     const tooltipStyle = ref<Record<string, string>>({});
 
     const hasContent = computed(() => !!slots.content?.().length);
     const canShow = computed(() => hasContent.value && !props.disabled);
 
+    function toEl(x: any): HTMLElement | null {
+        if (!x) return null;
+        if (x instanceof HTMLElement) return x;
+        if (x?.$el instanceof HTMLElement) return x.$el;
+        if (x?.value instanceof HTMLElement) return x.value;
+        if (x?.value?.$el instanceof HTMLElement) return x.value.$el;
+        return null;
+    }
+
     function updatePosition() {
-        if (!triggerRef.value || !open.value) return;
-        
-        const rect = triggerRef.value.getBoundingClientRect();
+        if (!open.value) return;
+
+        const el = toEl(triggerRef.value);
+        if (!el) return;
+
+        const rect = el.getBoundingClientRect();
         const offset = 8;
         
         let top = 0;
@@ -150,7 +163,7 @@
           :id="id"
           role="tooltip"
           :style="tooltipStyle"
-          :class="cn('pointer-events-none fixed z-50', posCls)"
+                    :class="cn('pointer-events-none fixed', props.zIndexClass, posCls)"
         >
           <span :class="cn('relative block rounded-lg bg-foreground/80 px-3 py-2 text-xs font-medium text-background shadow-lg max-w-xs', props.contentClass)">
             <slot name="content" />

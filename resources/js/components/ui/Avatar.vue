@@ -3,7 +3,7 @@
     import { cn } from "@/lib/helpers";
     import Tooltip from "./Tooltip.vue";
 
-    type Size = "sm" | "md" | "lg";
+    type Size = "xs" | "sm" | "md" | "lg";
 
     const props = withDefaults(
         defineProps<{
@@ -24,6 +24,7 @@
     });
 
     const sizeCls: Record<Size, string> = {
+        xs: "h-6 w-6 text-xs",
         sm: "h-8 w-8 text-xs",
         md: "h-10 w-10 text-sm",
         lg: "h-12 w-12 text-base",

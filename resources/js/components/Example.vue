@@ -1,5 +1,6 @@
 <template>
-    <div class="p-6 text-center bg-background">
+    <div class="h-full min-h-0 flex flex-col overflow-hidden bg-background">
+        <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-6 text-center">
         <div class="flex items-center justify-between mb-6">
             <div>
                 <h2 class="text-xl font-semibold text-primary dark:text-white">Hello from Vue!</h2>
@@ -136,12 +137,10 @@
 
         <Card class="mt-2">
             <div
-                v-for="variant in ['primary', 'secondary', 'ghost', 'danger']"
+                v-for="variant in buttonVariants"
                 class="flex gap-2 m-2"
             >
-                <template
-                    v-for="size in ['sm', 'md', 'lg']"
-                >
+                <template v-for="size in buttonSizes">
                     <Button
                         :size
                         :variant
@@ -270,7 +269,7 @@
                         placeholder="Wybierz tagi"
                     >
                         <template #selected="{ item, remove }">
-                            <Badge class="!px-2">{{ item.label }} <button class="ml-1 text-muted-foreground" @click="remove">✕</button></Badge>
+                            <Badge class="px-2!">{{ item.label }} <button class="ml-1 text-muted-foreground" @click="remove">✕</button></Badge>
                         </template>
                     </SelectInput>
                     <div class="text-xs text-muted-foreground mt-2">Values: {{ tags }}</div>
@@ -303,6 +302,7 @@
 
             <div class="mt-4">
                 <TextInput
+                    v-model="textValue"
                     label="Label"
                     placeholder="Search..."
                     hint="Hint"
@@ -321,6 +321,7 @@
 
             <div class="mt-4">
                 <TextareaInput
+                    v-model="textareaValue"
                     label="Label"
                     placeholder="Search..."
                     hint="Hint"
@@ -471,6 +472,28 @@
                 placeholder="Napisz treść…"
                 hint="Zwraca HTML w v-model"
             />
+
+            <h3 class="text-base font-semibold text-foreground mb-4">Icon Picker</h3>
+            <div class="flex flex-col gap-3">
+                <IconInput
+                    v-model="selectedIcon"
+                    label="Wybierz ikonę"
+                    placeholder="Kliknij, aby wybrać…"
+                    class="max-w-xl"
+                />
+
+                <IconInput
+                    v-model="selectedIcon2"
+                    disabled
+                    label="Druga ikona (więcej kolumn)"
+                    :columns="10"
+                    class="max-w-sm"
+                />
+            </div>
+
+            <p class="mt-2 text-sm text-muted-foreground">
+                Selected: {{ selectedIcon || '(empty)' }} · {{ selectedIcon2 || '(empty)' }}
+            </p>
         </Card>
 
         <Card class="mt-2">
@@ -628,18 +651,6 @@
             </div>
         </Card>
 
-        <!-- SearchInput -->
-        <Card class="mt-2">
-            <h3 class="text-base font-semibold text-foreground mb-4">Search Input</h3>
-            <SearchInput
-                v-model="searchQuery"
-                placeholder="Search posts, tasks..."
-                @search="(query) => console.log('Search:', query)"
-                class="max-w-md"
-            />
-            <p class="mt-2 text-sm text-muted-foreground">Current search: {{ searchQuery || '(empty)' }}</p>
-        </Card>
-
         <!-- Breadcrumbs -->
         <Card class="mt-2">
             <h3 class="text-base font-semibold text-foreground mb-4">Breadcrumbs</h3>
@@ -697,8 +708,7 @@
                 @load-more="handleLoadMore"
             />
         </Card>
-
-        <ToastViewport />
+        </div>
     </div>
 </template>
 
@@ -711,7 +721,6 @@
     import SelectInput from './ui/inputs/SelectInput.vue';
     import Badge from './ui/Badge.vue';
     import Dialog from './ui/Dialog.vue';
-    import ToastViewport from './ui/ToastViewport.vue';
     import Tabs from './ui/Tabs.vue';
     import DropdownMenu from './ui/DropdownMenu.vue';
     import Tooltip from './ui/Tooltip.vue';
@@ -737,12 +746,12 @@
     import SliderInput from './ui/inputs/SliderInput.vue';
     import RichTextInput from './ui/inputs/RichTextInput.vue';
     import LoadingSpinner from './ui/LoadingSpinner.vue';
-    import SearchInput from './ui/inputs/SearchInput.vue';
     import Breadcrumbs from './ui/Breadcrumbs.vue';
     import StatusBadge from './ui/StatusBadge.vue';
     import DataTable, { type Column } from './ui/tables/DataTable.vue';
     import Pagination from './ui/Pagination.vue';
     import Navbar, { type NavItem } from './ui/Navbar.vue';
+    import IconInput from './ui/inputs/IconInput.vue';
     import { useToast } from '@/composables/useToast';
     import { ref, computed, onMounted } from 'vue';
 
@@ -785,21 +794,30 @@
     const color = ref(null);
     const tags = ref<any[]>([]);
 
+    const buttonVariants = ['primary', 'secondary', 'ghost', 'danger'] as const;
+    const buttonSizes = ['sm', 'md', 'lg'] as const;
+
     // mock loader for remote example (pages)
     const mockData = Array.from({ length: 60 }).map((_, i) => ({ label: `Option ${i + 1}`, value: `opt_${i + 1}` }));
-    function mockLoader(url?: string, query?: string) {
+    function mockLoader(
+        url?: string,
+        query?: string
+    ): Promise<{ data: Array<{ label: string; value: string }>; next?: string }> {
         // url is used as page cursor, e.g. `page=2` simulated via string
         const page = url ? Number(url) : 0;
         const pageSize = 10;
         const start = page * pageSize;
         const data = mockData.slice(start, start + pageSize).filter(d => !query || d.label.toLowerCase().includes(query.toLowerCase()));
-        const next = start + pageSize < mockData.length ? String(page + 1) : null;
-        return new Promise(resolve => setTimeout(() => resolve({ data, next }), 400));
+        const next = start + pageSize < mockData.length ? String(page + 1) : undefined;
+        return new Promise((resolve) => setTimeout(() => resolve({ data, next }), 400));
     }
 
     const sw = ref(false);
     const showDialog = ref(false);
     const remote = ref(null);
+
+    const textValue = ref('');
+    const textareaValue = ref('');
 
     const { push } = useToast();
 
@@ -951,6 +969,8 @@
 
     // New components demo state
     const searchQuery = ref("");
+    const selectedIcon = ref<string | null>("search");
+    const selectedIcon2 = ref<string | null>(null);
     
     // DataTable demo
     interface TaskItem {

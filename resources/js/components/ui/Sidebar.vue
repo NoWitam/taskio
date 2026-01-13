@@ -34,7 +34,7 @@
             :name="getModuleIcon(module)"
             size="sm"
             :class="[
-              'flex-shrink-0',
+              'shrink-0',
             ]"
           />
           <span class="font-medium text-sm">
@@ -47,7 +47,7 @@
     <!-- Footer -->
     <div class="absolute bottom-0 left-0 right-0 p-3 border-t border-gray-200 bg-gray-50">
       <div class="flex items-center gap-2">
-        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-500" />
+        <div class="w-8 h-8 rounded-full bg-linear-to-br from-blue-400 to-purple-500" />
         <div class="flex-1 min-w-0">
           <p class="text-sm font-medium text-gray-800 truncate">{{ userName }}</p>
           <p class="text-xs text-gray-500 truncate">User</p>
