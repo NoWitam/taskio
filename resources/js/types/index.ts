@@ -9,7 +9,7 @@ export interface User {
 
 export interface Label {
     id?: string;
-    text: string;
+    name: string;
     color?: string;
     icon?: string | null;
 }

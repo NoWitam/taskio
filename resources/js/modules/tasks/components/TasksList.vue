@@ -16,6 +16,10 @@ const props = defineProps<{
     filters: TaskFilters;
 }>();
 
+const emit = defineEmits<{
+    (e: 'open-task', taskId: string): void;
+}>();
+
 const tasksStore = useTasksStore();
 
 // Pobierz taski dla danego statusu
@@ -28,6 +32,10 @@ const priorityObject: Record<string, { tone: 'danger' | 'warning' | 'neutral'; l
     "high": { tone: 'danger', label: 'Wysoki' },
     "medium": { tone: 'warning', label: 'Średni' },
     "low": { tone: 'neutral', label: 'Niski' }
+};
+
+const openTaskDialog = (taskId: string) => {
+    emit('open-task', taskId);
 };
 
 // Funkcja do pobierania tasków
@@ -109,6 +117,7 @@ watch(() => props.filters, () => {
             v-for="task in tasks"
             :key="task.id"
             class="group cursor-pointer hover:border-primary"
+            @click="openTaskDialog(task.id)"
         >
             <div>
                 <p class="text-lg font-semibold text-foreground group-hover:text-primary">
@@ -136,7 +145,8 @@ watch(() => props.filters, () => {
                         :tone="label.hasOwnProperty('color') ? 'custom' : 'neutral'"
                         :color="label.hasOwnProperty('color') ? label.color : null"
                     >
-                        {{ label.text }}
+                        <Icon v-if="label.icon" :name="label.icon" size="xs" />
+                        {{ label.name }}
                     </Badge>
                 </div>
             </div>
@@ -144,12 +154,12 @@ watch(() => props.filters, () => {
             <div class="flex items-center justify-between mt-2 pt-2 border-t border-border/50">
                 <div class="flex items-center gap-2 text-muted-foreground">
                     <Icon name="calendar" size="sm" />
-                    <span class="font-semibold text-sm"> {{ task.date || 'Brak terminu' }} </span>
+                    <span class="font-semibold text-sm"> {{ task.deadline || 'Brak terminu' }} </span>
                 </div>
 
                 <Avatar 
-                    :name="task.user.name"
-                    :src="task.user.avatar"
+                    :name="task.assigned.name"
+                    :src="task.assigned.avatar"
                     tooltip
                 />
             </div>

@@ -76,10 +76,10 @@ function resolveSelectedLabel(value: any) {
 
   return {
     ...l,
-    label: l.text,
+    label: l.name,
     value: l.id,
     id: l.id,
-    text: l.text,
+    text: l.name,
     color: l.color ?? null,
     icon: l.icon ?? null,
   };
@@ -92,18 +92,17 @@ watch(
   }
 );
 
-const debouncedSetQuery = useDebounceFn((setter: (q: string) => void, q: string) => setter(q));
+const debouncedSetQuery = useDebounceFn((setter: (search: string) => void, search: string) => setter(search));
 
-async function loadLabels(cursor?: string, q?: string) {
+async function loadLabels(cursor?: string, search?: string) {
   const res = await labelsStore.fetchLabels({
     cursor: cursor ?? null,
-    q: q || undefined,
-    per_page: 20,
+    search: search || undefined,
   });
 
   return {
     data: (res.data || []).map((label: Label) => ({
-      label: label.text,
+      label: label.name,
       value: label.id,
       color: label.color,
       icon: (label as any).icon ?? null,
@@ -126,9 +125,12 @@ function openCreateDialog() {
   createDialogOpen.value = true;
 }
 
-function handleCreated(label: Label) {
+async function handleCreated(label: Label) {
   const createdId = String((label as any)?.id ?? '').trim();
   if (createdId) {
+    // Odśwież listę etykiet w selekcie, aby nowa etykieta była dostępna
+    await selectRef.value?.refreshItems?.();
+    
     const next = Array.isArray(selectedLabels.value) ? [...selectedLabels.value] : [];
     if (!next.includes(createdId)) next.push(createdId);
     selectedLabels.value = next;
@@ -152,7 +154,7 @@ function handleCreated(label: Label) {
     :multiple="true"
     :clearable="true"
     :resolveSelected="resolveSelectedLabel"
-    option-label-key="text"
+    option-label-key="name"
     option-value-key="id"
   >
     <template #left>
@@ -218,7 +220,7 @@ function handleCreated(label: Label) {
       <div class="flex-1">
         <Badge :tone="item.color ? 'custom' : 'neutral'" :color="item.color" class="font-medium">
           <Icon v-if="item.icon" :name="item.icon" size="xs" />
-          {{ item.text }}
+          {{ item.name }}
         </Badge>
       </div>
     </template>
@@ -236,14 +238,14 @@ function handleCreated(label: Label) {
             :name="labelsStore.labelsById[String(item.id ?? item.value)].icon"
             size="xs"
           />
-          <span class="truncate">{{ labelsStore.labelsById[String(item.id ?? item.value)].text }}</span>
+          <span class="truncate">{{ labelsStore.labelsById[String(item.id ?? item.value)].name }}</span>
           <button type="button" class="text-muted-foreground hover:text-foreground" @click.stop="remove">✕</button>
         </Badge>
       </template>
 
       <Badge v-else :tone="item.color ? 'custom' : 'neutral'" :color="item.color" class="font-medium gap-2">
         <Icon v-if="item.icon" :name="item.icon" size="xs" />
-        <span class="truncate">{{ item.text }}</span>
+        <span class="truncate">{{ item.name }}</span>
         <button type="button" class="text-muted-foreground hover:text-foreground" @click.stop="remove">✕</button>
       </Badge>
     </template>

@@ -1,7 +1,6 @@
 <?php
 
+use App\Modules\Tasks\Http\Controllers\TasksController;
 use Illuminate\Support\Facades\Route;
 
-Route::prefix('tasks')->group(function (): void {
-    // API modułu Tasks
-});
+Route::apiResource('tasks', TasksController::class);

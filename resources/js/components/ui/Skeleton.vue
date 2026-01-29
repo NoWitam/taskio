@@ -35,7 +35,7 @@
     aria-hidden="true"
     :style="style"
     :class="cn(
-      'relative overflow-hidden bg-secondary',
+      'relative overflow-hidden bg-secondary max-w-full',
       radiusCls[rounded],
       props.class
     )"

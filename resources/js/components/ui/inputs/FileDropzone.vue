@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import { useToast } from "@/composables/useToast";
 
 export type UploadedFile = {
-  uuid: string;
+  id: string;
   name: string;
   size: number;
   mime: string;
@@ -29,6 +29,7 @@ type UploadItem = {
   error?: string;
   meta?: UploadedFile;
   controller?: AbortController;
+  thumbnail?: string;
 };
 
 const props = withDefaults(
@@ -130,7 +131,7 @@ async function defaultUploader(file: File, ctx: UploaderCtx): Promise<UploadedFi
   const fd = new FormData();
   fd.append("file", file, file.name);
 
-  return await api.post<UploadedFile>("/disk/file", fd, {
+  const response = await api.post<{ data: UploadedFile }>("/disk/temp", fd, {
     signal: ctx.signal,
     onUploadProgress: (e: any) => {
       const total = e?.total;
@@ -140,31 +141,94 @@ async function defaultUploader(file: File, ctx: UploaderCtx): Promise<UploadedFi
       }
     },
   });
+  
+  // Laravel Resource owija dane w klucz 'data'
+  return response.data;
 }
 
 const uploader = computed<FileUploader>(() => props.uploader ?? defaultUploader);
 
 function addUuid(uuid: string) {
-  if (!isControlled.value) return;
   const cur = model.value;
   if (cur.includes(uuid)) return;
   model.value = [...cur, uuid];
 }
 
 function removeUuid(uuid: string) {
-  if (!isControlled.value) return;
+  // Zawsze aktualizuj model - nie sprawdzaj isControlled
   model.value = (model.value || []).filter((x) => x !== uuid);
 }
 
-function enqueue(files: File[]) {
+function generateThumbnail(file: File): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const fileType = file.type.toLowerCase();
+    
+    // Dla obrazów - generuj miniaturkę
+    if (fileType.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          // Oblicz proporcje dla 640x360
+          const targetWidth = 640;
+          const targetHeight = 360;
+          const aspectRatio = img.width / img.height;
+          const targetAspectRatio = targetWidth / targetHeight;
+          
+          let drawWidth = img.width;
+          let drawHeight = img.height;
+          let offsetX = 0;
+          let offsetY = 0;
+          
+          // Przytnij do proporcji 16:9
+          if (aspectRatio > targetAspectRatio) {
+            // Obraz szerszy - przytnij boki
+            drawWidth = img.height * targetAspectRatio;
+            offsetX = (img.width - drawWidth) / 2;
+          } else {
+            // Obraz wyższy - przytnij góra/dół
+            drawHeight = img.width / targetAspectRatio;
+            offsetY = (img.height - drawHeight) / 2;
+          }
+          
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          
+          ctx?.drawImage(
+            img,
+            offsetX, offsetY, drawWidth, drawHeight,
+            0, 0, targetWidth, targetHeight
+          );
+          
+          resolve(canvas.toDataURL('image/jpeg', 0.8));
+        };
+        img.onerror = () => resolve(undefined);
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => resolve(undefined);
+      reader.readAsDataURL(file);
+    } else {
+      // Dla innych typów plików nie generujemy thumbnails
+      resolve(undefined);
+    }
+  });
+}
+
+async function enqueue(files: File[]) {
   if (!files.length) return;
 
-  const nextItems: UploadItem[] = files.map((file) => ({
-    id: uid(),
-    file,
-    status: "queued",
-    progress: 0,
-  }));
+  const nextItems: UploadItem[] = await Promise.all(
+    files.map(async (file) => ({
+      id: uid(),
+      file,
+      status: "queued" as UploadStatus,
+      progress: 0,
+      thumbnail: await generateThumbnail(file),
+    }))
+  );
 
   items.value = [...items.value, ...nextItems];
   pump();
@@ -188,7 +252,7 @@ async function startUpload(item: UploadItem) {
     item.meta = meta;
     item.progress = 100;
     item.status = "success";
-    addUuid(meta.uuid);
+    addUuid(meta.id);
     emit("uploaded", meta);
   } catch (err: any) {
     if (controller.signal.aborted) {
@@ -222,7 +286,7 @@ function cancel(item: UploadItem) {
 }
 
 function removeItem(item: UploadItem) {
-  if (item.meta?.uuid) removeUuid(item.meta.uuid);
+  if (item.meta?.id) removeUuid(item.meta.id);
   items.value = items.value.filter((x) => x.id !== item.id);
 }
 
@@ -353,37 +417,90 @@ watch(
         :key="it.id"
         class="rounded-xl border border-border bg-card px-3 py-2"
       >
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0">
-            <div class="truncate text-sm font-semibold">{{ it.file.name }}</div>
-            <div class="text-xs text-muted-foreground">
-              {{ formatBytes(it.file.size) }}
-              <span v-if="it.status === 'error' && it.error" class="text-danger"> • {{ it.error }}</span>
-              <span v-else-if="it.status === 'canceled'" class="text-amber-600"> • Anulowano</span>
-              <span v-else-if="it.status === 'success'"> • OK</span>
+        <div class="flex items-start gap-3">
+          <!-- Thumbnail -->
+          <div class="shrink-0">
+            <div
+              v-if="it.thumbnail"
+              class="relative w-32 h-18 rounded-lg overflow-hidden bg-secondary"
+            >
+              <img
+                :src="it.thumbnail"
+                :alt="it.file.name"
+                class="w-full h-full object-cover"
+              />
+            </div>
+            <div
+              v-else-if="it.file.type === 'application/pdf'"
+              class="w-32 h-18 rounded-lg flex items-center justify-center bg-red-100 dark:bg-red-950"
+            >
+              <svg
+                class="w-12 h-12 text-red-600 dark:text-red-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                />
+              </svg>
+            </div>
+            <div
+              v-else
+              class="w-32 h-18 rounded-lg flex items-center justify-center bg-secondary"
+            >
+              <svg
+                class="w-10 h-10 text-muted-foreground"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                />
+              </svg>
             </div>
           </div>
 
-          <div class="shrink-0 flex items-center gap-2">
-            <Button
-              v-if="it.status === 'uploading'"
-              type="button"
-              variant="secondary"
-              size="sm"
-              @click="cancel(it)"
-            >
-              Anuluj
-            </Button>
+          <!-- File Info -->
+          <div class="flex-1 min-w-0 flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="truncate text-sm font-semibold">{{ it.file.name }}</div>
+              <div class="text-xs text-muted-foreground">
+                {{ formatBytes(it.file.size) }}
+                <span v-if="it.status === 'error' && it.error" class="text-danger"> • {{ it.error }}</span>
+                <span v-else-if="it.status === 'canceled'" class="text-amber-600"> • Anulowano</span>
+                <span v-else-if="it.status === 'success'"> • OK</span>
+              </div>
+            </div>
 
-            <Button
-              v-else
-              type="button"
-              variant="secondary"
-              size="sm"
-              @click="removeItem(it)"
-            >
-              Usuń
-            </Button>
+            <div class="shrink-0 flex items-center gap-2">
+              <Button
+                v-if="it.status === 'uploading'"
+                type="button"
+                variant="secondary"
+                size="sm"
+                @click="cancel(it)"
+              >
+                Anuluj
+              </Button>
+
+              <Button
+                v-else
+                type="button"
+                variant="secondary"
+                size="sm"
+                @click="removeItem(it)"
+              >
+                Usuń
+              </Button>
+            </div>
           </div>
         </div>
 

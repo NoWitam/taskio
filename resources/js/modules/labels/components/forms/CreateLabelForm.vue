@@ -52,14 +52,13 @@ const previewColor = computed(() => (color.value ? color.value : undefined));
 async function submit() {
   touched.value = true;
   error.value = null;
-
-  const text = name.value.trim();
-  if (!text) return;
+  
+  if (!name.value.trim()) return;
 
   submitting.value = true;
   try {
     const created = await labelsStore.createLabel({
-      text,
+      name: name.value.trim(),
       color: color.value,
       icon: icon.value,
     });

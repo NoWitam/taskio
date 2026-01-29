@@ -11,14 +11,22 @@ import LabelSelect from '@/modules/labels/components/LabelSelect.vue';
 import FileDropzone from '@/components/ui/inputs/FileDropzone.vue';
 import Icon from '@/components/ui/Icon.vue';
 import { useTasksStore } from '@/store/tasks';
+import { useUsersStore } from '@/store/users';
+import { useLabelsStore } from '@/store/labels';
 import { useToast } from '@/composables/useToast';
+import type { TaskAttachment } from '@/store/tasks';
 
-type Priority = 'high' | 'medium' | 'low';
+type Priority = 'urgent' | 'high' | 'medium' | 'low';
 
-const props = defineProps<{ modelValue: boolean }>();
+const props = defineProps<{ 
+  modelValue: boolean;
+  editMode?: boolean;
+  taskId?: string;
+}>();
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void;
   (e: 'created', task: any): void;
+  (e: 'updated', task: any): void;
 }>();
 
 const open = computed({
@@ -27,16 +35,19 @@ const open = computed({
 });
 
 const tasksStore = useTasksStore();
+const usersStore = useUsersStore();
+const labelsStore = useLabelsStore();
 const { push: pushToast } = useToast();
 
 const submitting = ref(false);
+const existingAttachments = ref<TaskAttachment[]>([]);
 
 const form = reactive({
   title: '',
   description: '',
   priority: 'medium' as Priority,
-  due_date: null as string | null, // YYYY-MM-DD
-  user_id: null as string | number | null,
+  deadline: null as string | null, // YYYY-MM-DD
+  assigned_id: null as string | number | null,
   labels: [] as string[],
 
   // Future: attach a generated/custom form to the task.
@@ -59,20 +70,56 @@ function resetForm() {
   form.title = '';
   form.description = '';
   form.priority = 'medium';
-  form.due_date = null;
-  form.user_id = null;
+  form.deadline = null;
+  form.assigned_id = null;
   form.labels = [];
   form.task_form.mode = 'none';
   form.task_form.template_id = null;
   attachments.value = [];
+  existingAttachments.value = [];
   resetErrors();
 }
 
 watch(
   () => open.value,
-  (v) => {
+  async (v) => {
     if (v) {
       resetErrors();
+      
+      // Jeśli tryb edycji, załaduj dane zadania
+      if (props.editMode && props.taskId) {
+        submitting.value = true;
+        try {
+          const task = await tasksStore.fetchTask(props.taskId);
+          form.title = task.title;
+          form.description = task.description || '';
+          form.priority = task.priority;
+          form.deadline = task.deadline || null;
+          form.assigned_id = task.assigned?.id || null;
+          form.labels = task.labels?.map((l) => String(l.id)) || [];
+          attachments.value = task.attachments?.map((a) => a.id) || [];
+          existingAttachments.value = task.attachments || [];
+          
+          // Zapisz użytkownika i etykiety bezpośrednio do cache z otrzymanych danych
+          if (task.assigned) {
+            usersStore.usersById[String(task.assigned.id)] = task.assigned;
+          }
+          if (task.labels?.length) {
+            task.labels.forEach(label => {
+              labelsStore.labelsById[String(label.id)] = label;
+            });
+          }
+        } catch (e) {
+          pushToast({
+            title: 'Błąd podczas ładowania zadania',
+            message: 'Nie udało się pobrać danych zadania.',
+            tone: 'danger',
+            timeoutMs: 4500,
+          });
+        } finally {
+          submitting.value = false;
+        }
+      }
       return;
     }
     // When closing, reset so next open is clean.
@@ -88,20 +135,29 @@ function validate() {
 
   if (!form.priority) errors.priority = 'Priorytet jest wymagany.';
 
-  if (!form.user_id) errors.user_id = 'Wybierz użytkownika.';
+  if (!form.assigned_id) errors.assigned_id = 'Wybierz użytkownika.';
 
   return Object.keys(errors).length === 0;
 }
 
-function toFormData() {
+function toFormData(isUpdate = false) {
   const fd = new FormData();
+
+  // Laravel method spoofing dla PUT/PATCH przez POST
+  if (isUpdate) {
+    fd.append('_method', 'PUT');
+  }
 
   fd.append('title', form.title.trim());
   if (form.description?.trim()) fd.append('description', form.description.trim());
   fd.append('priority', form.priority);
-  if (form.due_date) fd.append('due_date', form.due_date);
-  if (form.user_id != null) fd.append('user_id', String(form.user_id));
-  fd.append('status', 'to_do');
+  if (form.deadline) fd.append('deadline', form.deadline);
+  if (form.assigned_id != null) fd.append('assigned_id', String(form.assigned_id));
+  
+  // Przy edycji nie zmieniamy statusu
+  if (!isUpdate) {
+    fd.append('status', 'to_do');
+  }
 
   (form.labels || []).forEach((id) => fd.append('labels[]', String(id)));
 
@@ -109,9 +165,15 @@ function toFormData() {
   fd.append('task_form_mode', form.task_form.mode);
   if (form.task_form.template_id) fd.append('task_form_template_id', form.task_form.template_id);
 
+  // Załączniki
   (attachments.value || []).forEach((uuid) => fd.append('attachments[]', String(uuid)));
 
   return fd;
+}
+
+function removeExistingAttachment(attachmentId: string) {
+  existingAttachments.value = existingAttachments.value.filter(a => a.id !== attachmentId);
+  attachments.value = attachments.value.filter(id => id !== attachmentId);
 }
 
 async function submit() {
@@ -120,21 +182,38 @@ async function submit() {
 
   submitting.value = true;
   try {
-    const payload = toFormData();
-    const created = await tasksStore.createTask(payload as any);
+    if (props.editMode && props.taskId) {
+      // Tryb edycji - użyj POST z _method=PUT
+      const payload = toFormData(true);
+      const updated = await tasksStore.updateTask(props.taskId, payload as any);
 
-    pushToast({
-      title: 'Zadanie utworzone',
-      message: `"${created?.title ?? form.title}" zostało dodane.`,
-      tone: 'success',
-      timeoutMs: 3500,
-    });
+      pushToast({
+        title: 'Zadanie zaktualizowane',
+        message: `"${updated?.title ?? form.title}" zostało zapisane.`,
+        tone: 'success',
+        timeoutMs: 3500,
+      });
 
-    emit('created', created);
-    open.value = false;
+      emit('updated', updated);
+      open.value = false;
+    } else {
+      // Tryb tworzenia
+      const payload = toFormData(false);
+      const created = await tasksStore.createTask(payload as any);
+
+      pushToast({
+        title: 'Zadanie utworzone',
+        message: `"${created?.title ?? form.title}" zostało dodane.`,
+        tone: 'success',
+        timeoutMs: 3500,
+      });
+
+      emit('created', created);
+      open.value = false;
+    }
   } catch (e: any) {
     pushToast({
-      title: 'Nie udało się utworzyć zadania',
+      title: props.editMode ? 'Nie udało się zaktualizować zadania' : 'Nie udało się utworzyć zadania',
       message: tasksStore.error ?? 'Sprawdź dane i spróbuj ponownie.',
       tone: 'danger',
       timeoutMs: 4500,
@@ -148,8 +227,8 @@ async function submit() {
 <template>
   <Dialog
     v-model="open"
-    title="Nowe zadanie"
-    description="Utwórz zadanie i przypisz je do osoby odpowiedzialnej."
+    :title="props.editMode ? 'Edytuj zadanie' : 'Nowe zadanie'"
+    :description="props.editMode ? 'Wprowadź zmiany w zadaniu.' : 'Utwórz zadanie i przypisz je do osoby odpowiedzialnej.'"
     width="lg"
   >
     <div class="space-y-6">
@@ -183,6 +262,7 @@ async function submit() {
             label="Priorytet"
             :error="errors.priority"
             :options="[
+              { label: 'Pilny', value: 'urgent' },
               { label: 'Wysoki', value: 'high' },
               { label: 'Średni', value: 'medium' },
               { label: 'Niski', value: 'low' },
@@ -198,10 +278,10 @@ async function submit() {
 
         <div class="col-span-4">
           <DateInput
-            v-model="form.due_date"
+            v-model="form.deadline"
             label="Termin"
             clearable
-            :error="errors.due_date"
+            :error="errors.deadline"
             class="min-h-11"
           >
             <template #left>
@@ -214,9 +294,9 @@ async function submit() {
 
         <div class="col-span-4">
           <UserSelect
-            v-model="form.user_id"
+            v-model="form.assigned_id"
             label="Przypisany użytkownik"
-            :error="errors.user_id"
+            :error="errors.assigned_id"
             :multiple="false"
             :clearable="true"
           />
@@ -250,7 +330,91 @@ async function submit() {
         <div class="col-span-12">
           <div class="space-y-3">
             <div class="text-sm font-medium text-foreground">Załączniki</div>
+            
             <FileDropzone v-model="attachments" :multiple="true" />
+            
+            <!-- Istniejące załączniki (tylko w trybie edycji) -->
+            <div v-if="props.editMode && existingAttachments.length" class="space-y-2">
+              <div
+                v-for="attachment in existingAttachments"
+                :key="attachment.id"
+                class="rounded-xl border border-border bg-card px-3 py-2"
+              >
+                <div class="flex items-start gap-3">
+                  <!-- Thumbnail/Icon -->
+                  <div class="shrink-0">
+                    <div
+                      v-if="attachment.type === 'image'"
+                      class="relative w-32 h-18 rounded-lg overflow-hidden bg-secondary"
+                    >
+                      <img
+                        :src="attachment.path"
+                        :alt="attachment.name"
+                        class="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div
+                      v-else-if="attachment.type === 'document'"
+                      class="w-32 h-18 rounded-lg flex items-center justify-center bg-red-100 dark:bg-red-950"
+                    >
+                      <svg
+                        class="w-12 h-12 text-red-600 dark:text-red-400"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                        />
+                      </svg>
+                    </div>
+                    <div
+                      v-else
+                      class="w-32 h-18 rounded-lg flex items-center justify-center bg-secondary"
+                    >
+                      <svg
+                        class="w-10 h-10 text-muted-foreground"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                        />
+                      </svg>
+                    </div>
+                  </div>
+
+                  <!-- File Info -->
+                  <div class="flex-1 min-w-0 flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="truncate text-sm font-semibold">{{ attachment.name }}</div>
+                      <div class="text-xs text-muted-foreground">
+                        {{ attachment.size_human }}
+                      </div>
+                    </div>
+
+                    <div class="shrink-0">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        :disabled="submitting"
+                        @click="removeExistingAttachment(attachment.id)"
+                      >
+                        Usuń
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -259,8 +423,8 @@ async function submit() {
     <template #footer>
       <Button type="button" variant="secondary" :disabled="submitting" @click="open = false">Anuluj</Button>
       <Button type="button" variant="primary" :loading="submitting" @click="submit">
-        <Icon name="plus" size="sm" />
-        Utwórz
+        <Icon :name="props.editMode ? 'save' : 'plus'" size="sm" />
+        {{ props.editMode ? 'Zapisz' : 'Utwórz' }}
       </Button>
     </template>
   </Dialog>

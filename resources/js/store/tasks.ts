@@ -3,27 +3,39 @@ import { ref, computed } from 'vue';
 import { api } from '@/lib/api';
 import type { User, Label, ApiMeta, ApiResponse } from '@/types';
 
+export interface TaskAttachment {
+    id: string;
+    name: string;
+    path: string;
+    type: string;
+    size: number;
+    size_human: string;
+    created_at: string;
+    updated_at: string;
+}
+
 export interface Task {
     id: string;
     title: string;
     description?: string;
     status: string;
-    priority: 'high' | 'medium' | 'low';
-    // Human-readable date used by UI list; can be null when task has no deadline.
-    date: string | null;
-    // ISO deadline (YYYY-MM-DD) for filtering/sorting (optional for backward compatibility).
-    due_date?: string | null;
-    user: User;
-    comments: number;
+    priority: 'urgent' | 'high' | 'medium' | 'low';
+    deadline?: string | null;
+    deadline_overdue?: number | null;
+    is_overdue?: boolean;
+    is_at_risk?: boolean;
+    assigned: User;
+    creator?: User;
+    comments?: number;
     labels: Label[];
+    attachments?: TaskAttachment[];
 }
 
 export interface TaskFilters {
     status?: string;
     priority?: string;
     search?: string;
-    user_id?: string | number | Array<string | number>;
-    label?: string;
+    user_id?: Array<string | number>;
     labels?: string[];
     labelOperator?: 'AND' | 'OR';
     date_from?: string | null;
@@ -69,7 +81,9 @@ export const useTasksStore = defineStore('tasks', () => {
 
                 if (Array.isArray(value)) {
                     if (!value.length) return;
-                    params.append(key, value.join(','));
+                    value.forEach(element => {
+                        params.append(key+"[]", element);
+                    });
                     return;
                 }
 
@@ -122,17 +136,32 @@ export const useTasksStore = defineStore('tasks', () => {
         }
     };
 
-    const updateTask = async (id: string | number, taskData: Partial<Task>) => {
+    const updateTask = async (id: string | number, taskData: Partial<Task> | FormData) => {
         error.value = null;
 
         try {
             const idStr = String(id);
-            const response = await api.put(`/tasks/${id}`, taskData);
+            // Użyj POST zamiast PUT gdy taskData to FormData (Laravel method spoofing)
+            const isFormData = taskData instanceof FormData;
+            const response: ApiResponse<Task> = isFormData 
+                ? await api.post(`/tasks/${id}`, taskData)
+                : await api.put(`/tasks/${id}`, taskData);
+            const updatedTask = response.data;
+            
             const index = tasks.value.findIndex(t => t.id === idStr);
             if (index !== -1) {
-                tasks.value[index] = response;
+                tasks.value[index] = updatedTask;
             }
-            return response;
+            
+            // Zaktualizuj także w tasksByStatus je\u015bli jest tam obecny
+            Object.keys(tasksByStatus.value).forEach(status => {
+                const statusIndex = tasksByStatus.value[status]?.findIndex(t => t.id === idStr);
+                if (statusIndex !== undefined && statusIndex !== -1) {
+                    tasksByStatus.value[status][statusIndex] = updatedTask;
+                }
+            });
+            
+            return updatedTask;
         } catch (err: any) {
             error.value = err.response?.data?.message || 'Błąd podczas aktualizacji zadania';
             throw err;
@@ -148,6 +177,18 @@ export const useTasksStore = defineStore('tasks', () => {
             tasks.value = tasks.value.filter(t => t.id !== idStr);
         } catch (err: any) {
             error.value = err.response?.data?.message || 'Błąd podczas usuwania zadania';
+            throw err;
+        }
+    };
+
+    const fetchTask = async (id: string | number) => {
+        error.value = null;
+
+        try {
+            const response: ApiResponse<Task> = await api.get(`/tasks/${id}`);
+            return response.data;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas pobierania zadania';
             throw err;
         }
     };
@@ -190,6 +231,7 @@ export const useTasksStore = defineStore('tasks', () => {
         createTask,
         updateTask,
         deleteTask,
+        fetchTask,
         
         // Getters
         getTasksByStatus,

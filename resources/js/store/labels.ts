@@ -10,8 +10,7 @@ export interface LabelsResponse {
 
 export interface FetchLabelsParams {
     cursor?: string | null;
-    q?: string;
-    per_page?: number;
+    search?: string;
 }
 
 export const useLabelsStore = defineStore('labels', () => {
@@ -22,21 +21,24 @@ export const useLabelsStore = defineStore('labels', () => {
     const createdLabels = ref<Label[]>([]);
     const labelsVersion = ref(0);
 
-    const createLabel = async (payload: { text: string; color?: string | null; icon?: string | null }) => {
+    const createLabel = async (payload: { name: string; color?: string | null; icon?: string | null }) => {
         error.value = null;
 
-        const text = String(payload?.text ?? '').trim();
-        if (!text) {
+        const name = String(payload?.name ?? '').trim();
+        if (!name) {
             error.value = 'Nazwa etykiety jest wymagana';
             throw new Error(error.value);
         }
 
         try {
-            const created: Label = await api.post('/labels', {
-                text,
+            const response: any = await api.post('/labels', {
+                name,
                 color: payload.color ?? null,
                 icon: payload.icon ?? null,
             });
+
+            // API może zwrócić { data: {...} } lub bezpośrednio {...}
+            const created: Label = response?.data ?? response;
 
             const id = (created as any)?.id;
             if (id !== undefined && id !== null && id !== '') {
@@ -52,7 +54,7 @@ export const useLabelsStore = defineStore('labels', () => {
             if (err?.response?.status === 404 || err?.response?.status === 405) {
                 const local: Label = {
                     id: String((globalThis as any)?.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2)),
-                    text,
+                    name,
                     color: payload.color ?? undefined,
                     icon: payload.icon ?? null,
                 };
@@ -75,17 +77,16 @@ export const useLabelsStore = defineStore('labels', () => {
             const qs = new URLSearchParams();
 
             if (params.cursor) qs.append('cursor', params.cursor);
-            if (params.q) qs.append('q', params.q);
-            if (params.per_page) qs.append('per_page', String(params.per_page));
+            if (params.search) qs.append('search', params.search);
 
             const query = qs.toString();
             const response: LabelsResponse = await api.get(`/labels${query ? `?${query}` : ''}`);
 
             // Inject client-created labels at the top of the first page so selects can resolve them.
             if (!params.cursor && createdLabels.value.length) {
-                const q = (params.q || '').trim().toLowerCase();
-                const locals = q
-                    ? createdLabels.value.filter((l) => String(l.text).toLowerCase().includes(q))
+                const search = (params.search || '').trim().toLowerCase();
+                const locals = search
+                    ? createdLabels.value.filter((l) => String(l.text).toLowerCase().includes(search))
                     : createdLabels.value;
 
                 const seen = new Set<string>();
@@ -119,14 +120,14 @@ export const useLabelsStore = defineStore('labels', () => {
     const fetchLabelsByIds = async (ids: Array<string | number>) => {
         const unique = Array.from(new Set((ids || []).map((x) => String(x)).filter(Boolean)));
         if (!unique.length) {
-            return { data: [], meta: { next_cursor: null, prev_cursor: null, per_page: unique.length, total: 0 } as any };
+            return { data: [], meta: { next_cursor: null, prev_cursor: null, total: 0 } as any };
         }
 
         const missing = unique.filter((id) => !labelsById.value[id]);
         if (!missing.length) {
             return {
                 data: unique.map((id) => labelsById.value[id]).filter(Boolean),
-                meta: { next_cursor: null, prev_cursor: null, per_page: unique.length, total: unique.length } as any,
+                meta: { next_cursor: null, prev_cursor: null, total: unique.length } as any,
             };
         }
 

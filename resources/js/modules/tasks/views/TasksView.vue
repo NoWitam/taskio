@@ -42,6 +42,7 @@
                 v-model="filters.priority"
                 :options="[
                     { label: 'Wszystkie', value: '' },
+                    { label: 'Pilny', value: 'urgent' },
                     { label: 'Wysoki', value: 'high' },
                     { label: 'Średni', value: 'medium' },
                     { label: 'Niski', value: 'low' },
@@ -100,17 +101,18 @@
     <Tabs :tabs="tabs" v-model="tab" />
 
     <div
-        class="w-full min-h-0 flex-1 flex gap-8"
+        class="w-full min-h-0 flex-1 grid grid-cols-4 gap-8"
     >
         <div 
             v-for="status in activeTab.statuses"
             :key="status.key"
-            class="w-full min-h-0 flex flex-col flex-1"
+            class="w-full min-h-0 flex flex-col"
         >
             <TasksList 
                 :status="status.key"
                 :label="status.label"
                 :filters="debouncedTaskFilters"
+                @open-task="openTaskDialog"
             />
         </div>
     </div>
@@ -118,6 +120,13 @@
     <CreateTaskDialog
         v-model="showCreateTaskDialog"
         @created="handleTaskCreated"
+    />
+
+    <TaskDialog
+        v-if="selectedTaskId"
+        v-model="isTaskDialogOpen"
+        :task-id="selectedTaskId"
+        @update:model-value="closeTaskDialog"
     />
 </div>
 </template>
@@ -131,7 +140,7 @@ import TextInput from '../../../components/ui/inputs/TextInput.vue';
 import LabelSelect from '@/modules/labels/components/LabelSelect.vue';
 import UserSelect from '../../../components/ui/inputs/reusable/UserSelect.vue';
 import DateRangeSelect from '@/components/ui/inputs/DateRangeSelect.vue';
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, onMounted } from 'vue';
 import Icon from '../../../components/ui/Icon.vue';
 import SelectInput from '../../../components/ui/inputs/SelectInput.vue';
 import { useDebounceFn } from '@/composables/useDebounce';
@@ -139,16 +148,64 @@ import FilterBar, { type ActiveFilter } from '@/components/ui/tables/FilterBar.v
 import { useUsersStore } from '@/store/users';
 import { useLabelsStore } from '@/store/labels';
 import CreateTaskDialog from '../components/CreateTaskDialog.vue';
+import TaskDialog from '../components/TaskDialog.vue';
 import { useTasksStore } from '@/store/tasks';
 import { useTasksUrlFilters } from '@/modules/tasks/composables/useTasksUrlFilters';
+import { useRouter, useRoute } from 'vue-router';
 
 const tab = ref('main');
 
 const tasksStore = useTasksStore();
 const usersStore = useUsersStore();
 const labelsStore = useLabelsStore();
+const router = useRouter();
+const route = useRoute();
 const showCreateTaskDialog = ref(false);
 const { filters, taskFilters, urlQuery } = useTasksUrlFilters();
+
+// Dialog state for task preview
+const isTaskDialogOpen = ref(false);
+const selectedTaskId = ref<string | null>(null);
+
+const openTaskDialog = (taskId: string) => {
+    selectedTaskId.value = taskId;
+    isTaskDialogOpen.value = true;
+    router.push({ hash: `#task-${taskId}` });
+};
+
+const closeTaskDialog = () => {
+    isTaskDialogOpen.value = false;
+    router.push({ hash: '' });
+};
+
+// Check URL hash on mount and open dialog if needed
+const checkUrlHash = () => {
+    const hash = route.hash;
+    if (hash && hash.startsWith('#task-')) {
+        const taskId = hash.replace('#task-', '');
+        if (taskId) {
+            selectedTaskId.value = taskId;
+            isTaskDialogOpen.value = true;
+        }
+    }
+};
+
+// Watch for hash changes
+watch(() => route.hash, (newHash) => {
+    if (!newHash || !newHash.startsWith('#task-')) {
+        isTaskDialogOpen.value = false;
+    } else {
+        const taskId = newHash.replace('#task-', '');
+        if (taskId && taskId !== selectedTaskId.value) {
+            selectedTaskId.value = taskId;
+            isTaskDialogOpen.value = true;
+        }
+    }
+});
+
+onMounted(() => {
+    checkUrlHash();
+});
 
 function displayDatePreset(preset: typeof filters.value.dateRange.preset) {
     const presetLabels: Record<string, string> = {
@@ -178,6 +235,7 @@ const activeFilters = computed<ActiveFilter[]>(() => {
 
     if (f.priority) {
         const priorityLabel: Record<string, string> = {
+            urgent: 'Pilny',
             high: 'Wysoki',
             medium: 'Średni',
             low: 'Niski',
@@ -198,7 +256,7 @@ const activeFilters = computed<ActiveFilter[]>(() => {
     if (Array.isArray(f.labels) && f.labels.length) {
         f.labels.forEach((labelId) => {
             const l = labelsStore.labelsById?.[String(labelId)];
-            const text = l?.text ? l.text : `#${labelId}`;
+            const text = l?.name ? l.name : `#${labelId}`;
             active.push({ key: `labels:${labelId}`, label: `Etykieta: ${text}` });
         });
     }
@@ -286,7 +344,7 @@ watch(
 const tabs = [
     { 
         id: "main", label: "Lista", 
-        statuses: [{ key: "to_do", label: "Do zrobienia"}, { key: "in_progrss", label: "W trakcie"}, { key: "in_test", label: "W testach"}, { key: "done", label: "Zrobione" }] 
+        statuses: [{ key: "to_do", label: "Do zrobienia"}, { key: "in_progress", label: "W trakcie"}, { key: "in_test", label: "W testach"}, { key: "done", label: "Zrobione" }] 
     },
     { id: "archive", label: "Archiwum", icon: "archive", statuses: [{ key: "archive", label: "Archiwum"}] },
     { id: "trash", label: "Kosz", icon: "trash", statuses: [{ key: "trash", label: "Kosz"}] },
