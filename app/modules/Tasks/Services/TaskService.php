@@ -79,6 +79,7 @@ class TaskService
     {
         return Task::query()
             ->with('assigned', 'labels')
+            ->withCount('comments')
             ->when(
                 $status = $request->enum('status', TaskStatus::class),
                 function (Builder $query) use ($status) {

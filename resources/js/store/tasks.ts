@@ -31,6 +31,35 @@ export interface Task {
     attachments?: TaskAttachment[];
 }
 
+export interface Comment {
+    id: string;
+    content: string;
+    author: {
+        id: string;
+        name: string;
+        email: string;
+    };
+    created_at: string;
+    updated_at: string;
+    is_edited: boolean;
+}
+
+export interface Activity {
+    id: string;
+    event: string;
+    event_description: string;
+    description: string;
+    changes: Record<string, { old: any; new: any }>;
+    old_values: Record<string, any> | null;
+    new_values: Record<string, any> | null;
+    causer: {
+        id: string;
+        name: string;
+        email: string;
+    } | null;
+    created_at: string;
+}
+
 export interface TaskFilters {
     status?: string;
     priority?: string;
@@ -58,6 +87,10 @@ export const useTasksStore = defineStore('tasks', () => {
     const totalByStatus = ref<Record<string, number>>({});
 
     const tasksByStatus = ref<Record<string, Task[]>>({});
+    const commentsByTask = ref<Record<string, Comment[]>>({});
+    const historyByTask = ref<Record<string, Activity[]>>({});
+    const loadingComments = ref<Record<string, boolean>>({});
+    const loadingHistory = ref<Record<string, boolean>>({});
 
     const fetchTasksByStatus = async (status: string, filters: TaskFilters = {}, resetCursor: boolean = true) => {
         loading.value[status] = true;
@@ -175,9 +208,201 @@ export const useTasksStore = defineStore('tasks', () => {
             const idStr = String(id);
             await api.delete(`/tasks/${id}`);
             tasks.value = tasks.value.filter(t => t.id !== idStr);
+            
+            // Usuń z tasksByStatus
+            Object.keys(tasksByStatus.value).forEach(status => {
+                tasksByStatus.value[status] = tasksByStatus.value[status]?.filter(t => t.id !== idStr) || [];
+                if (typeof totalByStatus.value[status] === 'number') {
+                    totalByStatus.value[status] = Math.max(0, (totalByStatus.value[status] || 0) - 1);
+                }
+            });
         } catch (err: any) {
             error.value = err.response?.data?.message || 'Błąd podczas usuwania zadania';
             throw err;
+        }
+    };
+
+    const forceDeleteTask = async (id: string | number) => {
+        error.value = null;
+
+        try {
+            const idStr = String(id);
+            await api.delete(`/tasks/${id}/force`);
+            tasks.value = tasks.value.filter(t => t.id !== idStr);
+            
+            // Usuń z tasksByStatus
+            Object.keys(tasksByStatus.value).forEach(status => {
+                tasksByStatus.value[status] = tasksByStatus.value[status]?.filter(t => t.id !== idStr) || [];
+                if (typeof totalByStatus.value[status] === 'number') {
+                    totalByStatus.value[status] = Math.max(0, (totalByStatus.value[status] || 0) - 1);
+                }
+            });
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas permanentnego usuwania zadania';
+            throw err;
+        }
+    };
+
+    const restoreTask = async (id: string | number) => {
+        error.value = null;
+
+        try {
+            const response: ApiResponse<Task> = await api.post(`/tasks/${id}/restore`);
+            const restoredTask = response.data;
+            
+            // Dodaj do to_do statusu
+            const status = 'to_do';
+            if (!tasksByStatus.value[status]) {
+                tasksByStatus.value[status] = [];
+            }
+            tasksByStatus.value[status].unshift(restoredTask);
+            
+            if (typeof totalByStatus.value[status] === 'number') {
+                totalByStatus.value[status] = (totalByStatus.value[status] || 0) + 1;
+            }
+            
+            return restoredTask;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas przywracania zadania';
+            throw err;
+        }
+    };
+
+    const changeStatus = async (id: string | number, newStatus: string) => {
+        error.value = null;
+
+        try {
+            const idStr = String(id);
+            const response: ApiResponse<Task> = await api.patch(`/tasks/${id}/status/${newStatus}`);
+            const updatedTask = response.data;
+            
+            // Usuń z poprzedniego statusu
+            Object.keys(tasksByStatus.value).forEach(status => {
+                tasksByStatus.value[status] = tasksByStatus.value[status]?.filter(t => t.id !== idStr) || [];
+            });
+            
+            // Dodaj do nowego statusu
+            if (!tasksByStatus.value[newStatus]) {
+                tasksByStatus.value[newStatus] = [];
+            }
+            tasksByStatus.value[newStatus].unshift(updatedTask);
+            
+            // Zaktualizuj w tasks
+            const index = tasks.value.findIndex(t => t.id === idStr);
+            if (index !== -1) {
+                tasks.value[index] = updatedTask;
+            }
+            
+            return updatedTask;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas zmiany statusu zadania';
+            throw err;
+        }
+    };
+
+    const fetchComments = async (taskId: string | number) => {
+        const taskIdStr = String(taskId);
+        loadingComments.value[taskIdStr] = true;
+        error.value = null;
+
+        try {
+            const response: ApiResponse<Comment[]> = await api.get(`/tasks/${taskId}/comments`);
+            commentsByTask.value[taskIdStr] = response.data;
+            return response.data;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas pobierania komentarzy';
+            throw err;
+        } finally {
+            loadingComments.value[taskIdStr] = false;
+        }
+    };
+
+    const addComment = async (taskId: string | number, content: string) => {
+        const taskIdStr = String(taskId);
+        error.value = null;
+
+        try {
+            const response: ApiResponse<Comment> = await api.post(`/tasks/${taskId}/comments`, { content });
+            
+            if (!commentsByTask.value[taskIdStr]) {
+                commentsByTask.value[taskIdStr] = [];
+            }
+            commentsByTask.value[taskIdStr].unshift(response.data);
+            
+            // Zwiększ licznik komentarzy w zadaniu
+            Object.keys(tasksByStatus.value).forEach(status => {
+                const task = tasksByStatus.value[status]?.find(t => t.id === taskIdStr);
+                if (task && typeof task.comments === 'number') {
+                    task.comments += 1;
+                }
+            });
+            
+            return response.data;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas dodawania komentarza';
+            throw err;
+        }
+    };
+
+    const updateComment = async (commentId: string, content: string) => {
+        error.value = null;
+
+        try {
+            const response: ApiResponse<Comment> = await api.patch(`/comments/${commentId}`, { content });
+            
+            // Zaktualizuj w commentsByTask
+            Object.keys(commentsByTask.value).forEach(taskId => {
+                const index = commentsByTask.value[taskId]?.findIndex(c => c.id === commentId);
+                if (index !== undefined && index !== -1) {
+                    commentsByTask.value[taskId][index] = response.data;
+                }
+            });
+            
+            return response.data;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas edycji komentarza';
+            throw err;
+        }
+    };
+
+    const deleteComment = async (commentId: string, taskId: string | number) => {
+        const taskIdStr = String(taskId);
+        error.value = null;
+
+        try {
+            await api.delete(`/comments/${commentId}`);
+            
+            if (commentsByTask.value[taskIdStr]) {
+                commentsByTask.value[taskIdStr] = commentsByTask.value[taskIdStr].filter(c => c.id !== commentId);
+            }
+            
+            // Zmniejsz licznik komentarzy w zadaniu
+            Object.keys(tasksByStatus.value).forEach(status => {
+                const task = tasksByStatus.value[status]?.find(t => t.id === taskIdStr);
+                if (task && typeof task.comments === 'number') {
+                    task.comments = Math.max(0, task.comments - 1);
+                }
+            });
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas usuwania komentarza';
+            throw err;
+        }
+    };
+
+    const fetchHistory = async (taskId: string | number) => {
+        const taskIdStr = String(taskId);
+        loadingHistory.value[taskIdStr] = true;
+        error.value = null;
+
+        try {
+            const response: ApiResponse<Activity[]> = await api.get(`/task/${taskId}/history`);
+            historyByTask.value[taskIdStr] = response.data;
+            return response.data;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas pobierania historii';
+            throw err;
+        } finally {
+            loadingHistory.value[taskIdStr] = false;
         }
     };
 
@@ -225,13 +450,25 @@ export const useTasksStore = defineStore('tasks', () => {
         cursors,
         hasMoreByStatus,
         totalByStatus,
+        commentsByTask,
+        historyByTask,
+        loadingComments,
+        loadingHistory,
         
         // Actions
         fetchTasksByStatus,
         createTask,
         updateTask,
         deleteTask,
+        forceDeleteTask,
+        restoreTask,
+        changeStatus,
         fetchTask,
+        fetchComments,
+        addComment,
+        updateComment,
+        deleteComment,
+        fetchHistory,
         
         // Getters
         getTasksByStatus,

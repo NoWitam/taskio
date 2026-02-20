@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import type { Task } from '@/store/tasks';
+import { ref, onMounted, computed } from 'vue';
+import { useTasksStore, type Task, type Activity } from '@/store/tasks';
 import Icon from '@/components/ui/Icon.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import Tabs from '@/components/ui/Tabs.vue';
+import Skeleton from '@/components/ui/Skeleton.vue';
+import Badge from '@/components/ui/Badge.vue';
 
 const props = defineProps<{
     task: Task;
 }>();
 
+const tasksStore = useTasksStore();
 const activeTab = ref('history');
 
 const tabs = [
@@ -17,6 +20,13 @@ const tabs = [
     { id: 'checklist', label: 'Checklista', icon: 'check-square' },
     { id: 'approval', label: 'Lejek zatwierdzenia', icon: 'git-merge' },
 ];
+
+const history = computed(() => tasksStore.historyByTask[props.task.id] || []);
+const loadingHistory = computed(() => tasksStore.loadingHistory[props.task.id] || false);
+
+const fetchHistory = async () => {
+    await tasksStore.fetchHistory(props.task.id);
+};
 
 const formatDate = (dateString?: string | null) => {
     if (!dateString) return 'Brak';
@@ -31,6 +41,54 @@ const formatDate = (dateString?: string | null) => {
         return dateString;
     }
 };
+
+const formatDateTime = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleString('pl-PL', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
+};
+
+const getEventIcon = (event: string) => {
+    const icons: Record<string, string> = {
+        created: 'plus-circle',
+        updated: 'edit',
+        deleted: 'trash',
+        restored: 'rotate-ccw',
+        status_changed: 'arrow-right',
+        archived: 'archive',
+        unarchived: 'package',
+    };
+    return icons[event] || 'activity';
+};
+
+const getEventTone = (event: string) => {
+    const tones: Record<string, 'success' | 'primary' | 'warning' | 'danger' | 'neutral'> = {
+        created: 'success',
+        updated: 'primary',
+        deleted: 'danger',
+        restored: 'success',
+        status_changed: 'warning',
+        archived: 'neutral',
+        unarchived: 'primary',
+    };
+    return tones[event] || 'neutral';
+};
+
+const formatChangeValue = (value: any): string => {
+    if (value === null || value === undefined) return 'brak';
+    if (typeof value === 'boolean') return value ? 'tak' : 'nie';
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+};
+
+onMounted(() => {
+    fetchHistory();
+});
 </script>
 
 <template>
@@ -93,10 +151,80 @@ const formatDate = (dateString?: string | null) => {
     <!-- Zawartość zakładek -->
     <div class="flex-1 p-6">
       <div v-if="activeTab === 'history'" class="space-y-4">
-        <div class="flex items-center justify-center py-12 text-muted-foreground">
+        <!-- Loading state -->
+        <div v-if="loadingHistory" class="space-y-3">
+          <div v-for="i in 5" :key="i" class="flex gap-3">
+            <Skeleton class="h-10 w-10 rounded-full" />
+            <div class="flex-1 space-y-2">
+              <Skeleton class="h-4 w-48" />
+              <Skeleton class="h-3 w-full" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Empty state -->
+        <div v-else-if="history.length === 0" class="flex items-center justify-center py-12 text-muted-foreground">
           <div class="text-center">
             <Icon name="clock" size="lg" class="mx-auto mb-2 opacity-50" />
-            <p class="text-sm">Historia zmian w przygotowaniu</p>
+            <p class="text-sm">Brak historii zmian</p>
+          </div>
+        </div>
+
+        <!-- History timeline -->
+        <div v-else class="relative space-y-4 pl-8">
+          <!-- Vertical line -->
+          <div class="absolute left-[19px] top-2 bottom-2 w-px bg-border" />
+
+          <div
+            v-for="activity in history"
+            :key="activity.id"
+            class="relative"
+          >
+            <!-- Timeline dot -->
+            <div class="absolute left-[-32px] top-1 flex h-10 w-10 items-center justify-center rounded-full border-2 border-border bg-background">
+              <Icon :name="getEventIcon(activity.event)" size="sm" />
+            </div>
+
+            <!-- Activity card -->
+            <div class="rounded-lg border border-border bg-background p-4">
+              <div class="mb-2 flex items-start justify-between gap-2">
+                <div>
+                  <Badge :tone="getEventTone(activity.event)" size="sm">
+                    {{ activity.event_description }}
+                  </Badge>
+                  <p v-if="activity.description" class="mt-1 text-sm text-muted-foreground">
+                    {{ activity.description }}
+                  </p>
+                </div>
+                <p class="text-xs text-muted-foreground whitespace-nowrap">
+                  {{ formatDateTime(activity.created_at) }}
+                </p>
+              </div>
+
+              <!-- Causer -->
+              <div v-if="activity.causer" class="mb-3 flex items-center gap-2 text-sm text-muted-foreground">
+                <Avatar :name="activity.causer.name" size="xs" />
+                <span>{{ activity.causer.name }}</span>
+              </div>
+
+              <!-- Changes -->
+              <div v-if="Object.keys(activity.changes).length > 0" class="mt-3 space-y-2 border-t border-border pt-3">
+                <div
+                  v-for="(change, key) in activity.changes"
+                  :key="key"
+                  class="text-sm"
+                >
+                  <span class="font-medium">{{ key }}:</span>
+                  <div class="ml-4 mt-1 space-y-1">
+                    <div class="flex items-center gap-2">
+                      <span class="text-danger line-through">{{ formatChangeValue(change.old) }}</span>
+                      <Icon name="arrow-right" size="xs" class="text-muted-foreground" />
+                      <span class="text-success">{{ formatChangeValue(change.new) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

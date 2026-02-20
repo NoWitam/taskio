@@ -137,14 +137,32 @@ const onTaskUpdated = (updatedTask: Task) => {
     task.value = updatedTask;
 };
 
-const handleDelete = () => {
-    // TODO: Pokazać confirm dialog i usunąć task
-    console.log('Delete task:', task.value?.id);
+const handleDelete = async () => {
+    if (!task.value) return;
+    
+    const confirmed = confirm('Czy na pewno chcesz przenieść to zadanie do kosza?');
+    if (!confirmed) return;
+    
+    try {
+        await tasksStore.deleteTask(task.value.id);
+        emit('update:modelValue', false);
+    } catch (error) {
+        console.error('Error deleting task:', error);
+        alert('Wystąpił błąd podczas usuwania zadania');
+    }
 };
 
-const handleStatusChange = (newStatus: string) => {
-    // TODO: Zmienić status taska przez API
-    console.log('Change status to:', newStatus);
+const handleStatusChange = async (newStatus: string) => {
+    if (!task.value) return;
+    
+    try {
+        const updatedTask = await tasksStore.changeStatus(task.value.id, newStatus);
+        task.value = updatedTask;
+    } catch (error: any) {
+        console.error('Error changing status:', error);
+        const message = error.response?.data?.message || 'Wystąpił błąd podczas zmiany statusu';
+        alert(message);
+    }
 };
 
 watch(() => props.modelValue, async (isOpen) => {

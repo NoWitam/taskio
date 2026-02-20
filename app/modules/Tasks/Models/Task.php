@@ -4,7 +4,13 @@ namespace App\Modules\Tasks\Models;
 
 use App\Models\AbstractModel;
 use App\Models\User;
+use App\Modules\Comments\Traits\HasComments;
+use App\Modules\Disk\Models\File;
 use App\Modules\Disk\Traits\HasFiles;
+use App\Modules\History\Interfaces\HasHistory as InterfacesHasHistory;
+use App\Modules\History\Managers\BagLog;
+use App\Modules\History\Managers\FieldLog;
+use App\Modules\History\Traits\HasHistory;
 use App\Modules\Labels\Traits\HasLabels;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Enums\TaskStatus;
@@ -13,9 +19,9 @@ use App\Traits\HasCreator;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
-class Task extends AbstractModel
+class Task extends AbstractModel implements InterfacesHasHistory
 {
-    use HasCreator, HasUuids, SoftDeletes, HasFiles, HasLabels, Archiving;
+    use HasCreator, HasUuids, SoftDeletes, HasFiles, HasLabels, HasComments, HasHistory, Archiving;
     
     protected $table = 'tasks';
 
@@ -38,6 +44,29 @@ class Task extends AbstractModel
         'deleted_at' => 'datetime',
         'archived_at' => 'datetime'
     ];
+
+    public static function getHistoryOptions(): array
+    {
+        return [
+            FieldLog::make('title')->withComparision(),
+            FieldLog::make('description')->withComparision(),
+            FieldLog::make('status')->asComponent('badge')->withMap(function (TaskStatus $status, Task $task) {
+                return [
+                    'label' => $status->label(),
+                    'tone' => $status->tone(),
+                    'icon' => $status->icon(),
+                    'dot' => true
+                ];
+            }),
+            BagLog::make('files')->asClass(File::class)->withMap(function (File $file, Task $task) {
+                return [
+                    'name' => $file->name,
+                    'type' => $file->type,
+                    'size' => $file->size
+                ];
+            })
+        ];
+    }
 
     public function assigned()
     {

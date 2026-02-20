@@ -8,121 +8,120 @@ Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
 
-Route::get('/tasksassd', function (Request $request) {
-    $status = $request->status ?? 'to_do';
+Route::get('/test', function () {
+    $string1 = "Witajcie w mojej bajce, slon zagra na fujarce";
 
-    $preset = (string) $request->input('date_preset', '');
-    $dateFrom = $request->input('date_from');
-    $dateTo = $request->input('date_to');
+    $string2 = "Witajcie w mojej bajce, zyrafa zagra na fujarce";
 
-    // If preset is used, compute date range in ISO (YYYY-MM-DD)
-    if ($preset) {
-        $now = now();
+    $context = 1;
+    // $diff = xdiff_string_diff($string1, $string2, $context); 
 
-        if ($preset === 'today') {
-            $dateFrom = $now->toDateString();
-            $dateTo = $now->toDateString();
-        } elseif ($preset === 'this_week') {
-            $dateFrom = $now->copy()->startOfWeek()->toDateString();
-            $dateTo = $now->copy()->endOfWeek()->toDateString();
-        } elseif ($preset === 'last_week') {
-            $dateFrom = $now->copy()->subWeek()->startOfWeek()->toDateString();
-            $dateTo = $now->copy()->subWeek()->endOfWeek()->toDateString();
-        } elseif ($preset === 'this_month') {
-            $dateFrom = $now->copy()->startOfMonth()->toDateString();
-            $dateTo = $now->copy()->endOfMonth()->toDateString();
+    $diff = diffline($string1, $string2);
+    return $diff;
+});
+
+
+function computeDiff($from, $to)
+{
+    $diffValues = array();
+    $diffMask = array();
+
+    $dm = array();
+    $n1 = count($from);
+    $n2 = count($to);
+
+    for ($j = -1; $j < $n2; $j++) $dm[-1][$j] = 0;
+    for ($i = -1; $i < $n1; $i++) $dm[$i][-1] = 0;
+    for ($i = 0; $i < $n1; $i++)
+    {
+        for ($j = 0; $j < $n2; $j++)
+        {
+            if ($from[$i] == $to[$j])
+            {
+                $ad = $dm[$i - 1][$j - 1];
+                $dm[$i][$j] = $ad + 1;
+            }
+            else
+            {
+                $a1 = $dm[$i - 1][$j];
+                $a2 = $dm[$i][$j - 1];
+                $dm[$i][$j] = max($a1, $a2);
+            }
         }
     }
 
-    $hasDateFilter = !empty($preset) || !empty($dateFrom) || !empty($dateTo);
-    $hideWithoutDeadline = filter_var($request->input('hide_without_deadline', false), FILTER_VALIDATE_BOOLEAN);
-
-    $data = [
-        [
-            'id' => (string) str()->uuid(),
-            'title' => "Design new landing page wireframes",
-            'description' => null,
-            'status' => $status,
-            'due_date' => '2026-01-06',
-            'date' => "06.01.2026",
-            'priority' => 'high',
-            'comments' => 13,
-            'user' => ['id' => (string) str()->uuid(), 'name' => 'Hubert Golewski', 'src' => null],
-            'labels' => [
-                ['id' => (string) str()->uuid(), 'text' => 'Design', 'color' => null]
-            ]
-        ],
-        [
-            'id' => (string) str()->uuid(),
-            'title' => "Design new landing page wireframes",
-            'description' => null,
-            'status' => $status,
-            // Example task without a deadline
-            'due_date' => null,
-            'date' => null,
-            'priority' => 'medium',
-            'comments' => 0,
-            'user' => ['id' => (string) str()->uuid(), 'name' => 'Hubert Golewski', 'src' => null],
-            'labels' => [
-                ['id' => (string) str()->uuid(), 'text' => 'Design', 'color' => null]
-            ]
-        ],
-        [
-            'id' => (string) str()->uuid(),
-            'title' => "Design new landing page wireframes",
-            'description' => null,
-            'status' => $status,
-            'due_date' => '2026-01-06',
-            'date' => "06.01.2026",
-            'priority' => 'low',
-            'comments' => 2,
-            'user' => ['id' => (string) str()->uuid(), 'name' => 'Hubert Golewski', 'src' => null],
-            'labels' => [
-                ['id' => (string) str()->uuid(), 'text' => 'Design', 'color' => null],
-                ['id' => (string) str()->uuid(), 'text' => 'Design', 'color' => '#b23e7c']
-            ]
-        ],
-    ];
-
-
-    if($request->status == 'in_test' OR ($request->status == 'to_do' AND $request->has('cursor'))) {
-        $combined = [];
-    } else {
-        $combined = [...$data, ...$data];
-    }
-
-    if ($hasDateFilter || $hideWithoutDeadline) {
-        $from = is_string($dateFrom) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFrom) ? $dateFrom : null;
-        $to = is_string($dateTo) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateTo) ? $dateTo : null;
-
-        $combined = array_values(array_filter($combined, function ($task) use ($from, $to, $hasDateFilter, $hideWithoutDeadline) {
-            $due = $task['due_date'] ?? null;
-
-            // If we're hiding tasks without deadline, always exclude them.
-            if ($hideWithoutDeadline && !$due) return false;
-
-            // If there is an active date range/preset:
-            // - tasks without deadline are INCLUDED unless hideWithoutDeadline is enabled
-            // - tasks with deadline must match the range
-            if ($hasDateFilter) {
-                if (!$due) return true;
-                if ($from && $due < $from) return false;
-                if ($to && $due > $to) return false;
-                return true;
+    $i = $n1 - 1;
+    $j = $n2 - 1;
+    while (($i > -1) || ($j > -1))
+    {
+        if ($j > -1)
+        {
+            if ($dm[$i][$j - 1] == $dm[$i][$j])
+            {
+                $diffValues[] = $to[$j];
+                $diffMask[] = 1;
+                $j--;  
+                continue;              
             }
+        }
+        if ($i > -1)
+        {
+            if ($dm[$i - 1][$j] == $dm[$i][$j])
+            {
+                $diffValues[] = $from[$i];
+                $diffMask[] = -1;
+                $i--;
+                continue;              
+            }
+        }
+        {
+            $diffValues[] = $from[$i];
+            $diffMask[] = 0;
+            $i--;
+            $j--;
+        }
+    }    
 
-            // No date filter: only apply hideWithoutDeadline (handled above)
-            return true;
-        }));
+    $diffValues = array_reverse($diffValues);
+    $diffMask = array_reverse($diffMask);
+
+    return array('values' => $diffValues, 'mask' => $diffMask);
+}
+
+function diffline($line1, $line2)
+{
+    $diff = computeDiff(str_split($line1), str_split($line2));
+    $diffval = $diff['values'];
+    $diffmask = $diff['mask'];
+
+    $n = count($diffval);
+    $pmc = 0;
+    $result = '';
+    for ($i = 0; $i < $n; $i++)
+    {
+        $mc = $diffmask[$i];
+        if ($mc != $pmc)
+        {
+            switch ($pmc)
+            {
+                case -1: $result .= '</del>'; break;
+                case 1: $result .= '</ins>'; break;
+            }
+            switch ($mc)
+            {
+                case -1: $result .= '<del>'; break;
+                case 1: $result .= '<ins>'; break;
+            }
+        }
+        $result .= $diffval[$i];
+
+        $pmc = $mc;
+    }
+    switch ($pmc)
+    {
+        case -1: $result .= '</del>'; break;
+        case 1: $result .= '</ins>'; break;
     }
 
-    $total = $request->status == 'in_test' ? 0 : count($combined);
-
-    return response()->json([
-        'meta' => [
-            'next_cursor' => empty($combined) ? null : 'sadasdasd', 
-            'total' => $request->has('cursor') ? null : $total
-        ],
-        'data' => $combined
-    ]);
-});
+    return $result;
+}

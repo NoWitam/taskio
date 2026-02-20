@@ -19,8 +19,7 @@ class TaskListResource extends JsonResource
             'deadline' => $this->deadline?->format('d.m.Y'),
             'is_overdue' => $this->isDeadlineOverdue(),
             'is_at_risk' => $this->isDeadlineAtRisk(),
-            // 'creator_id' => $this->creator_id, TODO
-            'comments' => 0, // TODO
+            'comments' => $this->whenCounted('comments'),
             'assigned' => UserResource::make($this->assigned),
             'labels' => LabelResource::collection($this->labels),
         ];
