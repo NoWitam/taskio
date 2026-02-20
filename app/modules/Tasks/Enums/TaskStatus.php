@@ -13,14 +13,14 @@ enum TaskStatus: string
     case IN_TEST = 'in_test';
     case DONE = 'done';
 
-    case ARCHVIE = 'archive';
+    case ARCHIVE = 'archive';
     case TRASH = 'trash';
 
     public function resolveSelectQuery(Builder $query): void
     {
         match($this)
         {
-            self::ARCHVIE => $query->onlyArchived(),
+            self::ARCHIVE => $query->onlyArchived(),
             self::TRASH => $query->onlyTrashed(),
             default => $query->where('status', $this)
         };
@@ -56,10 +56,10 @@ enum TaskStatus: string
     {
         return match($this)
         {
-            self::TO_DO => 'circle-check',
-            self::IN_PROGRESS => 'circle-check',
-            self::IN_TEST => 'circle-check',
-            self::DONE => 'circle-check',
+            self::TO_DO => 'check-circle',
+            self::IN_PROGRESS => 'check-circle',
+            self::IN_TEST => 'check-circle',
+            self::DONE => 'check-circle',
             self::ARCHIVE => 'archive',
             self::TRASH => 'trash'
         };
@@ -79,7 +79,7 @@ enum TaskStatus: string
             return false;
         }
 
-        if ($newStatus == self::ARCHVIE) {
+        if ($newStatus == self::ARCHIVE) {
             return $task->status == self::DONE && $task->creator_id == $user?->id;
         }
 

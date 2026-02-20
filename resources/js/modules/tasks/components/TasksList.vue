@@ -28,9 +28,10 @@ const loading = computed(() => tasksStore.getLoadingByStatus(props.status).value
 const hasMore = computed(() => tasksStore.getHasMoreByStatus(props.status).value);
 const total = computed(() => tasksStore.getTotalByStatus(props.status).value);
 
-const priorityObject: Record<string, { tone: 'danger' | 'warning' | 'neutral'; label: string }> = {
-    "high": { tone: 'danger', label: 'Wysoki' },
-    "medium": { tone: 'warning', label: 'Średni' },
+const priorityObject: Record<string, { tone: 'danger' | 'warning' | 'neutral' | 'primary'; label: string }> = {
+    "urgent": { tone: 'danger', label: 'Pilne' },
+    "high": { tone: 'warning', label: 'Wysoki' },
+    "medium": { tone: 'primary', label: 'Średni' },
     "low": { tone: 'neutral', label: 'Niski' }
 };
 

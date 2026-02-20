@@ -29,6 +29,8 @@ export interface Task {
     comments?: number;
     labels: Label[];
     attachments?: TaskAttachment[];
+    created_at?: string;
+    updated_at?: string;
 }
 
 export interface Comment {
@@ -44,14 +46,11 @@ export interface Comment {
     is_edited: boolean;
 }
 
-export interface Activity {
+export interface ChangelogEntry {
     id: string;
     event: string;
     event_description: string;
-    description: string;
-    changes: Record<string, { old: any; new: any }>;
-    old_values: Record<string, any> | null;
-    new_values: Record<string, any> | null;
+    details: Record<string, any>;
     causer: {
         id: string;
         name: string;
@@ -88,9 +87,9 @@ export const useTasksStore = defineStore('tasks', () => {
 
     const tasksByStatus = ref<Record<string, Task[]>>({});
     const commentsByTask = ref<Record<string, Comment[]>>({});
-    const historyByTask = ref<Record<string, Activity[]>>({});
+    const changelogByTask = ref<Record<string, ChangelogEntry[]>>({});
     const loadingComments = ref<Record<string, boolean>>({});
-    const loadingHistory = ref<Record<string, boolean>>({});
+    const loadingChangelog = ref<Record<string, boolean>>({});
 
     const fetchTasksByStatus = async (status: string, filters: TaskFilters = {}, resetCursor: boolean = true) => {
         loading.value[status] = true;
@@ -389,20 +388,20 @@ export const useTasksStore = defineStore('tasks', () => {
         }
     };
 
-    const fetchHistory = async (taskId: string | number) => {
+    const fetchChangelog = async (taskId: string | number) => {
         const taskIdStr = String(taskId);
-        loadingHistory.value[taskIdStr] = true;
+        loadingChangelog.value[taskIdStr] = true;
         error.value = null;
 
         try {
-            const response: ApiResponse<Activity[]> = await api.get(`/task/${taskId}/history`);
-            historyByTask.value[taskIdStr] = response.data;
+            const response: ApiResponse<ChangelogEntry[]> = await api.get(`/task/${taskId}/changelog`);
+            changelogByTask.value[taskIdStr] = response.data;
             return response.data;
         } catch (err: any) {
-            error.value = err.response?.data?.message || 'Błąd podczas pobierania historii';
+            error.value = err.response?.data?.message || 'Błąd podczas pobierania changelogu';
             throw err;
         } finally {
-            loadingHistory.value[taskIdStr] = false;
+            loadingChangelog.value[taskIdStr] = false;
         }
     };
 
@@ -451,9 +450,9 @@ export const useTasksStore = defineStore('tasks', () => {
         hasMoreByStatus,
         totalByStatus,
         commentsByTask,
-        historyByTask,
+        changelogByTask,
         loadingComments,
-        loadingHistory,
+        loadingChangelog,
         
         // Actions
         fetchTasksByStatus,
@@ -468,7 +467,7 @@ export const useTasksStore = defineStore('tasks', () => {
         addComment,
         updateComment,
         deleteComment,
-        fetchHistory,
+        fetchChangelog,
         
         // Getters
         getTasksByStatus,

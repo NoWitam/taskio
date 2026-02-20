@@ -57,9 +57,22 @@ class TaskService
 
             $this->fileService->attachToModel($task, $dto->attachments, deleteAnother: true);
 
-            $task->labels()->sync(
-                Label::whereIn('id', $dto->labels)->pluck('id')
-            );
+            // Synchronizacja labels z ręcznym trackowaniem
+            $newLabelIds = Label::whereIn('id', $dto->labels)->pluck('id');
+            $changes = $task->labels()->sync($newLabelIds);
+            
+            // Loguj zmiany etykiet przez manual()
+            if (!empty($changes['attached']) || !empty($changes['detached'])) {
+                app(\App\Modules\Changelog\Managers\ChangelogManager::class)->manual($task, 'labels', function ($tracker) use ($changes) {
+                    foreach ($changes['attached'] as $labelId) {
+                        $tracker->attach($labelId);
+                    }
+                    
+                    foreach ($changes['detached'] as $labelId) {
+                        $tracker->dettach($labelId);
+                    }
+                });
+            }
 
             return $task;
         });
