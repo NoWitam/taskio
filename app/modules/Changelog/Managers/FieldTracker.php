@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class FieldTracker extends AbstractTracker
 {
-    protected bool $withComparision = false;
+    protected bool $withComparison = false;
     protected ?Closure $map = null;
     protected ?string $component = null;
 
@@ -22,9 +22,9 @@ class FieldTracker extends AbstractTracker
         ];
     }
 
-    public function withComparision(): static
+    public function withComparison(): static
     {
-        $this->withComparision = true;
+        $this->withComparison = true;
 
         return $this;
     }
@@ -62,9 +62,9 @@ class FieldTracker extends AbstractTracker
             'after' => $map == null ? $dirty : $map($dirty, $model),
         ];
 
-        // Generuj word-level diff jeśli włączony comparision
-        if ($this->withComparision && is_string($original) && is_string($dirty)) {
-            $result['comparision'] = $this->generateWordDiff($original, $dirty);
+        // Generuj word-level diff jeśli włączony comparison
+        if ($this->withComparison && is_string($original) && is_string($dirty)) {
+            $result['comparison'] = $this->generateWordDiff($original, $dirty);
         }
 
         return $result;

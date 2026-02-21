@@ -50,8 +50,8 @@ class Task extends AbstractModel implements InterfacesHasChangelog
     public function getChangelogManager(): ModelChangelogManager
     {
         return new ModelChangelogManager($this, [
-            FieldTracker::make('title')->withComparision(),
-            FieldTracker::make('description')->withComparision(),
+            FieldTracker::make('title')->withComparison(),
+            FieldTracker::make('description')->withComparison(),
             FieldTracker::make('priority')->asComponent('badge')->withMap(function (?TaskPriority $priority, Task $task) {
                 if (!$priority) return null;
                 return [

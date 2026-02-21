@@ -112,7 +112,7 @@ onMounted(() => {
     fetchChangelog();
 });
 
-// Odświeżaj changelog po każdej zmianie taska (deep watch)
+// Refresh changelog when task changes (deep watch)
 watch(() => props.task, (newVal, oldVal) => {
     if (newVal && oldVal && newVal.id === oldVal.id) {
         // Tylko jeśli to ten sam task (nie nowy task)
@@ -292,9 +292,9 @@ watch(() => props.task, (newVal, oldVal) => {
                         <span v-else class="text-muted-foreground italic text-sm">brak</span>
                       </div>
                       <!-- Text comparison (word-level diff) -->
-                      <div v-else-if="detail.comparision" class="rounded-md bg-muted/30 p-3">
+                      <div v-else-if="detail.comparison" class="rounded-md bg-muted/30 p-3">
                         <span
-                          v-for="(part, idx) in detail.comparision"
+                          v-for="(part, idx) in detail.comparison"
                           :key="idx"
                           :class="{
                             'text-danger bg-danger/10': part.type === 'removed',
