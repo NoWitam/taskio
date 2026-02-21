@@ -13,14 +13,14 @@ enum TaskStatus: string
     case IN_TEST = 'in_test';
     case DONE = 'done';
 
-    case ARCHVIE = 'archive';
+    case ARCHIVE = 'archive';
     case TRASH = 'trash';
 
     public function resolveSelectQuery(Builder $query): void
     {
         match($this)
         {
-            self::ARCHVIE => $query->onlyArchived(),
+            self::ARCHIVE => $query->onlyArchived(),
             self::TRASH => $query->onlyTrashed(),
             default => $query->where('status', $this)
         };

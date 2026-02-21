@@ -86,7 +86,7 @@ export const useLabelsStore = defineStore('labels', () => {
             if (!params.cursor && createdLabels.value.length) {
                 const search = (params.search || '').trim().toLowerCase();
                 const locals = search
-                    ? createdLabels.value.filter((l) => String(l.text).toLowerCase().includes(search))
+                    ? createdLabels.value.filter((l) => String(l.name).toLowerCase().includes(search))
                     : createdLabels.value;
 
                 const seen = new Set<string>();

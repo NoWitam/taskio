@@ -13,7 +13,7 @@ class BagLog extends AbstractLog
     protected ?string $class = null;
 
     protected array $attached = [];
-    protected array $dettached = [];
+    protected array $detached = [];
 
     public function withMap(Closure $map): self
     {
@@ -38,10 +38,9 @@ class BagLog extends AbstractLog
 
     public function attach(Model|string $modelOrKey)
     {
-        dump('attach');
         $key = is_string($modelOrKey) ? $modelOrKey : $modelOrKey->getKey();
 
-        if(array_key_exists($key, $this->dettached)) {
+        if(array_key_exists($key, $this->detached)) {
             unset($this->detached[$key]);
 
             return;
@@ -50,9 +49,8 @@ class BagLog extends AbstractLog
         $this->attached[$key] = is_string($modelOrKey) ? $key : $modelOrKey; 
     }
 
-    public function dettach(Model|string $modelOrKey)
+    public function detach(Model|string $modelOrKey)
     {
-        dump('dettach');
         $key = is_string($modelOrKey) ? $modelOrKey : $modelOrKey->getKey();
 
         if(array_key_exists($key, $this->attached)) {
@@ -61,13 +59,12 @@ class BagLog extends AbstractLog
             return;
         }
 
-        $this->dettached[$key] = is_string($modelOrKey) ? $key : $modelOrKey; 
+        $this->detached[$key] = is_string($modelOrKey) ? $key : $modelOrKey; 
     }
 
 
     public function prepare(Model&HasHistory $model): ?array
     {
-        dump('prepare');
         if(empty($this->attached) AND empty($this->dettached)) {
             dump('prepare null');
             return null;

@@ -70,7 +70,7 @@ class Task extends AbstractModel implements InterfacesHasHistory
 
     public function assigned()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(User::class, 'assigned_id');
     }
 
     public function isCompleted(): bool // TODO czy formularz jest poprawnie uzupełniony

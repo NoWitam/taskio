@@ -37,7 +37,6 @@ class HistoryManager
 
     public function manual(Model&HasHistory $subject, string $field, callable $call): void
     {
-        dump('manual');
         $log = collect($subject->getHistoryOptions())->first(function (AbstractLog $log) use ($field) {
             return $log->getField() == $field;
         });
@@ -49,7 +48,6 @@ class HistoryManager
         $call($log);
 
         $details = $log->prepare($subject);
-        dump($details);
         if(!empty($details)) {
             $this->storeLog($subject, ActivityEvent::UPDATED, $details);
         }
@@ -73,7 +71,6 @@ class HistoryManager
 
     function __destruct()
     {
-        dump($this->cache);
         if(!empty($this->cache)) {
             $cache = $this->cache;
             $causer = auth()->id();
