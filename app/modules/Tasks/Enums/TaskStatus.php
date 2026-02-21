@@ -56,10 +56,10 @@ enum TaskStatus: string
     {
         return match($this)
         {
-            self::TO_DO => 'check-circle',
-            self::IN_PROGRESS => 'check-circle',
-            self::IN_TEST => 'check-circle',
-            self::DONE => 'check-circle',
+            self::TO_DO => 'circle-check',
+            self::IN_PROGRESS => 'circle-check',
+            self::IN_TEST => 'circle-check',
+            self::DONE => 'circle-check',
             self::ARCHIVE => 'archive',
             self::TRASH => 'trash'
         };
