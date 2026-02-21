@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { NodeViewWrapper } from '@tiptap/vue-3';
 import Icon from '@/components/ui/Icon.vue';
+import { getResultType } from '../utils/operations';
 import OperationsPanel from './OperationsPanel.vue';
 
 const props = defineProps<{
@@ -22,6 +23,16 @@ const typeIcons: Record<string, string> = {
 };
 
 const showOperationsPanel = ref(false);
+
+// Oblicz typ wynikowy na podstawie operacji
+const resultType = computed(() => {
+  return getResultType(props.node.attrs.varType, props.node.attrs.ops);
+});
+
+// Pobierz ikonę dla typu wynikowego
+const resultTypeIcon = computed(() => {
+  return typeIcons[resultType.value] || 'variable';
+});
 
 function handleClick() {
   showOperationsPanel.value = true;
@@ -49,7 +60,11 @@ function handleClosePanel() {
     <Icon name="curly-braces" size="xs" variant="stroke" />
     <span class="var-name">{{ node.attrs.varName || node.attrs.varId }}</span>
     <span v-if="node.attrs.varType" class="var-type-badge">
-      <Icon :name="typeIcons[node.attrs.varType] || 'variable'" size="xs" variant="stroke" />
+      <Icon :name="typeIcons[node.attrs.varType]" size="xs" variant="stroke" />
+    </span>
+    <!-- Pokaż typ wynikowy jeśli są operacje -->
+    <span v-if="node.attrs.ops && node.attrs.ops.length > 0" class="ops-result-type">
+      <Icon :name="resultTypeIcon" size="xs" variant="stroke" />
     </span>
     <span v-if="node.attrs.ops && node.attrs.ops.length > 0" class="ops-indicator">
       {{ node.attrs.ops.length }}
@@ -95,6 +110,13 @@ function handleClosePanel() {
   display: inline-flex;
   align-items: center;
   opacity: 0.85;
+}
+
+.ops-result-type {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.7;
+  margin-left: 0.125rem;
 }
 
 .ops-indicator {

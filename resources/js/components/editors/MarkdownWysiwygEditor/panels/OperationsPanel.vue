@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import type { VariableOperation } from '../types';
-import { getAllOperations, getOperation } from '../utils/operations';
+import { getAllOperations, getOperation, getOperationsForType } from '../utils/operations';
 import Button from '@/components/ui/Button.vue';
 import Dialog from '@/components/ui/Dialog.vue';
 import Icon from '@/components/ui/Icon.vue';
@@ -22,7 +22,8 @@ const operations = ref<Array<{ op: string; args?: any[] }>>(
   JSON.parse(JSON.stringify(props.currentOperations || []))
 );
 
-const availableOperations = computed(() => getAllOperations());
+// Tylko operacje dostępne dla konkretnego typu zmiennej
+const availableOperations = computed(() => getOperationsForType(props.variableType));
 
 const selectedOperation = ref<string | null>(null);
 const operationArgs = ref<string[]>([]);
@@ -93,6 +94,17 @@ function formatArgs(args?: any[]): string {
   if (!args || args.length === 0) return '';
   return `(${args.join(', ')})`;
 }
+
+// Pobierz ikonę typu
+function getTypeIcon(type: string): string {
+  const typeIcons: Record<string, string> = {
+    text: 'list',
+    number: 'equal',
+    boolean: 'numeric',
+    date: 'calendar',
+  };
+  return typeIcons[type] || 'variable';
+}
 </script>
 
 <template>
@@ -102,7 +114,13 @@ function formatArgs(args?: any[]): string {
         <h2 class="text-lg font-semibold">
           Operacje zmiennej: <span class="text-primary">{{ variableName }}</span>
         </h2>
-        <p class="text-sm text-muted-foreground">Typ: {{ variableType }}</p>
+        <p class="text-sm text-muted-foreground">
+          Typ wejścia: 
+          <span class="inline-flex items-center gap-1">
+            <Icon :name="getTypeIcon(variableType)" size="xs" />
+            {{ variableType }}
+          </span>
+        </p>
       </div>
 
       <!-- Lista obecnych operacji -->
@@ -118,7 +136,12 @@ function formatArgs(args?: any[]): string {
             class="flex items-center justify-between p-3 bg-muted rounded border border-border"
           >
             <div class="flex-1">
-              <span class="font-medium">{{ op.op }}</span>
+              <div class="flex items-center gap-2">
+                <span class="font-medium">{{ op.op }}</span>
+                <span v-if="getOperation(op.op)" class="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">
+                  → {{ getOperation(op.op)?.returnType }}
+                </span>
+              </div>
               <span class="text-sm text-muted-foreground">{{ formatArgs(op.args) }}</span>
             </div>
             <div class="flex gap-1">
@@ -164,7 +187,7 @@ function formatArgs(args?: any[]): string {
           >
             <option value="">-- Wybierz operację --</option>
             <option v-for="op in availableOperations" :key="op.name" :value="op.name">
-              {{ op.name }} - {{ op.description }}
+              {{ op.name }} → {{ op.returnType }} - {{ op.description }}
             </option>
           </select>
         </div>
@@ -175,15 +198,15 @@ function formatArgs(args?: any[]): string {
             {{ selectedOp.description }}
           </div>
           <!-- Dla operacji z argumentami -->
-          <div v-if="['prefix', 'suffix', 'repeat', 'concat', 'truncate', 'slice', 'equals', 'gt', 'lt', 'gte', 'lte', 'includes', 'default'].includes(selectedOp.name)">
+          <div v-if="selectedOp.argsCount && selectedOp.argsCount > 0">
             <label class="text-sm font-medium mb-2 block">Argumenty:</label>
             <div class="space-y-2">
               <input
-                v-for="(_, i) in (operationArgs.length > 0 ? operationArgs : [''])"
+                v-for="i in selectedOp.argsCount"
                 :key="i"
-                v-model="operationArgs[i]"
+                v-model="operationArgs[i - 1]"
                 type="text"
-                :placeholder="`Argument ${i + 1}`"
+                :placeholder="`Argument ${i}`"
                 class="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm"
               />
             </div>

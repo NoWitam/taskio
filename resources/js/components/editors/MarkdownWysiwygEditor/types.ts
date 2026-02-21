@@ -120,6 +120,9 @@ export interface VariableOperation {
   name: string;
   handler: VariableOperationHandler;
   description?: string;
+  supportedTypes: VariableType[]; // Które typy zmiennych mogą używać tej operacji
+  returnType: VariableType; // Jaki typ zwraca ta operacja
+  argsCount?: number; // Ile argumentów przyjmuje (0 jeśli brak)
 }
 
 // Preview modes
