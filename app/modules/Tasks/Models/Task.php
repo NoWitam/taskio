@@ -81,7 +81,7 @@ class Task extends AbstractModel implements InterfacesHasChangelog
                     'icon' => $label->icon?->value,
                 ];
             }),
-            BagTracker::make('files')->asClass(File::class)->manualOnly()->withMap(function (File $file, Task $task) {
+            BagTracker::make('files')->asClass(File::class)->manualOnly()->withTranslationKey('changelog.fields.attachments')->withMap(function (File $file, Task $task) {
                 return [
                     'id' => $file->id,
                     'name' => $file->name,

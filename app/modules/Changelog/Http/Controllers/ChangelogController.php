@@ -20,7 +20,7 @@ class ChangelogController
         $subject = $this->resolveSubject($module, $id);
 
         return ChangelogResource::collection(
-            $subject->changelogs()->with('causer')->cursorPaginate(8)
+            $subject->changelogs()->with(['causer', 'subject'])->cursorPaginate(8)
         );
     }
 

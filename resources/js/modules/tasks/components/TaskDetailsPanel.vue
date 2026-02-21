@@ -246,7 +246,7 @@ watch(() => props.task, (newVal, oldVal) => {
                   :key="key"
                   class="text-sm"
                 >
-                  <div class="mb-1 font-medium text-foreground">{{ key }}:</div>
+                  <div class="mb-1 font-medium text-foreground">{{ detail.field_label || key }}:</div>
                   <div class="ml-3">
                     <!-- Status change (custom event) -->
                     <div v-if="detail.type === 'status_change'" class="flex items-center gap-2">

@@ -12,6 +12,7 @@ abstract class AbstractTracker
     protected bool $manualOnly = false;
     protected ?ChangelogEvent $event = null;
     protected array $savedOriginals = [];
+    protected ?string $translationKey = null;
 
     public function __construct(
         protected string $field
@@ -60,6 +61,23 @@ abstract class AbstractTracker
     public function isManualOnly(): bool
     {
         return $this->manualOnly;
+    }
+
+    /**
+     * Ustaw niestandardowy klucz tłumaczenia dla pola
+     */
+    public function withTranslationKey(string $key): static
+    {
+        $this->translationKey = $key;
+        return $this;
+    }
+
+    /**
+     * Pobierz klucz tłumaczenia - zwraca custom lub domyślny
+     */
+    public function getTranslationKey(): string
+    {
+        return $this->translationKey ?? "changelog.fields.{$this->field}";
     }
 
     /**
