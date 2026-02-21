@@ -41,6 +41,18 @@
             </template>
         </PageHeader>
 
+        <Card class="mt-2">
+            <h3 class="text-base font-semibold text-foreground mb-4">Markdown WYSIWYG Editor: Full Features</h3>
+            <p class="text-sm text-muted-foreground mb-4">
+                All features enabled: mentions, variables, AI blocks, and conditionals.
+            </p>
+            <MarkdownWysiwygEditor
+                v-model="editorFullValue"
+                :config="editorFullConfig"
+                placeholder="Full editor with all features..."
+            />
+        </Card>
+
         <StatsGrid class="mt-2">
             <StatCard label="Queue" :value="12" delta="+3" deltaTone="success" />
             <StatCard label="Scheduled" :value="8" />
@@ -708,6 +720,44 @@
                 @load-more="handleLoadMore"
             />
         </Card>
+
+        <!-- MarkdownWysiwygEditor Examples -->
+        <Card class="mt-2">
+            <h3 class="text-base font-semibold text-foreground mb-4">Markdown WYSIWYG Editor: Baseline</h3>
+            <p class="text-sm text-muted-foreground mb-4">
+                Basic markdown functions with bold, italic, lists, and headings.
+            </p>
+            <MarkdownWysiwygEditor
+                v-model="editorBaselineValue"
+                :config="editorBaselineConfig"
+                placeholder="Write your markdown..."
+            />
+        </Card>
+
+        <Card class="mt-2">
+            <h3 class="text-base font-semibold text-foreground mb-4">Markdown WYSIWYG Editor: With Mentions</h3>
+            <p class="text-sm text-muted-foreground mb-4">
+                Editor with @mentions support. Type @ to insert team member mentions.
+            </p>
+            <MarkdownWysiwygEditor
+                v-model="editorMentionsValue"
+                :config="editorMentionsConfig"
+                placeholder="Mention someone with @..."
+            />
+        </Card>
+
+        <Card class="mt-2">
+            <h3 class="text-base font-semibold text-foreground mb-4">Markdown WYSIWYG Editor: With Variables</h3>
+            <p class="text-sm text-muted-foreground mb-4">
+                Editor with variable support. Insert variables and apply operations.
+            </p>
+            <MarkdownWysiwygEditor
+                v-model="editorVariablesValue"
+                :config="editorVariablesConfig"
+                placeholder="Use {{var:...}} to insert variables..."
+            />
+        </Card>
+
         </div>
     </div>
 </template>
@@ -753,6 +803,8 @@
     import Navbar, { type NavItem } from './ui/Navbar.vue';
     import IconInput from './ui/inputs/IconInput.vue';
     import { useToast } from '@/composables/useToast';
+    import { MarkdownWysiwygEditor } from './editors/MarkdownWysiwygEditor';
+    import type { EditorConfig, MentionUser, VariableDef, AiBot, KnowledgeTag } from './editors/MarkdownWysiwygEditor';
     import { ref, computed, onMounted } from 'vue';
 
     // Dark mode state and logic
@@ -1041,5 +1093,108 @@
         { label: 'Projects', href: '#' },
         { label: 'Current Project' },
     ];
+
+    // MarkdownWysiwygEditor demo state
+    const editorBaselineValue = ref('# Hello\n\nThis is a **baseline** editor with *markdown* support.');
+    const editorMentionsValue = ref('Hey @[user:1|John], can you review this?');
+    const editorVariablesValue = ref('Project: {{var:projectName}} · Members: {{var:memberCount|op:length}}');
+    const editorFullValue = ref('# Full Editor\n\nMention: @[user:1|John]\nVariable: {{var:projectName}}\n\n{{#if condition:"isActive"}}Content visible{{/if}}');
+
+    // Sample mentions
+    const sampleUsers: MentionUser[] = [
+        { id: '1', name: 'John Doe', avatarUrl: undefined },
+        { id: '2', name: 'Jane Smith', avatarUrl: undefined },
+        { id: '3', name: 'Bob Johnson', avatarUrl: undefined },
+    ];
+
+    // Sample variables
+    const sampleVariables: VariableDef[] = [
+        { id: 'projectName', name: 'Project Name', type: 'text', value: 'TaskIO' },
+        { id: 'memberCount', name: 'Member Count', type: 'number', value: 5 },
+        { id: 'isActive', name: 'Is Active', type: 'boolean', value: true },
+        { id: 'launchDate', name: 'Launch Date', type: 'date', value: '2026-02-21' },
+    ];
+
+    // Sample AI Bots
+    const sampleBots: AiBot[] = [
+        { id: 'gpt4', name: 'ChatGPT-4', description: 'Advanced language model' },
+        { id: 'claude', name: 'Claude', description: 'Constitutional AI' },
+        { id: 'gemini', name: 'Gemini', description: "Google's AI" },
+    ];
+
+    // Sample Knowledge Tags
+    const sampleTags: KnowledgeTag[] = [
+        { id: 'general', name: 'General' },
+        { id: 'technical', name: 'Technical' },
+        { id: 'legal', name: 'Legal' },
+    ];
+
+    // Editor configurations
+    const editorBaselineConfig: EditorConfig = {
+        headings: true,
+        underline: true,
+        lists: true,
+        blockquote: true,
+        code: true,
+        links: true,
+        images: false,
+        mentions: false,
+        variables: false,
+        aiText: false,
+        conditionBlocks: false,
+        placeholder: 'Write your markdown...',
+    };
+
+    const editorMentionsConfig: EditorConfig = {
+        headings: true,
+        underline: true,
+        lists: true,
+        blockquote: true,
+        code: true,
+        links: true,
+        images: false,
+        mentions: true,
+        variables: false,
+        aiText: false,
+        conditionBlocks: false,
+        mentionUsers: sampleUsers,
+        placeholder: 'Mention someone with @...',
+    };
+
+    const editorVariablesConfig: EditorConfig = {
+        headings: true,
+        underline: true,
+        lists: true,
+        blockquote: true,
+        code: true,
+        links: true,
+        images: false,
+        mentions: false,
+        variables: true,
+        aiText: false,
+        conditionBlocks: false,
+        variablesList: sampleVariables,
+        placeholder: 'Use {{var:...}} to insert variables...',
+    };
+
+    const editorFullConfig: EditorConfig = {
+        headings: true,
+        underline: true,
+        lists: true,
+        blockquote: true,
+        code: true,
+        links: true,
+        images: true,
+        mentions: true,
+        variables: true,
+        aiText: true,
+        conditionBlocks: true,
+        mentionUsers: sampleUsers,
+        variablesList: sampleVariables,
+        aiBots: sampleBots,
+        knowledgeTags: sampleTags,
+        maxAiNesting: 3,
+        placeholder: 'Full editor with all features...',
+    };
 
 </script>
