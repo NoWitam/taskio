@@ -6,6 +6,7 @@ import { Node as TiptapNode, mergeAttributes } from '@tiptap/core';
 import { VueNodeViewRenderer } from '@tiptap/vue-3';
 import type { EditorConfig } from '../types';
 import MentionNodeView from '../panels/MentionNodeView.vue';
+import VariableNodeView from '../panels/VariableNodeView.vue';
 
 /**
  * Custom Mention node
@@ -89,6 +90,20 @@ export const VariableNode = TiptapNode.create({
           'data-var-id': attributes.varId,
         }),
       },
+      varName: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-var-name'),
+        renderHTML: (attributes) => ({
+          'data-var-name': attributes.varName,
+        }),
+      },
+      varType: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-var-type'),
+        renderHTML: (attributes) => ({
+          'data-var-type': attributes.varType,
+        }),
+      },
       ops: {
         default: [],
         parseHTML: (element) => {
@@ -109,6 +124,8 @@ export const VariableNode = TiptapNode.create({
         getAttrs: (element: any) => {
           return {
             varId: element.getAttribute('data-var-id'),
+            varName: element.getAttribute('data-var-name'),
+            varType: element.getAttribute('data-var-type'),
             ops: element.getAttribute('data-ops')
               ? JSON.parse(element.getAttribute('data-ops'))
               : [],
@@ -143,6 +160,10 @@ export const VariableNode = TiptapNode.create({
       ),
       label,
     ];
+  },
+
+  addNodeView() {
+    return VueNodeViewRenderer(VariableNodeView);
   },
 });
 

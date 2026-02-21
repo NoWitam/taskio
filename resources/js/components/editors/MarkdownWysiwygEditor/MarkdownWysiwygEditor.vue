@@ -7,13 +7,14 @@ import Underline from '@tiptap/extension-underline';
 import type { Editor } from '@tiptap/core';
 
 import { cn } from '@/lib/helpers';
-import type { EditorConfig, EditorMode, EditorEmits, MentionUser } from './types';
+import type { EditorConfig, EditorMode, EditorEmits, MentionUser, VariableDef } from './types';
 import { serializeDocument } from './utils/serialize';
 import { deserializeMarkdown, markdownToEditorJSON } from './utils/deserialize';
 import { renderMarkdown } from './utils/render';
 import { MentionNode, VariableNode, AiBlockNode, ConditionalBlockNode } from './utils/schema';
 import MarkdownWysiwygEditorToolbar from './MarkdownWysiwygEditorToolbar.vue';
 import MentionDropdown from './panels/MentionDropdown.vue';
+import VariableDropdown from './panels/VariableDropdown.vue';
 import VariablePanel from './panels/VariablePanel.vue';
 import AiPanel from './panels/AiPanel.vue';
 import ConditionalPanel from './panels/ConditionalPanel.vue';
@@ -40,8 +41,14 @@ const mentionQuery = ref('');
 const showMentionDropdown = ref(false);
 const selectedMentionIndex = ref(-1);
 const filteredUsers = ref<MentionUser[]>([]);
-const dropdownPositionTop = ref(0);
-const dropdownPositionLeft = ref(0);
+const mentionDropdownPositionTop = ref(0);
+const mentionDropdownPositionLeft = ref(0);
+const variableQuery = ref('');
+const showVariableDropdown = ref(false);
+const selectedVariableIndex = ref(-1);
+const filteredVariables = ref<VariableDef[]>([]);
+const variableDropdownPositionTop = ref(0);
+const variableDropdownPositionLeft = ref(0);
 const selectedVariableId = ref<string | null>(null);
 const selectedAiBlockId = ref<string | null>(null);
 const selectedConditionalBlockId = ref<string | null>(null);
@@ -80,7 +87,7 @@ const detectMentionPattern = (ed: Editor) => {
     mentionQuery.value = atMatch[1] || '';
     showMentionDropdown.value = true;
     selectedMentionIndex.value = -1;
-    updateDropdownPosition(ed); // Update dropdown position based on cursor
+    updateMentionDropdownPosition(ed); // Update dropdown position based on cursor
     // watchEffect will automatically fetch users when mentionQuery changes
   } else {
     showMentionDropdown.value = false;
@@ -89,8 +96,8 @@ const detectMentionPattern = (ed: Editor) => {
   }
 };
 
-// Oblicz pozycję dropdown'u względem pozycji kursora
-const updateDropdownPosition = (ed: Editor) => {
+// Oblicz pozycję mention dropdown względem pozycji kursora
+const updateMentionDropdownPosition = (ed: Editor) => {
   if (!editor.value) return;
   
   try {
@@ -110,11 +117,114 @@ const updateDropdownPosition = (ed: Editor) => {
     const relativeTop = coords.top - wrapperRect.top;
     const relativeLeft = coords.left - wrapperRect.left;
     
-    dropdownPositionTop.value = relativeTop + 20; // 20px below cursor line
-    dropdownPositionLeft.value = Math.max(0, relativeLeft - 10); // Slight left offset for cursor
+    mentionDropdownPositionTop.value = relativeTop + 20; // 20px below cursor line
+    mentionDropdownPositionLeft.value = Math.max(0, relativeLeft - 10); // Slight left offset for cursor
   } catch (error) {
     // Silently handle positioning errors
   }
+};
+
+// Filter variables from config based on query
+watchEffect(() => {
+  // Only filter if dropdown is visible
+  if (!showVariableDropdown.value) {
+    filteredVariables.value = [];
+    return;
+  }
+
+  // Get all available variables from config
+  const allVariables = props.config.variablesList || [];
+  const query = variableQuery.value.toLowerCase();
+  
+  // Filter variables by name based on query
+  filteredVariables.value = allVariables.filter(variable => 
+    query === '' || variable.name.toLowerCase().includes(query)
+  );
+  selectedVariableIndex.value = -1;
+});
+
+// Detectuj variable pattern: {query
+const detectVariablePattern = (ed: Editor) => {
+  const { $from } = ed.state.selection;
+  
+  // Get text from 50 chars before cursor to current position
+  const startPos = Math.max(0, $from.pos - 50);
+  const textBefore = ed.state.doc.textBetween(startPos, $from.pos);
+  
+  // Match { followed by word chars
+  const braceMatch = textBefore.match(/\{(\w*)$/);
+  
+  if (braceMatch) {
+    variableQuery.value = braceMatch[1] || '';
+    showVariableDropdown.value = true;
+    selectedVariableIndex.value = -1;
+    updateVariableDropdownPosition(ed); // Update dropdown position based on cursor
+  } else {
+    showVariableDropdown.value = false;
+    variableQuery.value = '';
+    filteredVariables.value = [];
+  }
+};
+
+// Oblicz pozycję variable dropdown względem pozycji kursora
+const updateVariableDropdownPosition = (ed: Editor) => {
+  if (!editor.value) return;
+  
+  try {
+    const { $from } = ed.state.selection;
+    const editorWrapper = document.querySelector('.markdown-wysiwyg-editor') as HTMLElement;
+    
+    if (!editorWrapper) return;
+    
+    // Get cursor coordinates within the editor view
+    const coords = ed.view.coordsAtPos($from.pos);
+    
+    // Get editor wrapper position
+    const wrapperRect = editorWrapper.getBoundingClientRect();
+    
+    // Calculate position relative to the .markdown-wysiwyg-editor div
+    // coords.top/left are absolute screen coordinates
+    const relativeTop = coords.top - wrapperRect.top;
+    const relativeLeft = coords.left - wrapperRect.left;
+    
+    variableDropdownPositionTop.value = relativeTop + 20; // 20px below cursor line
+    variableDropdownPositionLeft.value = Math.max(0, relativeLeft - 10); // Slight left offset for cursor
+  } catch (error) {
+    // Silently handle positioning errors
+  }
+};
+
+// Insert selected variable
+const insertVariable = (variable: VariableDef) => {
+  if (!editor.value) return;
+
+  const { $from } = editor.value.state.selection;
+  
+  // Get text before cursor to find { position
+  const startPos = Math.max(0, $from.pos - 50);
+  const textBefore = editor.value.state.doc.textBetween(startPos, $from.pos);
+  const bracePos = textBefore.lastIndexOf('{');
+  
+  if (bracePos === -1) return;
+  
+  const deleteStart = $from.pos - (textBefore.length - bracePos);
+  
+  editor.value
+    .chain()
+    .deleteRange({ from: deleteStart, to: $from.pos })
+    .insertContent({
+      type: 'variable',
+      attrs: {
+        varId: variable.id,
+        varName: variable.name,
+        varType: variable.type,
+        ops: [],
+      },
+    })
+    .insertContent(' ')
+    .run();
+  
+  showVariableDropdown.value = false;
 };
 
 // Editor setup
@@ -146,6 +256,9 @@ const editor = useEditor({
     
     // Detectuj @ mention pattern
     detectMentionPattern(editor);
+    
+    // Detectuj { variable pattern
+    detectVariablePattern(editor);
   },
 });
 
@@ -211,6 +324,23 @@ const handleKeyDown = (e: KeyboardEvent) => {
       e.preventDefault();
       showMentionDropdown.value = false;
     }
+  } else if (showVariableDropdown.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedVariableIndex.value = Math.min(
+        selectedVariableIndex.value + 1,
+        filteredVariables.value.length - 1
+      );
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedVariableIndex.value = Math.max(selectedVariableIndex.value - 1, 0);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      insertVariable(filteredVariables.value[selectedVariableIndex.value]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      showVariableDropdown.value = false;
+    }
   }
 };
 
@@ -253,14 +383,6 @@ const insertMention = (user: MentionUser) => {
   showMentionDropdown.value = false;
   mentionQuery.value = '';
   filteredUsers.value = [];
-};
-
-// Insert variable
-const insertVariable = (varId: string) => {
-  if (!editor.value) return;
-  const variable = `{{var:${varId}}}`;
-  editor.value.commands.insertContent(variable);
-  selectedVariableId.value = varId;
 };
 
 // Insert AI block
@@ -330,11 +452,23 @@ onMounted(() => {
       v-if="showMentionDropdown && filteredUsers.length > 0 && mode === 'edit'"
       :users="filteredUsers"
       :selected-index="selectedMentionIndex"
-      :position-top="dropdownPositionTop"
-      :position-left="dropdownPositionLeft"
+      :position-top="mentionDropdownPositionTop"
+      :position-left="mentionDropdownPositionLeft"
       @select="insertMention"
       @close="showMentionDropdown = false"
       class="mention-dropdown-overlay"
+    />
+
+    <!-- Variable dropdown (outside editor-container to avoid overflow clipping) -->
+    <VariableDropdown
+      v-if="showVariableDropdown && filteredVariables.length > 0 && mode === 'edit'"
+      :variables="filteredVariables"
+      :selected-index="selectedVariableIndex"
+      :position-top="variableDropdownPositionTop"
+      :position-left="variableDropdownPositionLeft"
+      @select="insertVariable"
+      @close="showVariableDropdown = false"
+      class="variable-dropdown-overlay"
     />
 
     <!-- Raw preview -->
@@ -466,14 +600,17 @@ onMounted(() => {
 }
 
 :deep(.variable-chip) {
-  background-color: var(--color-secondary);
-  color: var(--color-secondary-foreground);
+  background-color: var(--color-primary);
+  color: var(--color-primary-foreground);
   padding: 0.25rem 0.5rem;
   border-radius: 0.25rem;
   font-weight: 500;
   cursor: pointer;
   font-family: monospace;
   font-size: 0.875em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 :deep(.ai-block) {
@@ -561,7 +698,7 @@ onMounted(() => {
 
 :deep(.variable-chip-styled) {
   display: inline-block;
-  background: linear-gradient(135deg, var(--color-secondary) 0%, var(--color-secondary) 100%);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary) 100%);
   color: white;
   padding: 0.25rem 0.75rem;
   border-radius: 1rem;

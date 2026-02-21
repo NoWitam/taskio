@@ -1109,10 +1109,10 @@
 
     // Sample variables
     const sampleVariables: VariableDef[] = [
-        { id: 'projectName', name: 'Project Name', type: 'text', value: 'TaskIO' },
-        { id: 'memberCount', name: 'Member Count', type: 'number', value: 5 },
-        { id: 'isActive', name: 'Is Active', type: 'boolean', value: true },
-        { id: 'launchDate', name: 'Launch Date', type: 'date', value: '2026-02-21' },
+        { id: 'projectName', name: 'Project Name', type: 'text' },
+        { id: 'memberCount', name: 'Member Count', type: 'number' },
+        { id: 'isActive', name: 'Is Active', type: 'boolean' },
+        { id: 'launchDate', name: 'Launch Date', type: 'date'},
     ];
 
     // Sample AI Bots
