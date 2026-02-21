@@ -13,7 +13,7 @@ class BagTracker extends AbstractTracker
     protected ?string $class = null;
 
     protected array $attached = [];
-    protected array $dettached = [];
+    protected array $detached = [];
 
     /**
      * Dla BagTracker zapisujemy puste, bo trackujemy manualnie przez attach/detach
@@ -48,8 +48,13 @@ class BagTracker extends AbstractTracker
     {
         $key = is_string($modelOrKey) ? $modelOrKey : $modelOrKey->getKey();
 
+<<<<<<< HEAD:app/modules/Changelog/Managers/BagTracker.php
         if(array_key_exists($key, $this->dettached)) {
             unset($this->dettached[$key]);
+=======
+        if(array_key_exists($key, $this->detached)) {
+            unset($this->detached[$key]);
+>>>>>>> main:app/modules/History/Managers/BagLog.php
 
             return;
         }
@@ -57,7 +62,7 @@ class BagTracker extends AbstractTracker
         $this->attached[$key] = is_string($modelOrKey) ? $key : $modelOrKey; 
     }
 
-    public function dettach(Model|string $modelOrKey)
+    public function detach(Model|string $modelOrKey)
     {
         $key = is_string($modelOrKey) ? $modelOrKey : $modelOrKey->getKey();
 
@@ -67,7 +72,7 @@ class BagTracker extends AbstractTracker
             return;
         }
 
-        $this->dettached[$key] = is_string($modelOrKey) ? $key : $modelOrKey; 
+        $this->detached[$key] = is_string($modelOrKey) ? $key : $modelOrKey; 
     }
 
 

@@ -16,10 +16,8 @@ class FilesController
 
     public function show(File $file)
     {
-        return Storage::get($file->path);
-        return response()->file($file->path);
+        return Storage::download($file->path);
     }
-
     public function uploadTemp(UploadTempFileRequest $request)
     {
         return FileResource::make(

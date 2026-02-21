@@ -5,7 +5,7 @@ namespace App\Modules\Disk\Enums;
 enum FileType: string
 {
     case IMAGE = 'image';
-    case VIDEO = 'viedeo';
+    case VIDEO = 'video';
     case AUDIO = 'audio';
     case DOCUMENT = 'document';
     case SPREADSHEET = 'spreadsheet';
