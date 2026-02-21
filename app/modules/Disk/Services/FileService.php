@@ -2,10 +2,10 @@
 
 namespace App\Modules\Disk\Services;
 
+use App\Modules\Changelog\Managers\BagTracker;
+use App\Modules\Changelog\Managers\ChangelogManager;
 use App\Modules\Disk\Enums\FileType;
 use App\Modules\Disk\Models\File;
-use App\Modules\History\Managers\BagLog;
-use App\Modules\History\Managers\HistoryManager;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Str;
@@ -29,7 +29,6 @@ class FileService
 
     public function attachToModel(Model $model, array $file_ids, bool $deleteAnother = false): void
     {
-        dump('attachToModel');
         $files = File::temp()
             ->whereIn('id', $file_ids)
             ->get();
@@ -40,21 +39,22 @@ class FileService
                 'fileable_type' => $model->getMorphClass()
             ]);
 
-        app(HistoryManager::class)->manual($model, 'files', function (BagLog $log) use ($files) {
+        // Zbierz zarówno dodane jak i usunięte pliki w jednym trackerze
+        app(ChangelogManager::class)->manual($model, 'files', function (BagTracker $tracker) use ($files, $model, $file_ids, $deleteAnother) {
+            // Dodaj nowe pliki
             foreach($files as $file) {
-                $log->attach($file);
+                $tracker->attach($file);
             }
-        });
-
-        if($deleteAnother) {
-            app(HistoryManager::class)->manual($model, 'files', function (BagLog $log) use ($model, $file_ids) {
+            
+            // Usuń stare pliki jeśli deleteAnother
+            if($deleteAnother) {
                 $toDelete = $model->files()->whereNotIn('id', $file_ids)->get();
-
+                
                 foreach($toDelete as $file) {
-                    $log->dettach($file);
+                    $tracker->dettach($file);
                     $file->delete();
                 }
-            });
-        }
+            }
+        });
     }
 }

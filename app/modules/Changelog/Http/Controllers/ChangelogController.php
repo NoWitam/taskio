@@ -1,26 +1,26 @@
 <?php
 
-namespace App\Modules\History\Http\Controllers;
+namespace App\Modules\Changelog\Http\Controllers;
 
-use App\Modules\History\Http\Resources\ActivityResource;
-use App\Modules\History\Interfaces\HasHistory;
-use App\Modules\History\Services\ActivityService;
+use App\Modules\Changelog\Http\Resources\ChangelogResource;
+use App\Modules\Changelog\Interfaces\HasChangelog;
+use App\Modules\Changelog\Services\ChangelogService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
-class HistoryController
+class ChangelogController
 {
     public function __construct(
-        private ActivityService $service
+        private ChangelogService $service
     ) {}
 
     public function index(string $module, string $id): AnonymousResourceCollection
     {
         $subject = $this->resolveSubject($module, $id);
 
-        return ActivityResource::collection(
-            $subject->activities()->with('causer')->cursorPaginate(8)
+        return ChangelogResource::collection(
+            $subject->changelogs()->with(['causer', 'subject'])->cursorPaginate(8)
         );
     }
 
@@ -34,7 +34,7 @@ class HistoryController
 
         $model = new $class();
 
-        if(!$model instanceof HasHistory) {
+        if(!$model instanceof HasChangelog) {
             abort(404);
         }
 

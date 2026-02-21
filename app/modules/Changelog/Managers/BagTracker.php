@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Modules\History\Managers;
+namespace App\Modules\Changelog\Managers;
 
-use App\Modules\History\Interfaces\HasHistory;
+use App\Modules\Changelog\Interfaces\HasChangelog;
 use Closure;
 use Illuminate\Database\Eloquent\Model;
 
-class BagLog extends AbstractLog
+class BagTracker extends AbstractTracker
 {
     protected ?Closure $map = null;
     protected ?string $component = null;
@@ -14,6 +14,14 @@ class BagLog extends AbstractLog
 
     protected array $attached = [];
     protected array $detached = [];
+
+    /**
+     * Dla BagTracker zapisujemy puste, bo trackujemy manualnie przez attach/detach
+     */
+    public function saveOriginals(Model&HasChangelog $model): void
+    {
+        $this->savedOriginals = [];
+    }
 
     public function withMap(Closure $map): self
     {
@@ -40,8 +48,13 @@ class BagLog extends AbstractLog
     {
         $key = is_string($modelOrKey) ? $modelOrKey : $modelOrKey->getKey();
 
+<<<<<<< HEAD:app/modules/Changelog/Managers/BagTracker.php
+        if(array_key_exists($key, $this->dettached)) {
+            unset($this->dettached[$key]);
+=======
         if(array_key_exists($key, $this->detached)) {
             unset($this->detached[$key]);
+>>>>>>> main:app/modules/History/Managers/BagLog.php
 
             return;
         }
@@ -63,10 +76,9 @@ class BagLog extends AbstractLog
     }
 
 
-    public function prepare(Model&HasHistory $model): ?array
+    public function prepare(Model&HasChangelog $model): ?array
     {
         if(empty($this->attached) AND empty($this->dettached)) {
-            dump('prepare null');
             return null;
         }
 
@@ -79,15 +91,15 @@ class BagLog extends AbstractLog
                 return is_string($value);
             })->toArray();
 
-            $this->class::whereIn('id', array_merge($unLoadedAttachd, $unLoadedDettached))
-                ->get()
-                ->map(function ($model) {
-                    if(array_key_exists($model->getKey(), $this->attached)) {
-                        $this->attached[$model->getKey()] = $model;
-                    } else if(array_key_exists($model->getKey(), $this->dettached)) {
-                        $this->dettached[$model->getKey()] = $model;
-                    }
-                });
+            $loadedModels = $this->class::whereIn('id', array_merge($unLoadedAttachd, $unLoadedDettached))->get();
+            
+            foreach ($loadedModels as $loadedModel) {
+                if(array_key_exists($loadedModel->getKey(), $this->attached)) {
+                    $this->attached[$loadedModel->getKey()] = $loadedModel;
+                } else if(array_key_exists($loadedModel->getKey(), $this->dettached)) {
+                    $this->dettached[$loadedModel->getKey()] = $loadedModel;
+                }
+            }
         }
         
         $map = $this->map;
@@ -95,8 +107,12 @@ class BagLog extends AbstractLog
         return [
             'type' => 'bag',
             'component' => $this->component,
-            'attached' => $map == null ? $this->attached : collect($this->attached)->map($map)->toArray(),
-            'dettached' => $map == null ? $this->dettached : collect($this->dettached)->map($map)->toArray(),
+            'attached' => $map == null ? array_values($this->attached) : collect($this->attached)->map(function ($value) use ($map, $model) {
+                return $map($value, $model);
+            })->values()->toArray(),
+            'dettached' => $map == null ? array_values($this->dettached) : collect($this->dettached)->map(function ($value) use ($map, $model) {
+                return $map($value, $model);
+            })->values()->toArray(),
         ];
     }
 }

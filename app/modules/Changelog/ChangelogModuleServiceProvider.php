@@ -1,13 +1,12 @@
 <?php
 
-namespace App\Modules\History;
+namespace App\Modules\Changelog;
 
-use App\Modules\History\Managers\HistoryManager;
-use Illuminate\Support\Facades\App;
+use App\Modules\Changelog\Managers\ChangelogManager;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 
-class HistoryModuleServiceProvider extends ServiceProvider
+class ChangelogModuleServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
@@ -22,8 +21,8 @@ class HistoryModuleServiceProvider extends ServiceProvider
             ->middleware('api')
             ->group(__DIR__ . '/routes/api.php');
 
-        App::scoped(HistoryManager::class, function () {
-            return new HistoryManager();
+        $this->app->singleton(ChangelogManager::class, function () {
+            return new ChangelogManager();
         });
     }
 }

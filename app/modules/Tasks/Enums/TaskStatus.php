@@ -79,7 +79,7 @@ enum TaskStatus: string
             return false;
         }
 
-        if ($newStatus == self::ARCHVIE) {
+        if ($newStatus == self::ARCHIVE) {
             return $task->status == self::DONE && $task->creator_id == $user?->id;
         }
 

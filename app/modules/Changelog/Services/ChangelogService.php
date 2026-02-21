@@ -1,12 +1,13 @@
 <?php
 
-namespace App\Modules\History\Services;
+namespace App\Modules\Changelog\Services;
 
-use App\Modules\History\Enums\ActivityEvent;
-use App\Modules\History\Models\Activity;
+use App\Modules\Changelog\Enums\ChangelogEvent;
+use App\Modules\Changelog\Models\Changelog;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Auth;
 
-class ActivityService
+class ChangelogService
 {
     protected array $excludedAttributes = [
         'updated_at',
@@ -16,20 +17,20 @@ class ActivityService
 
     public function log(
         Model $subject,
-        ActivityEvent $event,
+        ChangelogEvent $event,
         ?array $oldValues = null,
         ?array $newValues = null,
         ?string $description = null,
         ?string $causerId = null
-    ): Activity {
+    ): Changelog {
         // Filtruj excluded attributes
         $oldValues = $oldValues ? $this->filterAttributes($oldValues) : null;
         $newValues = $newValues ? $this->filterAttributes($newValues) : null;
 
-        return Activity::create([
+        return Changelog::create([
             'subject_type' => get_class($subject),
             'subject_id' => $subject->getKey(),
-            'causer_id' => $causerId ?? auth()->id(),
+            'causer_id' => $causerId ?? Auth::id(),
             'event' => $event,
             'old_values' => $oldValues,
             'new_values' => $newValues,
@@ -37,9 +38,9 @@ class ActivityService
         ]);
     }
 
-    public function getHistory(Model $subject)
+    public function getChangelogs(Model $subject)
     {
-        return Activity::where('subject_type', get_class($subject))
+        return Changelog::where('subject_type', get_class($subject))
             ->where('subject_id', $subject->getKey())
             ->with('causer')
             ->orderBy('created_at', 'desc')

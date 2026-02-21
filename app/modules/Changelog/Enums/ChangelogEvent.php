@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Modules\History\Enums;
+namespace App\Modules\Changelog\Enums;
 
-enum ActivityEvent: string
+enum ChangelogEvent: string
 {
     case CREATED = 'created';
     case UPDATED = 'updated';
@@ -10,6 +10,7 @@ enum ActivityEvent: string
     case RESTORED = 'restored';
     case ARCHIVED = 'archived';
     case UNARCHIVED = 'unarchived';
+    case STATUS_CHANGED = 'status_changed';
 
     public function getDescription(): string
     {
@@ -20,6 +21,7 @@ enum ActivityEvent: string
             self::RESTORED => 'Przywrócił',
             self::ARCHIVED => 'Zarchiwizował',
             self::UNARCHIVED => 'Od-archiwizował',
+            self::STATUS_CHANGED => 'Zmienił status',
         };
     }
 }

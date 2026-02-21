@@ -104,7 +104,7 @@ const toggleSidebar = () => {
 };
 
 const handleSettings = () => {
-  console.log('Settings clicked');
+  // Settings functionality to be implemented
 };
 </script>
 

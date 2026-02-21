@@ -7,5 +7,5 @@ return [
     App\Modules\Labels\LabelsModuleServiceProvider::class,
     App\Modules\Disk\DiskModuleServiceProvider::class,
     App\Modules\Comments\CommentsModuleServiceProvider::class,
-    App\Modules\History\HistoryModuleServiceProvider::class,
+    App\Modules\Changelog\ChangelogModuleServiceProvider::class,
 ];

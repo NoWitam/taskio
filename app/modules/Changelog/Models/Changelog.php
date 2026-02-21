@@ -1,19 +1,19 @@
 <?php
 
-namespace App\Modules\History\Models;
+namespace App\Modules\Changelog\Models;
 
 use App\Models\AbstractModel;
 use App\Models\User;
-use App\Modules\History\Enums\ActivityEvent;
+use App\Modules\Changelog\Enums\ChangelogEvent;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
-class Activity extends AbstractModel
+class Changelog extends AbstractModel
 {
     use HasUuids;
 
-    protected $table = 'activities';
+    protected $table = 'changelogs';
 
     protected $fillable = [
         'subject_type',
@@ -24,7 +24,7 @@ class Activity extends AbstractModel
     ];
 
     protected $casts = [
-        'event' => ActivityEvent::class,
+        'event' => ChangelogEvent::class,
         'details' => 'json',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
