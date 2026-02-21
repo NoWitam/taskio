@@ -1,8 +1,9 @@
 <script setup lang="ts">
     import { computed } from "vue";
     import { cn } from "@/lib/helpers";
+    import Tooltip from "./Tooltip.vue";
 
-    type Size = "sm" | "md" | "lg";
+    type Size = "xs" | "sm" | "md" | "lg";
 
     const props = withDefaults(
         defineProps<{
@@ -10,8 +11,9 @@
             src?: string;
             size?: Size;
             class?: string;
+            tooltip?: boolean;
         }>(),
-        { size: "md" }
+        { size: "md", tooltip: false }
     );
 
     const initials = computed(() => {
@@ -22,6 +24,7 @@
     });
 
     const sizeCls: Record<Size, string> = {
+        xs: "h-6 w-6 text-xs",
         sm: "h-8 w-8 text-xs",
         md: "h-10 w-10 text-sm",
         lg: "h-12 w-12 text-base",
@@ -29,7 +32,25 @@
 </script>
 
 <template>
+  <Tooltip v-if="tooltip">
+    <span
+      :class="cn(
+        'inline-flex select-none items-center justify-center rounded-full border border-secondary/60 bg-secondary text-secondary-foreground shadow-sm overflow-hidden',
+        sizeCls[size],
+        props.class
+      )"
+    >
+      <img v-if="src" :src="src" :alt="name" class="h-full w-full object-cover" />
+      <span v-else class="font-bold" aria-hidden="true">{{ initials }}</span>
+    </span>
+    
+    <template #content>
+      {{ name }}
+    </template>
+  </Tooltip>
+
   <span
+    v-else
     :class="cn(
       'inline-flex select-none items-center justify-center rounded-full border border-secondary/60 bg-secondary text-secondary-foreground shadow-sm overflow-hidden',
       sizeCls[size],

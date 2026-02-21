@@ -1,0 +1,31 @@
+<?php
+
+namespace App\Modules\Tasks\Http\Resources;
+
+use App\Modules\Disk\Http\Resources\FileResource;
+use App\Modules\Labels\Http\Resources\LabelResource;
+use App\Modules\Users\Http\Resources\UserResource;
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class TaskResource extends JsonResource
+{
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'title' => $this->title,
+            'description' => $this->description,
+            'status' => $this->status->value,
+            'priority' => $this->priority->value,
+            'deadline' => $this->deadline?->format('Y-m-d'),
+            'deadline_overdue' => $this->deadline?->diffInDays(now(), absolute: false),
+            'is_overdue' => $this->isDeadlineOverdue(),
+            'is_at_risk' => $this->isDeadlineAtRisk(),
+            'attachments' => FileResource::collection($this->files),
+            'creator' => UserResource::make($this->creator),
+            'assigned' => UserResource::make($this->assigned),
+            'labels' => LabelResource::collection($this->labels)
+        ];
+    }
+}

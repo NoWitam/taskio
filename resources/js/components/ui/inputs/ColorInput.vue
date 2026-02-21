@@ -19,8 +19,9 @@ const props = withDefaults(
     class?: string;
     showAlpha?: boolean;
     swatches?: string[];
+    clearable?: boolean;
   }>(),
-  { placeholder: '', disabled: false, showAlpha: false }
+  { placeholder: '', disabled: false, showAlpha: false, clearable: false }
 );
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: string | null): void }>();
@@ -101,14 +102,25 @@ const suppressHsv = ref(false);
 // track dragging state for hue handle to update cursor
 const isHueDragging = ref(false);
 
-const rString = computed({ get: () => String(r.value), set: (v: string) => { const n = Number(v); r.value = clamp(isNaN(n) ? 0 : n); suppressHsv.value = true; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; emit('update:modelValue', colorString.value); nextTick(() => { suppressHsv.value = false; }); } });
-const gString = computed({ get: () => String(g.value), set: (v: string) => { const n = Number(v); g.value = clamp(isNaN(n) ? 0 : n); suppressHsv.value = true; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; emit('update:modelValue', colorString.value); nextTick(() => { suppressHsv.value = false; }); } });
-const bString = computed({ get: () => String(b.value), set: (v: string) => { const n = Number(v); b.value = clamp(isNaN(n) ? 0 : n); suppressHsv.value = true; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; emit('update:modelValue', colorString.value); nextTick(() => { suppressHsv.value = false; }); } });
+const hasValue = ref(false);
+
+function clearSelection(closeMenu?: () => void) {
+  if (props.disabled) return;
+  hasValue.value = false;
+  emit('update:modelValue', null);
+  closeMenu?.();
+  menuOpen.value = false;
+}
+
+const rString = computed({ get: () => String(r.value), set: (v: string) => { hasValue.value = true; const n = Number(v); r.value = clamp(isNaN(n) ? 0 : n); suppressHsv.value = true; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; emit('update:modelValue', colorString.value); nextTick(() => { suppressHsv.value = false; }); } });
+const gString = computed({ get: () => String(g.value), set: (v: string) => { hasValue.value = true; const n = Number(v); g.value = clamp(isNaN(n) ? 0 : n); suppressHsv.value = true; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; emit('update:modelValue', colorString.value); nextTick(() => { suppressHsv.value = false; }); } });
+const bString = computed({ get: () => String(b.value), set: (v: string) => { hasValue.value = true; const n = Number(v); b.value = clamp(isNaN(n) ? 0 : n); suppressHsv.value = true; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; emit('update:modelValue', colorString.value); nextTick(() => { suppressHsv.value = false; }); } });
 function setFromRgb(rr:number,gg:number,bb:number,aa?:number){ r.value=clamp(rr); g.value=clamp(gg); b.value=clamp(bb); alpha.value = props.showAlpha ? (aa == null ? 1 : Math.max(0, Math.min(1, aa))) : 1; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; }
 function setFromHexOrRgba(s: string | null){ if (!s) return; const t = String(s).trim(); if (t.startsWith('#')){ const rgb = hexToRgb(t); if (rgb) { const aa = props.showAlpha ? rgb.a : undefined; setFromRgb(rgb.r, rgb.g, rgb.b, aa); } } else if (t.startsWith('rgb')){ const m = t.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s]+([0-9\.]+))?\)/); if (m){ const aa = props.showAlpha && m[4] ? Number(m[4]) : undefined; setFromRgb(Number(m[1]), Number(m[2]), Number(m[3]), aa); } } }
 
 // compute output string to emit
 const colorString = computed(() => {
+  if (!hasValue.value) return '';
   if (alpha.value < 1) return rgbaString(r.value,g.value,b.value,alpha.value);
   return rgbToHex(r.value,g.value,b.value);
 });
@@ -118,14 +130,20 @@ watch([hue, sat, val], () => {
   if (suppressHsv.value) return;
   const rgb = hsvToRgb(hue.value, sat.value, val.value);
   r.value = rgb.r; g.value = rgb.g; b.value = rgb.b;
-  emit('update:modelValue', colorString.value);
+  if (hasValue.value) emit('update:modelValue', colorString.value);
 });
 
-watch(alpha, () => { emit('update:modelValue', colorString.value); });
+watch(alpha, () => {
+  if (hasValue.value) emit('update:modelValue', colorString.value);
+});
 
 // keep in sync with external model
 watch(() => props.modelValue, (v) => {
-  if (!v) return;
+  if (!v) {
+    hasValue.value = false;
+    return;
+  }
+  hasValue.value = true;
   setFromHexOrRgba(v);
 }, { immediate: true });
 
@@ -134,6 +152,7 @@ const svRef = ref<HTMLElement | null>(null);
 function svSetFromPointer(clientX: number, clientY:number){ const el = svRef.value; if (!el) return; const rect = el.getBoundingClientRect(); const x = Math.max(0, Math.min(rect.width, clientX - rect.left)); const y = Math.max(0, Math.min(rect.height, clientY - rect.top)); sat.value = x / rect.width; val.value = 1 - (y / rect.height); }
 function startSv(e: PointerEvent){
   if (props.disabled) return;
+  hasValue.value = true;
   svRef.value?.setPointerCapture?.(e.pointerId);
   svSetFromPointer(e.clientX, e.clientY);
   window.addEventListener('pointermove', onSvMove);
@@ -145,12 +164,36 @@ function endSv(){ window.removeEventListener('pointermove', onSvMove); window.re
 // Hue slider
 const hueRef = ref<HTMLElement | null>(null);
 function hueSetFromPointer(clientX:number){ const el = hueRef.value; if (!el) return; const rect = el.getBoundingClientRect(); const x = Math.max(0, Math.min(rect.width, clientX - rect.left)); const pct = x / rect.width; hue.value = Math.round(pct * 360); }
-function startHue(e: PointerEvent){ if (props.disabled) return; isHueDragging.value = true; hueSetFromPointer(e.clientX); window.addEventListener('pointermove', onHueMove); window.addEventListener('pointerup', endHue); }
+function startHue(e: PointerEvent){
+  if (props.disabled) return;
+  hasValue.value = true;
+  isHueDragging.value = true;
+  hueSetFromPointer(e.clientX);
+  window.addEventListener('pointermove', onHueMove);
+  window.addEventListener('pointerup', endHue);
+}
 function onHueMove(e: PointerEvent){ hueSetFromPointer(e.clientX); }
 function endHue(){ isHueDragging.value = false; window.removeEventListener('pointermove', onHueMove); window.removeEventListener('pointerup', endHue); }
 
 // Handle manual RGB/A inputs
-function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){ const n = Number(v.replace(/[^0-9\.]/g,'')); if (which === 'a'){ alpha.value = Math.max(0, Math.min(1, isNaN(n) ? 1 : n)); } else { const nv = isNaN(n) ? 0 : clamp(n); if (which === 'r') r.value = nv; if (which === 'g') g.value = nv; if (which === 'b') b.value = nv; suppressHsv.value = true; const h = rgbToHsv(r.value,g.value,b.value); hue.value = h.h; sat.value = h.s; val.value = h.v; nextTick(()=> { suppressHsv.value = false; }); } }
+function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){
+  hasValue.value = true;
+  const n = Number(v.replace(/[^0-9\.]/g,''));
+  if (which === 'a'){
+    alpha.value = Math.max(0, Math.min(1, isNaN(n) ? 1 : n));
+  } else {
+    const nv = isNaN(n) ? 0 : clamp(n);
+    if (which === 'r') r.value = nv;
+    if (which === 'g') g.value = nv;
+    if (which === 'b') b.value = nv;
+    suppressHsv.value = true;
+    const h = rgbToHsv(r.value,g.value,b.value);
+    hue.value = h.h;
+    sat.value = h.s;
+    val.value = h.v;
+    nextTick(()=> { suppressHsv.value = false; });
+  }
+}
 
 
 
@@ -176,7 +219,7 @@ function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){ const n = Number(v.repla
             :autocomplete="autocomplete"
             :placeholder="placeholder"
             :disabled="disabled"
-            :aria-label="`Wybrany kolor ${colorString}`"
+            :aria-label="hasValue ? `Wybrany kolor ${colorString}` : 'Brak wybranego koloru'"
             :aria-haspopup="'dialog'"
             :aria-expanded="menuOpen ? 'true' : 'false'"
             :aria-controls="panelId"
@@ -203,9 +246,19 @@ function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){ const n = Number(v.repla
           </div>
 
           <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <slot name="center" :color="colorString">
+            <slot name="center" :color="hasValue ? colorString : null" :hasValue="hasValue">
               <div class="mx-2 w-full">
-                <div :style="{ background: colorString }" class="h-6 rounded-md border border-border w-full" />
+                <div
+                  v-if="hasValue"
+                  :style="{ background: colorString }"
+                  class="h-6 rounded-md border border-border w-full"
+                />
+                <div
+                  v-else
+                  class="h-6 rounded-md border border-border w-full flex items-center justify-center text-xs font-semibold text-muted-foreground bg-secondary/40"
+                >
+                  {{ placeholder || 'Brak koloru' }}
+                </div>
               </div>
             </slot>
           </div> 
@@ -215,7 +268,7 @@ function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){ const n = Number(v.repla
       <template #default="{ closeMenu }">
         <div class="flex justify-center">
             <div class="p-3 w-[320px]">
-            <div class="grid gap-3 mx-auto w-full max-w-[280px]">
+            <div class="grid gap-3 mx-auto w-full max-w-70">
                 <!-- SV box -->
                 <div class="w-full h-40 rounded-md overflow-hidden relative" ref="svRef" @pointerdown.prevent="startSv($event as PointerEvent)" :style="{ background: `linear-gradient(90deg, hsl(${hue},100%,50%) 0%, hsl(${hue},100%,50%) 100%)` }">
                 <div class="absolute inset-0" :style="{ background: `linear-gradient(0deg, rgba(0,0,0,1), rgba(0,0,0,0))` }"></div>
@@ -226,7 +279,7 @@ function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){ const n = Number(v.repla
                 <!-- Hue slider -->
                 <div class="h-3 w-full rounded-md relative overflow-visible cursor-ew-resize" ref="hueRef" @pointerdown.prevent="startHue($event as PointerEvent)">
                 <div class="absolute inset-0 rounded-md" :style="{ background: `linear-gradient(90deg, red 0%, yellow 17%, lime 33%, cyan 50%, blue 67%, magenta 83%, red 100%)` }"></div>
-              <div :class="['absolute -translate-x-1/2 top-[-10px] z-20 pointer-events-auto', isHueDragging ? 'cursor-grabbing' : 'cursor-grab']" :style="{ left: `${(hue/360)*100}%` }" tabindex="0" role="slider" :aria-valuemin="0" :aria-valuemax="360" :aria-valuenow="hue" @pointerdown.stop.prevent="startHue($event as PointerEvent)" @pointerup.stop.prevent="endHue()">
+              <div :class="['absolute -translate-x-1/2 -top-2.5 z-20 pointer-events-auto', isHueDragging ? 'cursor-grabbing' : 'cursor-grab']" :style="{ left: `${(hue/360)*100}%` }" tabindex="0" role="slider" :aria-valuemin="0" :aria-valuemax="360" :aria-valuenow="hue" @pointerdown.stop.prevent="startHue($event as PointerEvent)" @pointerup.stop.prevent="endHue()">
                 <div class="w-5 h-7 rounded-lg bg-primary border-2 border-white shadow-lg"></div>
                 </div>
                 </div>
@@ -236,7 +289,7 @@ function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){ const n = Number(v.repla
                     v-if="swatches"
                     class="flex gap-2 flex-wrap my-4"
                 >
-                    <button v-for="s in swatchesList" :key="s" type="button" class="w-14 h-8 rounded-md cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40" :style="{ background: s }" @click="() => { setFromHexOrRgba(s); emit('update:modelValue', colorString); }" aria-label="Wybierz kolor" />
+                    <button v-for="s in swatchesList" :key="s" type="button" class="w-14 h-8 rounded-md cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40" :style="{ background: s }" @click="() => { hasValue = true; setFromHexOrRgba(s); emit('update:modelValue', colorString); }" aria-label="Wybierz kolor" />
                 </div>
 
                 <!-- numeric inputs (NumberInput) -->
@@ -256,7 +309,17 @@ function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){ const n = Number(v.repla
                 </div>
 
                 <div class="flex justify-end gap-2 mt-2">
-                <Button variant="primary" size="sm" @click="() => { closeMenu(); menuOpen = false; }">Wybierz</Button>
+                  <Button
+                    v-if="clearable"
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    :disabled="disabled"
+                    @click="() => clearSelection(closeMenu)"
+                  >
+                    Wyczyść
+                  </Button>
+                  <Button variant="primary" size="sm" type="button" @click="() => { closeMenu(); menuOpen = false; }">Wybierz</Button>
                 </div> 
             </div>
             </div>

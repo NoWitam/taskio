@@ -1,11 +1,13 @@
 <script setup lang="ts">
     import { computed, nextTick, onMounted, ref, watch } from "vue";
     import { cn } from "@/lib/helpers";
+    import Icon from "@/components/ui/Icon.vue";
 
     type TabItem = {
         id: string;
         label: string;
         badge?: number;
+        icon?: string;
     };
 
     const props = defineProps<{
@@ -128,17 +130,18 @@
           'relative inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition cursor-pointer',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
           t.id === activeId
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-foreground/70 hover:bg-background/60 hover:text-foreground'
+            ? 'bg-primary text-background shadow-sm'
+            : 'text-foreground/70 hover:text-background hover:bg-primary/60'
         )"
       >
+        <Icon v-if="t.icon" :name="t.icon" size="sm" />
         <span class="whitespace-nowrap">{{ t.label }}</span>
 
         <span
           v-if="typeof t.badge === 'number'"
           :class="cn(
             'inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-xs font-bold',
-            t.id === activeId ? 'bg-primary text-primary-foreground' : 'bg-background text-foreground/70 border border-border'
+            t.id === activeId ? 'bg-background text-foreground/70' : 'bg-background text-foreground/70 border border-border'
           )"
           aria-label="Liczba elementów"
         >
@@ -162,7 +165,7 @@
       <slot name="panel" :activeId="activeId" :activeIndex="activeIndex" />
     </div>
     <div
-      v-else
+      v-else-if="$slots['panel-'+activeId]"
       class="mt-4"
       role="tabpanel"
       :id="panelId(activeId)"

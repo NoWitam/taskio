@@ -23,7 +23,7 @@
     <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div class="min-w-0">
           <div class="min-w-0">
-            <div class="flex items-start gap-3">
+            <div class="flex items-center gap-3">
                 <div v-if="$slots.icon" class="shrink-0 flex items-center">
                     <slot name="icon" />
                 </div>
