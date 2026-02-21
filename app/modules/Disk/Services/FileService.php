@@ -51,7 +51,7 @@ class FileService
                 $toDelete = $model->files()->whereNotIn('id', $file_ids)->get();
                 
                 foreach($toDelete as $file) {
-                    $tracker->dettach($file);
+                    $tracker->detach($file);
                     $file->delete();
                 }
             }

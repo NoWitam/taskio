@@ -9,6 +9,7 @@ import CommentPanel from '@/components/CommentPanel.vue';
 import TaskDetailsPanel from './TaskDetailsPanel.vue';
 import CreateTaskDialog from './CreateTaskDialog.vue';
 import { useTasksStore } from '@/store/tasks';
+import { useI18n } from '@/composables/useI18n';
 import type { Task } from '@/store/tasks';
 
 const props = defineProps<{
@@ -21,34 +22,44 @@ const emit = defineEmits<{
 }>();
 
 const tasksStore = useTasksStore();
+const { t } = useI18n();
 const task = ref<Task | null>(null);
 const loading = ref(false);
 const showEditDialog = ref(false);
 
 const statusConfig = {
-    to_do: { label: 'Do zrobienia', tone: 'neutral' as const, icon: 'circle-help' },
-    in_progress: { label: 'W trakcie', tone: 'primary' as const, icon: 'loader' },
-    in_test: { label: 'W testach', tone: 'warning' as const, icon: 'info-circle' },
-    done: { label: 'Zrobione', tone: 'success' as const, icon: 'check-circle' },
-    archive: { label: 'Archiwum', tone: 'neutral' as const, icon: 'archive' },
-    trash: { label: 'Kosz', tone: 'neutral' as const, icon: 'trash' },
+    to_do: { label: '', tone: 'neutral' as const, icon: 'circle-help' },
+    in_progress: { label: '', tone: 'primary' as const, icon: 'loader' },
+    in_test: { label: '', tone: 'warning' as const, icon: 'info-circle' },
+    done: { label: '', tone: 'success' as const, icon: 'check-circle' },
+    archive: { label: '', tone: 'neutral' as const, icon: 'archive' },
+    trash: { label: '', tone: 'neutral' as const, icon: 'trash' },
 };
 
 const priorityConfig = {
-    urgent: { label: 'Pilny', tone: 'danger' as const },
-    high: { label: 'Wysoki', tone: 'danger' as const },
-    medium: { label: 'Średni', tone: 'warning' as const },
-    low: { label: 'Niski', tone: 'neutral' as const },
+    urgent: { label: '', tone: 'danger' as const },
+    high: { label: '', tone: 'danger' as const },
+    medium: { label: '', tone: 'warning' as const },
+    low: { label: '', tone: 'neutral' as const },
 };
 
 const statusBadge = computed(() => {
     if (!task.value) return null;
-    return statusConfig[task.value.status as keyof typeof statusConfig] || statusConfig.to_do;
+    const config = statusConfig[task.value.status as keyof typeof statusConfig] || statusConfig.to_do;
+    const statusKey = task.value.status as keyof typeof statusConfig;
+    return {
+        ...config,
+        label: t(`changelog.statusValues.${statusKey}`)
+    };
 });
 
 const priorityBadge = computed(() => {
     if (!task.value) return null;
-    return priorityConfig[task.value.priority] || priorityConfig.medium;
+    const config = priorityConfig[task.value.priority] || priorityConfig.medium;
+    return {
+        ...config,
+        label: t(`changelog.priorityValues.${task.value.priority}`)
+    };
 });
 
 const alertBadge = computed(() => {
@@ -59,16 +70,17 @@ const alertBadge = computed(() => {
         return {
             tone: 'danger' as const,
             icon: 'alert-triangle',
-            text: `Spóźniony o ${days} ${days === 1 ? 'dzień' : 'dni'}`,
+            text: t('tasks.daysOverdue', '', { count: days }),
         };
     }
     
     if (task.value.is_at_risk && task.value.deadline_overdue) {
         const days = Math.abs(Math.round(task.value.deadline_overdue));
+        const daysText = days === 1 ? t('tasks.deadlineDay') : t('tasks.deadlineDays');
         return {
             tone: 'warning' as const,
             icon: 'alert-circle',
-            text: `Zbliża się deadline - ${days} ${days === 1 ? 'dzień' : 'dni'}`,
+            text: t('tasks.deadlineApproaching', '', { count: days, days: daysText }),
         };
     }
     
@@ -84,40 +96,40 @@ const statusActions = computed(() => {
     
     if (currentStatus === 'to_do') {
         actions.push({ 
-            label: 'Rozpocznij', 
+            label: 'startTask', 
             status: 'in_progress', 
             variant: 'primary' as const,
             icon: 'play'
         });
     } else if (currentStatus === 'in_progress') {
         actions.push({ 
-            label: 'Wyślij do testów', 
+            label: 'sendToTest', 
             status: 'in_test', 
             variant: 'warning' as const,
             icon: 'flask'
         });
         actions.push({ 
-            label: 'Zakończ', 
+            label: 'complete', 
             status: 'done', 
             variant: 'success' as const,
             icon: 'check'
         });
     } else if (currentStatus === 'in_test') {
         actions.push({ 
-            label: 'Wróć do pracy', 
+            label: 'backToProgress', 
             status: 'in_progress', 
             variant: 'secondary' as const,
             icon: 'rotate-ccw'
         });
         actions.push({ 
-            label: 'Zakończ', 
+            label: 'complete', 
             status: 'done', 
             variant: 'success' as const,
             icon: 'check'
         });
     } else if (currentStatus === 'done') {
         actions.push({ 
-            label: 'Przywróć', 
+            label: 'backToProgress', 
             status: 'in_progress', 
             variant: 'secondary' as const,
             icon: 'rotate-ccw'
@@ -308,56 +320,7 @@ const close = () => {
       <TaskDetailsPanel v-else-if="task" :task="task" />
 
       <!-- Right panel - Comments -->
-      <div class="flex justify-between w-[480px] flex-col border-l border-border bg-muted/30">
-        <div class="border-b border-border p-4">
-          <div v-if="loading" class="flex items-center gap-2">
-            <Skeleton width="16px" height="16px" rounded="sm" />
-            <Skeleton width="100px" height="16px" />
-          </div>
-          <h3 v-else class="flex items-center gap-2 text-sm font-semibold">
-            <Icon name="message" size="sm" />
-            Komentarze
-          </h3>
-        </div>
-
-        <div class="flex-1 overflow-y-auto p-4">
-          <div v-if="loading" class="space-y-3">
-            <Skeleton width="100%" height="60px" rounded="lg" />
-            <Skeleton width="100%" height="60px" rounded="lg" />
-            <Skeleton width="80%" height="60px" rounded="lg" />
-          </div>
-          <div v-else class="flex items-center justify-center py-12">
-            <div class="text-center text-sm text-muted-foreground">
-              <Icon name="message" size="lg" class="mx-auto mb-2 opacity-50" />
-              <p>Funkcja komentarzy</p>
-              <p>w przygotowaniu</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="border-t border-border p-4">
-          <div v-if="loading" class="space-y-2">
-            <Skeleton width="100%" height="60px" rounded="lg" />
-            <Skeleton width="100%" height="32px" rounded="lg" />
-          </div>
-          <div v-else class="space-y-2">
-            <textarea
-              placeholder="Dodaj komentarz..."
-              class="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-              rows="3"
-              disabled
-            />
-            <button
-              type="button"
-              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-background opacity-50 cursor-not-allowed"
-              disabled
-            >
-              <Icon name="send" size="sm" />
-              Dodaj komentarz
-            </button>
-          </div>
-        </div>
-      </div>
+      <CommentPanel v-if="task" :entity-id="task.id" entity-type="task" />
     </div>
 
     <template v-if="!loading && task" #footer>
@@ -366,15 +329,15 @@ const close = () => {
         <div class="flex gap-2">
           <Button v-if="task.status !== 'trash'" variant="secondary" size="sm" @click="handleEdit">
             <Icon name="pencil" size="sm" />
-            Edytuj
+            {{ t('taskActions.edit') }}
           </Button>
           <Button v-if="task.status !== 'trash'" variant="danger" size="sm" @click="handleDelete">
             <Icon name="trash" size="sm" />
-            Usuń
+            {{ t('taskActions.delete') }}
           </Button>
           <Button v-else variant="success" size="sm" @click="handleRestore">
             <Icon name="undo" size="sm" />
-            Przywróć
+            {{ t('taskActions.restore') }}
           </Button>
         </div>
 
@@ -388,7 +351,7 @@ const close = () => {
             @click="handleStatusChange(action.status)"
           >
             <Icon :name="action.icon" size="sm" />
-            {{ action.label }}
+            {{ t(`taskActions.${action.label}`) }}
           </Button>
         </div>
       </div>

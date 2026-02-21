@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
+import { useI18n } from '@/composables/useI18n';
 
 type PillItem = { key: string; label: string };
 
@@ -18,6 +19,8 @@ const props = withDefaults(defineProps<{
 }>(), { disabled: false, disabledItems: [] });
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: string[] | null): void }>();
+
+const { t } = useI18n();
 
 // Normalize items to PillItem[]
 const normalizedItems = computed((): PillItem[] => {
@@ -92,7 +95,7 @@ function baseBtnClass(){
       {{ props.label }}
     </label>
 
-    <div :class="['flex items-center gap-2', props.class]" role="group" :aria-label="props.ariaLabel ?? props.label ?? 'Wybierz'" :aria-describedby="describedBy">
+    <div :class="['flex items-center gap-2', props.class]" role="group" :aria-label="props.ariaLabel ?? props.label ?? t('common.select')" :aria-describedby="describedBy">
       <div class="flex gap-2" aria-hidden="false">
         <button
           v-for="(item, i) in normalizedItems"

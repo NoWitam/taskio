@@ -69,7 +69,7 @@ class TaskService
                     }
                     
                     foreach ($changes['detached'] as $labelId) {
-                        $tracker->dettach($labelId);
+                        $tracker->detach($labelId);
                     }
                 });
             }

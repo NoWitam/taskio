@@ -35,7 +35,7 @@ class ChangelogResource extends JsonResource
             // Pobierz translation_key z managera modelu
             $translationKey = $this->getTranslationKeyFromManager($field);
             
-            // Pobierz tłumaczenie
+            // Pobierz tłumaczenie dla wyświetlania
             $fieldLabel = __($translationKey);
             
             // Jeśli nie znaleziono tłumaczenia, użyj czytelnej wersji klucza
@@ -47,6 +47,7 @@ class ChangelogResource extends JsonResource
             $translated[$field] = array_merge([
                 'field' => $field,
                 'field_label' => $fieldLabel,
+                'field_translation_key' => $translationKey,
             ], $data);
         }
 

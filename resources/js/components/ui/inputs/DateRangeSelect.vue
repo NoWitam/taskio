@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { cn } from "@/lib/helpers";
+import { useI18n } from "@/composables/useI18n";
 import DropdownMenu from "@/components/ui/DropdownMenu.vue";
 import Icon from "@/components/ui/Icon.vue";
 import Button from "@/components/ui/Button.vue";
@@ -34,6 +35,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: "update:modelValue", value: DateRangeValue): void }>();
 
+const { t } = useI18n();
+
 const inputId = props.id ?? `daterange_${Math.random().toString(16).slice(2)}`;
 
 const value = computed<DateRangeValue>({
@@ -52,13 +55,13 @@ const value = computed<DateRangeValue>({
   },
 });
 
-const presetOptions: Array<{ id: DateRangePreset; label: string }> = [
-  { id: "", label: "Wszystkie terminy" },
-  { id: "today", label: "Dzisiaj" },
-  { id: "this_week", label: "Ten tydzień" },
-  { id: "last_week", label: "Ostatni tydzień" },
-  { id: "this_month", label: "Ten miesiąc" },
-];
+const presetOptions = computed(() => [
+  { id: "" as DateRangePreset, label: t('tasks.allDates') || "Wszystkie terminy" },
+  { id: "today" as DateRangePreset, label: t('datePicker.today') },
+  { id: "this_week" as DateRangePreset, label: t('datePicker.thisWeek') },
+  { id: "last_week" as DateRangePreset, label: t('datePicker.lastWeek') },
+  { id: "this_month" as DateRangePreset, label: t('datePicker.thisMonth') },
+]);
 
 function displayFromYmd(ymd: string | null) {
   if (!ymd) return "";
@@ -72,11 +75,11 @@ const displayText = computed(() => {
   const to = value.value.to;
 
   if (from && to) return `${displayFromYmd(from)} - ${displayFromYmd(to)}`;
-  if (from) return `od ${displayFromYmd(from)}`;
-  if (to) return `do ${displayFromYmd(to)}`;
+  if (from) return `${t('datePicker.from')} ${displayFromYmd(from)}`;
+  if (to) return `${t('datePicker.to')} ${displayFromYmd(to)}`;
 
   const preset = value.value.preset ?? "";
-  return presetOptions.find((o) => o.id === preset)?.label ?? "Wszystkie terminy";
+  return presetOptions.value.find((o) => o.id === preset)?.label ?? t('tasks.allDates');
 });
 
 function setPreset(preset: DateRangePreset) {
@@ -180,8 +183,8 @@ function clear(closeMenu?: () => void) {
             <SwitchInput
               :modelValue="value.hide_without_deadline"
               @update:modelValue="setHideWithoutDeadline"
-              label="Ukryj zadania bez terminu"
-              hint="Gdy włączone, zadania bez ustawionego terminu nie pojawią się w wynikach (nawet przy zakresie)."
+              :label="t('inputs.hideWithoutDeadline')"
+              :hint="t('inputs.hideWithoutDeadlineHint')"
             />
           </div>
 
@@ -210,7 +213,7 @@ function clear(closeMenu?: () => void) {
             <DateInput
               :modelValue="value.from"
               @update:modelValue="setFrom"
-              label="Od"
+              :label="t('datePicker.from')"
               :max="value.to"
               clearable
               class="w-full"
@@ -218,7 +221,7 @@ function clear(closeMenu?: () => void) {
             <DateInput
               :modelValue="value.to"
               @update:modelValue="setTo"
-              label="Do"
+              :label="t('datePicker.to')"
               :min="value.from"
               clearable
               class="w-full"
@@ -227,9 +230,9 @@ function clear(closeMenu?: () => void) {
 
           <div v-if="clearable" class="mt-2 border-t border-border pt-2 flex justify-end gap-2">
             <Button variant="ghost" type="button" :disabled="disabled" @click="clear(closeMenu)">
-              Wyczyść
+              {{ t('common.clear') }}
             </Button>
-            <Button variant="primary" type="button" @click="closeMenu">Gotowe</Button>
+            <Button variant="primary" type="button" @click="closeMenu">{{ t('common.apply') }}</Button>
           </div>
         </div>
       </template>

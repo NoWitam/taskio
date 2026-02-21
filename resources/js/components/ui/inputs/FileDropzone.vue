@@ -4,6 +4,7 @@ import { cn } from "@/lib/helpers";
 import Button from "@/components/ui/Button.vue";
 import { api } from "@/lib/api";
 import { useToast } from "@/composables/useToast";
+import { useI18n } from "@/composables/useI18n";
 
 export type UploadedFile = {
   id: string;
@@ -92,8 +93,10 @@ const model = computed<string[]>({
   set: (v) => emit("update:modelValue", v),
 });
 
+const { t } = useI18n();
+
 const help = computed(() =>
-  props.multiple ? "Upuść pliki tutaj lub wybierz z dysku" : "Upuść plik tutaj lub wybierz z dysku"
+  props.multiple ? t('upload.dragDropMulti') : t('upload.dragDropSingle')
 );
 
 function openPicker() {
@@ -335,7 +338,7 @@ function updateAggregateToast() {
 
   // zakończone: jeszcze chwilę pokazujemy
   updateToast(toastId.value, {
-    title: err ? "Załączniki: część nieudana" : "Załączniki wysłane",
+    title: err ? t('upload.uploadPartialError') : t('upload.uploadSuccess'),
     message,
     tone: err ? "danger" : "success",
     timeoutMs: 2500,
@@ -380,12 +383,12 @@ watch(
       />
 
       <div class="text-center">
-        <div class="text-sm font-semibold text-foreground">Załączniki</div>
+        <div class="text-sm font-semibold text-foreground">{{ t('upload.attachmentsLabel') }}</div>
         <div class="mt-1 text-sm text-foreground/70">{{ help }}</div>
 
         <div class="mt-4 flex flex-wrap justify-center gap-2">
           <Button size="sm" variant="secondary" :disabled="disabled" @click.stop="openPicker">
-            Wybierz pliki
+            {{ t('inputs.selectFilesButton') }}
           </Button>
 
           <Button
