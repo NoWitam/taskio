@@ -32,8 +32,10 @@ class TasksController extends Controller
         ]]);
     }
 
-    public function show(Request $request, Task $task): TaskResource
+    public function show(Request $request, string $id): TaskResource
     {
+        $task = Task::withTrashed()->findOrFail($id);
+        
         $this->authorize('view', $task);
 
         return TaskResource::make(
@@ -112,31 +114,7 @@ class TasksController extends Controller
 
         $this->authorize('changeStatus', [$task, $status]);
 
-        $oldStatus = $task->status;
         $task->update(['status' => $status]);
-
-        // Log jako customowy event STATUS_CHANGED
-        if ($oldStatus !== $status) {
-            app(\App\Modules\Changelog\Managers\ChangelogManager::class)->handleCustomEvent(
-                $task,
-                \App\Modules\Changelog\Enums\ChangelogEvent::STATUS_CHANGED,
-                [
-                    'status' => [
-                        'type' => 'status_change',
-                        'before' => [
-                            'label' => $oldStatus->label(),
-                            'tone' => $oldStatus->tone(),
-                            'icon' => $oldStatus->icon(),
-                        ],
-                        'after' => [
-                            'label' => $status->label(),
-                            'tone' => $status->tone(),
-                            'icon' => $status->icon(),
-                        ]
-                    ]
-                ]
-            );
-        }
 
         return TaskResource::make(
             $task->loadMissing(['assigned', 'creator', 'labels', 'files'])

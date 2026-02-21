@@ -18,7 +18,9 @@ class LogMiddleware
      */
     public function handle(Request $request, Closure $next): Response
     {
-        Auth::login(User::first());
+        if ($user = User::first()) {
+            Auth::login($user);
+        }
 
         $queries = [];
 

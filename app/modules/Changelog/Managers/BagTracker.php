@@ -48,13 +48,8 @@ class BagTracker extends AbstractTracker
     {
         $key = is_string($modelOrKey) ? $modelOrKey : $modelOrKey->getKey();
 
-<<<<<<< HEAD:app/modules/Changelog/Managers/BagTracker.php
-        if(array_key_exists($key, $this->dettached)) {
-            unset($this->dettached[$key]);
-=======
         if(array_key_exists($key, $this->detached)) {
             unset($this->detached[$key]);
->>>>>>> main:app/modules/History/Managers/BagLog.php
 
             return;
         }
@@ -78,7 +73,7 @@ class BagTracker extends AbstractTracker
 
     public function prepare(Model&HasChangelog $model): ?array
     {
-        if(empty($this->attached) AND empty($this->dettached)) {
+        if(empty($this->attached) AND empty($this->detached)) {
             return null;
         }
 
@@ -87,17 +82,17 @@ class BagTracker extends AbstractTracker
                 return is_string($value);
             })->toArray();
 
-            $unLoadedDettached = collect($this->dettached)->filter(function ($value) {
+            $unLoadedDetached = collect($this->detached)->filter(function ($value) {
                 return is_string($value);
             })->toArray();
 
-            $loadedModels = $this->class::whereIn('id', array_merge($unLoadedAttachd, $unLoadedDettached))->get();
+            $loadedModels = $this->class::whereIn('id', array_merge($unLoadedAttachd, $unLoadedDetached))->get();
             
             foreach ($loadedModels as $loadedModel) {
                 if(array_key_exists($loadedModel->getKey(), $this->attached)) {
                     $this->attached[$loadedModel->getKey()] = $loadedModel;
-                } else if(array_key_exists($loadedModel->getKey(), $this->dettached)) {
-                    $this->dettached[$loadedModel->getKey()] = $loadedModel;
+                } else if(array_key_exists($loadedModel->getKey(), $this->detached)) {
+                    $this->detached[$loadedModel->getKey()] = $loadedModel;
                 }
             }
         }
@@ -110,7 +105,7 @@ class BagTracker extends AbstractTracker
             'attached' => $map == null ? array_values($this->attached) : collect($this->attached)->map(function ($value) use ($map, $model) {
                 return $map($value, $model);
             })->values()->toArray(),
-            'dettached' => $map == null ? array_values($this->dettached) : collect($this->dettached)->map(function ($value) use ($map, $model) {
+            'detached' => $map == null ? array_values($this->detached) : collect($this->detached)->map(function ($value) use ($map, $model) {
                 return $map($value, $model);
             })->values()->toArray(),
         ];

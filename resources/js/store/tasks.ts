@@ -246,8 +246,17 @@ export const useTasksStore = defineStore('tasks', () => {
         error.value = null;
 
         try {
+            const idStr = String(id);
             const response: ApiResponse<Task> = await api.post(`/tasks/${id}/restore`);
             const restoredTask = response.data;
+            
+            // Usuń z listy trash
+            if (tasksByStatus.value['trash']) {
+                tasksByStatus.value['trash'] = tasksByStatus.value['trash'].filter(t => t.id !== idStr);
+                if (typeof totalByStatus.value['trash'] === 'number') {
+                    totalByStatus.value['trash'] = Math.max(0, (totalByStatus.value['trash'] || 0) - 1);
+                }
+            }
             
             // Dodaj do to_do statusu
             const status = 'to_do';

@@ -26,10 +26,10 @@ const loading = ref(false);
 const showEditDialog = ref(false);
 
 const statusConfig = {
-    to_do: { label: 'Do zrobienia', tone: 'neutral' as const, icon: 'circle-check' },
-    in_progress: { label: 'W trakcie', tone: 'primary' as const, icon: 'circle-check' },
-    in_test: { label: 'W testach', tone: 'warning' as const, icon: 'circle-check' },
-    done: { label: 'Zrobione', tone: 'success' as const, icon: 'circle-check' },
+    to_do: { label: 'Do zrobienia', tone: 'neutral' as const, icon: 'circle-help' },
+    in_progress: { label: 'W trakcie', tone: 'primary' as const, icon: 'loader' },
+    in_test: { label: 'W testach', tone: 'warning' as const, icon: 'info-circle' },
+    done: { label: 'Zrobione', tone: 'success' as const, icon: 'check-circle' },
     archive: { label: 'Archiwum', tone: 'neutral' as const, icon: 'archive' },
     trash: { label: 'Kosz', tone: 'neutral' as const, icon: 'trash' },
 };
@@ -77,7 +77,7 @@ const alertBadge = computed(() => {
 
 // Dostępne akcje zmiany statusu w zależności od aktualnego statusu
 const statusActions = computed(() => {
-    if (!task.value) return [];
+    if (!task.value || task.value.status === 'trash') return [];
     
     const actions = [];
     const currentStatus = task.value.status;
@@ -149,6 +149,19 @@ const handleDelete = async () => {
     } catch (error) {
         console.error('Error deleting task:', error);
         alert('Wystąpił błąd podczas usuwania zadania');
+    }
+};
+
+const handleRestore = async () => {
+    if (!task.value) return;
+    
+    try {
+        const restoredTask = await tasksStore.restoreTask(task.value.id);
+        task.value = restoredTask;
+        emit('update:modelValue', false);
+    } catch (error) {
+        console.error('Error restoring task:', error);
+        alert('Wystąpił błąd podczas przywracania zadania');
     }
 };
 
@@ -351,13 +364,17 @@ const close = () => {
       <div class="flex w-full items-center justify-between">
         <!-- Akcje ogólne po lewej -->
         <div class="flex gap-2">
-          <Button variant="secondary" size="sm" @click="handleEdit">
+          <Button v-if="task.status !== 'trash'" variant="secondary" size="sm" @click="handleEdit">
             <Icon name="pencil" size="sm" />
             Edytuj
           </Button>
-          <Button variant="danger" size="sm" @click="handleDelete">
+          <Button v-if="task.status !== 'trash'" variant="danger" size="sm" @click="handleDelete">
             <Icon name="trash" size="sm" />
             Usuń
+          </Button>
+          <Button v-else variant="success" size="sm" @click="handleRestore">
+            <Icon name="undo" size="sm" />
+            Przywróć
           </Button>
         </div>
 

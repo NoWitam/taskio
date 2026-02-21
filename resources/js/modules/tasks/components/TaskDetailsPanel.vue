@@ -59,7 +59,7 @@ const getEventIcon = (event: string) => {
         updated: 'pencil',
         deleted: 'trash',
         restored: 'undo',
-        status_changed: 'chevron-right',
+        change_status: 'chevron-right',
         archived: 'archive',
         unarchived: 'restore',
     };
@@ -72,7 +72,7 @@ const getEventTone = (event: string) => {
         updated: 'primary',
         deleted: 'danger',
         restored: 'success',
-        status_changed: 'warning',
+        change_status: 'warning',
         archived: 'neutral',
         unarchived: 'primary',
     };
@@ -122,7 +122,7 @@ watch(() => props.task, (newVal, oldVal) => {
 </script>
 
 <template>
-  <div class="flex h-full flex-1 flex-col overflow-y-auto">
+  <div class="flex h-full flex-1 flex-col">
     <!-- Sekcja informacji o tasku -->
     <div class="border-b border-border">
       <div class="flex flex-wrap items-start justify-between gap-6 p-6">
@@ -179,7 +179,7 @@ watch(() => props.task, (newVal, oldVal) => {
     </div>
 
     <!-- Zawartość zakładek -->
-    <div class="flex-1 p-6">
+    <div class="flex-1 overflow-y-auto p-6">
       <div v-if="activeTab === 'history'" class="space-y-4">
         <!-- Loading state -->
         <div v-if="loadingChangelog" class="space-y-3">

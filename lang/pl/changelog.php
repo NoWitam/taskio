@@ -35,6 +35,6 @@ return [
         'restored' => 'Przywrócono',
         'archived' => 'Zarchiwizowano',
         'unarchived' => 'Odarchiwizowano',
-        'status_changed' => 'Zmieniono status',
+        'change_status' => 'Zmieniono status',
     ],
 ];

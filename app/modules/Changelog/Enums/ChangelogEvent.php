@@ -10,7 +10,7 @@ enum ChangelogEvent: string
     case RESTORED = 'restored';
     case ARCHIVED = 'archived';
     case UNARCHIVED = 'unarchived';
-    case STATUS_CHANGED = 'status_changed';
+    case CHANGE_STATUS = 'change_status';
 
     public function getDescription(): string
     {
@@ -21,7 +21,7 @@ enum ChangelogEvent: string
             self::RESTORED => 'Przywrócił',
             self::ARCHIVED => 'Zarchiwizował',
             self::UNARCHIVED => 'Od-archiwizował',
-            self::STATUS_CHANGED => 'Zmienił status',
+            self::CHANGE_STATUS => 'Zmienił status',
         };
     }
 }

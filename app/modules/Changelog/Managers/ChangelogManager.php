@@ -77,11 +77,19 @@ class ChangelogManager
             $data = $tracker->prepare($subject);
 
             if($data) {
-                $details[$tracker->getField()] = $data;
+                // Jeśli tracker ma ustawiony event, loguj na tym evencie zamiast UPDATED
+                if ($tracker->getEvent() !== null) {
+                    $this->storeLog($subject, $tracker->getEvent(), [$tracker->getField() => $data]);
+                } else {
+                    $details[$tracker->getField()] = $data;
+                }
             }
         }
 
-        $this->storeLog($subject, $event, $details);
+        // Nie zapisuj eventu jeśli nie ma żadnych zmian (wszystkie trackery zwróciły null)
+        if (!empty($details)) {
+            $this->storeLog($subject, $event, $details);
+        }
     }
 
     /**
@@ -119,7 +127,10 @@ class ChangelogManager
      */
     public function handleCustomEvent(Model&HasChangelog $subject, ChangelogEvent $event, array $details = []): void
     {
-        $this->storeLog($subject, $event, $details);
+        // Nie zapisuj eventu jeśli nie ma details
+        if (!empty($details)) {
+            $this->storeLog($subject, $event, $details);
+        }
     }
 
     /**
@@ -142,11 +153,60 @@ class ChangelogManager
      */
     protected function getCacheKey(Model&HasChangelog $subject, ChangelogEvent $event): string
     {
-        return implode("_", [
-            Relation::getMorphAlias($subject::class),
-            $subject->getKey(),
-            $event->value
-        ]);
+        $morphAlias = Relation::getMorphAlias($subject::class);
+        $subjectId = $subject->getKey();
+        $eventValue = $event->value;
+        
+        $key = implode("_", [$morphAlias, $subjectId, $eventValue]);
+        
+        return $key;
+    }
+
+    /**
+     * Flushuj cache - zapisz wszystko do bazy i czyszcz cache
+     */
+    public function flush(): void
+    {
+        if(!empty($this->cache)) {
+            $cache = $this->cache;
+            $causer = Auth::id();
+
+            // Wyczyść cache ZARAZ na początku
+            $this->cache = [];
+            $this->originals = [];
+            $this->managers = [];
+
+            foreach($cache as $key => $details) {
+                try {
+                    [$type, $id, $event] = explode("_", $key, 3);
+                } catch (\Throwable $e) {
+                    info("Changelog: Error parsing cache key '{$key}': {$e->getMessage()}");
+                    continue;
+                }
+
+                // Jeśli event value jest pusty, pomiń
+                if (empty($event)) {
+                    info("Changelog: Empty event value for cache key '{$key}'");
+                    continue;
+                }
+
+                // Sprawdź czy event value jest ważny dla enuma
+                try {
+                    $eventEnum = ChangelogEvent::from($event);
+                } catch (\ValueError $e) {
+                    info("Changelog: Invalid event value '{$event}' for model {$type} with id {$id}, cache key: {$key}");
+                    continue;
+                }
+
+                Changelog::create([
+                    'subject_type' => $type,
+                    'subject_id' => $id,
+                    'causer_id' => $causer,
+                    'event' => $event,
+                    'details' => $details
+                ]);
+            }
+        }
     }
 
     /**
@@ -154,23 +214,7 @@ class ChangelogManager
      */
     function __destruct()
     {
-        if(!empty($this->cache)) {
-            $cache = $this->cache;
-            $causer = Auth::id();
-
-            // defer(function () use ($cache, $causer) {
-                foreach($cache as $key => $details) {
-                    [$type, $id, $event] = explode("_", $key);
-
-                    Changelog::create([
-                        'subject_type' => $type,
-                        'subject_id' => $id,
-                        'causer_id' => $causer,
-                        'event' => $event,
-                        'details' => $details
-                    ]);
-                }
-            // });
-        }
+        // Wołaj flush() aby zapisać cache
+        $this->flush();
     }
 }

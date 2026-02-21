@@ -5,8 +5,9 @@ namespace App\Modules\Tasks\Models;
 use App\Models\AbstractModel;
 use App\Models\User;
 use App\Modules\Changelog\Interfaces\HasChangelog as InterfacesHasChangelog;
-use App\Modules\Changelog\Managers\BagTracker;
 use App\Modules\Changelog\Managers\FieldTracker;
+use App\Modules\Changelog\Managers\BagTracker;
+use App\Modules\Changelog\Managers\StatusTracker;
 use App\Modules\Changelog\Managers\ModelChangelogManager;
 use App\Modules\Changelog\Traits\HasChangelog;
 use App\Modules\Comments\Traits\HasComments;
@@ -50,6 +51,7 @@ class Task extends AbstractModel implements InterfacesHasChangelog
     public function getChangelogManager(): ModelChangelogManager
     {
         return new ModelChangelogManager($this, [
+            StatusTracker::make('status')->trackOriginalInUpdating(),
             FieldTracker::make('title')->withComparison(),
             FieldTracker::make('description')->withComparison(),
             FieldTracker::make('priority')->asComponent('badge')->withMap(function (?TaskPriority $priority, Task $task) {

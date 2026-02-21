@@ -35,6 +35,6 @@ return [
         'restored' => 'Restored',
         'archived' => 'Archived',
         'unarchived' => 'Unarchived',
-        'status_changed' => 'Status changed',
+        'change_status' => 'Status changed',
     ],
 ];
