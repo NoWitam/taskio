@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import InnerLabelSelect from "@/modules/labels/components/LabelSelect.vue";
+import { computed } from "vue";
+import { useI18n } from "@/composables/useI18n";
 
 const props = withDefaults(
   defineProps<{
@@ -17,7 +19,7 @@ const props = withDefaults(
     modelValue: () => [],
     operator: null,
     addable: false,
-    placeholder: "Wybierz etykiety...",
+    placeholder: "",
   }
 );
 
@@ -25,11 +27,17 @@ const emit = defineEmits<{
   (e: "update:modelValue", value: string[]): void;
   (e: "update:operator", value: "AND" | "OR"): void;
 }>();
+
+const { t } = useI18n();
+
+const defaultPlaceholder = computed(() => 
+  props.placeholder || t('tasks.selectLabels')
+);
 </script>
 
 <template>
   <InnerLabelSelect
-    v-bind="props"
+    v-bind="{ ...props, placeholder: defaultPlaceholder }"
     @update:modelValue="(v) => emit('update:modelValue', v)"
     @update:operator="(v) => emit('update:operator', v)"
   />

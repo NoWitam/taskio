@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, useSlots, onBeforeUnmount } from "vue";
+import { useI18n } from "@/composables/useI18n";
 import { cn } from "@/lib/helpers";
 import DropdownMenu from "@/components/ui/DropdownMenu.vue";
 import Button from "@/components/ui/Button.vue";
@@ -38,6 +39,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string | null): void }>();
 
+const { t } = useI18n();
 const inputId = props.id ?? `date_${Math.random().toString(16).slice(2)}`;
 const localValue = ref(""); // display value dd.mm.yyyy partial allowed
 const inputRef = ref<HTMLInputElement | null>(null);
@@ -587,9 +589,9 @@ watch(
               :disabled="disabled"
               @click="(e: any) => { clearValue(e); }"
             >
-              Wyczyść
+              {{ t('common.clearButton') }}
             </Button>
-            <Button variant="primary" size="sm" @click="closeMenu(); menuOpen = false">Wybierz</Button>
+            <Button variant="primary" size="sm" @click="closeMenu(); menuOpen = false">{{ t('common.selectButton') }}</Button>
           </div> 
         </div>
       </template>

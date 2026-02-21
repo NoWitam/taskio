@@ -47,11 +47,13 @@ class StatusTracker extends AbstractTracker
                 'label' => $beforeStatus->label(),
                 'tone' => $beforeStatus->tone(),
                 'icon' => $beforeStatus->icon(),
+                'translation_key' => 'changelog.statusValues.' . $beforeStatus->value,
             ],
             'after' => [
                 'label' => $afterStatus->label(),
                 'tone' => $afterStatus->tone(),
                 'icon' => $afterStatus->icon(),
+                'translation_key' => 'changelog.statusValues.' . $afterStatus->value,
             ]
         ];
     }

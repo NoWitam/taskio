@@ -15,7 +15,7 @@
     <!-- Main Menu -->
     <nav class="p-3 space-y-1">
       <div class="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-        Main Menu
+        {{ t('navigation.mainMenu') }}
       </div>
       
       <div class="flex flex-col gap-2">
@@ -38,7 +38,7 @@
             ]"
           />
           <span class="font-medium text-sm">
-            {{ formatModuleName(module) }}
+            {{ getModuleLabel(module) }}
           </span>
         </router-link>
       </div>
@@ -62,6 +62,7 @@ import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import Icon from '@/components/ui/Icon.vue';
 import { useAuth } from '@/composables/useAuth';
+import { useI18n } from '@/composables/useI18n';
 import { useUserStore } from '@/store/user';
 
 const props = defineProps({
@@ -75,6 +76,7 @@ const emit = defineEmits(['toggle']);
 
 const route = useRoute();
 const { userName } = useAuth();
+const { t } = useI18n();
 const userStore = useUserStore();
 
 const availableModules = computed(() => {
@@ -97,6 +99,11 @@ const getModuleIcon = (module) => {
 
 const formatModuleName = (module) => {
   return module.charAt(0).toUpperCase() + module.slice(1);
+};
+
+const getModuleLabel = (module) => {
+  const label = t(`modules.${module}`, '');
+  return label || formatModuleName(module);
 };
 
 const toggleSidebar = () => {

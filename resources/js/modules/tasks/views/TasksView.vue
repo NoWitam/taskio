@@ -1,8 +1,8 @@
 <template>
 <div class="h-full max-h-full min-h-0 flex flex-col gap-8 px-6 pt-6 overflow-hidden">
     <PageHeader
-        title="Zadania"
-        description="Zarządzaj i organizuj pracę swojego zespołu."
+        :title="t('tasks.title')"
+        :description="t('tasks.description')"
     >
         <template #icon>
             <span class="text-primary">
@@ -13,7 +13,7 @@
         <template #actions>
             <Button variant="primary" @click="showCreateTaskDialog = true">
                 <Icon name="plus" size="sm" />
-                Nowe zadanie
+                {{ t('tasks.newTask') }}
             </Button>
         </template>
 
@@ -25,7 +25,7 @@
         <div class="col-span-4 flex">
             <TextInput
                 v-model="filters.search"
-                placeholder="Szukaj zadań.."
+                :placeholder="t('tasks.searchPlaceholder')"
             >
                 <template #left>
                     <span
@@ -40,13 +40,7 @@
         <div class="col-span-1">
             <SelectInput
                 v-model="filters.priority"
-                :options="[
-                    { label: 'Wszystkie', value: '' },
-                    { label: 'Pilny', value: 'urgent' },
-                    { label: 'Wysoki', value: 'high' },
-                    { label: 'Średni', value: 'medium' },
-                    { label: 'Niski', value: 'low' },
-                ]"
+                :options="priorityOptions"
             >
                 <template #left>
                     <span
@@ -84,7 +78,7 @@
 
     <FilterBar
         urlable
-        title="Aktywne filtry"
+        :title="t('tasks.activeFilters')"
         :active="activeFilters"
         :urlQuery="urlQuery"
         @remove="removeActiveFilter"
@@ -144,6 +138,7 @@ import { computed, ref, watch, onMounted } from 'vue';
 import Icon from '../../../components/ui/Icon.vue';
 import SelectInput from '../../../components/ui/inputs/SelectInput.vue';
 import { useDebounceFn } from '@/composables/useDebounce';
+import { useI18n } from '@/composables/useI18n';
 import FilterBar, { type ActiveFilter } from '@/components/ui/tables/FilterBar.vue';
 import { useUsersStore } from '@/store/users';
 import { useLabelsStore } from '@/store/labels';
@@ -153,6 +148,7 @@ import { useTasksStore } from '@/store/tasks';
 import { useTasksUrlFilters } from '@/modules/tasks/composables/useTasksUrlFilters';
 import { useRouter, useRoute } from 'vue-router';
 
+const { t } = useI18n();
 const tab = ref('main');
 
 const tasksStore = useTasksStore();
@@ -162,6 +158,14 @@ const router = useRouter();
 const route = useRoute();
 const showCreateTaskDialog = ref(false);
 const { filters, taskFilters, urlQuery } = useTasksUrlFilters();
+
+const priorityOptions = computed(() => [
+    { label: t('tasks.allPriorities'), value: '' },
+    { label: t('tasks.urgentPriority'), value: 'urgent' },
+    { label: t('tasks.highPriority'), value: 'high' },
+    { label: t('tasks.mediumPriority'), value: 'medium' },
+    { label: t('tasks.lowPriority'), value: 'low' },
+]);
 
 // Dialog state for task preview
 const isTaskDialogOpen = ref(false);
@@ -209,14 +213,14 @@ onMounted(() => {
 
 function displayDatePreset(preset: typeof filters.value.dateRange.preset) {
     const presetLabels: Record<string, string> = {
-        today: 'Dzisiaj',
-        this_week: 'Ten tydzień',
-        last_week: 'Ostatni tydzień',
-        this_month: 'Ten miesiąc',
+        today: t('datePicker.today'),
+        this_week: t('datePicker.thisWeek'),
+        last_week: t('datePicker.lastWeek'),
+        this_month: t('datePicker.thisMonth'),
     };
 
     if (!preset) return '';
-    return presetLabels[preset] ?? 'Zakres terminów';
+    return presetLabels[preset] ?? t('tasks.deadline');
 }
 
 function displayDateYmd(ymd: string | null) {
@@ -231,16 +235,16 @@ const activeFilters = computed<ActiveFilter[]>(() => {
     const f = filters.value;
 
     const search = (f.search ?? '').trim();
-    if (search) active.push({ key: 'search', label: `Szukaj: ${search}` });
+    if (search) active.push({ key: 'search', label: `${t('common.search')}: ${search}` });
 
     if (f.priority) {
         const priorityLabel: Record<string, string> = {
-            urgent: 'Pilny',
-            high: 'Wysoki',
-            medium: 'Średni',
-            low: 'Niski',
+            urgent: t('tasks.urgentPriority'),
+            high: t('tasks.highPriority'),
+            medium: t('tasks.mediumPriority'),
+            low: t('tasks.lowPriority'),
         };
-        active.push({ key: 'priority', label: `Priorytet: ${priorityLabel[f.priority] ?? f.priority}` });
+        active.push({ key: 'priority', label: `${t('tasks.priority')}: ${priorityLabel[f.priority] ?? f.priority}` });
     }
 
     const selectedUserIds = Array.isArray(f.user_id)
@@ -250,26 +254,26 @@ const activeFilters = computed<ActiveFilter[]>(() => {
     selectedUserIds.forEach((id) => {
         const u = usersStore.usersById?.[String(id)];
         const name = u?.name ? u.name : `#${id}`;
-        active.push({ key: `user_id:${id}`, label: `Użytkownik: ${name}` });
+        active.push({ key: `user_id:${id}`, label: `${t('users.title')}: ${name}` });
     });
 
     if (Array.isArray(f.labels) && f.labels.length) {
         f.labels.forEach((labelId) => {
             const l = labelsStore.labelsById?.[String(labelId)];
             const text = l?.name ? l.name : `#${labelId}`;
-            active.push({ key: `labels:${labelId}`, label: `Etykieta: ${text}` });
+            active.push({ key: `labels:${labelId}`, label: `${t('tasks.labels')}: ${text}` });
         });
     }
 
-    if (f.dateRange.from) active.push({ key: 'date_from', label: `Termin: od ${displayDateYmd(f.dateRange.from)}` });
-    if (f.dateRange.to) active.push({ key: 'date_to', label: `Termin: do ${displayDateYmd(f.dateRange.to)}` });
+    if (f.dateRange.from) active.push({ key: 'date_from', label: `${t('tasks.deadline')}: ${t('tasks.from')} ${displayDateYmd(f.dateRange.from)}` });
+    if (f.dateRange.to) active.push({ key: 'date_to', label: `${t('tasks.deadline')}: ${t('tasks.to')} ${displayDateYmd(f.dateRange.to)}` });
     if (f.dateRange.preset) {
         const presetText = displayDatePreset(f.dateRange.preset);
-        if (presetText) active.push({ key: 'date_preset', label: `Termin: ${presetText}` });
+        if (presetText) active.push({ key: 'date_preset', label: `${t('tasks.deadline')}: ${presetText}` });
     }
 
     if (f.dateRange.hide_without_deadline) {
-        active.push({ key: 'hide_without_deadline', label: 'Bez terminu: ukryte' });
+        active.push({ key: 'hide_without_deadline', label: t('tasks.without_deadline') });
     }
 
     return active;
@@ -278,8 +282,8 @@ const activeFilters = computed<ActiveFilter[]>(() => {
 const labelsOperatorInfo = computed(() => {
     const f = filters.value;
     if (!Array.isArray(f.labels) || f.labels.length <= 1) return '';
-    const op = f.label_operator === 'AND' ? 'ORAZ' : 'LUB';
-    return `Etykiety (${op})`;
+    const op = f.label_operator === 'AND' ? t('tasks.labels_and') : t('tasks.labels_or');
+    return op;
 });
 
 function removeActiveFilter(key: string) {
@@ -343,11 +347,16 @@ watch(
 
 const tabs = [
     { 
-        id: "main", label: "Lista", 
-        statuses: [{ key: "to_do", label: "Do zrobienia"}, { key: "in_progress", label: "W trakcie"}, { key: "in_test", label: "W testach"}, { key: "done", label: "Zrobione" }] 
+        id: "main", label: t('tasks.list'), 
+        statuses: [
+            { key: "to_do", label: t('tasks.toDo')}, 
+            { key: "in_progress", label: t('tasks.inProgress')}, 
+            { key: "in_test", label: t('tasks.inTest')}, 
+            { key: "done", label: t('tasks.done')} 
+        ] 
     },
-    { id: "archive", label: "Archiwum", icon: "archive", statuses: [{ key: "archive", label: "Archiwum"}] },
-    { id: "trash", label: "Kosz", icon: "trash", statuses: [{ key: "trash", label: "Kosz"}] },
+    { id: "archive", label: t('tasks.archive'), icon: "archive", statuses: [{ key: "archive", label: t('tasks.archive')}] },
+    { id: "trash", label: t('tasks.trash'), icon: "trash", statuses: [{ key: "trash", label: t('tasks.trash')}] },
 ];
 
 const activeTab = computed(() => {

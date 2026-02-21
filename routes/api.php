@@ -1,12 +1,17 @@
 <?php
 
+use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 
-Route::get('/user', function (Request $request) {
-    return $request->user();
-})->middleware('auth:sanctum');
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/user', function (Request $request) {
+        return $request->user();
+    });
+
+    Route::put('/user/locale', [UserController::class, 'updateLocale']);
+});
 
 Route::get('/test', function () {
     $string1 = "Witajcie w mojej bajce, slon zagra na fujarce";

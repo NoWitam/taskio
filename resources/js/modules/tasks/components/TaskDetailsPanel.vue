@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue';
 import { useTasksStore, type Task, type ChangelogEntry } from '@/store/tasks';
+import { useI18n } from '@/composables/useI18n';
 import Icon from '@/components/ui/Icon.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import Tabs from '@/components/ui/Tabs.vue';
@@ -12,14 +13,22 @@ const props = defineProps<{
 }>();
 
 const tasksStore = useTasksStore();
+const { t } = useI18n();
 const activeTab = ref('history');
 
-const tabs = [
-    { id: 'history', label: 'Historia', icon: 'clock' },
-    { id: 'form', label: 'Formularz', icon: 'file-text' },
-    { id: 'checklist', label: 'Checklista', icon: 'check-square' },
-    { id: 'approval', label: 'Lejek zatwierdzenia', icon: 'git-merge' },
+const tabsData = [
+    { id: 'history', labelKey: 'taskDetails.tabHistory', icon: 'clock' },
+    { id: 'form', labelKey: 'taskDetails.tabForm', icon: 'file-text' },
+    { id: 'checklist', labelKey: 'taskDetails.tabChecklist', icon: 'check-square' },
+    { id: 'approval', labelKey: 'taskDetails.tabApproval', icon: 'git-merge' },
 ];
+
+const tabs = computed(() =>
+    tabsData.map(tab => ({
+        ...tab,
+        label: t(tab.labelKey),
+    }))
+);
 
 const changelog = computed(() => tasksStore.changelogByTask[props.task.id] || []);
 const loadingChangelog = computed(() => tasksStore.loadingChangelog[props.task.id] || false);
@@ -29,12 +38,12 @@ const fetchChangelog = async () => {
 };
 
 const formatDate = (dateString?: string | null) => {
-    if (!dateString) return 'Brak';
+    if (!dateString) return t('taskDetails.noValue');
     try {
         const date = new Date(dateString);
         const day = date.getDate();
-        const months = ['stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia'];
-        const month = months[date.getMonth()];
+        const months = t('datePicker.months');
+        const month = months[date.getMonth()] || '';
         const year = date.getFullYear();
         return `${day} ${month} ${year}`;
     } catch {
@@ -80,7 +89,7 @@ const getEventTone = (event: string) => {
 };
 
 const formatChangeValue = (value: any): string => {
-    if (value === null || value === undefined) return 'brak';
+    if (value === null || value === undefined) return t('taskDetails.noValue');
     if (typeof value === 'boolean') return value ? 'tak' : 'nie';
     if (typeof value === 'object') return JSON.stringify(value);
     return String(value);
@@ -130,7 +139,7 @@ watch(() => props.task, (newVal, oldVal) => {
         <div class="flex items-start gap-3">
           <Icon name="calendar" size="sm" class="mt-0.5 text-muted-foreground" />
           <div>
-            <div class="text-xs font-medium text-muted-foreground">Termin</div>
+            <div class="text-xs font-medium text-muted-foreground">{{ t('taskDetails.deadline') }}</div>
             <div class="text-sm">{{ formatDate(task.deadline) }}</div>
           </div>
         </div>
@@ -139,7 +148,7 @@ watch(() => props.task, (newVal, oldVal) => {
         <div class="flex items-start gap-3">
           <Icon name="user" size="sm" class="mt-0.5 text-muted-foreground" />
           <div>
-            <div class="text-xs font-medium text-muted-foreground">Przypisana osoba</div>
+            <div class="text-xs font-medium text-muted-foreground">{{ t('taskDetails.assignedUser') }}</div>
             <div class="flex items-center gap-2 text-sm">
               <Avatar :name="task.assigned.name" :src="task.assigned.avatar" size="xs" />
               {{ task.assigned.name }}
@@ -151,7 +160,7 @@ watch(() => props.task, (newVal, oldVal) => {
         <div v-if="task.creator" class="flex items-start gap-3">
           <Icon name="user-circle" size="sm" class="mt-0.5 text-muted-foreground" />
           <div>
-            <div class="text-xs font-medium text-muted-foreground">Utworzył</div>
+            <div class="text-xs font-medium text-muted-foreground">{{ t('taskDetails.createdBy') }}</div>
             <div class="flex items-center gap-2 text-sm">
               <Avatar :name="task.creator.name" :src="task.creator.avatar" size="xs" />
               {{ task.creator.name }}
@@ -163,10 +172,10 @@ watch(() => props.task, (newVal, oldVal) => {
         <div class="w-full flex items-start gap-3">
           <Icon name="file-text" size="sm" class="mt-0.5 text-muted-foreground" />
           <div class="flex-1">
-            <div class="text-xs font-medium text-muted-foreground">Opis</div>
+            <div class="text-xs font-medium text-muted-foreground">{{ t('taskDetails.description') }}</div>
             <div class="mt-1 h-[200px] overflow-y-auto pr-3 text-sm">
               <p v-if="task.description" class="whitespace-pre-wrap">{{ task.description }}</p>
-              <p v-else class="text-muted-foreground">Brak opisu</p>
+              <p v-else class="text-muted-foreground">{{ t('taskDetails.noDescription') }}</p>
             </div>
           </div>
         </div>
@@ -196,7 +205,7 @@ watch(() => props.task, (newVal, oldVal) => {
         <div v-else-if="changelog.length === 0" class="flex items-center justify-center py-12 text-muted-foreground">
           <div class="text-center">
             <Icon name="clock" size="lg" class="mx-auto mb-2 opacity-50" />
-            <p class="text-sm">Brak historii zmian</p>
+            <p class="text-sm">{{ t('taskDetails.noChanges') }}</p>
           </div>
         </div>
 
@@ -228,7 +237,7 @@ watch(() => props.task, (newVal, oldVal) => {
               <div class="mb-2 flex items-start justify-between gap-2">
                 <div>
                   <Badge :tone="getEventTone(entry.event)" size="sm">
-                    {{ entry.event_description }}
+                    {{ t(entry.event_description) }}
                   </Badge>
                   <div v-if="entry.causer" class="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
                     <span>{{ entry.causer.name }}</span>
@@ -246,18 +255,20 @@ watch(() => props.task, (newVal, oldVal) => {
                   :key="key"
                   class="text-sm"
                 >
-                  <div class="mb-1 font-medium text-foreground">{{ detail.field_label || key }}:</div>
+                  <div class="mb-1 font-medium text-foreground">
+                    {{ detail.field_translation_key ? t(detail.field_translation_key) : detail.field_label || key }}:
+                  </div>
                   <div class="ml-3">
                     <!-- Status change (custom event) -->
                     <div v-if="detail.type === 'status_change'" class="flex items-center gap-2">
                       <Badge v-if="detail.before" :tone="detail.before.tone" size="sm">
                         <Icon :name="detail.before.icon" size="xs" class="mr-1" />
-                        {{ detail.before.label }}
+                        {{ detail.before.translation_key ? t(detail.before.translation_key) : detail.before.label }}
                       </Badge>
                       <Icon name="chevron-right" size="xs" class="text-muted-foreground" />
                       <Badge v-if="detail.after" :tone="detail.after.tone" size="sm">
                         <Icon :name="detail.after.icon" size="xs" class="mr-1" />
-                        {{ detail.after.label }}
+                        {{ detail.after.translation_key ? t(detail.after.translation_key) : detail.after.label }}
                       </Badge>
                     </div>
                     
@@ -267,15 +278,15 @@ watch(() => props.task, (newVal, oldVal) => {
                       <div v-if="detail.component === 'badge'" class="flex items-center gap-2">
                         <Badge v-if="detail.before" :tone="detail.before.tone" size="sm">
                           <Icon v-if="detail.before.icon" :name="detail.before.icon" size="xs" class="mr-1" />
-                          {{ detail.before.label }}
+                          {{ detail.before.translation_key ? t(detail.before.translation_key) : detail.before.label }}
                         </Badge>
-                        <span v-else class="text-muted-foreground italic">brak</span>
+                        <span v-else class="text-muted-foreground italic">{{ t('taskDetails.noValue') }}</span>
                         <Icon name="chevron-right" size="xs" class="text-muted-foreground" />
                         <Badge v-if="detail.after" :tone="detail.after.tone" size="sm">
                           <Icon v-if="detail.after.icon" :name="detail.after.icon" size="xs" class="mr-1" />
-                          {{ detail.after.label }}
+                          {{ detail.after.translation_key ? t(detail.after.translation_key) : detail.after.label }}
                         </Badge>
-                        <span v-else class="text-muted-foreground italic">brak</span>
+                        <span v-else class="text-muted-foreground italic">{{ t('taskDetails.noValue') }}</span>
                       </div>
                       <!-- User component render (assigned user) -->
                       <div v-else-if="isUserObject(detail.before) || isUserObject(detail.after)" class="flex items-center gap-2">
@@ -283,13 +294,13 @@ watch(() => props.task, (newVal, oldVal) => {
                           <Avatar :name="detail.before.name" :src="detail.before.avatar" size="xs" />
                           <span class="text-sm">{{ detail.before.name }}</span>
                         </div>
-                        <span v-else class="text-muted-foreground italic text-sm">brak</span>
+                        <span v-else class="text-muted-foreground italic text-sm">{{ t('taskDetails.noValue') }}</span>
                         <Icon name="chevron-right" size="xs" class="text-muted-foreground" />
                         <div v-if="detail.after" class="flex items-center gap-2">
                           <Avatar :name="detail.after.name" :src="detail.after.avatar" size="xs" />
                           <span class="text-sm">{{ detail.after.name }}</span>
                         </div>
-                        <span v-else class="text-muted-foreground italic text-sm">brak</span>
+                        <span v-else class="text-muted-foreground italic text-sm">{{ t('taskDetails.noValue') }}</span>
                       </div>
                       <!-- Text comparison (word-level diff) -->
                       <div v-else-if="detail.comparison" class="rounded-md bg-muted/30 p-3">
@@ -318,7 +329,7 @@ watch(() => props.task, (newVal, oldVal) => {
                       <div v-if="detail.attached?.length > 0" class="space-y-1">
                         <div class="flex items-center gap-1 text-xs font-medium text-success">
                           <Icon name="plus" size="xs" />
-                          <span>Dodano ({{ detail.attached.length }})</span>
+                          <span>{{ t('taskDetails.added', '', { count: detail.attached.length }) }}</span>
                         </div>
                         <div class="ml-5 space-y-1">
                           <!-- Files -->
@@ -339,20 +350,20 @@ watch(() => props.task, (newVal, oldVal) => {
                         </div>
                       </div>
                       <!-- Detached items -->
-                      <div v-if="detail.dettached?.length > 0" class="space-y-1">
+                      <div v-if="detail.detached?.length > 0" class="space-y-1">
                         <div class="flex items-center gap-1 text-xs font-medium text-danger">
                           <Icon name="x-circle" size="xs" />
-                          <span>Usunięto ({{ detail.dettached.length }})</span>
+                          <span>{{ t('taskDetails.removed', '', { count: detail.detached.length }) }}</span>
                         </div>
                         <div class="ml-5 space-y-1">
                           <!-- Files -->
-                          <div v-if="key === 'files'" v-for="item in detail.dettached" :key="item.id" class="flex items-center gap-2 text-xs">
+                          <div v-if="key === 'files'" v-for="item in detail.detached" :key="item.id" class="flex items-center gap-2 text-xs">
                             <Icon :name="getFileIcon(item.type)" size="xs" class="text-muted-foreground" />
                             <span class="font-medium">{{ item.name }}</span>
                             <span class="text-muted-foreground">({{ formatFileSize(item.size) }})</span>
                           </div>
                           <!-- Labels -->
-                          <div v-else v-for="item in detail.dettached" :key="item.id" class="flex items-center gap-2 text-xs">
+                          <div v-else v-for="item in detail.detached" :key="item.id" class="flex items-center gap-2 text-xs">
                             <Icon v-if="item.icon" :name="item.icon" size="xs" class="text-muted-foreground" />
                             <Icon v-else name="tag" size="xs" class="text-muted-foreground" />
                             <span>{{ item.name }}</span>
@@ -372,7 +383,7 @@ watch(() => props.task, (newVal, oldVal) => {
         <div class="flex items-center justify-center py-12 text-muted-foreground">
           <div class="text-center">
             <Icon name="file-text" size="lg" class="mx-auto mb-2 opacity-50" />
-            <p class="text-sm">Formularz w przygotowaniu</p>
+            <p class="text-sm">{{ t('taskDetails.formPreparing') }}</p>
           </div>
         </div>
       </div>
@@ -381,7 +392,7 @@ watch(() => props.task, (newVal, oldVal) => {
         <div class="flex items-center justify-center py-12 text-muted-foreground">
           <div class="text-center">
             <Icon name="check-square" size="lg" class="mx-auto mb-2 opacity-50" />
-            <p class="text-sm">Checklista w przygotowaniu</p>
+            <p class="text-sm">{{ t('taskDetails.checklistPreparing') }}</p>
           </div>
         </div>
       </div>
@@ -390,7 +401,7 @@ watch(() => props.task, (newVal, oldVal) => {
         <div class="flex items-center justify-center py-12 text-muted-foreground">
           <div class="text-center">
             <Icon name="git-merge" size="lg" class="mx-auto mb-2 opacity-50" />
-            <p class="text-sm">Lejek zatwierdzenia w przygotowaniu</p>
+            <p class="text-sm">{{ t('taskDetails.approvalPreparing') }}</p>
           </div>
         </div>
       </div>

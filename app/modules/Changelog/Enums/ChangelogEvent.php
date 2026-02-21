@@ -15,13 +15,13 @@ enum ChangelogEvent: string
     public function getDescription(): string
     {
         return match($this) {
-            self::CREATED => 'Utworzył',
-            self::UPDATED => 'Edytował',
-            self::DELETED => 'Usunął',
-            self::RESTORED => 'Przywrócił',
-            self::ARCHIVED => 'Zarchiwizował',
-            self::UNARCHIVED => 'Od-archiwizował',
-            self::CHANGE_STATUS => 'Zmienił status',
+            self::CREATED => 'changelog.created',
+            self::UPDATED => 'changelog.updated',
+            self::DELETED => 'changelog.deleted',
+            self::RESTORED => 'changelog.restored',
+            self::ARCHIVED => 'changelog.archived',
+            self::UNARCHIVED => 'changelog.unarchived',
+            self::CHANGE_STATUS => 'changelog.changedStatus',
         };
     }
 }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, useSlots, onBeforeUnmount } from "vue";
+import { useI18n } from "@/composables/useI18n";
 import { cn } from "@/lib/helpers";
 import DropdownMenu from "@/components/ui/DropdownMenu.vue";
 import Button from "@/components/ui/Button.vue";
@@ -22,6 +23,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
 
+const { t } = useI18n();
 const inputId = props.id ?? `time_${Math.random().toString(16).slice(2)}`;
 
 // Local display value (what is shown in the input)
@@ -535,7 +537,7 @@ function onPanelKeydown(e: KeyboardEvent, closeMenu?: () => void) {
 
           <!-- panel actions -->
           <div class="absolute right-3 bottom-3">
-            <Button variant="primary" size="sm" @click="closeMenu()">Wybierz</Button>
+            <Button variant="primary" size="sm" @click="closeMenu()">{{ t('common.selectButton') }}</Button>
           </div>
         </div>
       </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
   import { computed, ref } from "vue";
+  import { useI18n } from "@/composables/useI18n";
   import { cn } from "@/lib/helpers";
 
   import DropdownMenu from "@/components/ui/DropdownMenu.vue";
@@ -38,6 +39,7 @@ import Button from '@/components/ui/Button.vue';
 
   const emit = defineEmits<{ (e: "update:modelValue", value: string | null): void }>();
 
+  const { t } = useI18n();
   const inputId = props.id ?? `icon_${Math.random().toString(16).slice(2)}`;
   const query = ref("");
 
@@ -96,8 +98,8 @@ import Button from '@/components/ui/Button.vue';
               class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary/60"
               @click.stop="clearSelection"
               :disabled="disabled"
-              aria-label="Wyczyść wybór"
-              title="Wyczyść"
+              :aria-label="t('common.clear')"
+              :title="t('common.clear')"
             >
               <Icon name="x" :size="16" />
             </Button>
@@ -112,7 +114,7 @@ import Button from '@/components/ui/Button.vue';
       <template #default="{ closeMenu }">
         <div class="min-w-md">
             <div class="p-2 border-b border-border">
-                <TextInput v-model="query" placeholder="Szukaj ikony…" class="w-full" />
+                <TextInput v-model="query" :placeholder="t('inputs.searchIcon')" class="w-full" />
             </div>
 
           <div class="p-2 max-h-72 overflow-auto">

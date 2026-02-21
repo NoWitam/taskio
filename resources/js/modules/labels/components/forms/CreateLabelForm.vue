@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useLabelsStore } from '@/store/labels';
+import { useI18n } from '@/composables/useI18n';
 import type { Label } from '@/types';
 
 import Badge from '@/components/ui/Badge.vue';
@@ -10,6 +11,8 @@ import TextInput from '@/components/ui/inputs/TextInput.vue';
 import ColorInput from '@/components/ui/inputs/ColorInput.vue';
 import IconInput from '@/components/ui/inputs/IconInput.vue';
 
+const { t } = useI18n();
+
 const props = withDefaults(
   defineProps<{
     submitLabel?: string;
@@ -18,8 +21,6 @@ const props = withDefaults(
     disabled?: boolean;
   }>(),
   {
-    submitLabel: 'Utwórz',
-    cancelLabel: 'Anuluj',
     cancelable: true,
     disabled: false,
   }
@@ -40,12 +41,16 @@ const name = ref('');
 const color = ref<string | null>(null);
 const icon = ref<string | null>(null);
 
+// Computed properties for labels
+const submitButtonLabel = computed(() => props.submitLabel || t('common.create'));
+const cancelButtonLabel = computed(() => props.cancelLabel || t('common.cancel'));
+
 const nameError = computed(() => {
   if (!touched.value) return undefined;
-  return name.value.trim() ? undefined : 'Nazwa jest wymagana';
+  return name.value.trim() ? undefined : t('validation.required');
 });
 
-const previewText = computed(() => name.value.trim() || 'Nowa etykieta');
+const previewText = computed(() => name.value.trim() || t('labels.newLabel'));
 const previewTone = computed(() => (color.value ? 'custom' : 'neutral'));
 const previewColor = computed(() => (color.value ? color.value : undefined));
 
@@ -65,7 +70,7 @@ async function submit() {
 
     emit('created', created);
   } catch (e: any) {
-    error.value = labelsStore.error || e?.response?.data?.message || e?.message || 'Nie udało się utworzyć etykiety';
+    error.value = labelsStore.error || e?.response?.data?.message || e?.message || t('labels.labelCreated');
   } finally {
     submitting.value = false;
   }
@@ -75,23 +80,23 @@ async function submit() {
 <template>
   <form class="space-y-4" @submit.prevent="submit">
     <div>
-      <div class="text-sm font-semibold text-muted-foreground mb-2">Podgląd</div>
+      <div class="text-sm font-semibold text-muted-foreground mb-2">{{ t('common.preview') }}</div>
       <Badge :tone="previewTone" :color="previewColor" class="font-medium gap-2">
         <Icon v-if="icon" :name="icon" size="xs" />
         <span class="truncate">{{ previewText }}</span>
       </Badge>
     </div>
 
-    <TextInput v-model="name" label="Nazwa" placeholder="Np. Pilne" :error="nameError" />
+    <TextInput v-model="name" :label="t('labels.labelName')" :placeholder="`${t('forms.enterName')}…`" :error="nameError" />
 
     <ColorInput
       v-model="color"
-      label="Kolor (opcjonalnie)"
-      placeholder="Wybierz kolor…"
+      :label="t('labels.color') + ' (' + t('common.optional') + ')'"
+      :placeholder="t('labels.chooseColor') + '…'"
       :clearable="true"
     />
 
-    <IconInput v-model="icon" label="Ikona (opcjonalnie)" placeholder="Wybierz ikonę…" />
+    <IconInput v-model="icon" :label="t('labels.icon') + ' (' + t('common.optional') + ')'" :placeholder="t('labels.chooseIcon') + '…'" />
 
     <p v-if="error" class="text-xs text-danger">{{ error }}</p>
 
@@ -103,10 +108,10 @@ async function submit() {
         :disabled="submitting || disabled"
         @click="emit('cancel')"
       >
-        {{ cancelLabel }}
+        {{ cancelButtonLabel }}
       </Button>
       <Button type="submit" variant="primary" :disabled="submitting || disabled">
-        {{ submitLabel }}
+        {{ submitButtonLabel }}
       </Button>
     </div>
   </form>

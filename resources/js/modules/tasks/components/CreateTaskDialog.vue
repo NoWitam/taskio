@@ -14,6 +14,7 @@ import { useTasksStore } from '@/store/tasks';
 import { useUsersStore } from '@/store/users';
 import { useLabelsStore } from '@/store/labels';
 import { useToast } from '@/composables/useToast';
+import { useI18n } from '@/composables/useI18n';
 import type { TaskAttachment } from '@/store/tasks';
 
 type Priority = 'urgent' | 'high' | 'medium' | 'low';
@@ -38,6 +39,7 @@ const tasksStore = useTasksStore();
 const usersStore = useUsersStore();
 const labelsStore = useLabelsStore();
 const { push: pushToast } = useToast();
+const { t } = useI18n();
 
 const submitting = ref(false);
 const existingAttachments = ref<TaskAttachment[]>([]);
@@ -188,8 +190,8 @@ async function submit() {
       const updated = await tasksStore.updateTask(props.taskId, payload as any);
 
       pushToast({
-        title: 'Zadanie zaktualizowane',
-        message: `"${updated?.title ?? form.title}" zostało zapisane.`,
+        title: t('tasks.taskUpdated'),
+        message: t('tasks.taskUpdatedMessage', null, { title: updated?.title ?? form.title }),
         tone: 'success',
         timeoutMs: 3500,
       });
@@ -202,8 +204,8 @@ async function submit() {
       const created = await tasksStore.createTask(payload as any);
 
       pushToast({
-        title: 'Zadanie utworzone',
-        message: `"${created?.title ?? form.title}" zostało dodane.`,
+        title: t('tasks.taskCreated'),
+        message: t('tasks.taskCreatedMessage', null, { title: created?.title ?? form.title }),
         tone: 'success',
         timeoutMs: 3500,
       });
@@ -213,8 +215,8 @@ async function submit() {
     }
   } catch (e: any) {
     pushToast({
-      title: props.editMode ? 'Nie udało się zaktualizować zadania' : 'Nie udało się utworzyć zadania',
-      message: tasksStore.error ?? 'Sprawdź dane i spróbuj ponownie.',
+      title: props.editMode ? t('tasks.taskUpdateFailed') : t('tasks.taskCreateFailed'),
+      message: tasksStore.error ?? t('tasks.checkData'),
       tone: 'danger',
       timeoutMs: 4500,
     });
@@ -227,8 +229,8 @@ async function submit() {
 <template>
   <Dialog
     v-model="open"
-    :title="props.editMode ? 'Edytuj zadanie' : 'Nowe zadanie'"
-    :description="props.editMode ? 'Wprowadź zmiany w zadaniu.' : 'Utwórz zadanie i przypisz je do osoby odpowiedzialnej.'"
+    :title="props.editMode ? t('tasks.editTask') : t('tasks.newTask')"
+    :description="props.editMode ? t('tasks.editTaskDescription') : t('tasks.newTaskDescription')"
     width="lg"
   >
     <div class="space-y-6">
@@ -236,8 +238,8 @@ async function submit() {
         <div class="col-span-12">
           <TextInput
             v-model="form.title"
-            label="Tytuł"
-            placeholder="Np. Przygotuj ofertę dla klienta"
+            :label="t('tasks.taskName')"
+            :placeholder="t('tasks.searchPlaceholder')"
             :error="errors.title"
           >
             <template #left>
@@ -251,21 +253,21 @@ async function submit() {
         <div class="col-span-12">
           <TextareaInput
             v-model="form.description"
-            label="Opis"
-            placeholder="Dodatkowe informacje, kontekst, kryteria akceptacji..."
+            :label="t('tasks.description')"
+            :placeholder="t('tasks.descriptionPlaceholder')"
           />
         </div>
 
         <div class="col-span-4">
           <SelectInput
             v-model="form.priority"
-            label="Priorytet"
+            :label="t('tasks.priority')"
             :error="errors.priority"
             :options="[
-              { label: 'Pilny', value: 'urgent' },
-              { label: 'Wysoki', value: 'high' },
-              { label: 'Średni', value: 'medium' },
-              { label: 'Niski', value: 'low' },
+              { label: t('tasks.priorityUrgent'), value: 'urgent' },
+              { label: t('tasks.priorityHigh'), value: 'high' },
+              { label: t('tasks.priorityMedium'), value: 'medium' },
+              { label: t('tasks.priorityLow'), value: 'low' },
             ]"
           >
             <template #left>
@@ -279,7 +281,7 @@ async function submit() {
         <div class="col-span-4">
           <DateInput
             v-model="form.deadline"
-            label="Termin"
+            :label="t('tasks.deadline')"
             clearable
             :error="errors.deadline"
             class="min-h-11"
@@ -295,7 +297,7 @@ async function submit() {
         <div class="col-span-4">
           <UserSelect
             v-model="form.assigned_id"
-            label="Przypisany użytkownik"
+            :label="t('tasks.assignedTo')"
             :error="errors.assigned_id"
             :multiple="false"
             :clearable="true"
@@ -305,7 +307,7 @@ async function submit() {
         <div class="col-span-12">
           <LabelSelect
             v-model="form.labels"
-            label="Etykiety"
+            :label="t('tasks.labels')"
             addable
           />
         </div>
@@ -317,10 +319,9 @@ async function submit() {
                 <Icon name="sparkles" />
               </div>
               <div class="min-w-0">
-                <div class="text-sm font-semibold">Formularz do wypełnienia (wkrótce)</div>
+                <div class="text-sm font-semibold">{{ t('tasks.formTitle') }}</div>
                 <div class="mt-1 text-sm text-muted-foreground">
-                  W przyszłości dodamy generator formularzy podpinany do zadania. Przypisany użytkownik będzie musiał
-                  go wypełnić. Ta sekcja jest już przygotowana pod rozbudowę.
+                  {{ t('tasks.formDescription') }}
                 </div>
               </div>
             </div>
@@ -329,7 +330,7 @@ async function submit() {
 
         <div class="col-span-12">
           <div class="space-y-3">
-            <div class="text-sm font-medium text-foreground">Załączniki</div>
+            <div class="text-sm font-medium text-foreground">{{ t('tasks.attachments') }}</div>
             
             <FileDropzone v-model="attachments" :multiple="true" />
             
@@ -421,10 +422,10 @@ async function submit() {
     </div>
 
     <template #footer>
-      <Button type="button" variant="secondary" :disabled="submitting" @click="open = false">Anuluj</Button>
+      <Button type="button" variant="secondary" :disabled="submitting" @click="open = false">{{ t('common.cancel') }}</Button>
       <Button type="button" variant="primary" :loading="submitting" @click="submit">
         <Icon :name="props.editMode ? 'save' : 'plus'" size="sm" />
-        {{ props.editMode ? 'Zapisz' : 'Utwórz' }}
+        {{ props.editMode ? t('common.save') : t('common.create') }}
       </Button>
     </template>
   </Dialog>

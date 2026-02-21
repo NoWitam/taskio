@@ -1,6 +1,7 @@
 <script setup lang="ts">
   import { computed, ref, watch } from "vue";
   import { useRoute, useRouter, type LocationQueryRaw } from "vue-router";
+  import { useI18n } from "@/composables/useI18n";
     import { cn } from "@/lib/helpers";
     import Badge from "@/components/ui/Badge.vue";
     import Button from "@/components/ui/Button.vue";
@@ -31,12 +32,13 @@
         {
         urlable: false,
             title: "Filtry",
-            clearLabel: "Wyczyść",
+            clearLabel: "",
         }
     );
 
     const router = useRouter();
     const route = useRoute();
+    const { t } = useI18n();
 
     const managedKeys = ref<Set<string>>(new Set());
 
@@ -190,12 +192,12 @@
           </Badge>
 
           <Button size="sm" variant="ghost" @click="clearAll">
-            {{ clearLabel }}
+            {{ t('common.clearButton') }}
           </Button>
         </template>
 
         <template v-else>
-          <span class="text-xs font-medium text-foreground/60">Brak aktywnych filtrów</span>
+          <span class="text-xs font-medium text-foreground/60">{{ t('inputs.noActiveFilters') }}</span>
         </template>
       </div>
     </div>

@@ -60,6 +60,7 @@ class Task extends AbstractModel implements InterfacesHasChangelog
                     'label' => $priority->label(),
                     'tone' => $priority->tone(),
                     'icon' => $priority->icon(),
+                    'translation_key' => 'changelog.priorityValues.' . $priority->value,
                 ];
             }),
             FieldTracker::make('deadline')->withMap(function ($date, Task $task) {
