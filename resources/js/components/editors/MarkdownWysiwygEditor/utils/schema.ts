@@ -155,6 +155,8 @@ export const VariableNode = TiptapNode.create({
           'data-variable': true,
           class: 'variable-chip',
           'data-var-id': node.attrs.varId,
+          'data-var-name': node.attrs.varName,
+          'data-var-type': node.attrs.varType,
           'data-ops': JSON.stringify(node.attrs.ops || []),
         }
       ),

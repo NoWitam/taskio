@@ -44,7 +44,17 @@
     "all": "Wszystkie",
     "none": "Brak",
     "optional": "Opcjonalne",
-    "required": "Wymagane"
+    "required": "Wymagane",
+    "operations": "Operacje",
+    "operation": "Operacja",
+    "addOperation": "Dodaj operację",
+    "selectOperation": "Wybierz operację",
+    "addedOperations": "Dodane operacje",
+    "noOperations": "Brak dodanych operacji",
+    "inputType": "Typ wejścia",
+    "arguments": "Argumenty",
+    "lock": "Zablokuj",
+    "unlock": "Odblokuj"
   },
   "theme": {
     "light": "Jasny",
@@ -377,5 +387,219 @@
     "welcome": "Witaj w aplikacji TaskIO!",
     "availableModules": "Dostępne Moduły",
     "debugInfo": "Informacje debugowania"
+  },
+  "editor": {
+    "operations": {
+      "text": {
+        "length": {
+          "name": "Długość",
+          "description": "Zwraca liczbę znaków w tekście"
+        },
+        "uppercase": {
+          "name": "Wielkie litery",
+          "description": "Konwertuje tekst na wielkie litery"
+        },
+        "lowercase": {
+          "name": "Małe litery",
+          "description": "Konwertuje tekst na małe litery"
+        },
+        "trim": {
+          "name": "Przytnij",
+          "description": "Usuwa spacje z obu końców"
+        },
+        "prefix": {
+          "name": "Prefiks",
+          "description": "Dodaje prefiks do tekstu",
+          "args": {
+            "prefix": {
+              "label": "Prefiks",
+              "description": "Tekst do dodania na początku"
+            }
+          }
+        },
+        "suffix": {
+          "name": "Sufiks",
+          "description": "Dodaje sufiks do tekstu",
+          "args": {
+            "suffix": {
+              "label": "Sufiks",
+              "description": "Tekst do dodania na końcu"
+            }
+          }
+        },
+        "slice": {
+          "name": "Wytnij",
+          "description": "Wyciąga część tekstu (początek, koniec)",
+          "args": {
+            "start": {
+              "label": "Początek",
+              "description": "Pozycja początkowa (0-based)"
+            },
+            "end": {
+              "label": "Koniec",
+              "description": "Pozycja końcowa (opcjonalnie)"
+            }
+          }
+        },
+        "truncate": {
+          "name": "Skróć",
+          "description": "Skraca tekst do N znaków",
+          "args": {
+            "length": {
+              "label": "Długość",
+              "description": "Maksymalna liczba znaków"
+            }
+          }
+        },
+        "includes": {
+          "name": "Zawiera",
+          "description": "Sprawdza czy tekst zawiera podciąg",
+          "args": {
+            "substring": {
+              "label": "Podciąg",
+              "description": "Tekst do wyszukania"
+            }
+          }
+        }
+      },
+      "number": {
+        "add": {
+          "name": "Dodaj",
+          "description": "Dodaje wartość do liczby",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Liczba do dodania"
+            }
+          }
+        },
+        "subtract": {
+          "name": "Odejmij",
+          "description": "Odejmuje wartość od liczby",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Liczba do odjęcia"
+            }
+          }
+        },
+        "multiply": {
+          "name": "Pomnóż",
+          "description": "Mnoży liczbę przez wartość",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Mnożnik"
+            }
+          }
+        },
+        "divide": {
+          "name": "Podziel",
+          "description": "Dzieli liczbę przez wartość",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Dzielnik"
+            }
+          }
+        },
+        "modulo": {
+          "name": "Reszta z dzielenia",
+          "description": "Zwraca resztę z dzielenia",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Dzielnik"
+            }
+          }
+        },
+        "floor": {
+          "name": "Zaokrąglij w dół",
+          "description": "Zaokrągla w dół do najbliższej liczby całkowitej"
+        },
+        "ceil": {
+          "name": "Zaokrąglij w górę",
+          "description": "Zaokrągla w górę do najbliższej liczby całkowitej"
+        },
+        "round": {
+          "name": "Zaokrąglij",
+          "description": "Zaokrągla do najbliższej liczby całkowitej"
+        },
+        "abs": {
+          "name": "Wartość bezwzględna",
+          "description": "Zwraca wartość bezwzględną"
+        },
+        "gt": {
+          "name": "Większe niż",
+          "description": "Sprawdza czy liczba jest większa niż wartość",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Liczba do porównania"
+            }
+          }
+        },
+        "lt": {
+          "name": "Mniejsze niż",
+          "description": "Sprawdza czy liczba jest mniejsza niż wartość",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Liczba do porównania"
+            }
+          }
+        },
+        "equals": {
+          "name": "Równa się",
+          "description": "Sprawdza czy liczba równa się wartości",
+          "args": {
+            "value": {
+              "label": "Wartość",
+              "description": "Liczba do porównania"
+            }
+          }
+        }
+      },
+      "boolean": {
+        "negate": {
+          "name": "Neguj",
+          "description": "Odwraca wartość logiczną"
+        },
+        "toText": {
+          "name": "Na tekst",
+          "description": "Konwertuje wartość logiczną na tekst"
+        }
+      },
+      "date": {
+        "format": {
+          "name": "Format",
+          "description": "Formatuje datę na tekst",
+          "args": {
+            "format": {
+              "label": "Format",
+              "description": "Wzór formatu daty (np. YYYY-MM-DD)"
+            }
+          }
+        },
+        "addDays": {
+          "name": "Dodaj dni",
+          "description": "Dodaje dni do daty",
+          "args": {
+            "days": {
+              "label": "Dni",
+              "description": "Liczba dni do dodania"
+            }
+          }
+        },
+        "isFuture": {
+          "name": "W przyszłości",
+          "description": "Sprawdza czy data jest w przyszłości"
+        },
+        "isPast": {
+          "name": "W przeszłości",
+          "description": "Sprawdza czy data jest w przeszłości"
+        }
+      }
+    }
   }
 }

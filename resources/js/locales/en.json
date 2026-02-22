@@ -44,7 +44,17 @@
     "all": "All",
     "none": "None",
     "optional": "Optional",
-    "required": "Required"
+    "required": "Required",
+    "operations": "Operations",
+    "operation": "Operation",
+    "addOperation": "Add Operation",
+    "selectOperation": "Select an operation",
+    "addedOperations": "Added Operations",
+    "noOperations": "No operations added",
+    "inputType": "Input Type",
+    "arguments": "Arguments",
+    "lock": "Lock",
+    "unlock": "Unlock"
   },
   "theme": {
     "light": "Light",
@@ -380,5 +390,219 @@
     "welcome": "Welcome to TaskIO application!",
     "availableModules": "Available Modules",
     "debugInfo": "Debug Info"
+  },
+  "editor": {
+    "operations": {
+      "text": {
+        "length": {
+          "name": "Length",
+          "description": "Returns the number of characters in text"
+        },
+        "uppercase": {
+          "name": "Uppercase",
+          "description": "Converts text to uppercase"
+        },
+        "lowercase": {
+          "name": "Lowercase",
+          "description": "Converts text to lowercase"
+        },
+        "trim": {
+          "name": "Trim",
+          "description": "Removes spaces from both ends"
+        },
+        "prefix": {
+          "name": "Prefix",
+          "description": "Adds prefix to text",
+          "args": {
+            "prefix": {
+              "label": "Prefix",
+              "description": "Text to prepend"
+            }
+          }
+        },
+        "suffix": {
+          "name": "Suffix",
+          "description": "Adds suffix to text",
+          "args": {
+            "suffix": {
+              "label": "Suffix",
+              "description": "Text to append"
+            }
+          }
+        },
+        "slice": {
+          "name": "Slice",
+          "description": "Extracts part of text (start, end)",
+          "args": {
+            "start": {
+              "label": "Start",
+              "description": "Starting position (0-based)"
+            },
+            "end": {
+              "label": "End",
+              "description": "Ending position (optional)"
+            }
+          }
+        },
+        "truncate": {
+          "name": "Truncate",
+          "description": "Shortens text to N characters",
+          "args": {
+            "length": {
+              "label": "Length",
+              "description": "Maximum number of characters"
+            }
+          }
+        },
+        "includes": {
+          "name": "Includes",
+          "description": "Checks if text contains substring",
+          "args": {
+            "substring": {
+              "label": "Substring",
+              "description": "Text to search for"
+            }
+          }
+        }
+      },
+      "number": {
+        "add": {
+          "name": "Add",
+          "description": "Adds value to number",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Number to add"
+            }
+          }
+        },
+        "subtract": {
+          "name": "Subtract",
+          "description": "Subtracts value from number",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Number to subtract"
+            }
+          }
+        },
+        "multiply": {
+          "name": "Multiply",
+          "description": "Multiplies number by value",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Multiplier"
+            }
+          }
+        },
+        "divide": {
+          "name": "Divide",
+          "description": "Divides number by value",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Divisor"
+            }
+          }
+        },
+        "modulo": {
+          "name": "Modulo",
+          "description": "Returns remainder of division",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Divisor"
+            }
+          }
+        },
+        "floor": {
+          "name": "Floor",
+          "description": "Rounds down to nearest integer"
+        },
+        "ceil": {
+          "name": "Ceil",
+          "description": "Rounds up to nearest integer"
+        },
+        "round": {
+          "name": "Round",
+          "description": "Rounds to nearest integer"
+        },
+        "abs": {
+          "name": "Absolute",
+          "description": "Returns absolute value"
+        },
+        "gt": {
+          "name": "Greater Than",
+          "description": "Checks if number is greater than value",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Number to compare with"
+            }
+          }
+        },
+        "lt": {
+          "name": "Less Than",
+          "description": "Checks if number is less than value",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Number to compare with"
+            }
+          }
+        },
+        "equals": {
+          "name": "Equals",
+          "description": "Checks if number equals value",
+          "args": {
+            "value": {
+              "label": "Value",
+              "description": "Number to compare with"
+            }
+          }
+        }
+      },
+      "boolean": {
+        "negate": {
+          "name": "Negate",
+          "description": "Inverts boolean value"
+        },
+        "toText": {
+          "name": "To Text",
+          "description": "Converts boolean to text"
+        }
+      },
+      "date": {
+        "format": {
+          "name": "Format",
+          "description": "Formats date as text",
+          "args": {
+            "format": {
+              "label": "Format",
+              "description": "Date format pattern (e.g., YYYY-MM-DD)"
+            }
+          }
+        },
+        "addDays": {
+          "name": "Add Days",
+          "description": "Adds days to date",
+          "args": {
+            "days": {
+              "label": "Days",
+              "description": "Number of days to add"
+            }
+          }
+        },
+        "isFuture": {
+          "name": "Is Future",
+          "description": "Checks if date is in the future"
+        },
+        "isPast": {
+          "name": "Is Past",
+          "description": "Checks if date is in the past"
+        }
+      }
+    }
   }
 }

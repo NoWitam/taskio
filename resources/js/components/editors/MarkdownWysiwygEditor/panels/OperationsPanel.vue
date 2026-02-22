@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
+import { useI18n } from '@/composables/useI18n';
 import type { VariableOperation } from '../types';
-import { getAllOperations, getOperation, getOperationsForType } from '../utils/operations';
+import { getOperation, getOperationsForType, getResultType } from '../utils/operations';
 import Button from '@/components/ui/Button.vue';
 import Dialog from '@/components/ui/Dialog.vue';
 import Icon from '@/components/ui/Icon.vue';
+import SelectInput from '@/components/ui/inputs/SelectInput.vue';
+import TextInput from '@/components/ui/inputs/TextInput.vue';
+import Badge from '@/components/ui/Badge.vue';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   variableName: string;
@@ -13,89 +19,60 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  'save': [operations: Array<{ op: string; args?: any[] }>];
+  'save': [data: { operations: Array<{ op: string; args?: any[] }>; panelName: string }];
   'close': [];
 }>();
 
 const isOpen = ref(true);
+const panelName = ref(props.variableName);
+const isNameLocked = ref(false);
 const operations = ref<Array<{ op: string; args?: any[] }>>(
   JSON.parse(JSON.stringify(props.currentOperations || []))
 );
 
-// Tylko operacje dostępne dla konkretnego typu zmiennej
-const availableOperations = computed(() => getOperationsForType(props.variableType));
+// Operations available for the current result type (after all operations so far)
+const availableOperations = computed(() => getOperationsForType(resultType.value));
 
-const selectedOperation = ref<string | null>(null);
-const operationArgs = ref<string[]>([]);
+const operationOptions = computed(() => {
+  return availableOperations.value.map(({ key, operation }) => ({
+    value: key,  // Use short key (e.g., "add", "length")
+    label: t(operation.name),
+    description: t(operation.description),
+    operation,
+  }));
+});
+
+const selectedOperation = ref<string>('');
+const operationArgs = ref<Record<string, string>>({});
 
 const selectedOp = computed(() => {
-  if (!selectedOperation.value) return null;
+  if (!selectedOperation.value || selectedOperation.value === '') return null;
   return getOperation(selectedOperation.value);
 });
 
-// Obserwuj zmiany isOpen aby emitować close
+// Calculate return type for all operations
+const resultType = computed(() => {
+  return getResultType(props.variableType, operations.value);
+});
+
+const resultTypeIcon = computed(() => {
+  const typeIcons: Record<string, string> = {
+    text: 'list',
+    number: 'equal',
+    boolean: 'numeric',
+    date: 'calendar',
+  };
+  return typeIcons[resultType.value] || 'variable';
+});
+
+// Watch isOpen to emit close
 watch(isOpen, (newVal) => {
   if (!newVal) {
     emit('close');
   }
 });
 
-// Dodaj operację
-function addOperation() {
-  if (!selectedOperation.value) return;
-  
-  operations.value.push({
-    op: selectedOperation.value,
-    args: operationArgs.value.filter(a => a.trim()).length > 0 
-      ? operationArgs.value.filter(a => a.trim()) 
-      : undefined,
-  });
-  
-  selectedOperation.value = null;
-  operationArgs.value = [];
-}
-
-// Usuń operację
-function removeOperation(index: number) {
-  operations.value.splice(index, 1);
-}
-
-// Zmień porządek (przesuń w górę)
-function moveUp(index: number) {
-  if (index === 0) return;
-  [operations.value[index], operations.value[index - 1]] = [
-    operations.value[index - 1],
-    operations.value[index],
-  ];
-}
-
-// Zmień porządek (przesuń w dół)
-function moveDown(index: number) {
-  if (index === operations.value.length - 1) return;
-  [operations.value[index], operations.value[index + 1]] = [
-    operations.value[index + 1],
-    operations.value[index],
-  ];
-}
-
-// Zapisz zmiany
-function save() {
-  emit('save', operations.value);
-  isOpen.value = false;
-}
-
-// Anuluj
-function cancel() {
-  isOpen.value = false;
-}
-
-// Formatuj argumenty do wyświetlenia
-function formatArgs(args?: any[]): string {
-  if (!args || args.length === 0) return '';
-  return `(${args.join(', ')})`;
-}
-
-// Pobierz ikonę typu
+// Get icon for type
 function getTypeIcon(type: string): string {
   const typeIcons: Record<string, string> = {
     text: 'list',
@@ -105,140 +82,222 @@ function getTypeIcon(type: string): string {
   };
   return typeIcons[type] || 'variable';
 }
+
+// Get icon for input type
+function getInputTypeIcon(argType: string): string {
+  return getTypeIcon(argType);
+}
+
+// Add operation
+function addOperation() {
+  if (!selectedOperation.value || selectedOperation.value === '') return;
+  
+  // Collect args in defined order to maintain structure
+  const argsArray = selectedOp.value?.args?.map(arg => operationArgs.value[arg.key] || '').filter(a => a.trim()) || [];
+  
+  operations.value.push({
+    op: selectedOperation.value,
+    args: argsArray.length > 0 ? argsArray : undefined,
+  });
+  
+  selectedOperation.value = '';
+  operationArgs.value = {};
+}
+
+// Remove last operation only
+function removeLastOperation() {
+  if (operations.value.length > 0) {
+    operations.value.pop();
+  }
+}
+
+// Save changes
+function save() {
+  emit('save', {
+    operations: operations.value,
+    panelName: panelName.value,
+  });
+  isOpen.value = false;
+}
+
+// Cancel
+function cancel() {
+  isOpen.value = false;
+}
+
+// Toggle lock
+function toggleLock() {
+  isNameLocked.value = !isNameLocked.value;
+}
 </script>
 
 <template>
   <Dialog v-model="isOpen">
-    <div class="operations-panel p-6 w-full max-w-2xl">
-      <div class="mb-6">
-        <h2 class="text-lg font-semibold">
-          Operacje zmiennej: <span class="text-primary">{{ variableName }}</span>
-        </h2>
-        <p class="text-sm text-muted-foreground">
-          Typ wejścia: 
-          <span class="inline-flex items-center gap-1">
-            <Icon :name="getTypeIcon(variableType)" size="xs" />
-            {{ variableType }}
-          </span>
-        </p>
+    <template #header>
+      <div>
+        <div class="p-5.5 flex items-center gap-4 flex-1 min-w-0 max-w-xl">
+            <Icon :name="resultTypeIcon" size="sm" class="text-primary" />
+            <TextInput
+                v-model="panelName"
+                :disabled="isNameLocked"
+                :autofocus="false"
+                class="flex-1"
+            >
+                <template #right>
+                <button
+                    @click="toggleLock"
+                    :title="isNameLocked ? t('common.unlock') : t('common.lock')"
+                    class="flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                >
+                    <Icon :name="isNameLocked ? 'lock' : 'lock-open'" size="sm" />
+                </button>
+                </template>
+            </TextInput>
+        </div>
+      </div>
+    </template>
+
+    <div class="operations-panel space-y-6 p-6">
+      <!-- Input Type Info -->
+      <div class="p-3 bg-muted rounded border border-border flex items-center justify-between gap-4">
+        <div>
+          <p class="text-xs text-muted-foreground mb-1">{{ t('common.inputType') }}:</p>
+          <span class="font-medium text-sm">{{ props.variableName }}</span>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <Icon :name="getTypeIcon(props.variableType)" size="sm" class="text-primary" />
+        </div>
       </div>
 
-      <!-- Lista obecnych operacji -->
-      <div class="mb-6">
-        <h3 class="font-medium mb-3">Dodane operacje:</h3>
-        <div v-if="operations.length === 0" class="text-sm text-muted-foreground p-3 bg-muted rounded">
-          Brak dodanych operacji
+      <!-- Added Operations List -->
+      <div>
+        <h3 class="font-medium mb-3">{{ t('common.addedOperations') }}:</h3>
+        <div v-if="operations.length === 0" class="text-sm text-muted-foreground p-4 bg-muted rounded border border-border text-center">
+          {{ t('common.noOperations') }}
         </div>
         <div v-else class="space-y-2">
           <div
             v-for="(op, index) in operations"
             :key="index"
-            class="flex items-center justify-between p-3 bg-muted rounded border border-border"
+            class="p-4 bg-muted rounded border border-border"
           >
-            <div class="flex-1">
-              <div class="flex items-center gap-2">
-                <span class="font-medium">{{ op.op }}</span>
-                <span v-if="getOperation(op.op)" class="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">
-                  → {{ getOperation(op.op)?.returnType }}
-                </span>
+            <div class="flex items-start gap-3 mb-2">
+              <!-- Left: Name + Icon -->
+              <div class="flex-1">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="font-semibold">{{ t(getOperation(op.op)?.name || op.op) }}</span>
+                  <Icon :name="getTypeIcon(getOperation(op.op)?.returnType || 'text')" size="xs" class="text-primary" />
+                </div>
+                <p class="text-sm text-muted-foreground">
+                  {{ t(getOperation(op.op)?.description || '') }}
+                </p>
               </div>
-              <span class="text-sm text-muted-foreground">{{ formatArgs(op.args) }}</span>
+              <!-- Right: Delete button (only for last operation) -->
+              <div v-if="index === operations.length - 1" class="shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  @click="removeLastOperation"
+                  :title="t('common.delete')"
+                >
+                  <Icon name="trash" size="xs" />
+                </Button>
+              </div>
             </div>
-            <div class="flex gap-1">
-              <Button
-                v-if="index > 0"
-                variant="ghost"
-                size="sm"
-                @click="moveUp(index)"
-                title="Przesuń w górę"
-              >
-                <Icon name="chevron-up" size="xs" />
-              </Button>
-              <Button
-                v-if="index < operations.length - 1"
-                variant="ghost"
-                size="sm"
-                @click="moveDown(index)"
-                title="Przesuń w dół"
-              >
-                <Icon name="chevron-down" size="xs" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                @click="removeOperation(index)"
-              >
-                <Icon name="trash" size="xs" />
-              </Button>
+
+            <!-- Arguments Badges -->
+            <div v-if="op.args && op.args.length > 0" class="flex flex-wrap gap-2 mt-2">
+              <Badge v-for="(value, idx) in op.args" :key="idx" variant="secondary" class="text-xs flex items-center gap-1.5">
+                <span class="font-medium">{{ getOperation(op.op)?.args?.[idx]?.key }}</span>
+                <Icon 
+                  v-if="getOperation(op.op)?.args?.[idx]" 
+                  :name="getTypeIcon(getOperation(op.op).args[idx].type)" 
+                  size="xs" 
+                />
+                {{ value }}
+              </Badge>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Dodaj nową operację -->
-      <div class="mb-6 p-4 border border-border rounded-lg bg-card">
-        <h3 class="font-medium mb-3">Dodaj operację:</h3>
+      <!-- Add New Operation Section -->
+      <div class="p-4 border border-border rounded-lg bg-card space-y-4">
+        <h3 class="font-medium">{{ t('common.addOperation') }}:</h3>
         
-        <div class="mb-4">
-          <label class="text-sm font-medium mb-2 block">Operacja</label>
-          <select
+        <!-- Operation Selection -->
+        <div>
+          <label class="text-sm font-medium mb-2 block">{{ t('common.operation') }}</label>
+          <SelectInput
             v-model="selectedOperation"
-            class="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground"
+            :options="operationOptions"
+            :placeholder="t('common.selectOperation')"
           >
-            <option value="">-- Wybierz operację --</option>
-            <option v-for="op in availableOperations" :key="op.name" :value="op.name">
-              {{ op.name }} → {{ op.returnType }} - {{ op.description }}
-            </option>
-          </select>
+            <template #item="{ item }">
+              <div class="flex w-full items-start justify-between gap-3">
+                <!-- Left: Name + Args badges -->
+                <div class="flex-1">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-semibold">{{ item.label }}</span>
+                    <!-- Badges for arguments -->
+                    <template v-if="item.operation?.args && item.operation.args.length > 0">
+                      <Badge v-for="arg in item.operation.args" :key="arg.key" variant="secondary" class="text-xs">
+                        {{ t(arg.label) }}
+                        <Icon :name="getInputTypeIcon(arg.type)" size="xs" class="ml-1" />
+                      </Badge>
+                    </template>
+                  </div>
+                  <!-- Description -->
+                  <p class="text-xs text-muted-foreground mt-1">{{ item.description }}</p>
+                </div>
+                <!-- Right: Return type icon -->
+                <Icon :name="getTypeIcon(item.operation?.returnType || 'text')" size="xs" class="text-primary shrink-0 mt-1" />
+              </div>
+            </template>
+          </SelectInput>
         </div>
 
-        <!-- Argumenty operacji -->
-        <div v-if="selectedOp" class="mb-4 space-y-3">
-          <div class="text-sm text-muted-foreground">
-            {{ selectedOp.description }}
-          </div>
-          <!-- Dla operacji z argumentami -->
-          <div v-if="selectedOp.argsCount && selectedOp.argsCount > 0">
-            <label class="text-sm font-medium mb-2 block">Argumenty:</label>
-            <div class="space-y-2">
-              <input
-                v-for="i in selectedOp.argsCount"
-                :key="i"
-                v-model="operationArgs[i - 1]"
-                type="text"
-                :placeholder="`Argument ${i}`"
-                class="w-full px-3 py-2 border border-input rounded-md bg-background text-foreground text-sm"
-              />
-            </div>
+        <!-- Arguments for Selected Operation -->
+        <div v-if="selectedOp?.args && selectedOp.args.length > 0" class="space-y-3">
+          <div v-for="arg in selectedOp.args" :key="arg.key" class="space-y-1">
+            <label class="text-sm font-medium flex items-center gap-1">
+              {{ t(arg.label) }}
+              <Icon :name="getTypeIcon(arg.type)" size="xs" class="text-muted-foreground" />
+            </label>
+            <p class="text-xs text-muted-foreground mb-1">{{ t(arg.description) }}</p>
+            <TextInput
+              v-model="operationArgs[arg.key]"
+              :placeholder="t(arg.description)"
+            />
           </div>
         </div>
 
+        <!-- Add Button -->
         <Button
           @click="addOperation"
           :disabled="!selectedOperation"
           class="w-full"
         >
           <Icon name="plus" size="xs" />
-          Dodaj operację
-        </Button>
-      </div>
-
-      <!-- Akcje -->
-      <div class="flex gap-3 justify-end">
-        <Button variant="ghost" @click="cancel">
-          Anuluj
-        </Button>
-        <Button @click="save">
-          Zapisz operacje
+          {{ t('common.addOperation') }}
         </Button>
       </div>
     </div>
+
+    <template #footer>
+      <Button variant="ghost" @click="cancel">
+        {{ t('common.cancel') }}
+      </Button>
+      <Button @click="save">
+        {{ t('common.save') }}
+      </Button>
+    </template>
   </Dialog>
 </template>
 
 <style scoped>
 .operations-panel {
-  max-height: 80vh;
+  max-height: 70vh;
   overflow-y: auto;
 }
 </style>

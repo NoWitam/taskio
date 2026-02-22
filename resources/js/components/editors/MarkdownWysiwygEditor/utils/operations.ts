@@ -1,435 +1,348 @@
 /**
- * Variable operations - definiuje i wykonuje operacje na zmiennych
- * Każda operacja ma typ wejścia (supportedTypes) i tip wyjścia (returnType)
+ * Variable operations registry
+ * Операции для переменных - определяет только метаданные, обработка делается на сервере
  */
 
-import type { VariableOperation, VariableDef } from '../types';
+import type { VariableOperation } from '../types';
 
-// Registry operacji
-const operationsRegistry: Map<string, VariableOperation> = new Map();
-
-/**
- * Rejestracja domyślnych operacji z typowaniem
- */
-export function registerDefaultOperations() {
+export const operationsRegistry: Record<string, VariableOperation> = {
   // ===== TEXT OPERATIONS =====
-  registerOperation('length', {
-    name: 'length',
-    description: 'Zwraca liczbę znaków tekstu',
+  length: {
+    name: 'editor.operations.text.length.name',
+    description: 'editor.operations.text.length.description',
     supportedTypes: ['text'],
     returnType: 'number',
-    argsCount: 0,
-    handler: (value: any) => {
-      return String(value).length;
-    },
-  });
-
-  registerOperation('uppercase', {
-    name: 'uppercase',
-    description: 'Konwertuje na wielkie litery',
+    args: [],
+  },
+  uppercase: {
+    name: 'editor.operations.text.uppercase.name',
+    description: 'editor.operations.text.uppercase.description',
     supportedTypes: ['text'],
     returnType: 'text',
-    argsCount: 0,
-    handler: (value: any) => {
-      return String(value).toUpperCase();
-    },
-  });
-
-  registerOperation('lowercase', {
-    name: 'lowercase',
-    description: 'Konwertuje na małe litery',
+    args: [],
+  },
+  lowercase: {
+    name: 'editor.operations.text.lowercase.name',
+    description: 'editor.operations.text.lowercase.description',
     supportedTypes: ['text'],
     returnType: 'text',
-    argsCount: 0,
-    handler: (value: any) => {
-      return String(value).toLowerCase();
-    },
-  });
-
-  registerOperation('trim', {
-    name: 'trim',
-    description: 'Usuwa spacje z obu końców',
+    args: [],
+  },
+  trim: {
+    name: 'editor.operations.text.trim.name',
+    description: 'editor.operations.text.trim.description',
     supportedTypes: ['text'],
     returnType: 'text',
-    argsCount: 0,
-    handler: (value: any) => {
-      return String(value).trim();
-    },
-  });
-
-  registerOperation('prefix', {
-    name: 'prefix',
-    description: 'Dodaje prefiks do tekstu',
+    args: [],
+  },
+  prefix: {
+    name: 'editor.operations.text.prefix.name',
+    description: 'editor.operations.text.prefix.description',
     supportedTypes: ['text'],
     returnType: 'text',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      const prefix = args?.[0] ?? '';
-      return prefix + String(value);
-    },
-  });
-
-  registerOperation('suffix', {
-    name: 'suffix',
-    description: 'Dodaje sufiks do tekstu',
+    args: [
+      {
+        key: 'prefix',
+        label: 'editor.operations.text.prefix.args.prefix.label',
+        description: 'editor.operations.text.prefix.args.prefix.description',
+        type: 'text',
+      },
+    ],
+  },
+  suffix: {
+    name: 'editor.operations.text.suffix.name',
+    description: 'editor.operations.text.suffix.description',
     supportedTypes: ['text'],
     returnType: 'text',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      const suffix = args?.[0] ?? '';
-      return String(value) + suffix;
-    },
-  });
-
-  registerOperation('slice', {
-    name: 'slice',
-    description: 'Wyciąga część tekstu (start, koniec)',
+    args: [
+      {
+        key: 'suffix',
+        label: 'editor.operations.text.suffix.args.suffix.label',
+        description: 'editor.operations.text.suffix.args.suffix.description',
+        type: 'text',
+      },
+    ],
+  },
+  slice: {
+    name: 'editor.operations.text.slice.name',
+    description: 'editor.operations.text.slice.description',
     supportedTypes: ['text'],
     returnType: 'text',
-    argsCount: 2,
-    handler: (value: any, args?: any[]) => {
-      const start = args?.[0] ?? 0;
-      const end = args?.[1];
-      return String(value).slice(Number(start), end ? Number(end) : undefined);
-    },
-  });
-
-  registerOperation('truncate', {
-    name: 'truncate',
-    description: 'Skraca tekst do N znaków',
+    args: [
+      {
+        key: 'start',
+        label: 'editor.operations.text.slice.args.start.label',
+        description: 'editor.operations.text.slice.args.start.description',
+        type: 'number',
+      },
+      {
+        key: 'end',
+        label: 'editor.operations.text.slice.args.end.label',
+        description: 'editor.operations.text.slice.args.end.description',
+        type: 'number',
+      },
+    ],
+  },
+  truncate: {
+    name: 'editor.operations.text.truncate.name',
+    description: 'editor.operations.text.truncate.description',
     supportedTypes: ['text'],
     returnType: 'text',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      const length = args?.[0] ?? 50;
-      const text = String(value);
-      const maxLen = Number(length);
-      return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
-    },
-  });
-
-  registerOperation('includes', {
-    name: 'includes',
-    description: 'Sprawdza czy zawiera substring',
+    args: [
+      {
+        key: 'length',
+        label: 'editor.operations.text.truncate.args.length.label',
+        description: 'editor.operations.text.truncate.args.length.description',
+        type: 'number',
+      },
+    ],
+  },
+  includes: {
+    name: 'editor.operations.text.includes.name',
+    description: 'editor.operations.text.includes.description',
     supportedTypes: ['text'],
     returnType: 'boolean',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      return String(value).includes(String(args?.[0] ?? ''));
-    },
-  });
+    args: [
+      {
+        key: 'substring',
+        label: 'editor.operations.text.includes.args.substring.label',
+        description: 'editor.operations.text.includes.args.substring.description',
+        type: 'text',
+      },
+    ],
+  },
 
   // ===== NUMBER OPERATIONS =====
-  registerOperation('add', {
-    name: 'add',
-    description: 'Dodaje liczbę',
+  add: {
+    name: 'editor.operations.number.add.name',
+    description: 'editor.operations.number.add.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      return Number(value) + Number(args?.[0] ?? 0);
-    },
-  });
-
-  registerOperation('subtract', {
-    name: 'subtract',
-    description: 'Odejmuje liczbę',
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.add.args.value.label',
+        description: 'editor.operations.number.add.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
+  subtract: {
+    name: 'editor.operations.number.subtract.name',
+    description: 'editor.operations.number.subtract.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      return Number(value) - Number(args?.[0] ?? 0);
-    },
-  });
-
-  registerOperation('multiply', {
-    name: 'multiply',
-    description: 'Mnoży przez liczbę',
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.subtract.args.value.label',
+        description: 'editor.operations.number.subtract.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
+  multiply: {
+    name: 'editor.operations.number.multiply.name',
+    description: 'editor.operations.number.multiply.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      return Number(value) * Number(args?.[0] ?? 1);
-    },
-  });
-
-  registerOperation('divide', {
-    name: 'divide',
-    description: 'Dzieli przez liczbę',
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.multiply.args.value.label',
+        description: 'editor.operations.number.multiply.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
+  divide: {
+    name: 'editor.operations.number.divide.name',
+    description: 'editor.operations.number.divide.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      const divisor = Number(args?.[0] ?? 1);
-      return divisor !== 0 ? Number(value) / divisor : 0;
-    },
-  });
-
-  registerOperation('modulo', {
-    name: 'modulo',
-    description: 'Zwraca resztę z dzielenia',
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.divide.args.value.label',
+        description: 'editor.operations.number.divide.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
+  modulo: {
+    name: 'editor.operations.number.modulo.name',
+    description: 'editor.operations.number.modulo.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      const divisor = Number(args?.[0] ?? 1);
-      return divisor !== 0 ? Number(value) % divisor : 0;
-    },
-  });
-
-  registerOperation('floor', {
-    name: 'floor',
-    description: 'Zaokrągla w dół',
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.modulo.args.value.label',
+        description: 'editor.operations.number.modulo.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
+  floor: {
+    name: 'editor.operations.number.floor.name',
+    description: 'editor.operations.number.floor.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 0,
-    handler: (value: any) => {
-      return Math.floor(Number(value));
-    },
-  });
-
-  registerOperation('ceil', {
-    name: 'ceil',
-    description: 'Zaokrągla w górę',
+    args: [],
+  },
+  ceil: {
+    name: 'editor.operations.number.ceil.name',
+    description: 'editor.operations.number.ceil.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 0,
-    handler: (value: any) => {
-      return Math.ceil(Number(value));
-    },
-  });
-
-  registerOperation('round', {
-    name: 'round',
-    description: 'Zaokrągla do najbliższej liczby całkowitej',
+    args: [],
+  },
+  round: {
+    name: 'editor.operations.number.round.name',
+    description: 'editor.operations.number.round.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 0,
-    handler: (value: any) => {
-      return Math.round(Number(value));
-    },
-  });
-
-  registerOperation('abs', {
-    name: 'abs',
-    description: 'Zwraca wartość bezwzględną',
+    args: [],
+  },
+  abs: {
+    name: 'editor.operations.number.abs.name',
+    description: 'editor.operations.number.abs.description',
     supportedTypes: ['number'],
     returnType: 'number',
-    argsCount: 0,
-    handler: (value: any) => {
-      return Math.abs(Number(value));
-    },
-  });
-
-  registerOperation('gt', {
-    name: 'gt',
-    description: 'Czy jest większa niż',
+    args: [],
+  },
+  gt: {
+    name: 'editor.operations.number.gt.name',
+    description: 'editor.operations.number.gt.description',
     supportedTypes: ['number'],
     returnType: 'boolean',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      return Number(value) > Number(args?.[0] ?? 0);
-    },
-  });
-
-  registerOperation('lt', {
-    name: 'lt',
-    description: 'Czy jest mniejsza niż',
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.gt.args.value.label',
+        description: 'editor.operations.number.gt.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
+  lt: {
+    name: 'editor.operations.number.lt.name',
+    description: 'editor.operations.number.lt.description',
     supportedTypes: ['number'],
     returnType: 'boolean',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      return Number(value) < Number(args?.[0] ?? 0);
-    },
-  });
-
-  registerOperation('equals', {
-    name: 'equals',
-    description: 'Czy równa się',
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.lt.args.value.label',
+        description: 'editor.operations.number.lt.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
+  equals: {
+    name: 'editor.operations.number.equals.name',
+    description: 'editor.operations.number.equals.description',
     supportedTypes: ['number'],
     returnType: 'boolean',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      return Number(value) === Number(args?.[0] ?? 0);
-    },
-  });
+    args: [
+      {
+        key: 'value',
+        label: 'editor.operations.number.equals.args.value.label',
+        description: 'editor.operations.number.equals.args.value.description',
+        type: 'number',
+      },
+    ],
+  },
 
   // ===== BOOLEAN OPERATIONS =====
-  registerOperation('negate', {
-    name: 'negate',
-    description: 'Neguje wartość logiczną',
+  negate: {
+    name: 'editor.operations.boolean.negate.name',
+    description: 'editor.operations.boolean.negate.description',
     supportedTypes: ['boolean'],
     returnType: 'boolean',
-    argsCount: 0,
-    handler: (value: any) => {
-      return !Boolean(value);
-    },
-  });
-
-  registerOperation('toText', {
-    name: 'toText',
-    description: 'Konwertuje na tekst (true/false)',
+    args: [],
+  },
+  toText: {
+    name: 'editor.operations.boolean.toText.name',
+    description: 'editor.operations.boolean.toText.description',
     supportedTypes: ['boolean'],
     returnType: 'text',
-    argsCount: 0,
-    handler: (value: any) => {
-      return Boolean(value) ? 'true' : 'false';
-    },
-  });
+    args: [],
+  },
 
   // ===== DATE OPERATIONS =====
-  registerOperation('format', {
-    name: 'format',
-    description: 'Formatuje datę (YYYY-MM-DD)',
+  format: {
+    name: 'editor.operations.date.format.name',
+    description: 'editor.operations.date.format.description',
     supportedTypes: ['date'],
     returnType: 'text',
-    argsCount: 0,
-    handler: (value: any) => {
-      try {
-        const date = new Date(value);
-        return date.toISOString().split('T')[0];
-      } catch {
-        return String(value);
-      }
-    },
-  });
-
-  registerOperation('addDays', {
-    name: 'addDays',
-    description: 'Dodaje dni do daty',
+    args: [
+      {
+        key: 'format',
+        label: 'editor.operations.date.format.args.format.label',
+        description: 'editor.operations.date.format.args.format.description',
+        type: 'text',
+      },
+    ],
+  },
+  addDays: {
+    name: 'editor.operations.date.addDays.name',
+    description: 'editor.operations.date.addDays.description',
     supportedTypes: ['date'],
     returnType: 'date',
-    argsCount: 1,
-    handler: (value: any, args?: any[]) => {
-      try {
-        const date = new Date(value);
-        const days = Number(args?.[0] ?? 0);
-        date.setDate(date.getDate() + days);
-        return date.toISOString();
-      } catch {
-        return value;
-      }
-    },
-  });
-
-  registerOperation('isFuture', {
-    name: 'isFuture',
-    description: 'Czy data jest w przyszłości',
+    args: [
+      {
+        key: 'days',
+        label: 'editor.operations.date.addDays.args.days.label',
+        description: 'editor.operations.date.addDays.args.days.description',
+        type: 'number',
+      },
+    ],
+  },
+  isFuture: {
+    name: 'editor.operations.date.isFuture.name',
+    description: 'editor.operations.date.isFuture.description',
     supportedTypes: ['date'],
     returnType: 'boolean',
-    argsCount: 0,
-    handler: (value: any) => {
-      try {
-        const date = new Date(value);
-        return date > new Date();
-      } catch {
-        return false;
-      }
-    },
-  });
-
-  registerOperation('isPast', {
-    name: 'isPast',
-    description: 'Czy data jest w przeszłości',
+    args: [],
+  },
+  isPast: {
+    name: 'editor.operations.date.isPast.name',
+    description: 'editor.operations.date.isPast.description',
     supportedTypes: ['date'],
     returnType: 'boolean',
-    argsCount: 0,
-    handler: (value: any) => {
-      try {
-        const date = new Date(value);
-        return date < new Date();
-      } catch {
-        return false;
-      }
-    },
-  });
+    args: [],
+  },
+};
+
+/**
+ * Get operation by name
+ */
+export function getOperation(name: string): VariableOperation | null {
+  return operationsRegistry[name] || null;
 }
 
 /**
- * Rejestruj operację
+ * Get all operations for a specific variable type
  */
-export function registerOperation(name: string, operation: VariableOperation) {
-  operationsRegistry.set(name, operation);
+export function getOperationsForType(variableType: string): Array<{ key: string; operation: VariableOperation }> {
+  return Object.entries(operationsRegistry)
+    .filter(([_, op]) => op.supportedTypes.includes(variableType as any))
+    .map(([key, operation]) => ({ key, operation }));
 }
 
 /**
- * Pobierz operację
+ * Calculate the result type after applying a series of operations
  */
-export function getOperation(name: string): VariableOperation | undefined {
-  return operationsRegistry.get(name);
-}
-
-/**
- * Pobierz wszystkie operacje
- */
-export function getAllOperations(): VariableOperation[] {
-  return Array.from(operationsRegistry.values());
-}
-
-/**
- * Pobierz operacje dostępne dla danego typu zmiennej
- */
-export function getOperationsForType(varType: string): VariableOperation[] {
-  return getAllOperations().filter((op) => op.supportedTypes.includes(varType as any));
-}
-
-/**
- * Wykonaj operacje na wartości
- */
-export function executeOperations(
-  value: any,
-  operations: Array<{ op: string; args?: any[] }>
-): any {
-  let result = value;
-
-  for (const opDef of operations) {
-    const operation = getOperation(opDef.op);
-    if (!operation) {
-      console.warn(`Operation "${opDef.op}" not found`);
-      continue;
-    }
-    try {
-      result = operation.handler(result, opDef.args);
-    } catch (err) {
-      console.error(`Error executing operation "${opDef.op}":`, err);
-    }
+export function getResultType(inputType: string, operations?: Array<{ op: string; args?: any[] }> | null): string {
+  if (!operations || operations.length === 0) {
+    return inputType;
   }
 
-  return result;
-}
+  let currentType = inputType;
 
-/**
- * Renderuj wartość zmiennej z operacjami
- */
-export function renderVariable(
-  variables: VariableDef[],
-  varId: string,
-  operations: Array<{ op: string; args?: any[] }> = []
-): string {
-  const variable = variables.find((v) => v.id === varId);
-  if (!variable) {
-    return `[VAR NOT FOUND: ${varId}]`;
-  }
-
-  try {
-    const result = executeOperations(variable.value, operations);
-    return String(result);
-  } catch (err) {
-    return `[ERROR: ${String(err)}]`;
-  }
-}
-
-/**
- * Oblicz typ wynikowy operacji
- */
-export function getResultType(
-  varType: string,
-  operations: Array<{ op: string }> = []
-): string {
-  let currentType = varType;
-
-  for (const opDef of operations) {
-    const operation = getOperation(opDef.op);
+  for (const op of operations) {
+    const operation = getOperation(op.op);
     if (operation) {
       currentType = operation.returnType;
     }
@@ -439,15 +352,29 @@ export function getResultType(
 }
 
 /**
- * Sparsuj string operacji z tokenu: "op:length|op:prefix('Hello ')|op:concat(' world')"
+ * Dla kompatybilności z istniejącym kodem
  */
-export function parseOperationsFromString(
-  opsString: string
-): Array<{ op: string; args?: any[] }> {
-  if (!opsString) return [];
+export function getAllOperations(): VariableOperation[] {
+  return Object.values(operationsRegistry);
+}
+
+/**
+ * Rejestracja operacji (stara funkcja - nie jest już potrzebna)
+ * Pozostajemy dla kompatybilności, ale nie robi nic
+ */
+export function registerDefaultOperations() {
+  // Operations are now defined in operationsRegistry directly
+}
+
+/**
+ * Parse operations from string format: "op:add("5")|op:multiply("2")"
+ * Returns array of {op: string, args?: string[]}
+ */
+export function parseOperationsFromString(opsStr: string): Array<{ op: string; args?: any[] }> {
+  if (!opsStr) return [];
 
   const operations: Array<{ op: string; args?: any[] }> = [];
-  const parts = opsString.split('|');
+  const parts = opsStr.split('|');
 
   for (const part of parts) {
     const match = part.match(/op:(\w+)(?:\(([^)]*)\))?/);
@@ -456,17 +383,19 @@ export function parseOperationsFromString(
     const opName = match[1];
     const argsStr = match[2];
 
-    const args = argsStr
-      ? argsStr
-          .split(',')
-          .map((a) => {
-            const trimmed = a.trim();
-            if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-              return trimmed.slice(1, -1);
-            }
-            return trimmed;
-          })
-      : [];
+    const args: any[] = [];
+    if (argsStr) {
+      // Sparsuj argumenty oddzielone przecinkami, usuń cudzysłowy
+      const argMatches = argsStr.match(/"([^"]*)"|'([^']*)'|([^,]+)/g);
+      if (argMatches) {
+        for (const arg of argMatches) {
+          const cleaned = arg.replace(/^["']|["']$/g, '').trim();
+          if (cleaned) {
+            args.push(cleaned);
+          }
+        }
+      }
+    }
 
     operations.push({
       op: opName,
@@ -477,5 +406,30 @@ export function parseOperationsFromString(
   return operations;
 }
 
-// Inicjalizacja
-registerDefaultOperations();
+/**
+ * Render variable value for preview
+ * Since operations are executed server-side, this just returns the raw variable value
+ * In the preview, operations cannot be executed on the client
+ */
+export function renderVariable(
+  variables: any[],
+  varId: string,
+  ops?: Array<{ op: string; args?: any[] }>
+): string {
+  const variable = variables.find((v) => v.id === varId);
+  if (!variable) {
+    return `[${varId}]`;
+  }
+
+  let value = variable.value;
+
+  // Operations are processed server-side, so we just return the raw value
+  // In a real implementation, you might show a placeholder or fetch the processed value from the server
+  if (ops && ops.length > 0) {
+    // Show that operations will be applied
+    const opNames = ops.map((o) => o.op).join(' → ');
+    return `${value} (with: ${opNames})`;
+  }
+
+  return String(value);
+}

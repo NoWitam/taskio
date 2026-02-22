@@ -527,7 +527,7 @@
                 </Button>
 
                 <template #content>
-                    <div class="space-y-1 w-[200px]">
+                    <div class="space-y-1 w-50">
                         <div class="font-semibold">Skrót</div>
                         <div class="text-background/80">Ctrl + K</div>
                     </div>
@@ -1098,7 +1098,7 @@
     const editorBaselineValue = ref('# Hello\n\nThis is a **baseline** editor with *markdown* support.');
     const editorMentionsValue = ref('Hey @[user:1|John], can you review this?');
     const editorVariablesValue = ref('Project: {{var:projectName}} · Members: {{var:memberCount|op:length}}');
-    const editorFullValue = ref('# Full Editor\n\nMention: @[user:1|John]\nVariable: {{var:projectName}}\n\n{{#if condition:"isActive"}}Content visible{{/if}}');
+    const editorFullValue = ref('# Full Editor\n\nMention: @[user:1|John]\n\nVariable: {{var:projectName}} {{var:memberCount|op:add("3")}}\n\n{{#if condition:"isActive"}}{{/if}}');
 
     // Sample mentions
     const sampleUsers: MentionUser[] = [

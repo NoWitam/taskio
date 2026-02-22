@@ -230,7 +230,7 @@ const insertVariable = (variable: VariableDef) => {
 // Editor setup
 
 const editor = useEditor({
-  content: markdownToEditorJSON(internalValue.value),
+  content: markdownToEditorJSON(internalValue.value, props.config),
   extensions: [
     StarterKit.configure({
       heading: props.config.headings !== false ? { levels: [1, 2, 3, 4, 5, 6] } : false,
@@ -292,7 +292,13 @@ const convertTokensToNodes = (content: string): string => {
     /\{\{var:([^|}\]]+)(?:\|(.+?))?\}\}/g,
     (match, varId, opsStr) => {
       const ops = opsStr ? opsStr : '';
-      return `<span data-variable="true" data-var-id="${varId}" data-ops="${btoa(ops)}" class="variable-chip">{{${varId}}}</span>`;
+      
+      // Lookup variable from config to get name and type
+      const varDef = props.config.variablesList?.find(v => v.id === varId);
+      const varName = varDef?.name || varId;
+      const varType = varDef?.type || 'text';
+      
+      return `<span data-variable="true" data-var-id="${varId}" data-var-name="${varName}" data-var-type="${varType}" data-ops="${btoa(ops)}" class="variable-chip">{{${varId}}}</span>`;
     }
   );
 

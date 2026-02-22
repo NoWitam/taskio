@@ -3,13 +3,15 @@
  */
 
 import type { VariableDef } from '../types';
-import { executeOperations, getOperation, parseOperationsFromString } from './operations';
 
 /**
  * Evaluuj condition wyrażenie do boolean
  * Obsługuje:
  * - Proste zmienne (truthy/falsey)
  * - Zmienne ze pipeline operacji: "varId|op:equals('value')|op:gt(5)"
+ * 
+ * UWAGA: Operacje są wykonywane serwer-side, więc na kliencie możemy tylko
+ * ocenić surową wartość zmiennej bez operacji
  */
 export function evaluateCondition(
   condition: string,
@@ -19,7 +21,7 @@ export function evaluateCondition(
     // Sparsuj "varId|op:equals('value')|op:gt(5)"
     const parts = condition.split('|');
     const varId = parts[0];
-    const opsStr = parts.slice(1).join('|');
+    // const opsStr = parts.slice(1).join('|'); // Operations are server-side only
 
     const variable = variables.find((v) => v.id === varId);
     if (!variable) {
@@ -29,11 +31,9 @@ export function evaluateCondition(
 
     let value = variable.value;
 
-    // Jeśli są operacje, wykonaj je
-    if (opsStr) {
-      const ops = parseOperationsFromString(opsStr);
-      value = executeOperations(value, ops);
-    }
+    // NOTE: Operations would be applied server-side
+    // On client side, we can only evaluate the raw variable value
+    // If operations were in the condition, they are ignored in client-side evaluation
 
     // Ostateczna konwersja na boolean
     return Boolean(value);

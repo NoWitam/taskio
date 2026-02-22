@@ -8,14 +8,14 @@ import type { Node } from '@tiptap/pm/model';
 /**
  * Konwertuj markdown bezpośrednio na editor JSON (bez parametru schema)
  */
-export function markdownToEditorJSON(markdown: string): { type: string; content: any[] } {
-  return deserializeMarkdown(markdown);
+export function markdownToEditorJSON(markdown: string, config?: any): { type: string; content: any[] } {
+  return deserializeMarkdown(markdown, config);
 }
 
 /**
  * Sparsuj markdown string na dokument JSON
  */
-export function deserializeMarkdown(markdown: string, schema?: Schema): { type: string; content: any[] } {
+export function deserializeMarkdown(markdown: string, config?: any): { type: string; content: any[] } {
   const lines = markdown.split('\n');
   const content: any[] = [];
   let i = 0;
@@ -104,7 +104,7 @@ export function deserializeMarkdown(markdown: string, schema?: Schema): { type: 
     }
 
     // Normal paragraph
-    const paragraph = parseInline(line);
+    const paragraph = parseInline(line, config);
     if (paragraph.content.length > 0) {
       content.push({
         type: 'paragraph',
@@ -132,7 +132,7 @@ export function deserializeMarkdown(markdown: string, schema?: Schema): { type: 
 /**
  * Sparsuj inline content (mentions, variables, AI blocks, text s marks)
  */
-function parseInline(text: string): { content: any[] } {
+function parseInline(text: string, config?: any): { content: any[] } {
   const content: any[] = [];
   let remaining = text;
 
@@ -163,9 +163,14 @@ function parseInline(text: string): { content: any[] } {
     } else if (token.startsWith('{{var:')) {
       const variable = parseVariableToken(token);
       if (variable) {
+        // Lookup variable from config to get name and type
+        const varDef = config?.variablesList?.find((v: any) => v.id === variable.varId);
+        const varName = varDef?.name || variable.varId;
+        const varType = varDef?.type || 'text';
+        
         content.push({
           type: 'variable',
-          attrs: { varId: variable.varId, ops: variable.ops },
+          attrs: { varId: variable.varId, varName, varType, ops: variable.ops },
         });
       }
     } else if (token.startsWith('{{ai:')) {

@@ -116,13 +116,19 @@ export interface ConditionalBlockNodeAttrs {
 // Variable operations registry
 export type VariableOperationHandler = (value: any, args?: any[]) => any;
 
+export interface VariableOperationArg {
+  key: string; // Identifier for the argument
+  label: string; // i18n key for label
+  description: string; // i18n key for description
+  type: VariableType; // Expected type: 'text', 'number', 'boolean', 'date'
+}
+
 export interface VariableOperation {
-  name: string;
-  handler: VariableOperationHandler;
-  description?: string;
-  supportedTypes: VariableType[]; // Które typy zmiennych mogą używać tej operacji
-  returnType: VariableType; // Jaki typ zwraca ta operacja
-  argsCount?: number; // Ile argumentów przyjmuje (0 jeśli brak)
+  name: string; // i18n key for operation name
+  description: string; // i18n key for description
+  supportedTypes: VariableType[]; // Which variable types can use this operation
+  returnType: VariableType; // What type this operation returns
+  args?: VariableOperationArg[]; // Optional list of arguments
 }
 
 // Preview modes

@@ -38,9 +38,10 @@ function handleClick() {
   showOperationsPanel.value = true;
 }
 
-function handleSaveOperations(operations: Array<{ op: string; args?: any[] }>) {
+function handleSaveOperations(data: { operations: Array<{ op: string; args?: any[] }>; panelName: string }) {
   props.updateAttributes({
-    ops: operations,
+    ops: data.operations,
+    varName: data.panelName,
   });
   showOperationsPanel.value = false;
 }
@@ -59,11 +60,11 @@ function handleClosePanel() {
   >
     <Icon name="curly-braces" size="xs" variant="stroke" />
     <span class="var-name">{{ node.attrs.varName || node.attrs.varId }}</span>
-    <span v-if="node.attrs.varType" class="var-type-badge">
+    <!-- Show original type only if no operations, otherwise show result type -->
+    <span v-if="!node.attrs.ops || node.attrs.ops.length === 0" class="var-type-badge">
       <Icon :name="typeIcons[node.attrs.varType]" size="xs" variant="stroke" />
     </span>
-    <!-- Pokaż typ wynikowy jeśli są operacje -->
-    <span v-if="node.attrs.ops && node.attrs.ops.length > 0" class="ops-result-type">
+    <span v-else class="ops-result-type">
       <Icon :name="resultTypeIcon" size="xs" variant="stroke" />
     </span>
     <span v-if="node.attrs.ops && node.attrs.ops.length > 0" class="ops-indicator">
@@ -124,11 +125,12 @@ function handleClosePanel() {
   align-items: center;
   justify-content: center;
   margin-left: 0.25rem;
-  min-width: 1.25rem;
-  height: 1.25rem;
+  width: 1rem;
+  height: 1rem;
   background-color: rgba(255, 255, 255, 0.2);
   border-radius: 50%;
   font-size: 0.625rem;
   font-weight: bold;
+  flex-shrink: 0;
 }
 </style>

@@ -1,23 +1,27 @@
 <script setup lang="ts">
-    import { computed, useSlots } from "vue";
-    import { cn } from "@/lib/helpers";
+import { computed, useSlots } from "vue";
+import { cn } from "@/lib/helpers";
 
-    const props = withDefaults(
-      defineProps<{
-          modelValue: string;
-          id?: string;
-          label?: string;
-          placeholder?: string;
-          type?: "text" | "email" | "password" | "search" | "url";
-          disabled?: boolean;
-          error?: string;
-          hint?: string;
-          name?: string;
-          autocomplete?: string;
-          class?: string;
-      }>(),
-      { type: "text", disabled: false }
-    );
+interface TextInputProps {
+  modelValue: string;
+  id?: string;
+  label?: string;
+  placeholder?: string;
+  type?: "text" | "email" | "password" | "search" | "url";
+  disabled?: boolean;
+  error?: string;
+  hint?: string;
+  name?: string;
+  autocomplete?: string;
+  autofocus?: boolean;
+  class?: string;
+}
+
+const props = withDefaults(defineProps<TextInputProps>(), {
+  type: "text",
+  disabled: false,
+  autofocus: false,
+});
 
     const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
 
@@ -51,6 +55,7 @@
         :type="type"
         :name="name"
         :autocomplete="autocomplete"
+        :autofocus="autofocus"
         :placeholder="placeholder"
         :disabled="disabled"
         :aria-invalid="!!error || undefined"
