@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useDebounceFn } from "@/composables/useDebounce";
+import { useI18n } from "@/composables/useI18n";
 import SelectInput from "../SelectInput.vue";
 import TextInput from "../TextInput.vue";
 import Icon from "../../Icon.vue";
@@ -24,11 +25,16 @@ const props = withDefaults(
   {
     multiple: false,
     clearable: true,
-    placeholder: "Wybierz użytkownika...",
+    placeholder: "",
   }
 );
 
 const emit = defineEmits<{ (e: "update:modelValue", value: any): void }>();
+const { t } = useI18n();
+
+const defaultPlaceholder = computed(() => 
+  props.placeholder || (props.multiple ? t('inputs.selectUsers') : t('inputs.selectUser'))
+);
 
 const selectedValue = computed({
   get: () => props.modelValue,
@@ -94,7 +100,7 @@ async function loadUsers(cursor?: string, q?: string) {
   <SelectInput
     v-model="selectedValue"
     :label="label"
-    :placeholder="placeholder"
+    :placeholder="defaultPlaceholder"
     :error="error"
     :hint="hint"
     :disabled="disabled"
@@ -117,7 +123,7 @@ async function loadUsers(cursor?: string, q?: string) {
         <TextInput
           :modelValue="query"
           @update:modelValue="(v) => debouncedSetQuery(setQuery, v as string)"
-          placeholder="Szukaj użytkownika..."
+          :placeholder="t('inputs.searchUser')"
           type="search"
           class="h-11"
         >

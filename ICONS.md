@@ -78,6 +78,7 @@ Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
 - `link`
 - `loader`
 - `lock`
+- `lock-open`
 - `logout`
 - `mail`
 - `mail-open`

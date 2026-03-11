@@ -15,7 +15,6 @@ const isDarkMode = ref(initialDark);
 
 function applyTheme() {
   const html = document.documentElement;
-  console.log('applyTheme called, isDark:', isDarkMode.value);
   if (isDarkMode.value) {
     html.classList.add('dark');
     if (typeof localStorage !== 'undefined') localStorage.setItem('theme', 'dark');

@@ -48,6 +48,79 @@
             <StatCard label="Errors" :value="1" delta="!" deltaTone="danger" />
         </StatsGrid>
 
+        <Card class="mt-6 text-left">
+            <div class="flex flex-col gap-2 mb-6">
+                <div>
+                    <p class="text-sm font-semibold tracking-wide text-primary uppercase">MarkdownEditor</p>
+                    <h3 class="text-xl font-semibold text-foreground">Przykładowe konfiguracje</h3>
+                </div>
+                <p class="text-sm text-foreground/70 max-w-3xl">
+                    Poniżej dwie instancje nowego edytora opartego o TipTap. Pierwsza prezentuje pełne wsparcie dla mentions, zmiennych,
+                    bloków IF i tekstu AI, a druga minimalną konfigurację tylko z bazowym Markdownem.
+                </p>
+            </div>
+
+            <div class="grid gap-6 md:grid-cols-2">
+                <div class="rounded-2xl border border-border/80 bg-card/60 p-4 shadow-sm">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <p class="text-sm font-semibold text-foreground">Pełna konfiguracja</p>
+                            <p class="text-xs text-foreground/70">Mentions · Variables · IF · AI</p>
+                        </div>
+                        <Badge tone="primary">Full</Badge>
+                    </div>
+                    <MarkdownEditor
+                        v-model="fullMarkdown"
+                        :config="fullEditorConfig"
+                        placeholder="Wstaw komunikat dla klienta..."
+                    />
+                    <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-foreground/70">
+                        <span>Wersja demonstracyjna z pełną funkcjonalnością.</span>
+                        <div class="flex gap-2">
+                            <Button size="xs" variant="ghost" @click="resetFullMarkdown">Resetuj demo</Button>
+                        </div>
+                    </div>
+                    <div class="mt-4 space-y-2">
+                        <p class="text-xs font-semibold uppercase tracking-wide text-foreground/70">Aktualny markdown</p>
+                        <pre class="rounded-xl bg-background/70 p-3 text-[11px] leading-relaxed overflow-x-auto">{{ fullMarkdown }}</pre>
+                    </div>
+                    <div class="mt-3 space-y-2">
+                        <p class="text-xs font-semibold uppercase tracking-wide text-foreground/70">Aktualny doc JSON</p>
+                        <pre class="rounded-xl bg-background/70 p-3 text-[10px] leading-relaxed overflow-x-auto">{{ fullDocPreview }}</pre>
+                    </div>
+                </div>
+
+                <div class="rounded-2xl border border-dashed border-border/60 bg-background/60 p-4">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <p class="text-sm font-semibold text-foreground">Minimalny wariant</p>
+                            <p class="text-xs text-foreground/70">Nagłówki + podstawowe formatowanie</p>
+                        </div>
+                        <Badge tone="neutral">Lite</Badge>
+                    </div>
+                    <MarkdownEditor
+                        v-model="liteMarkdown"
+                        :config="liteEditorConfig"
+                        placeholder="Krótka notatka..."
+                    />
+                    <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-foreground/70">
+                        <span>Porównaj z lekkim profilem bez rozszerzeń.</span>
+                        <div class="flex gap-2">
+                            <Button size="xs" variant="ghost" @click="resetLiteMarkdown">Resetuj demo</Button>
+                        </div>
+                    </div>
+                    <div class="mt-4 space-y-2">
+                        <p class="text-xs font-semibold uppercase tracking-wide text-foreground/70">Wynik</p>
+                        <pre class="rounded-xl bg-background/70 p-3 text-[11px] leading-relaxed overflow-x-auto">{{ liteMarkdown }}</pre>
+                    </div>
+                    <div class="mt-3 space-y-2">
+                        <p class="text-xs font-semibold uppercase tracking-wide text-foreground/70">Doc JSON</p>
+                        <pre class="rounded-xl bg-background/70 p-3 text-[10px] leading-relaxed overflow-x-auto">{{ liteDocPreview }}</pre>
+                    </div>
+                </div>
+            </div>
+        </Card>
+
         <EntityCard class="mt-2" title="Post: New Year Campaign" subtitle="Scheduled · Jan 2, 10:00">
             <template #leading>
                 <Avatar name="ACME" />
@@ -752,6 +825,9 @@
     import Pagination from './ui/Pagination.vue';
     import Navbar, { type NavItem } from './ui/Navbar.vue';
     import IconInput from './ui/inputs/IconInput.vue';
+    import MarkdownEditor from './editors/MarkdownEditor/MarkdownEditor.vue';
+    import type { EditorConfig as MarkdownEditorConfig } from './editors/MarkdownEditor/types/editor';
+    import { parseMarkdown } from './editors/MarkdownEditor/utils/parse';
     import { useToast } from '@/composables/useToast';
     import { ref, computed, onMounted } from 'vue';
 
@@ -820,6 +896,208 @@
     const textareaValue = ref('');
 
     const { push } = useToast();
+
+    // MarkdownEditor demo configs
+    const demoMentionUsers = [
+        { id: 'u_marta', name: 'Marta Kowalska', avatar: 'https://i.pravatar.cc/64?img=1' },
+        { id: 'u_janek', name: 'Jan Nowak', avatar: 'https://i.pravatar.cc/64?img=2' },
+        { id: 'u_ola', name: 'Ola Zielińska', avatar: 'https://i.pravatar.cc/64?img=3' },
+    ];
+
+    const demoVariables = [
+        { id: 'var_total', name: 'Suma koszyka', type: 'number' },
+        { id: 'var_customer', name: 'Klient', type: 'text' },
+        { id: 'var_has_discount', name: 'Kod rabatowy?', type: 'boolean' },
+    ];
+
+    const variableOperationsCatalog = [
+        // TEXT OPERATIONS
+        {
+            id: 'textPrefix',
+            label: 'Dodaj prefix',
+            inputTypes: ['text'],
+            outputType: 'text',
+            args: [{ id: 'prefix', label: 'Prefix', type: 'text', placeholder: 'np. [PROMO]' }],
+        },
+        {
+            id: 'textSuffix',
+            label: 'Dodaj suffix',
+            inputTypes: ['text'],
+            outputType: 'text',
+            args: [{ id: 'suffix', label: 'Suffix', type: 'text', placeholder: 'np. %' }],
+        },
+        {
+            id: 'textLength',
+            label: 'Długość tekstu',
+            inputTypes: ['text'],
+            outputType: 'number',
+        },
+        {
+            id: 'textContains',
+            label: 'Czy zawiera fragment',
+            inputTypes: ['text'],
+            outputType: 'boolean',
+            args: [{ id: 'needle', label: 'Szukany fragment', type: 'text' }],
+        },
+
+        // NUMBER OPERATIONS
+        {
+            id: 'numberAdd',
+            label: 'Dodaj wartość',
+            inputTypes: ['number'],
+            outputType: 'number',
+            args: [{ id: 'value', label: 'Wartość', type: 'number', placeholder: 'np. 10' }],
+        },
+        {
+            id: 'numberSubtract',
+            label: 'Odejmij wartość',
+            inputTypes: ['number'],
+            outputType: 'number',
+            args: [{ id: 'value', label: 'Wartość', type: 'number' }],
+        },
+        {
+            id: 'numberMultiply',
+            label: 'Pomnóż',
+            inputTypes: ['number'],
+            outputType: 'number',
+            args: [{ id: 'value', label: 'Mnożnik', type: 'number', defaultValue: 1 }],
+        },
+        {
+            id: 'numberDivide',
+            label: 'Podziel',
+            inputTypes: ['number'],
+            outputType: 'number',
+            args: [{ id: 'value', label: 'Dzielnik', type: 'number', defaultValue: 1 }],
+        },
+        {
+            id: 'numberRound',
+            label: 'Zaokrąglij',
+            inputTypes: ['number'],
+            outputType: 'number',
+            args: [{ id: 'decimals', label: 'Miejsca po przecinku', type: 'number', defaultValue: 0 }],
+        },
+        {
+            id: 'numberEquals',
+            label: 'Czy równe',
+            inputTypes: ['number'],
+            outputType: 'boolean',
+            args: [{ id: 'value', label: 'Wartość referencyjna', type: 'number' }],
+        },
+        {
+            id: 'numberLessThan',
+            label: 'Czy mniejsze',
+            inputTypes: ['number'],
+            outputType: 'boolean',
+            args: [{ id: 'value', label: 'Próg', type: 'number' }],
+        },
+        {
+            id: 'numberGreaterThan',
+            label: 'Czy większe',
+            inputTypes: ['number'],
+            outputType: 'boolean',
+            args: [{ id: 'value', label: 'Próg', type: 'number' }],
+        },
+
+        // BOOLEAN OPERATIONS
+        {
+            id: 'booleanNegate',
+            label: 'Neguj',
+            inputTypes: ['boolean'],
+            outputType: 'boolean',
+        },
+        {
+            id: 'booleanToText',
+            label: 'Zamień na tekst',
+            inputTypes: ['boolean'],
+            outputType: 'text',
+            args: [
+                { id: 'trueLabel', label: 'Tekst dla PRAWDA', type: 'text', defaultValue: 'Tak' },
+                { id: 'falseLabel', label: 'Tekst dla FAŁSZ', type: 'text', defaultValue: 'Nie' },
+            ],
+        },
+    ];
+
+    const fullEditorConfig: MarkdownEditorConfig = {
+        features: {
+            markdown: {
+                headings: [1, 2, 3],
+                links: true,
+                lists: true,
+                bold: true,
+                italic: true,
+                underline: true,
+            },
+            mentions: { enabled: true, users: demoMentionUsers, trigger: '@' },
+            variables: { enabled: true, variables: demoVariables, operationsCatalog: variableOperationsCatalog },
+            ifBlock: { enabled: true, maxElseIf: 3 },
+            aiText: {
+                enabled: true,
+                personas: [
+                    { id: 'hero', label: 'Hero copywriter' },
+                    { id: 'legal', label: 'Legal (ostrożny)' },
+                ],
+                labelsEnabled: true,
+                labelsCatalog: [
+                    { id: 'promo', name: 'Promocje' },
+                    { id: 'onboarding', name: 'Onboarding' },
+                    { id: 'faq', name: 'FAQ' },
+                ],
+            },
+        },
+    };
+
+    const liteEditorConfig: MarkdownEditorConfig = {
+        features: {
+            markdown: {
+                headings: [1, 2],
+                links: false,
+                lists: false,
+                bold: true,
+                italic: true,
+                underline: false,
+            },
+            mentions: { enabled: false, users: [] },
+            variables: { enabled: false, variables: [], operationsCatalog: [] },
+            ifBlock: { enabled: false },
+            aiText: { enabled: false, labelsEnabled: false },
+        },
+    };
+
+    const defaultFullMarkdown = [
+        '## Podsumowanie',
+        '',
+        'Hej @[mention]("{\\"v\\":1,\\"data\\":{\\"id\\":\\"u_marta\\",\\"name\\":\\"Marta Kowalska\\",\\"avatar\\":\\"https://i.pravatar.cc/64?img=1\\"}}"), status zamówienia to @[variable]("{\\"v\\":1,\\"data\\":{\\"id\\":\\"var_total\\",\\"name\\":\\"Suma koszyka\\",\\"type\\":\\"number\\",\\"locked\\":false,\\"pipeline\\":[],\\"resultType\\":\\"number\\"}}") . @[ai-text]("{\\"v\\":1,\\"data\\":{\\"id\\":\\"ai_1\\",\\"personaId\\":null,\\"prompt\\":\\"Napisz CTA\\",\\"labels\\":[]}}")',
+        '',
+        '```if-block {"id":"if_block_1","v":1}',
+        '[[IF {"id":"if_branch_1","condition":{"variableId":"var_has_discount","pipeline":[],"resultType":"boolean"}}]]',
+        'Dodaj sekcję o rabacie.',
+        '[[ELSE {"id":"else_branch_1"}]]',
+        'Brak rabatu.',
+        '```',
+        '',
+    ].join('\n');
+
+    const defaultLiteMarkdown = [
+        '### Notatka zespołowa',
+        '',
+        '1. Sprawdź backlog.',
+        '2. Przygotuj krótką aktualizację.',
+        '',
+        '**Status:** _w toku_'
+    ].join('\n');
+
+    const fullMarkdown = ref<string>(defaultFullMarkdown);
+    const liteMarkdown = ref<string>(defaultLiteMarkdown);
+    const fullDocPreview = computed(() => JSON.stringify(parseMarkdown(fullMarkdown.value), null, 2));
+    const liteDocPreview = computed(() => JSON.stringify(parseMarkdown(liteMarkdown.value), null, 2));
+
+    function resetFullMarkdown() {
+        fullMarkdown.value = defaultFullMarkdown;
+    }
+
+    function resetLiteMarkdown() {
+        liteMarkdown.value = defaultLiteMarkdown;
+    }
 
     function handleAction(action: string, closeMenu?: () => void) {
         console.log(action);

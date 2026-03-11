@@ -1,5 +1,5 @@
 <script setup lang="ts">
-    import { computed, ref, watch } from "vue";
+    import { computed, ref, watch, useSlots } from "vue";
     import { cn } from "@/lib/helpers";
     import { useFocusTrap } from "@/composables/useFocusTrap";
     import Button from "@/components/ui/Button.vue";
@@ -12,7 +12,7 @@
             title?: string;
             description?: string;
             side?: Side;
-            width?: "sm" | "md" | "lg";
+            width?: "sm" | "md" | "lg" | "xl";
             closeOnOverlay?: boolean;
             class?: string;
         }>(),
@@ -25,13 +25,15 @@
     }>();
 
     const panelRef = ref<HTMLElement | null>(null);
+    const slots = useSlots();
     const enabled = computed(() => props.modelValue);
     const { activate, restore } = useFocusTrap(panelRef, enabled);
 
     const widthCls: Record<NonNullable<typeof props.width>, string> = {
-        sm: "w-[360px] max-w-[90vw]",
-        md: "w-[480px] max-w-[92vw]",
-        lg: "w-[640px] max-w-[94vw]",
+      sm: "w-[360px] max-w-[90vw]",
+      md: "w-[480px] max-w-[92vw]",
+      lg: "w-[640px] max-w-[94vw]",
+      xl: "w-[780px] max-w-[96vw]",
     };
 
     const sideCls = computed(() => (props.side === "left" ? "left-0" : "right-0"));
@@ -41,6 +43,7 @@
     );
 
     const enterFrom = computed(() => (props.side === "left" ? "-translate-x-2" : "translate-x-2"));
+    const hasFooterSlot = computed(() => Boolean(slots.footer));
 
     function close() {
         emit("update:modelValue", false);
@@ -134,7 +137,7 @@
             </div>
 
             <!-- Footer (zawsze na dole) -->
-            <footer v-if="$slots.footer" class="shrink-0 border-t border-secondary/60 p-5">
+            <footer v-if="hasFooterSlot" class="shrink-0 border-t border-secondary/60 p-5">
               <slot name="footer" />
             </footer>
           </aside>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, useSlots, onMounted, onBeforeUnmount } from "vue";
+import { useI18n } from "@/composables/useI18n";
 import { cn } from "@/lib/helpers";
 import DropdownMenu from "@/components/ui/DropdownMenu.vue";
 import Icon from "@/components/ui/Icon.vue";
@@ -39,6 +40,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: "update:modelValue", value: any): void }>();
 
+const { t } = useI18n();
 const inputId = props.id ?? `sel_${Math.random().toString(16).slice(2)}`;
 const slots = useSlots();
 const hasLeft = computed(() => !!slots.left);
@@ -617,7 +619,7 @@ onBeforeUnmount(() => {
               type="button"
               @click="clearSelection(closeMenu)"
             >
-              Wyczyść
+              {{ t('common.clearButton') }}
             </Button>
           </div>
         </div>

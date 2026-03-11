@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, useSlots } from 'vue';
+import { useI18n } from '@/composables/useI18n';
 import { cn } from '@/lib/helpers';
 import DropdownMenu from '@/components/ui/DropdownMenu.vue';
 import Button from '@/components/ui/Button.vue';
@@ -28,6 +29,7 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: string | null): void }>()
 
 const inputId = props.id ?? `color_${Math.random().toString(16).slice(2)}`;
 const slots = useSlots();
+const { t } = useI18n();
 const hasLeft = computed(() => !!slots.left);
 const hasRight = computed(() => !!slots.right);
 const hasCenter = computed(() => !!slots.center);
@@ -317,9 +319,9 @@ function onRgbInput(which: 'r'|'g'|'b'|'a', v: string){
                     :disabled="disabled"
                     @click="() => clearSelection(closeMenu)"
                   >
-                    Wyczyść
+                    {{ t('common.clearButton') }}
                   </Button>
-                  <Button variant="primary" size="sm" type="button" @click="() => { closeMenu(); menuOpen = false; }">Wybierz</Button>
+                  <Button variant="primary" size="sm" type="button" @click="() => { closeMenu(); menuOpen = false; }">{{ t('common.selectButton') }}</Button>
                 </div> 
             </div>
             </div>

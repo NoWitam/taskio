@@ -4,6 +4,7 @@ import Button from './ui/Button.vue';
 import Icon from './ui/Icon.vue';
 import Skeleton from './ui/Skeleton.vue';
 import { useTasksStore, type Comment } from '@/store/tasks';
+import { useI18n } from '@/composables/useI18n';
 
 const props = defineProps<{
     entityId: string;
@@ -11,6 +12,7 @@ const props = defineProps<{
 }>();
 
 const tasksStore = useTasksStore();
+const { t } = useI18n();
 const commentText = ref('');
 const isSubmitting = ref(false);
 const editingCommentId = ref<string | null>(null);
@@ -98,7 +100,7 @@ watch(() => props.entityId, () => {
     <div class="border-b border-border p-4">
       <h3 class="flex items-center gap-2 text-sm font-semibold">
         <Icon name="message" size="sm" />
-        Komentarze
+        {{ t('comments.title') }}
         <span v-if="comments.length > 0" class="ml-auto text-xs text-muted-foreground">
           ({{ comments.length }})
         </span>
@@ -118,8 +120,8 @@ watch(() => props.entityId, () => {
       <div v-else-if="comments.length === 0" class="flex h-full items-center justify-center">
         <div class="text-center text-sm text-muted-foreground">
           <Icon name="message" size="lg" class="mx-auto mb-2 opacity-50" />
-          <p>Brak komentarzy</p>
-          <p class="text-xs">Dodaj pierwszy komentarz</p>
+          <p>{{ t('comments.noComments') }}</p>
+          <p class="text-xs">{{ t('comments.addFirstComment') }}</p>
         </div>
       </div>
 
@@ -135,7 +137,7 @@ watch(() => props.entityId, () => {
               <p class="text-sm font-medium">{{ comment.author.name }}</p>
               <p class="text-xs text-muted-foreground">
                 {{ formatDate(comment.created_at) }}
-                <span v-if="comment.is_edited" class="ml-1">(edytowany)</span>
+                <span v-if="comment.is_edited" class="ml-1">{{ t('comments.edited') }}</span>
               </p>
             </div>
             <div class="flex gap-1">
@@ -170,7 +172,7 @@ watch(() => props.entityId, () => {
                 size="xs"
                 @click="saveEdit(comment.id)"
               >
-                Zapisz
+                {{ t('comments.save') }}
               </Button>
               <Button
                 type="button"
@@ -178,7 +180,7 @@ watch(() => props.entityId, () => {
                 size="xs"
                 @click="cancelEdit"
               >
-                Anuluj
+                {{ t('comments.cancel') }}
               </Button>
             </div>
           </div>
@@ -193,7 +195,7 @@ watch(() => props.entityId, () => {
       <div class="space-y-2">
         <textarea
           v-model="commentText"
-          placeholder="Dodaj komentarz..."
+          :placeholder="t('comments.writeComment')"
           class="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
           rows="3"
           :disabled="isSubmitting"
@@ -207,7 +209,7 @@ watch(() => props.entityId, () => {
           @click="handleSubmit"
         >
           <Icon name="send" size="sm" />
-          {{ isSubmitting ? 'Dodawanie...' : 'Dodaj komentarz' }}
+          {{ isSubmitting ? t('comments.adding') : t('comments.addComment') }}
         </Button>
       </div>
     </div>

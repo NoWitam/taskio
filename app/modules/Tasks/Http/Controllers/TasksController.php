@@ -32,8 +32,10 @@ class TasksController extends Controller
         ]]);
     }
 
-    public function show(Request $request, Task $task): TaskResource
+    public function show(Request $request, string $id): TaskResource
     {
+        $task = Task::withTrashed()->findOrFail($id);
+        
         $this->authorize('view', $task);
 
         return TaskResource::make(

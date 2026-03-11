@@ -4,9 +4,16 @@
     "type": "module",
     "scripts": {
         "build": "vite build",
-        "dev": "vite"
+        "dev": "vite",
+        "test:unit": "vitest run"
     },
     "dependencies": {
+        "@tiptap/core": "^2.5.8",
+        "@tiptap/extension-link": "^2.5.8",
+        "@tiptap/extension-underline": "^2.5.8",
+        "@tiptap/pm": "^2.5.8",
+        "@tiptap/starter-kit": "^2.5.8",
+        "@tiptap/vue-3": "^2.5.8",
         "pinia": "^3.0.4",
         "vue": "^3.3.4",
         "vue-router": "^4.6.4"
@@ -20,6 +27,7 @@
         "laravel-vite-plugin": "^2.0.0",
         "postcss": "^8.4.24",
         "tailwindcss": "^4.1.18",
-        "vite": "^7.0.7"
+        "vite": "^7.0.7",
+        "vitest": "^2.1.1"
     }
 }

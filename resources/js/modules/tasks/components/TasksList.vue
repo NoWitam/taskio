@@ -7,6 +7,7 @@ import Icon from '@/components/ui/Icon.vue';
 import Skeleton from '../../../components/ui/Skeleton.vue';
 import { useTasksStore } from '@/store/tasks';
 import { useInfiniteScroll } from '@/composables/useInfiniteScroll';
+import { useI18n } from '@/composables/useI18n';
 import type { TaskFilters } from '@/store/tasks';
 import HelpIcon from '../../../components/ui/HelpIcon.vue';
 
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 }>();
 
 const tasksStore = useTasksStore();
+const { t } = useI18n();
 
 // Pobierz taski dla danego statusu
 const tasks = computed(() => tasksStore.getTasksByStatus(props.status).value);
@@ -28,11 +30,12 @@ const loading = computed(() => tasksStore.getLoadingByStatus(props.status).value
 const hasMore = computed(() => tasksStore.getHasMoreByStatus(props.status).value);
 const total = computed(() => tasksStore.getTotalByStatus(props.status).value);
 
-const priorityObject: Record<string, { tone: 'danger' | 'warning' | 'neutral'; label: string }> = {
-    "high": { tone: 'danger', label: 'Wysoki' },
-    "medium": { tone: 'warning', label: 'Średni' },
-    "low": { tone: 'neutral', label: 'Niski' }
-};
+const priorityObject = computed(() => ({
+    "urgent": { tone: 'danger' as const, label: t('tasks.priorityUrgent') },
+    "high": { tone: 'warning' as const, label: t('tasks.priorityHigh') },
+    "medium": { tone: 'primary' as const, label: t('tasks.priorityMedium') },
+    "low": { tone: 'neutral' as const, label: t('tasks.priorityLow') }
+}));
 
 const openTaskDialog = (taskId: string) => {
     emit('open-task', taskId);
@@ -92,13 +95,13 @@ watch(() => props.filters, () => {
                 v-if="status === 'archive'"
                 size="md"
             >
-                Do archiwum automatycznie trafiają wszystkie ukończone zadania po 1 miesiącu
+                {{ t('tasks.archiveInfo') }}
             </HelpIcon>
             <HelpIcon
                 v-else-if="status === 'trash'"
                 size="md"
             >
-                Usunięte zadania najpierw trafiają do kosza. Po 1 miesiącu zostają automatycznie usuwane z systemu
+                {{ t('tasks.trashInfo') }}
             </HelpIcon>
            
         </div>
@@ -154,7 +157,7 @@ watch(() => props.filters, () => {
             <div class="flex items-center justify-between mt-2 pt-2 border-t border-border/50">
                 <div class="flex items-center gap-2 text-muted-foreground">
                     <Icon name="calendar" size="sm" />
-                    <span class="font-semibold text-sm"> {{ task.deadline || 'Brak terminu' }} </span>
+                    <span class="font-semibold text-sm"> {{ task.deadline || t('tasks.noDeadline') }} </span>
                 </div>
 
                 <Avatar 
@@ -190,7 +193,7 @@ watch(() => props.filters, () => {
         </template>
 
         <div v-if="total === 0" class="text-center py-8">
-            <p class="text-muted-foreground">Brak zadań</p>
+            <p class="text-muted-foreground">{{ t('tasks.noTasks') }}</p>
         </div>
     </div>
 </div>

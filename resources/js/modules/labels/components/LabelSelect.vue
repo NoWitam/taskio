@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { useDebounceFn } from '@/composables/useDebounce';
+import { useI18n } from '@/composables/useI18n';
 import { useLabelsStore } from '@/store/labels';
 import type { Label } from '@/types';
 
@@ -30,7 +31,7 @@ const props = withDefaults(
     modelValue: () => [],
     operator: null,
     addable: false,
-    placeholder: 'Wybierz etykiety...',
+    placeholder: '',
   }
 );
 
@@ -38,6 +39,12 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string[]): void;
   (e: 'update:operator', value: 'AND' | 'OR'): void;
 }>();
+
+const { t } = useI18n();
+
+const defaultPlaceholder = computed(() => 
+  props.placeholder || t('labels.selectLabels', 'Select labels')
+);
 
 const selectedLabels = computed({
   get: () => props.modelValue,
@@ -53,15 +60,15 @@ function setOperator(value: 'AND' | 'OR') {
   }
 }
 
-const operatorTabs = [
-  { id: 'OR', label: 'LUB' },
-  { id: 'AND', label: 'ORAZ' },
-];
+const operatorTabs = computed(() => [
+  { id: 'OR', label: t('labels.operatorOr', 'OR') },
+  { id: 'AND', label: t('labels.operatorAnd', 'AND') },
+]);
 
 const operatorHelp = computed(() =>
   currentOperator.value === 'OR'
-    ? 'Pokaż zadania z przynajmniej jedną z wybranych etykiet.'
-    : 'Pokaż zadania, które mają wszystkie wybrane etykiety.'
+    ? t('labels.operatorOrHelp', 'Show tasks with at least one of the selected labels.')
+    : t('labels.operatorAndHelp', 'Show tasks that have all selected labels.')
 );
 
 const labelsStore = useLabelsStore();
@@ -145,7 +152,7 @@ async function handleCreated(label: Label) {
     ref="selectRef"
     v-model="selectedLabels"
     :label="label"
-    :placeholder="placeholder"
+    :placeholder="defaultPlaceholder"
     :error="error"
     :hint="hint"
     :disabled="disabled"
@@ -167,7 +174,7 @@ async function handleCreated(label: Label) {
       <div class="p-2 border-b border-border flex flex-col gap-2">
         <div v-if="addable || operator !== null" class="w-full">
           <div v-if="operator !== null" class="text-sm font-semibold text-muted-foreground mb-1">
-            Łączenie etykiet w filtrze
+            {{ t('labels.combineInfo') }}
           </div>
 
           <div class="flex justify-between items-center gap-2">
@@ -190,7 +197,7 @@ async function handleCreated(label: Label) {
                 :class="operator === null ? 'w-full' : ''"
               >
                 <Icon name="plus" size="sm" />
-                <span>Nowa</span>
+                <span>{{ t('labels.new') }}</span>
               </Button>
             </div>
           </div>
@@ -203,7 +210,7 @@ async function handleCreated(label: Label) {
         <TextInput
           :modelValue="query"
           @update:modelValue="(v) => debouncedSetQuery(setQuery, v as string)"
-          placeholder="Szukaj etykiet..."
+          :placeholder="t('labels.searchPlaceholder')"
           type="search"
           class="h-11"
         >
@@ -251,7 +258,7 @@ async function handleCreated(label: Label) {
     </template>
   </SelectInput>
 
-  <Dialog v-model="createDialogOpen" title="Nowa etykieta" description="Utwórz nową etykietę." width="sm">
+  <Dialog v-model="createDialogOpen" :title="t('labels.newLabelTitle')" :description="t('labels.newLabelDescription')" width="sm">
     <CreateLabelForm @created="handleCreated" @cancel="createDialogOpen = false" />
   </Dialog>
 </template>

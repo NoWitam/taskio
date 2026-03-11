@@ -2,7 +2,9 @@
 import { ref, watch, computed } from 'vue';
 import Icon from '@/components/ui/Icon.vue';
 import DropdownMenu from '@/components/ui/DropdownMenu.vue';
+import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
 import { useTheme } from '@/composables/useTheme';
+import { useI18n } from '@/composables/useI18n';
 
 export type NavItem = {
   label: string;
@@ -11,6 +13,8 @@ export type NavItem = {
   badge?: number;
   disabled?: boolean;
 };
+
+const { t } = useI18n();
 
 const props = withDefaults(
   defineProps<{
@@ -109,19 +113,21 @@ function fireUserMenu(action: string, closeMenu?: () => void) {
       <button
         @click="toggleTheme"
         class="p-2 rounded-md cursor-pointer text-foreground/80 hover:bg-primary/15 hover:text-primary transition-colors"
-        :title="isDarkMode ? 'Light mode' : 'Dark mode'"
-        aria-label="Toggle theme"
+        :title="isDarkMode ? t('theme.switchLight') : t('theme.switchDark')"
+        :aria-label="isDarkMode ? t('theme.switchLight') : t('theme.switchDark')"
       >
         <Icon :name="isDarkMode ? 'sun' : 'moon'" size="sm" />
       </button>
+
+      <LanguageSwitcher />
 
       <DropdownMenu align="end">
         <template #activator="{ toggle }">
           <button
             type="button"
             class="p-2 rounded-md cursor-pointer text-foreground/80 hover:bg-secondary/60 transition-colors"
-            aria-label="User menu"
-            title="User menu"
+            :aria-label="t('users.myProfile')"
+            :title="t('users.myProfile')"
             @click.stop="toggle()"
           >
             <Icon name="user" size="sm" />
@@ -134,21 +140,21 @@ function fireUserMenu(action: string, closeMenu?: () => void) {
             class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition cursor-pointer hover:bg-secondary/60 focus:bg-secondary/60"
             @click="fireUserMenu('profile', closeMenu)"
           >
-            Profil
+            {{ t('users.myProfile') }}
           </button>
           <button
             type="button"
             class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition cursor-pointer hover:bg-secondary/60 focus:bg-secondary/60"
             @click="fireUserMenu('settings', closeMenu)"
           >
-            Ustawienia
+            {{ t('navigation.settings') }}
           </button>
           <button
             type="button"
             class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition cursor-pointer hover:bg-secondary/60 focus:bg-secondary/60 text-danger"
             @click="fireUserMenu('logout', closeMenu)"
           >
-            Wyloguj
+            {{ t('navigation.logout') }}
           </button>
         </template>
       </DropdownMenu>
