@@ -2,6 +2,7 @@
 
 namespace App\Modules\Tasks\Models;
 
+use App\Casts\MarkdownTreeCast;
 use App\Models\AbstractModel;
 use App\Models\User;
 use App\Modules\Changelog\Interfaces\HasChangelog as InterfacesHasChangelog;
@@ -39,6 +40,7 @@ class Task extends AbstractModel implements InterfacesHasChangelog
     ];
 
     protected $casts = [
+        'description' => MarkdownTreeCast::class,
         'priority' => TaskPriority::class,
         'status' => TaskStatus::class,
         'deadline' => 'date',

@@ -14,6 +14,7 @@ export interface MentionUser {
   id: string;
   name: string;
   avatar?: string;
+  email?: string;
 }
 
 export interface MentionFeatureConfig {

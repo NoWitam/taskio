@@ -7,6 +7,8 @@ import Avatar from '@/components/ui/Avatar.vue';
 import Tabs from '@/components/ui/Tabs.vue';
 import Skeleton from '@/components/ui/Skeleton.vue';
 import Badge from '@/components/ui/Badge.vue';
+import MarkdownViewer from '@/components/editors/MarkdownEditor/MarkdownViewer.vue';
+import type { EditorConfig as MarkdownEditorConfig } from '@/components/editors/MarkdownEditor/types/editor';
 
 const props = defineProps<{
     task: Task;
@@ -117,6 +119,23 @@ const formatFileSize = (bytes: number): string => {
     return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 };
 
+const viewerConfig = computed<MarkdownEditorConfig>(() => ({
+  features: {
+    markdown: {
+      headings: [1, 2, 3],
+      links: true,
+      lists: true,
+      bold: true,
+      italic: true,
+      underline: true,
+    },
+    mentions: { enabled: true, users: [], trigger: '@' },
+    variables: { enabled: true, variables: [], operationsCatalog: [] },
+    ifBlock: { enabled: true },
+    aiText: { enabled: true, labelsEnabled: false },
+  },
+}));
+
 onMounted(() => {
     fetchChangelog();
 });
@@ -173,9 +192,12 @@ watch(() => props.task, (newVal, oldVal) => {
           <Icon name="file-text" size="sm" class="mt-0.5 text-muted-foreground" />
           <div class="flex-1">
             <div class="text-xs font-medium text-muted-foreground">{{ t('taskDetails.description') }}</div>
-            <div class="mt-1 h-[200px] overflow-y-auto pr-3 text-sm">
-              <p v-if="task.description" class="whitespace-pre-wrap">{{ task.description }}</p>
-              <p v-else class="text-muted-foreground">{{ t('taskDetails.noDescription') }}</p>
+            <div class="mt-2">
+              <MarkdownViewer
+                :value="task.description ?? null"
+                :config="viewerConfig"
+                :placeholder="t('taskDetails.noDescription')"
+              />
             </div>
           </div>
         </div>

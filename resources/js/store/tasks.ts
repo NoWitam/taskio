@@ -1,3 +1,4 @@
+import type { JSONContent } from '@tiptap/core';
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api } from '@/lib/api';
@@ -17,7 +18,7 @@ export interface TaskAttachment {
 export interface Task {
     id: string;
     title: string;
-    description?: string;
+    description?: string | JSONContent | null;
     status: string;
     priority: 'urgent' | 'high' | 'medium' | 'low';
     deadline?: string | null;
