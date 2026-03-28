@@ -18,6 +18,7 @@ import type {
 import Button from '@/components/ui/Button.vue';
 import DropdownMenu from '@/components/ui/DropdownMenu.vue';
 import Icon from '@/components/ui/Icon.vue';
+import Avatar from '@/components/ui/Avatar.vue';
 import { getVariableIconName, getVariableIconLabel } from './utils/variableIcons';
 
 const props = withDefaults(defineProps<{
@@ -288,11 +289,14 @@ function generateId(prefix: string) {
                   v-for="user in mentionUsers"
                   :key="user.id"
                   type="button"
-                  class="flex w-full flex-col gap-0.5 px-3 py-2 text-sm hover:bg-secondary/60"
+                  class="flex w-full items-center gap-3 px-3 py-2 text-sm hover:bg-secondary/60"
                   @click="insertMention(user, closeMenu)"
                 >
-                  <span class="font-medium text-foreground">@{{ user.name }}</span>
-                  <span class="text-xs text-muted-foreground">{{ user.id }}</span>
+                  <Avatar :name="user.name" :src="user.avatar" size="xs" class="shrink-0" />
+                  <div class="min-w-0 text-left">
+                    <div class="font-medium text-foreground truncate">@{{ user.name }}</div>
+                    <div class="text-xs text-muted-foreground truncate">{{ user.email || user.id }}</div>
+                  </div>
                 </button>
               </div>
             </template>

@@ -1,21 +1,26 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
+import type { JSONContent } from '@tiptap/core';
 import Dialog from '@/components/ui/Dialog.vue';
 import Button from '@/components/ui/Button.vue';
 import TextInput from '@/components/ui/inputs/TextInput.vue';
-import TextareaInput from '@/components/ui/inputs/TextareaInput.vue';
 import SelectInput from '@/components/ui/inputs/SelectInput.vue';
 import DateInput from '@/components/ui/inputs/DateInput.vue';
 import UserSelect from '@/components/ui/inputs/reusable/UserSelect.vue';
 import LabelSelect from '@/modules/labels/components/LabelSelect.vue';
 import FileDropzone from '@/components/ui/inputs/FileDropzone.vue';
 import Icon from '@/components/ui/Icon.vue';
+import MarkdownEditor from '@/components/editors/MarkdownEditor/MarkdownEditor.vue';
+import type { EditorConfig as MarkdownEditorConfig, MarkdownEditorChangeMeta } from '@/components/editors/MarkdownEditor/types/editor';
+import { serializeDocument } from '@/components/editors/MarkdownEditor/utils/serialize';
+import { parseMarkdown } from '@/components/editors/MarkdownEditor/utils/parse';
 import { useTasksStore } from '@/store/tasks';
 import { useUsersStore } from '@/store/users';
 import { useLabelsStore } from '@/store/labels';
 import { useToast } from '@/composables/useToast';
 import { useI18n } from '@/composables/useI18n';
 import type { TaskAttachment } from '@/store/tasks';
+import type { User } from '@/types';
 
 type Priority = 'urgent' | 'high' | 'medium' | 'low';
 
@@ -43,6 +48,8 @@ const { t } = useI18n();
 
 const submitting = ref(false);
 const existingAttachments = ref<TaskAttachment[]>([]);
+const mentionUsersLoaded = ref(false);
+const descriptionInput = ref('');
 
 const form = reactive({
   title: '',
@@ -64,13 +71,114 @@ const attachments = ref<string[]>([]);
 
 const errors = reactive<Record<string, string>>({});
 
+const mentionUsers = computed(() => {
+  const catalog = usersStore.usersById || {};
+  return Object.values(catalog)
+    .filter((user): user is User => Boolean(user && user.id != null && user.name))
+    .map((user) => ({
+      id: String(user.id),
+      name: user.name,
+      avatar: user.avatar ?? undefined,
+      email: user.email ?? undefined,
+    }));
+});
+
+const markdownEditorConfig = computed<MarkdownEditorConfig>(() => ({
+  features: {
+    markdown: {
+      headings: [1, 2, 3],
+      links: true,
+      lists: true,
+      bold: true,
+      italic: true,
+      underline: true,
+    },
+    mentions: {
+      enabled: mentionUsers.value.length > 0,
+      users: mentionUsers.value,
+      trigger: '@',
+    },
+    variables: { enabled: false, variables: [], operationsCatalog: [] },
+    ifBlock: { enabled: false },
+    aiText: { enabled: false, labelsEnabled: false },
+  },
+}));
+
+function createEmptyDoc(): JSONContent {
+  return {
+    type: 'doc',
+    content: [
+      {
+        type: 'paragraph',
+        content: [],
+      },
+    ],
+  };
+}
+
+function normalizeDoc(doc: JSONContent | null | undefined): JSONContent {
+  if (doc && doc.type === 'doc') {
+    return {
+      ...doc,
+      content: Array.isArray(doc.content) ? doc.content : [],
+    };
+  }
+  return createEmptyDoc();
+}
+
+function applyDoc(doc: JSONContent | null | undefined) {
+  const normalized = normalizeDoc(doc);
+  form.description = JSON.stringify(normalized);
+  descriptionInput.value = serializeDocument(normalized) ?? '';
+}
+
+function parseDocString(raw: string | null | undefined): JSONContent | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && parsed.type === 'doc') {
+      return parsed as JSONContent;
+    }
+  } catch (error) {
+    return null;
+  }
+  return null;
+}
+
+function hydrateDescription(value?: string | JSONContent | null) {
+  if (!value) {
+    applyDoc(createEmptyDoc());
+    return;
+  }
+
+  if (typeof value === 'object') {
+    applyDoc(value as JSONContent);
+    return;
+  }
+
+  const fromJson = parseDocString(value);
+  if (fromJson) {
+    applyDoc(fromJson);
+    return;
+  }
+
+  const fromMarkdown = parseMarkdown(value) as JSONContent;
+  applyDoc(fromMarkdown);
+}
+
+function handleDescriptionChange(meta: MarkdownEditorChangeMeta) {
+  const normalized = normalizeDoc(meta.doc);
+  form.description = JSON.stringify(normalized);
+}
+
+applyDoc(createEmptyDoc());
+
 function resetErrors() {
   Object.keys(errors).forEach((k) => delete errors[k]);
 }
 
 function resetForm() {
   form.title = '';
-  form.description = '';
   form.priority = 'medium';
   form.deadline = null;
   form.assigned_id = null;
@@ -79,7 +187,28 @@ function resetForm() {
   form.task_form.template_id = null;
   attachments.value = [];
   existingAttachments.value = [];
+  applyDoc(createEmptyDoc());
   resetErrors();
+}
+
+async function ensureMentionUsersLoaded() {
+  if (mentionUsersLoaded.value) return;
+  if (Object.keys(usersStore.usersById || {}).length) {
+    mentionUsersLoaded.value = true;
+    return;
+  }
+
+  try {
+    await usersStore.fetchUsers({ per_page: 50 });
+    mentionUsersLoaded.value = true;
+  } catch (error) {
+    pushToast({
+      title: 'Nie udało się pobrać użytkowników',
+      message: 'Mentions pozostaną niedostępne, spróbuj ponownie później.',
+      tone: 'warning',
+      timeoutMs: 4500,
+    });
+  }
 }
 
 watch(
@@ -87,6 +216,7 @@ watch(
   async (v) => {
     if (v) {
       resetErrors();
+      await ensureMentionUsersLoaded();
       
       // Jeśli tryb edycji, załaduj dane zadania
       if (props.editMode && props.taskId) {
@@ -94,7 +224,7 @@ watch(
         try {
           const task = await tasksStore.fetchTask(props.taskId);
           form.title = task.title;
-          form.description = task.description || '';
+          hydrateDescription(task.description || '');
           form.priority = task.priority;
           form.deadline = task.deadline || null;
           form.assigned_id = task.assigned?.id || null;
@@ -250,11 +380,13 @@ async function submit() {
           </TextInput>
         </div>
 
-        <div class="col-span-12">
-          <TextareaInput
-            v-model="form.description"
-            :label="t('tasks.description')"
+        <div class="col-span-12 space-y-2">
+          <label class="text-sm font-medium text-foreground">{{ t('tasks.description') }}</label>
+          <MarkdownEditor
+            v-model="descriptionInput"
+            :config="markdownEditorConfig"
             :placeholder="t('tasks.descriptionPlaceholder')"
+            @change="handleDescriptionChange"
           />
         </div>
 

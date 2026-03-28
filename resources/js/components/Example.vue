@@ -539,13 +539,6 @@
                 hint="Ustaw zakres od–do"
             />
 
-            <RichTextInput
-                v-model="richText"
-                label="RichTextInput"
-                placeholder="Napisz treść…"
-                hint="Zwraca HTML w v-model"
-            />
-
             <h3 class="text-base font-semibold text-foreground mb-4">Icon Picker</h3>
             <div class="flex flex-col gap-3">
                 <IconInput
@@ -817,7 +810,6 @@
     import NumberInput from './ui/inputs/NumberInput.vue';
     import PillGroupInput from './ui/inputs/PillGroupInput.vue';
     import SliderInput from './ui/inputs/SliderInput.vue';
-    import RichTextInput from './ui/inputs/RichTextInput.vue';
     import LoadingSpinner from './ui/LoadingSpinner.vue';
     import Breadcrumbs from './ui/Breadcrumbs.vue';
     import StatusBadge from './ui/StatusBadge.vue';
