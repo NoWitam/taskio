@@ -2,6 +2,7 @@
 
 namespace App\Modules\Comments\Models;
 
+use App\Casts\MarkdownTreeCast;
 use App\Models\AbstractModel;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -23,6 +24,7 @@ class Comment extends AbstractModel
     ];
 
     protected $casts = [
+        'content' => MarkdownTreeCast::class,
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',

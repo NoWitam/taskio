@@ -35,6 +35,6 @@ class CommentService
         return $commentable->comments()
             ->with('author')
             ->orderBy('created_at', 'desc')
-            ->get();
+            ->cursorPaginate(8);
     }
 }

@@ -26,9 +26,11 @@ const props = withDefaults(defineProps<{
   config: EditorConfig;
   readonly?: boolean;
   placeholder?: string;
+  hideToolbar?: boolean;
 }>(), {
   readonly: false,
   placeholder: 'Napisz coś...',
+  hideToolbar: false,
 });
 
 const emit = defineEmits<{
@@ -228,7 +230,7 @@ function generateId(prefix: string) {
 
 <template>
   <div class="rounded-xl border border-border bg-background">
-    <header class="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+    <header v-if="!hideToolbar" class="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
       <div class="flex flex-wrap items-center gap-3">
         <div class="flex items-center gap-1">
           <Button
@@ -284,7 +286,7 @@ function generateId(prefix: string) {
               <Button size="sm" variant="ghost" type="button" @click.stop="toggle">@ Wzmianka</Button>
             </template>
             <template #default="{ closeMenu }">
-              <div class="min-w-[220px] py-1 text-left">
+              <div class="min-w-55 py-1 text-left">
                 <button
                   v-for="user in mentionUsers"
                   :key="user.id"
@@ -307,7 +309,7 @@ function generateId(prefix: string) {
               <Button size="sm" variant="ghost" type="button" @click.stop="toggle">+ Zmienna</Button>
             </template>
             <template #default="{ closeMenu }">
-              <div class="min-w-[220px] py-1 text-left">
+              <div class="min-w-55 py-1 text-left">
                 <button
                   v-for="variable in variableDefinitions"
                   :key="variable.id"

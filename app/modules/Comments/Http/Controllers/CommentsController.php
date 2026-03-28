@@ -2,6 +2,7 @@
 
 namespace App\Modules\Comments\Http\Controllers;
 
+use App\Http\Controllers\Controller;
 use App\Modules\Comments\DTOs\CommentDTO;
 use App\Modules\Comments\Http\Requests\StoreCommentRequest;
 use App\Modules\Comments\Http\Resources\CommentResource;
@@ -10,7 +11,7 @@ use App\Modules\Comments\Services\CommentService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
-class CommentsController
+class CommentsController extends Controller
 {
     public function __construct(
         private CommentService $service

@@ -91,6 +91,8 @@ export const useTasksStore = defineStore('tasks', () => {
     const changelogByTask = ref<Record<string, ChangelogEntry[]>>({});
     const loadingComments = ref<Record<string, boolean>>({});
     const loadingChangelog = ref<Record<string, boolean>>({});
+    const commentsCursors = ref<Record<string, string | null>>({});
+    const hasMoreComments = ref<Record<string, boolean>>({});
 
     const fetchTasksByStatus = async (status: string, filters: TaskFilters = {}, resetCursor: boolean = true) => {
         loading.value[status] = true;
@@ -309,14 +311,34 @@ export const useTasksStore = defineStore('tasks', () => {
         }
     };
 
-    const fetchComments = async (taskId: string | number) => {
+    const fetchComments = async (taskId: string | number, resetCursor: boolean = true) => {
         const taskIdStr = String(taskId);
         loadingComments.value[taskIdStr] = true;
         error.value = null;
 
+        if (resetCursor) {
+            commentsByTask.value[taskIdStr] = [];
+            commentsCursors.value[taskIdStr] = null;
+        }
+
         try {
-            const response: ApiResponse<Comment[]> = await api.get(`/tasks/${taskId}/comments`);
-            commentsByTask.value[taskIdStr] = response.data;
+            const params = new URLSearchParams();
+            if (commentsCursors.value[taskIdStr] && !resetCursor) {
+                params.append('cursor', commentsCursors.value[taskIdStr]!);
+            }
+
+            const url = `/tasks/${taskId}/comments${params.toString() ? '?' + params.toString() : ''}`;
+            const response: ApiResponse<Comment[]> = await api.get(url);
+            
+            if (resetCursor) {
+                commentsByTask.value[taskIdStr] = response.data;
+            } else {
+                commentsByTask.value[taskIdStr] = [...(commentsByTask.value[taskIdStr] || []), ...response.data];
+            }
+            
+            commentsCursors.value[taskIdStr] = response.meta?.next_cursor ?? null;
+            hasMoreComments.value[taskIdStr] = response.meta?.next_cursor !== null;
+            
             return response.data;
         } catch (err: any) {
             error.value = err.response?.data?.message || 'Błąd podczas pobierania komentarzy';
@@ -324,6 +346,10 @@ export const useTasksStore = defineStore('tasks', () => {
         } finally {
             loadingComments.value[taskIdStr] = false;
         }
+    };
+
+    const loadMoreComments = async (taskId: string | number) => {
+        return fetchComments(taskId, false);
     };
 
     const addComment = async (taskId: string | number, content: string) => {
@@ -463,6 +489,7 @@ export const useTasksStore = defineStore('tasks', () => {
         changelogByTask,
         loadingComments,
         loadingChangelog,
+        hasMoreComments,
         
         // Actions
         fetchTasksByStatus,
@@ -474,6 +501,7 @@ export const useTasksStore = defineStore('tasks', () => {
         changeStatus,
         fetchTask,
         fetchComments,
+        loadMoreComments,
         addComment,
         updateComment,
         deleteComment,
