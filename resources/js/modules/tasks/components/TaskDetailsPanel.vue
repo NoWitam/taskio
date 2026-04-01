@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue';
 import { useTasksStore, type Task, type ChangelogEntry } from '@/store/tasks';
+import { useFormsStore } from '@/store/forms';
 import { useI18n } from '@/composables/useI18n';
 import Icon from '@/components/ui/Icon.vue';
 import Avatar from '@/components/ui/Avatar.vue';
@@ -8,21 +9,29 @@ import Tabs from '@/components/ui/Tabs.vue';
 import Skeleton from '@/components/ui/Skeleton.vue';
 import Badge from '@/components/ui/Badge.vue';
 import MarkdownViewer from '@/components/editors/MarkdownEditor/MarkdownViewer.vue';
+import FormViewer from '@/modules/forms/components/FormViewer/FormViewer.vue';
 import type { EditorConfig as MarkdownEditorConfig } from '@/components/editors/MarkdownEditor/types/editor';
 
 const props = defineProps<{
     task: Task;
 }>();
 
+const emit = defineEmits<{
+    'task-updated': [task: Task]
+}>();
+
 const tasksStore = useTasksStore();
+const formsStore = useFormsStore();
 const { t } = useI18n();
 const activeTab = ref('history');
+const loadingForm = ref(false);
+const submittingForm = ref(false);
 
 const tabsData = [
     { id: 'history', labelKey: 'taskDetails.tabHistory', icon: 'clock' },
     { id: 'form', labelKey: 'taskDetails.tabForm', icon: 'file-text' },
     { id: 'checklist', labelKey: 'taskDetails.tabChecklist', icon: 'check-square' },
-    { id: 'approval', labelKey: 'taskDetails.tabApproval', icon: 'git-merge' },
+    { id: 'approval', labelKey: 'taskDetails.tabApproval', icon: 'workflow' },
 ];
 
 const tabs = computed(() =>
@@ -119,6 +128,47 @@ const formatFileSize = (bytes: number): string => {
     return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 };
 
+const attachedForm = computed(() => {
+  // Use form directly from task props - it already has full data with content from API
+  return props.task.form || null;
+});
+
+const formSubmissionData = computed(() => {
+  return props.task.form_submission?.data ?? {};
+});
+
+const hasFormSubmission = computed(() => {
+  return Boolean(props.task.form_submission?.id);
+});
+
+async function fetchFormData() {
+  if (!props.task.form_id) return;
+  if (formsStore.formById[props.task.form_id]) return; // Already in cache
+  
+  loadingForm.value = true;
+  try {
+    await formsStore.fetchForm(props.task.form_id);
+  } catch (error) {
+    console.error('Failed to load form:', error);
+  } finally {
+    loadingForm.value = false;
+  }
+}
+
+async function handleFormSubmit(data: Record<string, any>) {
+  if (!props.task.id) return;
+  
+  submittingForm.value = true;
+  try {
+    const updatedTask = await tasksStore.submitTaskForm(props.task.id, data);
+    emit('task-updated', updatedTask);
+  } catch (error) {
+    console.error('Failed to submit form:', error);
+  } finally {
+    submittingForm.value = false;
+  }
+}
+
 const viewerConfig = computed<MarkdownEditorConfig>(() => ({
   features: {
     markdown: {
@@ -147,6 +197,14 @@ watch(() => props.task, (newVal, oldVal) => {
         fetchChangelog();
     }
 }, { deep: true });
+
+// Load form data when switching to form tab
+watch(activeTab, async (tab) => {
+  if (tab === 'form' && props.task.form_id && !props.task.form) {
+    // Only fetch if form data is missing (shouldn't happen with proper eager loading)
+    await fetchFormData();
+  }
+});
 </script>
 
 <template>
@@ -177,7 +235,7 @@ watch(() => props.task, (newVal, oldVal) => {
 
         <!-- Twórca -->
         <div v-if="task.creator" class="flex items-start gap-3">
-          <Icon name="user-circle" size="sm" class="mt-0.5 text-muted-foreground" />
+          <Icon name="user" size="sm" class="mt-0.5 text-muted-foreground" />
           <div>
             <div class="text-xs font-medium text-muted-foreground">{{ t('taskDetails.createdBy') }}</div>
             <div class="flex items-center gap-2 text-sm">
@@ -402,11 +460,33 @@ watch(() => props.task, (newVal, oldVal) => {
       </div>
 
       <div v-if="activeTab === 'form'" class="space-y-4">
-        <div class="flex items-center justify-center py-12 text-muted-foreground">
+        <!-- Loading state -->
+        <div v-if="loadingForm" class="flex items-center justify-center py-12">
+          <Skeleton class="w-full h-64" />
+        </div>
+
+        <!-- No form attached -->
+        <div v-else-if="!props.task.form_id" class="flex items-center justify-center py-12 text-muted-foreground">
           <div class="text-center">
             <Icon name="file-text" size="lg" class="mx-auto mb-2 opacity-50" />
-            <p class="text-sm">{{ t('taskDetails.formPreparing') }}</p>
+            <p class="text-sm">{{ t('taskDetails.noFormAttached') }}</p>
           </div>
+        </div>
+
+        <!-- Form attached but not loaded yet -->
+        <div v-else-if="!attachedForm" class="flex items-center justify-center py-12">
+          <Skeleton class="w-full h-64" />
+        </div>
+
+        <!-- Render form -->
+        <div v-else>
+          <FormViewer
+            :form="attachedForm"
+            mode="fill"
+            :auto-save="true"
+            :initial-data="formSubmissionData"
+            @submit="handleFormSubmit"
+          />
         </div>
       </div>
 

@@ -37,4 +37,6 @@ return [
         'unarchived' => 'Odarchiwizowano',
         'change_status' => 'Zmieniono status',
     ],
+    
+    'formFilled' => 'Wypełniono formularz',
 ];

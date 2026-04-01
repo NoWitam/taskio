@@ -15,7 +15,8 @@ class TaskDTO
         public readonly ?Carbon $deadline,
         public readonly string $assigned,
         public readonly array $labels,
-        public readonly array $attachments
+        public readonly array $attachments,
+        public readonly ?string $form_id
     ) {}
 
     public static function fromRequest(Request $request): self
@@ -27,7 +28,8 @@ class TaskDTO
             deadline: $request->date('deadline'),
             assigned: $request->string('assigned_id'),
             labels: $request->array('labels'),
-            attachments: $request->array('attachments')
+            attachments: $request->array('attachments'),
+            form_id: $request->string('form_id')
         );
     }
 }

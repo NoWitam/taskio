@@ -5,7 +5,12 @@ namespace App\Modules\Tasks\Http\Controllers;
 use App\Http\Controllers\Controller;
 use App\Modules\Tasks\DTOs\TaskDTO;
 use App\Modules\Tasks\Enums\TaskStatus;
+use App\Modules\Tasks\Http\Requests\ChangeTaskStatusRequest;
+use App\Modules\Tasks\Http\Requests\DeleteTaskRequest;
+use App\Modules\Tasks\Http\Requests\ForceDeleteTaskRequest;
+use App\Modules\Tasks\Http\Requests\RestoreTaskRequest;
 use App\Modules\Tasks\Http\Requests\StoreTasksRequest;
+use App\Modules\Tasks\Http\Requests\SubmitTaskFormRequest;
 use App\Modules\Tasks\Http\Resources\TaskListResource;
 use App\Modules\Tasks\Http\Resources\TaskResource;
 use App\Modules\Tasks\Models\Task;
@@ -21,8 +26,6 @@ class TasksController extends Controller
 
     public function index(Request $request): AnonymousResourceCollection
     {
-        $this->authorize('viewAny', Task::class);
-
         $paginator = $this->service->index($request);
 
         return TaskListResource::collection($paginator)->additional(['meta' => [
@@ -35,18 +38,14 @@ class TasksController extends Controller
     public function show(Request $request, string $id): TaskResource
     {
         $task = Task::withTrashed()->findOrFail($id);
-        
-        $this->authorize('view', $task);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files'])
+            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
         );
     }
 
     public function store(StoreTasksRequest $request): TaskResource
     {
-        $this->authorize('create', Task::class);
-
         return TaskResource::make(
             $this->service->create(
                 TaskDTO::fromRequest($request)
@@ -56,34 +55,27 @@ class TasksController extends Controller
 
     public function update(StoreTasksRequest $request, Task $task): TaskResource
     {
-        $this->authorize('update', $task);
-
         $this->service->update(
             $task,
             TaskDTO::fromRequest($request)
         );
         
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files'])
+            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
         ); 
     }
 
-    public function destroy(Task $task): \Illuminate\Http\JsonResponse
+    public function destroy(DeleteTaskRequest $request, Task $task): \Illuminate\Http\JsonResponse
     {
-        $this->authorize('delete', $task);
-
-        $task->update(['status' => TaskStatus::TRASH]);
-        $task->delete();
+        $this->service->delete($task);
 
         return response()->json([
             'message' => 'Task moved to trash successfully'
         ]);
     }
 
-    public function forceDestroy(Task $task): \Illuminate\Http\JsonResponse
+    public function forceDestroy(ForceDeleteTaskRequest $request, Task $task): \Illuminate\Http\JsonResponse
     {
-        $this->authorize('forceDelete', $task);
-
         $task->forceDelete();
 
         return response()->json([
@@ -91,20 +83,18 @@ class TasksController extends Controller
         ]);
     }
 
-    public function restore(string $id): TaskResource
+    public function restore(RestoreTaskRequest $request, string $id): TaskResource
     {
         $task = Task::withTrashed()->findOrFail($id);
-        $this->authorize('restore', $task);
-
-        $task->restore();
-        $task->update(['status' => TaskStatus::TO_DO]);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files'])
+            $this->service->restore($task)->loadMissing([
+                'assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'
+            ])
         );
     }
 
-    public function changeStatus(Task $task, TaskStatus $status): TaskResource
+    public function changeStatus(ChangeTaskStatusRequest $request, Task $task, TaskStatus $status): TaskResource
     {
         if ($status === TaskStatus::TRASH) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -112,12 +102,17 @@ class TasksController extends Controller
             ]);
         }
 
-        $this->authorize('changeStatus', [$task, $status]);
-
         $task->update(['status' => $status]);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files'])
+            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+        );
+    }
+
+    public function submitForm(SubmitTaskFormRequest $request, Task $task): TaskResource
+    {
+        return TaskResource::make(
+            $this->service->submitForm($task, $request->input('data'))
         );
     }
 }

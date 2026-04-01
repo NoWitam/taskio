@@ -276,7 +276,7 @@ watch(() => props.entityId, () => {
                 class="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                 @click="startEdit(comment)"
               >
-                <Icon name="edit" size="xs" />
+                <Icon name="pencil" size="xs" />
               </button>
               <button
                 type="button"

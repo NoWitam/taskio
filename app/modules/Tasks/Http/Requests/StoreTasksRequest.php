@@ -3,6 +3,7 @@
 namespace App\Modules\Tasks\Http\Requests;
 
 use App\Modules\Tasks\Enums\TaskPriority;
+use App\Modules\Tasks\Models\Task;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -10,7 +11,14 @@ class StoreTasksRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return true;
+        // Check if creating new task or updating existing
+        $task = $this->route('task');
+        
+        if ($task) {
+            return $this->user()->can('update', $task);
+        }
+        
+        return $this->user()->can('create', Task::class);
     }
 
     public function rules(): array
@@ -25,6 +33,7 @@ class StoreTasksRequest extends FormRequest
             'labels.*' => ['required', 'uuid'],
             'attachments' => ['array', 'min:0', 'max:5'],
             'attachments.*' => ['required', 'uuid'],
+            'form_id' => ['nullable', 'uuid', 'exists:forms,id'],
         ];
     }
 

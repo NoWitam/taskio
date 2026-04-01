@@ -3,6 +3,8 @@
 namespace App\Modules\Tasks\Http\Resources;
 
 use App\Modules\Disk\Http\Resources\FileResource;
+use App\Modules\Forms\Http\Resources\FormResource;
+use App\Modules\Forms\Http\Resources\FormSubmissionResource;
 use App\Modules\Labels\Http\Resources\LabelResource;
 use App\Modules\Users\Http\Resources\UserResource;
 use Illuminate\Http\Request;
@@ -25,7 +27,10 @@ class TaskResource extends JsonResource
             'attachments' => FileResource::collection($this->files),
             'creator' => UserResource::make($this->creator),
             'assigned' => UserResource::make($this->assigned),
-            'labels' => LabelResource::collection($this->labels)
+            'labels' => LabelResource::collection($this->labels),
+            'form_id' => $this->form_id,
+            'form' => FormResource::make($this->whenLoaded('form')),
+            'form_submission' => FormSubmissionResource::make($this->whenLoaded('formSubmission')),
         ];
     }
 }

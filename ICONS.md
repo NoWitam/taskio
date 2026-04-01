@@ -24,7 +24,11 @@
 Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
 
 - `alert-triangle`
+- `alert-circle`
 - `archive`
+- `arrow-down`
+- `arrow-left`
+- `arrow-up`
 - `at-sign`
 - `badge-check`
 - `bell`
@@ -36,6 +40,7 @@ Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
 - `chart-line`
 - `check`
 - `check-circle`
+- `check-square`
 - `chevron-down`
 - `chevron-left`
 - `chevron-right`
@@ -56,26 +61,34 @@ Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
 - `eye`
 - `eye-off`
 - `file`
+- `file-check`
 - `file-plus`
 - `file-search`
 - `file-text`
 - `file-x`
 - `filter`
 - `flag`
+- `flask`
 - `folder`
 - `folder-open`
 - `folder-plus`
 - `forward`
 - `globe`
 - `grid`
+- `grip-horizontal`
+- `grip-vertical`
 - `hash`
+- `heading`
 - `home`
 - `image`
 - `inbox`
 - `info-circle`
 - `key`
 - `label`
+- `layout-grid`
 - `link`
+- `list`
+- `list-check`
 - `loader`
 - `lock`
 - `lock-open`
@@ -85,6 +98,7 @@ Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
 - `megaphone`
 - `menu`
 - `message`
+- `minus`
 - `minus-circle`
 - `moon`
 - `paperclip`
@@ -98,6 +112,7 @@ Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
 - `redo`
 - `repeat`
 - `reply`
+- `rotate-ccw`
 - `restore`
 - `save`
 - `search`
@@ -116,9 +131,11 @@ Poniżej jest pełna lista ikon dostępnych jako `name` w komponencie `Icon`.
 - `sun`
 - `table`
 - `tag`
+- `text`
 - `timer`
 - `trash`
 - `trash-restore`
+- `type`
 - `undo`
 - `upload`
 - `user`

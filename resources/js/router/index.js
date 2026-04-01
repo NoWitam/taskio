@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import dashboardRoutes from './modules/dashboard';
 import tasksRoutes from './modules/tasks';
+import formsRoutes from '@/modules/forms/routes';
 
 function parseQuery(search = '') {
   const query = {};
@@ -58,6 +59,7 @@ const routes = [
     children: [
       ...dashboardRoutes,
       ...tasksRoutes,
+      ...formsRoutes,
       {
         path: 'example',
         name: 'example',

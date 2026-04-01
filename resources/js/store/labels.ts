@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../lib/api';
 import type { Label, ApiMeta } from '../types';
+import { useI18n } from '../composables/useI18n';
 
 export interface LabelsResponse {
     data: Label[];
@@ -14,6 +15,7 @@ export interface FetchLabelsParams {
 }
 
 export const useLabelsStore = defineStore('labels', () => {
+    const { t } = useI18n();
     const loading = ref(false);
     const error = ref<string | null>(null);
 
@@ -26,7 +28,7 @@ export const useLabelsStore = defineStore('labels', () => {
 
         const name = String(payload?.name ?? '').trim();
         if (!name) {
-            error.value = 'Nazwa etykiety jest wymagana';
+            error.value = t('errors.labelNameRequired');
             throw new Error(error.value);
         }
 
@@ -64,7 +66,7 @@ export const useLabelsStore = defineStore('labels', () => {
                 return local;
             }
 
-            error.value = err.response?.data?.message || 'Błąd podczas tworzenia etykiety';
+            error.value = err.response?.data?.message || t('errors.labelCreate');
             throw err;
         }
     };
@@ -110,7 +112,7 @@ export const useLabelsStore = defineStore('labels', () => {
 
             return response;
         } catch (err: any) {
-            error.value = err.response?.data?.message || 'Błąd podczas pobierania etykiet';
+            error.value = err.response?.data?.message || t('errors.labelFetch');
             throw err;
         } finally {
             loading.value = false;
@@ -147,7 +149,7 @@ export const useLabelsStore = defineStore('labels', () => {
 
             return response;
         } catch (err: any) {
-            error.value = err.response?.data?.message || 'Błąd podczas pobierania etykiet';
+            error.value = err.response?.data?.message || t('errors.labelFetch');
             throw err;
         } finally {
             loading.value = false;

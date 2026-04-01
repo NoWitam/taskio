@@ -45,7 +45,7 @@
 </script>
 
 <template>
-  <button :type="type" :class="cls" :disabled="isDisabled" :aria-busy="loading || undefined" v-bind="$attrs" v-on="$attrs">
+  <button :type="type" :class="cls" :disabled="isDisabled" :aria-busy="loading || undefined" v-bind="$attrs">
     <svg
       v-if="loading"
       class="h-4 w-4 animate-spin"

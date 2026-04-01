@@ -1,0 +1,160 @@
+<?php
+
+return [
+    'moduleName' => 'Formularze',
+    'forms' => 'Formularze',
+    'form' => 'Formularz',
+    'createForm' => 'Utwórz formularz',
+    'createAnonymousForm' => 'Utwórz formularz dla zadania',
+    'editForm' => 'Edytuj formularz',
+    'deleteForm' => 'Usuń formularz',
+    'formDetails' => 'Szczegóły formularza',
+    'formBuilder' => 'Kreator formularza',
+    'formPreview' => 'Podgląd formularza',
+    'formName' => 'Nazwa formularza',
+    'formDescription' => 'Opis formularza',
+    'formIcon' => 'Ikona formularza',
+    'isAnonymous' => 'Formularz anonimowy',
+    'anonymousDescription' => 'Formularz może być wypełniony bez logowania',
+    'formContent' => 'Zawartość formularza',
+    'noForms' => 'Brak formularzy',
+    'searchForms' => 'Szukaj formularzy...',
+    'allForms' => 'Wszystkie formularze',
+    'archivedForms' => 'Zarchiwizowane formularze',
+    'formCreated' => 'Formularz utworzony',
+    'formCreatedMessage' => 'Formularz :title został utworzony pomyślnie.',
+    'formDeleted' => 'Formularz usunięty',
+    'formDeletedMessage' => 'Formularz :title został usunięty pomyślnie.',
+    'formRestored' => 'Formularz przywrócony',
+    'formRestoredMessage' => 'Formularz :title został przywrócony pomyślnie.',
+    'confirmDelete' => 'Czy na pewno chcesz usunąć formularz :name?',
+    'confirmDeleteDescription' => 'Ta akcja przeniesie formularz do kosza.',
+    'confirmForceDelete' => 'Czy na pewno chcesz trwale usunąć formularz :name?',
+    'confirmForceDeleteDescription' => 'Ta akcja jest nieodwracalna.',
+    'confirmRestore' => 'Czy na pewno chcesz przywrócić formularz :name?',
+    
+    // Element types
+    'elementTypes' => [
+        'section' => 'Sekcja',
+        'grid' => 'Siatka',
+        'repeater' => 'Powtarzacz',
+        'heading' => 'Nagłówek',
+        'text_block' => 'Blok tekstu',
+        'divider' => 'Separator',
+        'short_text' => 'Krótki tekst',
+        'long_text' => 'Długi tekst',
+        'select' => 'Lista wyboru',
+        'checklist' => 'Lista kontrolna',
+        'number' => 'Liczba',
+        'date' => 'Data',
+        'time' => 'Czas',
+        'url' => 'URL',
+        'image' => 'Obraz',
+        'checkbox' => 'Pole wyboru',
+    ],
+
+    // Element categories
+    'categories' => [
+        'layout' => 'Układ',
+        'content' => 'Treść',
+        'input' => 'Pole wejściowe',
+    ],
+
+    // Element palette
+    'elementPalette' => 'Paleta elementów',
+    'dragToAdd' => 'Przeciągnij aby dodać',
+    
+    // Element editor
+    'elementProperties' => 'Właściwości elementu',
+    'noElementSelected' => 'Nie wybrano elementu',
+    'selectElementToEdit' => 'Wybierz element z drzewa aby edytować jego właściwości',
+    'elementName' => 'Nazwa',
+    'elementLabel' => 'Etykieta',
+    'elementPlaceholder' => 'Placeholder',
+    'elementHint' => 'Wskazówka',
+    'elementRequired' => 'Wymagane',
+    'elementDefaultValue' => 'Wartość domyślna',
+    'elementMinLength' => 'Minimalna długość',
+    'elementMaxLength' => 'Maksymalna długość',
+    'elementMin' => 'Minimum',
+    'elementMax' => 'Maksimum',
+    'elementOptions' => 'Opcje',
+    'addOption' => 'Dodaj opcję',
+    'optionValue' => 'Wartość',
+    'optionLabel' => 'Etykieta',
+    'optionIcon' => 'Ikona',
+    'optionHint' => 'Wskazówka',
+    'removeOption' => 'Usuń opcję',
+    'moveOptionUp' => 'Przenieś w górę',
+    'moveOptionDown' => 'Przenieś w dół',
+    'headingLevel' => 'Poziom nagłówka',
+    'textContent' => 'Treść tekstu',
+    'columns' => 'Kolumny',
+    'columnWidth' => 'Szerokość kolumny',
+    'gridColumns' => 'Kolumny siatki',
+    'addColumn' => 'Dodaj kolumnę',
+    'removeColumn' => 'Usuń kolumnę',
+    'minInstances' => 'Minimalna liczba powtórzeń',
+    'maxInstances' => 'Maksymalna liczba powtórzeń',
+    
+    // Element actions
+    'duplicateElement' => 'Duplikuj',
+    'deleteElement' => 'Usuń',
+    
+    // Form builder
+    'formCanvas' => 'Obszar roboczy',
+    'elementTree' => 'Drzewo elementów',
+    'emptyCanvas' => 'Przeciągnij elementy z palety aby rozpocząć budowanie formularza',
+    'saveForm' => 'Zapisz formularz',
+    'previewForm' => 'Podgląd',
+    'formSaved' => 'Formularz zapisany',
+    'formSavedMessage' => 'Zmiany w formularzu zostały zapisane.',
+    'formSaveFailed' => 'Błąd zapisu',
+    'formSaveFailedMessage' => 'Nie udało się zapisać formularza.',
+    
+    // Form viewer
+    'submitForm' => 'Wyślij formularz',
+    'formSubmitted' => 'Formularz wysłany',
+    'formSubmittedMessage' => 'Formularz został wysłany pomyślnie.',
+    'formSubmitFailed' => 'Błąd wysyłania',
+    'formSubmitFailedMessage' => 'Nie udało się wysłać formularza.',
+    'fillForm' => 'Wypełnij formularz',
+    'addInstance' => 'Dodaj',
+    'removeInstance' => 'Usuń',
+    'instance' => 'Powtórzenie',
+    
+    // Validation
+    'validation' => [
+        'required' => 'To pole jest wymagane.',
+        'minLength' => 'Minimalna długość: {min} znaków.',
+        'maxLength' => 'Maksymalna długość: {max} znaków.',
+        'minValue' => 'Minimalna wartość: {min}.',
+        'maxValue' => 'Maksymalna wartość: {max}.',
+        'invalidUrl' => 'Wprowadź prawidłowy adres URL.',
+        'invalidDate' => 'Wprowadź prawidłową datę.',
+        'invalidTime' => 'Wprowadź prawidłowy czas.',
+        'invalidNumber' => 'Wprowadź prawidłową liczbę.',
+    ],
+    
+    // Submissions
+    'submissions' => 'Wypełnienia',
+    'submittedBy' => 'Wypełnione przez',
+    'submittedAt' => 'Data wypełnienia',
+    'noSubmissions' => 'Brak wypełnień',
+    'viewSubmission' => 'Zobacz wypełnienie',
+    
+    // Filters
+    'showArchived' => 'Pokaż zarchiwizowane',
+    'filterByAnonymous' => 'Tylko anonimowe',
+    
+    // Form selection
+    'selectForm' => 'Wybierz formularz',
+    'searchPlaceholder' => 'Szukaj formularzy...',
+    'noFormsAvailable' => 'Brak dostępnych formularzy',
+    'noFormsAvailableDescription' => 'Wszystkie formularze zostały zarchiwizowane lub nie utworzono jeszcze żadnego formularza.',
+    
+    // Messages
+    'selectFormToView' => 'Wybierz formularz aby zobaczyć szczegóły',
+    'loadingForm' => 'Ładowanie formularza...',
+    'formNotFound' => 'Formularz nie został znaleziony.',
+];

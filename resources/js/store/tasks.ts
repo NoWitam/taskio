@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api } from '@/lib/api';
 import type { User, Label, ApiMeta, ApiResponse } from '@/types';
+import { useI18n } from '@/composables/useI18n';
 
 export interface TaskAttachment {
     id: string;
@@ -30,6 +31,19 @@ export interface Task {
     comments?: number;
     labels: Label[];
     attachments?: TaskAttachment[];
+    form_id?: string | null;
+    form?: {
+        id: string;
+        name: string;
+        icon: string;
+        description: string | null;
+        content: any[];
+    } | null;
+    form_submission?: {
+        id: string;
+        data: Record<string, any>;
+        submitted_at: string;
+    } | null;
     created_at?: string;
     updated_at?: string;
 }
@@ -79,6 +93,7 @@ export interface TasksResponse {
 }
 
 export const useTasksStore = defineStore('tasks', () => {
+    const { t } = useI18n();
     const tasks = ref<Task[]>([]);
     const loading = ref<Record<string, boolean>>({});
     const error = ref<string | null>(null);
@@ -448,7 +463,36 @@ export const useTasksStore = defineStore('tasks', () => {
             const response: ApiResponse<Task> = await api.get(`/tasks/${id}`);
             return response.data;
         } catch (err: any) {
-            error.value = err.response?.data?.message || 'Błąd podczas pobierania zadania';
+            error.value = err.response?.data?.message || t('errors.taskSingleFetch');
+            throw err;
+        }
+    };
+
+    const submitTaskForm = async (taskId: string | number, formData: Record<string, any>) => {
+        error.value = null;
+
+        try {
+            const response: ApiResponse<Task> = await api.post(`/tasks/${taskId}/form-submission`, { data: formData });
+            const updatedTask = response.data;
+            
+            // Update task in cache
+            const taskIdStr = String(taskId);
+            const index = tasks.value.findIndex(t => t.id === taskIdStr);
+            if (index !== -1) {
+                tasks.value[index] = updatedTask;
+            }
+            
+            // Update in tasksByStatus
+            Object.keys(tasksByStatus.value).forEach(status => {
+                const statusIndex = tasksByStatus.value[status]?.findIndex(t => t.id === taskIdStr);
+                if (statusIndex !== undefined && statusIndex !== -1) {
+                    tasksByStatus.value[status][statusIndex] = updatedTask;
+                }
+            });
+            
+            return updatedTask;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Błąd podczas zapisywania formularza';
             throw err;
         }
     };
@@ -500,6 +544,7 @@ export const useTasksStore = defineStore('tasks', () => {
         restoreTask,
         changeStatus,
         fetchTask,
+        submitTaskForm,
         fetchComments,
         loadMoreComments,
         addComment,

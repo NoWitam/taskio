@@ -8,4 +8,5 @@ return [
     App\Modules\Disk\DiskModuleServiceProvider::class,
     App\Modules\Comments\CommentsModuleServiceProvider::class,
     App\Modules\Changelog\ChangelogModuleServiceProvider::class,
+    App\Modules\Forms\FormsModuleServiceProvider::class,
 ];

@@ -11,6 +11,7 @@ enum ChangelogEvent: string
     case ARCHIVED = 'archived';
     case UNARCHIVED = 'unarchived';
     case CHANGE_STATUS = 'change_status';
+    case FORM_FILLED = 'form_filled';
 
     public function getDescription(): string
     {
@@ -22,6 +23,7 @@ enum ChangelogEvent: string
             self::ARCHIVED => 'changelog.archived',
             self::UNARCHIVED => 'changelog.unarchived',
             self::CHANGE_STATUS => 'changelog.changedStatus',
+            self::FORM_FILLED => 'changelog.formFilled',
         };
     }
 }

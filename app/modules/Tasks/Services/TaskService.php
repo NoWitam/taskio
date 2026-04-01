@@ -2,8 +2,12 @@
 
 namespace App\Modules\Tasks\Services;
 
+use App\Modules\Changelog\Enums\ChangelogEvent;
+use App\Modules\Changelog\Managers\ChangelogManager;
 use App\Modules\Disk\Models\File;
 use App\Modules\Disk\Services\FileService;
+use App\Modules\Forms\DTOs\FormSubmissionDTO;
+use App\Modules\Forms\Services\FormSubmissionService;
 use App\Modules\Labels\Models\Label;
 use App\Modules\Tasks\DTOs\TaskDTO;
 use App\Modules\Tasks\Enums\TaskPriority;
@@ -31,7 +35,8 @@ class TaskService
                 'status' => TaskStatus::TO_DO,
                 'priority' => $dto->priority,
                 'deadline' => $dto->deadline,
-                'assigned_id' => $dto->assigned
+                'assigned_id' => $dto->assigned,
+                'form_id' => $dto->form_id,
             ]);
 
             $this->fileService->attachToModel($task, $dto->attachments);
@@ -52,7 +57,8 @@ class TaskService
                 'description' => $dto->description,
                 'priority' => $dto->priority,
                 'deadline' => $dto->deadline,
-                'assigned_id' => $dto->assigned
+                'assigned_id' => $dto->assigned,
+                'form_id' => $dto->form_id,
             ]);
 
             $this->fileService->attachToModel($task, $dto->attachments, deleteAnother: true);
@@ -130,5 +136,51 @@ class TaskService
             )
             ->filterByDate('deadline', $request)
             ->filterByLabels($request->array('labels'), $request->string('label_operator'));
+    }
+
+    public function submitForm(Task $task, array $data): Task
+    {
+        $submissionService = app(FormSubmissionService::class);
+        $changelogManager = app(ChangelogManager::class);
+
+        DB::transaction(function () use ($task, $data, $submissionService, $changelogManager) {
+
+            $task->loadMissing('formSubmission');
+
+            if ($task->formSubmission) {
+                $submissionService->update($task->formSubmission, $data);
+            } else {
+                $submissionService->create(
+                    new  FormSubmissionDTO(
+                        form_id: $task->form_id,
+                        submittable_type: $task->getMorphClass(),
+                        submittable_id: $task->getKey(),
+                        data: $data
+                    )
+                );
+            }
+
+            $changelogManager->handleCustomEvent(
+                $task,
+                ChangelogEvent::FORM_FILLED,
+                []
+            );
+        });
+
+        return Task::with(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+            ->findOrFail($task->id);
+    }
+
+    public function delete(Task $task): void
+    {
+        $task->update(['status' => TaskStatus::TRASH]);
+        $task->delete();
+    }
+
+    public function restore(Task $task): Task
+    {
+        $task->restore();
+        $task->update(['status' => TaskStatus::TO_DO]);
+        return $task;
     }
 }

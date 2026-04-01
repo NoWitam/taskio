@@ -9,6 +9,8 @@ import DateInput from '@/components/ui/inputs/DateInput.vue';
 import UserSelect from '@/components/ui/inputs/reusable/UserSelect.vue';
 import LabelSelect from '@/modules/labels/components/LabelSelect.vue';
 import FileDropzone from '@/components/ui/inputs/FileDropzone.vue';
+import FormSelectDialog from '@/modules/forms/components/Dialogs/FormSelectDialog.vue';
+import CreateFormDialog from '@/modules/forms/components/Dialogs/CreateFormDialog.vue';
 import Icon from '@/components/ui/Icon.vue';
 import MarkdownEditor from '@/components/editors/MarkdownEditor/MarkdownEditor.vue';
 import type { EditorConfig as MarkdownEditorConfig, MarkdownEditorChangeMeta } from '@/components/editors/MarkdownEditor/types/editor';
@@ -50,6 +52,9 @@ const submitting = ref(false);
 const existingAttachments = ref<TaskAttachment[]>([]);
 const mentionUsersLoaded = ref(false);
 const descriptionInput = ref('');
+const showFormSelectDialog = ref(false);
+const showCreateAnonymousFormDialog = ref(false);
+const selectedForm = ref<{ id: string; name: string; icon: string; description: string | null } | null>(null);
 
 const form = reactive({
   title: '',
@@ -58,13 +63,7 @@ const form = reactive({
   deadline: null as string | null, // YYYY-MM-DD
   assigned_id: null as string | number | null,
   labels: [] as string[],
-
-  // Future: attach a generated/custom form to the task.
-  // We'll later replace this with the real generator flow.
-  task_form: {
-    mode: 'none' as 'none' | 'generated',
-    template_id: null as string | null,
-  },
+  form_id: null as string | null,
 });
 
 const attachments = ref<string[]>([]);
@@ -183,10 +182,10 @@ function resetForm() {
   form.deadline = null;
   form.assigned_id = null;
   form.labels = [];
-  form.task_form.mode = 'none';
-  form.task_form.template_id = null;
+  form.form_id = null;
   attachments.value = [];
   existingAttachments.value = [];
+  selectedForm.value = null;
   applyDoc(createEmptyDoc());
   resetErrors();
 }
@@ -229,8 +228,19 @@ watch(
           form.deadline = task.deadline || null;
           form.assigned_id = task.assigned?.id || null;
           form.labels = task.labels?.map((l) => String(l.id)) || [];
+          form.form_id = task.form_id || null;
           attachments.value = task.attachments?.map((a) => a.id) || [];
           existingAttachments.value = task.attachments || [];
+          
+          // Load selected form details if attached
+          if (task.form) {
+            selectedForm.value = {
+              id: task.form.id,
+              name: task.form.name,
+              icon: task.form.icon,
+              description: task.form.description,
+            };
+          }
           
           // Zapisz użytkownika i etykiety bezpośrednio do cache z otrzymanych danych
           if (task.assigned) {
@@ -293,9 +303,10 @@ function toFormData(isUpdate = false) {
 
   (form.labels || []).forEach((id) => fd.append('labels[]', String(id)));
 
-  // Future extension point
-  fd.append('task_form_mode', form.task_form.mode);
-  if (form.task_form.template_id) fd.append('task_form_template_id', form.task_form.template_id);
+  // Formularz
+  if (form.form_id) {
+    fd.append('form_id', form.form_id);
+  }
 
   // Załączniki
   (attachments.value || []).forEach((uuid) => fd.append('attachments[]', String(uuid)));
@@ -306,6 +317,38 @@ function toFormData(isUpdate = false) {
 function removeExistingAttachment(attachmentId: string) {
   existingAttachments.value = existingAttachments.value.filter(a => a.id !== attachmentId);
   attachments.value = attachments.value.filter(id => id !== attachmentId);
+}
+
+function attachForm() {
+  showFormSelectDialog.value = true;
+}
+
+function createAnonymousForm() {
+  showCreateAnonymousFormDialog.value = true;
+}
+
+function handleFormSelect(formData: { id: string; name: string; icon: string; description: string | null }) {
+  selectedForm.value = formData;
+  form.form_id = formData.id;
+  showFormSelectDialog.value = false;
+}
+
+function handleAnonymousFormCreated(formId: string) {
+  // Fetch the created form data
+  // For now, we'll create a placeholder since we have the ID
+  selectedForm.value = {
+    id: formId,
+    name: 'Formularz zadania',
+    icon: 'file-text',
+    description: null
+  };
+  form.form_id = formId;
+  showCreateAnonymousFormDialog.value = false;
+}
+
+function removeForm() {
+  selectedForm.value = null;
+  form.form_id = null;
 }
 
 async function submit() {
@@ -445,15 +488,58 @@ async function submit() {
         </div>
 
         <div class="col-span-12">
-          <div class="rounded-2xl border border-border bg-secondary/20 p-4">
-            <div class="flex items-start gap-3">
-              <div class="mt-0.5 text-muted-foreground">
-                <Icon name="sparkles" />
-              </div>
-              <div class="min-w-0">
-                <div class="text-sm font-semibold">{{ t('tasks.formTitle') }}</div>
-                <div class="mt-1 text-sm text-muted-foreground">
-                  {{ t('tasks.formDescription') }}
+          <div class="space-y-3">
+            <div class="text-sm font-medium text-foreground">{{ t('tasks.form') }}</div>
+            
+            <!-- No form selected -->
+            <div v-if="!selectedForm" class="flex gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                :disabled="submitting"
+                @click="attachForm"
+              >
+                <Icon name="file-text" size="sm" />
+                {{ t('tasks.attachExistingForm') }}
+              </Button>
+              
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                :disabled="submitting"
+                @click="createAnonymousForm"
+              >
+                <Icon name="plus" size="sm" />
+                {{ t('tasks.createAnonymousForm') }}
+              </Button>
+            </div>
+
+            <!-- Form selected card -->
+            <div v-else class="rounded-xl border border-border bg-card">
+              <div class="flex items-start gap-3 p-4">
+                <div class="shrink-0">
+                  <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                    <Icon :name="selectedForm.icon" class="text-primary" />
+                  </div>
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm font-semibold">{{ selectedForm.name }}</div>
+                  <div v-if="selectedForm.description" class="mt-0.5 text-xs text-muted-foreground line-clamp-2">
+                    {{ selectedForm.description }}
+                  </div>
+                </div>
+                <div class="shrink-0">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    :disabled="submitting"
+                    @click="removeForm"
+                  >
+                    <Icon name="x" size="sm" />
+                  </Button>
                 </div>
               </div>
             </div>
@@ -561,4 +647,15 @@ async function submit() {
       </Button>
     </template>
   </Dialog>
+
+  <FormSelectDialog
+    v-model="showFormSelectDialog"
+    @select="handleFormSelect"
+  />
+  
+  <CreateFormDialog
+    v-model="showCreateAnonymousFormDialog"
+    :anonymous="true"
+    @created="handleAnonymousFormCreated"
+  />
 </template>

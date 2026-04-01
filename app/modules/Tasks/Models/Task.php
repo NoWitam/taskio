@@ -14,6 +14,8 @@ use App\Modules\Changelog\Traits\HasChangelog;
 use App\Modules\Comments\Traits\HasComments;
 use App\Modules\Disk\Models\File;
 use App\Modules\Disk\Traits\HasFiles;
+use App\Modules\Forms\Models\Form;
+use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Labels\Models\Label;
 use App\Modules\Labels\Traits\HasLabels;
 use App\Modules\Tasks\Enums\TaskPriority;
@@ -36,7 +38,8 @@ class Task extends AbstractModel implements InterfacesHasChangelog
         'priority',
         'deadline',
         'creator_id',
-        'assigned_id'
+        'assigned_id',
+        'form_id',
     ];
 
     protected $casts = [
@@ -93,13 +96,32 @@ class Task extends AbstractModel implements InterfacesHasChangelog
                     'type' => $file->type,
                     'size' => $file->size
                 ];
-            })
+            }),
+            FieldTracker::make('form_id')->withMap(function ($formId, Task $task) {
+                if (!$formId) return null;
+                $form = Form::find($formId);
+                return $form ? [
+                    'id' => $form->id,
+                    'name' => $form->name,
+                    'icon' => $form->icon?->value,
+                ] : null;
+            }),
         ]);
     }
 
     public function assigned()
     {
         return $this->belongsTo(User::class, 'assigned_id');
+    }
+
+    public function form()
+    {
+        return $this->belongsTo(Form::class, 'form_id');
+    }
+
+    public function formSubmission()
+    {
+        return $this->morphOne(FormSubmission::class, 'submittable');
     }
 
     public function isCompleted(): bool // TODO czy formularz jest poprawnie uzupełniony

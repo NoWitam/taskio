@@ -37,4 +37,5 @@ return [
         'unarchived' => 'Unarchived',
         'change_status' => 'Status changed',
     ],
+    'formFilled' => 'Form Filled',
 ];

@@ -11,6 +11,7 @@ return [
     'available' => [
         'dashboard',
         'tasks',
+        'forms',
         'example',
         // 'settings',
     ],
@@ -25,6 +26,11 @@ return [
             'name' => 'Tasks',
             'icon' => 'check-circle',
             'permissions' => ['view_tasks', 'create_tasks'],
+        ],
+        'forms' => [
+            'name' => 'Forms',
+            'icon' => 'file-text',
+            'permissions' => [],
         ],
         'example' => [
             'name' => 'Dashboard',
