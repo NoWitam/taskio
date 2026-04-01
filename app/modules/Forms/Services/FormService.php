@@ -6,29 +6,40 @@ use App\Modules\Forms\DTOs\FormDTO;
 use App\Modules\Forms\Models\Form;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class FormService
 {
     public function create(FormDTO $dto): Form
     {
-        return Form::create([
+        $form = Form::create([
             'name' => $dto->name,
             'icon' => $dto->icon,
             'description' => $dto->description,
             'content' => $dto->content,
             'is_anonymous' => $dto->is_anonymous,
+            // Anonymous forms are automatically enabled
+            'enabled_at' => $dto->is_anonymous ? now() : null,
         ]);
+
+        return $form;
     }
 
     public function update(Form $form, FormDTO $dto): Form
     {
-        $form->update([
+        $updateData = [
             'name' => $dto->name,
             'icon' => $dto->icon,
             'description' => $dto->description,
-            'content' => $dto->content,
             'is_anonymous' => $dto->is_anonymous,
-        ]);
+        ];
+
+        // Content can only be updated if form is not enabled yet
+        if ($form->canBeEdited()) {
+            $updateData['content'] = $dto->content;
+        }
+
+        $form->update($updateData);
 
         return $form;
     }
@@ -43,6 +54,32 @@ class FormService
         $form->restore();
 
         return $form;
+    }
+
+    /**
+     * Enable the form, making it ready to accept submissions
+     * 
+     * @throws ValidationException if form doesn't have minimum required fields or is already enabled
+     */
+    public function enable(Form $form): Form
+    {
+        // Idempotent - if already enabled, just return the form
+        if ($form->isEnabled()) {
+            return $form;
+        }
+
+        // Validate that form has at least one input field
+        if (!$form->hasMinimumRequiredFields()) {
+            throw ValidationException::withMessages([
+                'content' => ['Formularz musi zawierać co najmniej jedno pole wejściowe.'],
+            ]);
+        }
+
+        $form->update([
+            'enabled_at' => now(),
+        ]);
+
+        return $form->fresh();
     }
 
     public function index(Request $request)

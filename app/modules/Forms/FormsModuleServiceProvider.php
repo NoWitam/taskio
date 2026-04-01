@@ -4,7 +4,10 @@ namespace App\Modules\Forms;
 
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
+use App\Modules\Forms\Policies\FormPolicy;
+use App\Modules\Forms\Policies\FormSubmissionPolicy;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 
@@ -25,5 +28,9 @@ class FormsModuleServiceProvider extends ServiceProvider
             'form' => Form::class,
             'form_submission' => FormSubmission::class,
         ]);
+
+        // Register policies
+        Gate::policy(Form::class, FormPolicy::class);
+        Gate::policy(FormSubmission::class, FormSubmissionPolicy::class);
     }
 }

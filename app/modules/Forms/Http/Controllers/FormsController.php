@@ -4,6 +4,7 @@ namespace App\Modules\Forms\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Forms\DTOs\FormDTO;
+use App\Modules\Forms\Http\Requests\EnableFormRequest;
 use App\Modules\Forms\Http\Requests\StoreFormRequest;
 use App\Modules\Forms\Http\Resources\FormListResource;
 use App\Modules\Forms\Http\Resources\FormResource;
@@ -85,5 +86,40 @@ class FormsController extends Controller
         return FormResource::make(
             $this->service->restore($form)->loadMissing(['creator'])
         );
+    }
+
+    /**
+     * Enable the form, making it ready to accept submissions
+     */
+    public function enable(EnableFormRequest $request, Form $form): FormResource
+    {
+        return FormResource::make(
+            $this->service->enable($form)->loadMissing(['creator'])
+        );
+    }
+
+    /**
+     * Get form preview
+     */
+    public function preview(Request $request, Form $form): FormResource
+    {
+        $this->authorize('view', $form);
+
+        return FormResource::make(
+            $form->loadMissing(['creator'])
+        );
+    }
+
+    /**
+     * Get form reports (placeholder for future implementation)
+     */
+    public function reports(Request $request, Form $form): JsonResponse
+    {
+        $this->authorize('view', $form);
+
+        return response()->json([
+            'data' => [],
+            'message' => 'Reports feature not implemented yet',
+        ]);
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Modules\Forms\Http\Requests;
 
+use App\Modules\Forms\Models\Form;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreFormSubmissionRequest extends FormRequest
@@ -15,10 +16,25 @@ class StoreFormSubmissionRequest extends FormRequest
     {
         return [
             'form_id' => ['required', 'uuid', 'exists:forms,id'],
-            'submittable_type' => ['required', 'string'],
-            'submittable_id' => ['required', 'uuid'],
+            'submittable_type' => ['nullable', 'string'],
+            'submittable_id' => ['nullable', 'uuid'],
             'data' => ['required', 'array'],
         ];
+    }
+
+    /**
+     * Prepare the data for validation.
+     */
+    protected function prepareForValidation(): void
+    {
+        // For manual submissions (when submittable is not provided),
+        // automatically set it to point to the Form itself
+        if (!$this->has('submittable_type') || !$this->has('submittable_id')) {
+            $this->merge([
+                'submittable_type' => Form::class,
+                'submittable_id' => $this->input('form_id'),
+            ]);
+        }
     }
 
     public function messages(): array
@@ -26,8 +42,6 @@ class StoreFormSubmissionRequest extends FormRequest
         return [
             'form_id.required' => 'Form ID is required.',
             'form_id.exists' => 'The selected form does not exist.',
-            'submittable_type.required' => 'Submittable type is required.',
-            'submittable_id.required' => 'Submittable ID is required.',
             'data.required' => 'Form data is required.',
         ];
     }

@@ -49,7 +49,7 @@ class FormSubmissionsController extends Controller
         $this->service->update($submission, $request->input('data'));
 
         return FormSubmissionResource::make(
-            $submission->loadMissing(['form', 'creator'])
+            $submission->fresh()->loadMissing(['form', 'creator'])
         );
     }
 }
