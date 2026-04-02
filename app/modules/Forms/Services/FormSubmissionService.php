@@ -58,11 +58,26 @@ class FormSubmissionService
         return FormSubmission::query()
             ->with('creator', 'submittable')
             ->where('form_id', $formId)
+            ->whereNotNull('approved_at')
             ->when(
-                $request->array('sources'),
+                $request->boolean('trashed'),
+                fn(Builder $query) => $query->onlyTrashed()
+            )
+            ->when(
+                request()->array('sources'),
                 fn(Builder $query, $sources) => $query->whereIn('submittable_type', $sources)
             )
-            ->latest('created_at')
+            ->when(
+                $request->has('search'),
+                fn(Builder $query) => $query->where(fn(Builder $sq) => 
+                    $sq->where('data', 'like', '%' . $request->get('search') . '%')
+                )
+            )
+            ->filterByDate('approved_at', $request)
+            ->orderBy(
+                'approved_at', 
+                $request->get('sort', 'newest') === 'oldest' ? 'asc' : 'desc'
+            )
             ->cursorPaginate(12);
     }
 

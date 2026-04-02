@@ -49,6 +49,7 @@ const loading = ref(false)
 const showPreview = ref(false)
 const builderRef = ref<InstanceType<typeof FormBuilder> | null>(null)
 const existingFormContent = ref<FormElement[]>([])
+const previewElements = ref<FormElement[]>([])
 
 const form = reactive({
     name: '',
@@ -63,6 +64,7 @@ const resetForm = () => {
     form.icon = 'file-text'
     form.description = ''
     existingFormContent.value = []
+    previewElements.value = []
     Object.keys(errors).forEach(key => delete errors[key])
 }
 
@@ -76,6 +78,7 @@ const loadForm = async () => {
         form.icon = existingForm.icon || 'file-text'
         form.description = existingForm.description || ''
         existingFormContent.value = existingForm.content || []
+        previewElements.value = existingForm.content || []
     } catch (err: any) {
         toast.push({
             tone: 'danger',
@@ -116,6 +119,10 @@ const goToStep1 = () => {
 }
 
 const togglePreview = () => {
+    if (!showPreview.value) {
+        // Switching to preview - cache current elements
+        previewElements.value = builderRef.value?.getElements() || existingFormContent.value
+    }
     showPreview.value = !showPreview.value
 }
 
@@ -258,14 +265,14 @@ const handleSubmit = async () => {
         <div v-else-if="currentStep === 2" class="h-150">
             <!-- Builder mode -->
             <FormBuilder
-                v-if="!showPreview"
+                v-show="!showPreview"
                 ref="builderRef"
                 :initial-elements="isEditMode ? existingFormContent : []"
                 embedded
             />
             
             <!-- Preview mode -->
-            <div v-else class="h-full overflow-y-auto p-6">
+            <div v-show="showPreview" class="h-full overflow-y-auto p-6">
                 <div class="max-w-4xl mx-auto">
                     <FormViewer
                         v-if="form.name"
@@ -274,8 +281,11 @@ const handleSubmit = async () => {
                             name: form.name,
                             icon: form.icon,
                             description: form.description,
-                            content: builderRef?.getElements() || existingFormContent,
+                            content: previewElements,
                             is_anonymous: false,
+                            enabled_at: null,
+                            is_enabled: false,
+                            can_be_edited: true,
                             submissions_count: 0,
                             created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString(),
@@ -308,7 +318,7 @@ const handleSubmit = async () => {
                 
                 <div class="flex gap-2">
                     <Button variant="secondary" @click="togglePreview">
-                        <Icon :name="showPreview ? 'edit' : 'eye'" />
+                        <Icon :name="showPreview ? 'pencil' : 'eye'" />
                         {{ showPreview ? t('forms.edit') : t('forms.preview') }}
                     </Button>
                     

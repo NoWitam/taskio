@@ -227,6 +227,9 @@ export interface Form {
     description: string | null
     content: FormElement[]
     is_anonymous: boolean
+    enabled_at: string | null
+    is_enabled: boolean
+    can_be_edited: boolean
     creator?: User
     submissions_count?: number
     created_at: string
@@ -238,6 +241,10 @@ export interface FormSubmission {
     form_id: string
     form?: Form
     data: Record<string, any> // { element_id: value }
+    source: string
+    approved_at: string | null
+    is_approved: boolean
+    can_be_edited: boolean
     creator?: User
     created_at: string
     updated_at: string

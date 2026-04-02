@@ -99,13 +99,20 @@ class FormService
             ->withCount('submissions')
             ->where('is_anonymous', false)
             ->when(
+                request()->boolean('trashed'),
+                fn(Builder $query) => $query->onlyTrashed()
+            )
+            ->when(
+                request()->filled('enabled'),
+                fn(Builder $query) => request()->boolean('enabled') ? $query->whereNotNull('enabled_at') : $query->whereNull('enabled_at')
+            )
+            ->when(
                 $request->has('search'),
                 fn(Builder $query) => $query->where(fn(Builder $sq) => 
                     $sq->whereLike('name', '%' . $request->get('search') . '%')
                         ->orWhereLike('description', '%' . $request->get('search') . '%')
                 )
             )
-            ->filterByDate('created_at', $request)
             ->latest('created_at');
     }
 }

@@ -31,7 +31,7 @@ class StoreFormSubmissionRequest extends FormRequest
         // automatically set it to point to the Form itself
         if (!$this->has('submittable_type') || !$this->has('submittable_id')) {
             $this->merge([
-                'submittable_type' => Form::class,
+                'submittable_type' => (new Form())->getMorphClass(),
                 'submittable_id' => $this->input('form_id'),
             ]);
         }

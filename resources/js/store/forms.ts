@@ -7,10 +7,20 @@ import type { Form, FormSubmission } from '@/types/forms'
 export interface FormFilters {
     search?: string
     is_anonymous?: boolean
-    archived?: boolean
+    trashed?: boolean
+    enabled?: boolean
     date_from?: string | null
     date_to?: string | null
     date_preset?: '' | 'today' | 'this_week' | 'last_week' | 'this_month'
+}
+
+export interface SubmissionFilters {
+    search?: string
+    sources?: string[] // Array of 'task' or 'form'
+    trashed?: boolean
+    date_from?: string | null
+    date_to?: string | null
+    sort?: 'newest' | 'oldest'
 }
 
 export interface FormsResponse {
@@ -38,6 +48,8 @@ export const useFormsStore = defineStore('forms', () => {
 
     const publicForms = computed(() => forms.value.filter(f => !f.is_anonymous))
     const anonymousForms = computed(() => forms.value.filter(f => f.is_anonymous))
+    const enabledForms = computed(() => forms.value.filter(f => f.is_enabled))
+    const disabledForms = computed(() => forms.value.filter(f => !f.is_enabled))
 
     // ============================================
     // FORMS CRUD
@@ -219,11 +231,32 @@ export const useFormsStore = defineStore('forms', () => {
         }
     }
 
+    const enableForm = async (id: string): Promise<Form> => {
+        try {
+            const response = await api.post<ApiResponse<Form>>(`/forms/${id}/enable`)
+            const form = response.data
+
+            // Update cache
+            formById.value[id] = form
+
+            // Update in list
+            const index = forms.value.findIndex(f => f.id === id)
+            if (index !== -1) {
+                forms.value[index] = form
+            }
+
+            return form
+        } catch (err: any) {
+            console.error('Failed to enable form:', err)
+            throw err
+        }
+    }
+
     // ============================================
     // FORM SUBMISSIONS
     // ============================================
 
-    const fetchSubmissions = async (formId: string, resetCursor: boolean = true) => {
+    const fetchSubmissions = async (formId: string, filters: SubmissionFilters = {}, resetCursor: boolean = true) => {
         const key = `submissions_${formId}`
         loading.value[key] = true
 
@@ -238,6 +271,21 @@ export const useFormsStore = defineStore('forms', () => {
             if (cursors.value[key] && !resetCursor) {
                 params.append('cursor', cursors.value[key]!)
             }
+
+            // Add filters to URL params
+            Object.entries(filters).forEach(([key, value]) => {
+                if (value === undefined || value === null || value === '') return
+                if (key === 'sources' && Array.isArray(value)) {
+                    // Send as array parameters: sources[]=form&sources[]=task
+                    value.forEach(source => {
+                        params.append('sources[]', source)
+                    })
+                } else if (key === 'trashed') {
+                    params.append('trashed', value ? 'true' : 'false')
+                } else {
+                    params.append(key, String(value))
+                }
+            })
 
             const response = await api.get<FormSubmissionsResponse>(
                 `/forms/${formId}/submissions?${params.toString()}`
@@ -306,6 +354,51 @@ export const useFormsStore = defineStore('forms', () => {
         }
     }
 
+    const deleteSubmission = async (id: string, formId: string): Promise<void> => {
+        try {
+            await api.delete(`/form-submissions/${id}`)
+
+            // Remove from submissions list
+            if (submissions.value[formId]) {
+                submissions.value[formId] = submissions.value[formId].filter(s => s.id !== id)
+            }
+        } catch (err: any) {
+            console.error('Failed to delete submission:', err)
+            throw err
+        }
+    }
+
+    const forceDeleteSubmission = async (id: string, formId: string): Promise<void> => {
+        try {
+            await api.delete(`/form-submissions/${id}/force`)
+
+            // Remove from submissions list
+            if (submissions.value[formId]) {
+                submissions.value[formId] = submissions.value[formId].filter(s => s.id !== id)
+            }
+        } catch (err: any) {
+            console.error('Failed to permanently delete submission:', err)
+            throw err
+        }
+    }
+
+    const restoreSubmission = async (id: string, formId: string): Promise<FormSubmission> => {
+        try {
+            const response = await api.post<ApiResponse<FormSubmission>>(`/form-submissions/${id}/restore`)
+            const submission = response.data
+
+            // Add to submissions list if exists
+            if (submissions.value[formId]) {
+                submissions.value[formId].unshift(submission)
+            }
+
+            return submission
+        } catch (err: any) {
+            console.error('Failed to restore submission:', err)
+            throw err
+        }
+    }
+
     // ============================================
     // HELPERS
     // ============================================
@@ -336,6 +429,8 @@ export const useFormsStore = defineStore('forms', () => {
         // Computed
         publicForms,
         anonymousForms,
+        enabledForms,
+        disabledForms,
 
         // Actions
         fetchForms,
@@ -345,9 +440,13 @@ export const useFormsStore = defineStore('forms', () => {
         deleteForm,
         forceDeleteForm,
         restoreForm,
+        enableForm,
         fetchSubmissions,
         createSubmission,
         updateSubmission,
+        deleteSubmission,
+        forceDeleteSubmission,
+        restoreSubmission,
 
         // Helpers
         getFormById,

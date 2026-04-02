@@ -12,10 +12,12 @@ const props = withDefaults(defineProps<{
     mode: 'preview' | 'fill'
     initialData?: Record<string, any>
     autoSave?: boolean
+    hideSubmitButton?: boolean
 }>(), {
     mode: 'preview',
     initialData: () => ({}),
-    autoSave: false
+    autoSave: false,
+    hideSubmitButton: false
 })
 
 const emit = defineEmits<{
@@ -248,6 +250,11 @@ const findElement = (id: string): FormElement | null => {
 const getElementError = (elementId: string): string | undefined => {
     return errors.value.find(e => e.elementId === elementId)?.message
 }
+
+// Expose submit method for external trigger
+defineExpose({
+    submit: handleSubmit
+})
 </script>
 
 <template>
@@ -266,7 +273,7 @@ const getElementError = (elementId: string): string | undefined => {
         </div>
 
         <!-- Elements -->
-        <div class="space-y-4">
+        <div v-if="form.content && form.content.length > 0" class="space-y-4">
             <InputRenderer
                 v-for="element in form.content"
                 :key="element.id"
@@ -279,9 +286,17 @@ const getElementError = (elementId: string): string | undefined => {
                 @remove-repeater="removeRepeaterInstance"
             />
         </div>
+        
+        <!-- Empty state -->
+        <div v-else class="flex items-center justify-center py-12 text-center">
+            <div>
+                <Icon name="file-text" size="xl" class="text-muted-foreground mx-auto mb-2" />
+                <p class="text-muted-foreground">{{ t('forms.emptyCanvas') }}</p>
+            </div>
+        </div>
 
-        <!-- Submit button (only when not auto-saving) -->
-        <div v-if="mode === 'fill' && !autoSave" class="flex justify-end pt-4 border-t border-border">
+        <!-- Submit button (only when not auto-saving and not hidden) -->
+        <div v-if="mode === 'fill' && !autoSave && !hideSubmitButton" class="flex justify-end pt-4 border-t border-border">
             <Button
                 size="lg"
                 :loading="submitting"
