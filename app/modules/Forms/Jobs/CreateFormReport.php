@@ -29,13 +29,9 @@ class CreateFormReport implements ShouldQueue
     {
         $this->createView();
 
-        try {
-            $report = $this->generateReport();
-            $this->saveReport($report);
-            $this->report->markAsCompleted();
-        } finally {
-            $this->dropView();
-        }
+        $report = $this->generateReport();
+        $this->saveReport($report);
+        $this->report->markAsCompleted();
     }
 
     public function failed(?Throwable $exception): void
@@ -185,7 +181,7 @@ class CreateFormReport implements ShouldQueue
     private function createView(): void
     {
         $statement = "
-            CREATE VIEW {$this->report->getViewName()} AS
+            CREATE MATERIALIZED VIEW {$this->report->getViewName()} AS
             (
                 SELECT 
                     fs.data as data,
