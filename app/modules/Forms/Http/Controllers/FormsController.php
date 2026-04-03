@@ -109,17 +109,4 @@ class FormsController extends Controller
             $form->loadMissing(['creator'])
         );
     }
-
-    /**
-     * Get form reports (placeholder for future implementation)
-     */
-    public function reports(Request $request, Form $form): JsonResponse
-    {
-        $this->authorize('view', $form);
-
-        return response()->json([
-            'data' => [],
-            'message' => 'Reports feature not implemented yet',
-        ]);
-    }
 }

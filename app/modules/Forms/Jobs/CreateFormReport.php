@@ -141,15 +141,19 @@ class CreateFormReport implements ShouldQueue
      */
     private function formatSources(): string
     {
-        return collect($this->report->sources)
-            ->map(function ($source) {
-                return match ($source) {
-                    'task' => 'zadania',
-                    'form' => 'ręczne wypełnienia',
-                    default => $source
-                };
-            })
-            ->join(', ');
+        if(!empty($this->report->sources)) {
+            return collect($this->report->sources)
+                ->map(function ($source) {
+                    return match ($source) {
+                        'task' => 'zadania',
+                        'form' => 'ręczne wypełnienia',
+                        default => $source
+                    };
+                })
+                ->join(', ');
+        }
+
+        return 'nie sprecyzowano - wszystkie są dozwolone';
     }
 
     /**
@@ -180,9 +184,7 @@ class CreateFormReport implements ShouldQueue
      */
     private function createView(): void
     {
-        $sources = implode("', '", $this->report->sources);
-
-        DB::statement("
+        $statement = "
             CREATE VIEW {$this->report->getViewName()} AS
             (
                 SELECT 
@@ -196,13 +198,20 @@ class CreateFormReport implements ShouldQueue
                 LEFT JOIN users u ON u.id = fs.creator_id
                 WHERE 
                     fs.form_id = '{$this->report->form_id}'
-                    AND fs.submittable_type IN ('{$sources}')
                     AND fs.approved_at IS NOT NULL
                     AND fs.deleted_at IS NULL
                     AND fs.approved_at >= '{$this->report->submissions_from->format('Y-m-d')}'
                     AND fs.approved_at <= '{$this->report->submissions_to->format('Y-m-d')}'
-            )
-        ");
+        ";
+
+        if(!empty($this->report->sources)) {
+            $sources = implode("', '", $this->report->sources);
+            $statement .= "AND fs.submittable_type IN ('{$sources}')";
+        }
+
+        $statement .= ")";
+
+        DB::statement($statement);
     }
 
     /**

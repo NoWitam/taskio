@@ -6,6 +6,7 @@ use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormReport;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Forms\Policies\FormPolicy;
+use App\Modules\Forms\Policies\FormReportPolicy;
 use App\Modules\Forms\Policies\FormSubmissionPolicy;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\Gate;
@@ -34,5 +35,6 @@ class FormsModuleServiceProvider extends ServiceProvider
         // Register policies
         Gate::policy(Form::class, FormPolicy::class);
         Gate::policy(FormSubmission::class, FormSubmissionPolicy::class);
+        Gate::policy(FormReport::class, FormReportPolicy::class);
     }
 }
