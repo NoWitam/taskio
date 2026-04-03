@@ -4,7 +4,6 @@ namespace App\Modules\Forms\Models;
 
 use App\Enums\IconEnum;
 use App\Models\AbstractModel;
-use App\Models\User;
 use App\Modules\Changelog\Enums\ChangelogEvent;
 use App\Modules\Changelog\Interfaces\HasChangelog as InterfacesHasChangelog;
 use App\Modules\Changelog\Managers\FieldTracker;
@@ -17,6 +16,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\JsonSchema\JsonSchema;
 
 class Form extends AbstractModel implements InterfacesHasChangelog
 {
@@ -125,18 +125,18 @@ class Form extends AbstractModel implements InterfacesHasChangelog
                 return true;
             }
 
-            // Check nested elements in sections, grids, and repeaters
-            if (isset($element['elements']) && is_array($element['elements'])) {
-                if ($this->hasInputFieldsInElements($element['elements'])) {
+            // Check nested elements in sections and repeaters
+            if (isset($element['config']['children']) && is_array($element['config']['children'])) {
+                if ($this->hasInputFieldsInElements($element['config']['children'])) {
                     return true;
                 }
             }
 
             // Check grid columns
-            if (isset($element['columns']) && is_array($element['columns'])) {
-                foreach ($element['columns'] as $column) {
-                    if (isset($column['elements']) && is_array($column['elements'])) {
-                        if ($this->hasInputFieldsInElements($column['elements'])) {
+            if (isset($element['config']['columns']) && is_array($element['config']['columns'])) {
+                foreach ($element['config']['columns'] as $column) {
+                    if (isset($column['element']) && is_array($column['element'])) {
+                        if ($this->hasInputFieldsInElements([$column['element']])) {
                             return true;
                         }
                     }
@@ -150,6 +150,39 @@ class Form extends AbstractModel implements InterfacesHasChangelog
     public function submissions(): HasMany
     {
         return $this->hasMany(FormSubmission::class);
+    }
+
+    public function reports(): HasMany
+    {
+        return $this->hasMany(FormReport::class);
+    }
+
+    /**
+     * Normalize field IDs from random strings to readable snake_case keys
+     * Called automatically when form is being enabled
+     */
+    public function normalizeFieldIds(): void
+    {
+        if (empty($this->content)) {
+            return;
+        }
+
+        $this->content = FormElementType::normalizeElements($this->content);
+    }
+
+    /**
+     * Generate JsonSchema from form structure
+     * Returns an array representation of the schema
+     */
+    public function getJsonSchema(): array
+    {
+        if (empty($this->content)) {
+            return JsonSchema::object([])->toArray();
+        }
+
+        $properties = FormElementType::buildJsonSchema($this->content);
+        
+        return JsonSchema::object($properties)->toArray();
     }
 
     /**
