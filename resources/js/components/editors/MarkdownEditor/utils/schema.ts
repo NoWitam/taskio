@@ -2,6 +2,10 @@ import type { Extension } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import Link from '@tiptap/extension-link';
+import Table from '@tiptap/extension-table';
+import TableCell from '@tiptap/extension-table-cell';
+import TableHeader from '@tiptap/extension-table-header';
+import TableRow from '@tiptap/extension-table-row';
 import type { EditorConfig } from '../types/editor';
 import { MentionNode, VariableNode, AiTextNode, IfBlockNode, ConfigExtension } from '../extensions';
 
@@ -18,7 +22,20 @@ export function createBaseExtensions(config: EditorConfig): Extension[] {
     link: false,
   });
 
-  const extensions: Extension[] = [starter, ConfigExtension, MentionNode, VariableNode, AiTextNode, IfBlockNode];
+  const extensions: Extension[] = [
+    starter, 
+    ConfigExtension, 
+    MentionNode, 
+    VariableNode, 
+    AiTextNode, 
+    IfBlockNode,
+    Table.configure({
+      resizable: true,
+    }),
+    TableRow,
+    TableHeader,
+    TableCell,
+  ];
 
   if (markdown.underline) {
     extensions.push(Underline);

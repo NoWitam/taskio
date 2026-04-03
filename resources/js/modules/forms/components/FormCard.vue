@@ -117,15 +117,19 @@ const handleEnableToggle = () => {
                         {{ t('common.select') }}
                     </Button>
                 </div>
-                <div v-else class="flex gap-2 p-2 bg-primary/5 border-2 border-primary rounded-lg">
-                    <span class="text-sm font-medium text-foreground">
+                <div v-else>
+                    <Button 
+                        variant="primary" 
+                        size="sm"
+                        @click="handleEnableToggle"
+                    >
                         {{ t('forms.enable') }}
-                    </span>
-                    <SwitchInput
-                        :model-value="form.is_enabled"
-                        @update:model-value="handleEnableToggle"
-                        :disabled="form.is_enabled"
-                    />
+                        <SwitchInput
+                            :model-value="form.is_enabled"
+                            @update:model-value="handleEnableToggle"
+                            :disabled="form.is_enabled"
+                        />
+                    </Button>
                 </div>
             </div>
 

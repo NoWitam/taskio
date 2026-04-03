@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/lib/api'
 import type { ApiMeta, ApiResponse } from '@/types'
-import type { Form, FormSubmission } from '@/types/forms'
+import type { Form, FormSubmission, FormReport } from '@/types/forms'
 
 export interface FormFilters {
     search?: string
@@ -23,6 +23,22 @@ export interface SubmissionFilters {
     sort?: 'newest' | 'oldest'
 }
 
+export interface ReportFilters {
+    search?: string
+    creator_id?: string[]
+    trashed?: boolean
+    date_from?: string | null
+    date_to?: string | null
+    sort?: 'newest' | 'oldest'
+    only_completed?: boolean
+    only_pending?: boolean
+}
+
+export interface FormReportsResponse {
+    data: FormReport[]
+    meta: ApiMeta
+}
+
 export interface FormsResponse {
     data: Form[]
     meta: ApiMeta
@@ -37,10 +53,12 @@ export const useFormsStore = defineStore('forms', () => {
     const forms = ref<Form[]>([])
     const formById = ref<Record<string, Form>>({})
     const submissions = ref<Record<string, FormSubmission[]>>({}) // by form_id
+    const reports = ref<Record<string, FormReport[]>>({}) // by form_id
     const loading = ref<Record<string, boolean>>({})
     const cursors = ref<Record<string, string | null>>({})
     const hasMore = ref<Record<string, boolean>>({})
     const total = ref<number | null>(null)
+    const abortControllers = ref<Record<string, AbortController | null>>({}) // for aborting fetch reports
 
     // ============================================
     // COMPUTED
@@ -400,6 +418,151 @@ export const useFormsStore = defineStore('forms', () => {
     }
 
     // ============================================
+    // FORM REPORTS
+    // ============================================
+
+    const fetchReports = async (formId: string, filters: ReportFilters = {}, resetCursor: boolean = true) => {
+        const key = `reports_${formId}`
+        
+        // Cancel previous request if resetting cursor (new filters)
+        if (resetCursor && abortControllers.value[key]) {
+            abortControllers.value[key]!.abort()
+        }
+        
+        // Create new abort controller
+        const abortController = new AbortController()
+        abortControllers.value[key] = abortController
+        
+        loading.value[key] = true
+
+        if (resetCursor) {
+            reports.value[formId] = []
+            cursors.value[key] = null
+        }
+
+        try {
+            const params = new URLSearchParams()
+
+            if (cursors.value[key] && !resetCursor) {
+                params.append('cursor', cursors.value[key]!)
+            }
+
+            // Add filters to URL params
+            Object.entries(filters).forEach(([key, value]) => {
+                if (value === undefined || value === null) return
+                
+                if (Array.isArray(value)) {
+                    // Handle arrays (e.g., creator_id)
+                    value.forEach(item => {
+                        if (item !== undefined && item !== null && item !== '') {
+                            params.append(`${key}[]`, String(item))
+                        }
+                    })
+                } else if (key === 'trashed' || key === 'only_completed' || key === 'only_pending') {
+                    params.append(key, value ? 'true' : 'false')
+                } else if (value !== '') {
+                    params.append(key, String(value))
+                }
+            })
+
+            const response = await api.get<FormReportsResponse>(
+                `/forms/${formId}/reports?${params.toString()}`,
+                { signal: abortController.signal }
+            )
+
+            if (resetCursor) {
+                reports.value[formId] = response.data
+            } else {
+                if (!reports.value[formId]) {
+                    reports.value[formId] = []
+                }
+                reports.value[formId].push(...response.data)
+            }
+
+            cursors.value[key] = response.meta.next_cursor
+            hasMore.value[key] = !!response.meta.next_cursor
+        } catch (err: any) {
+            // Ignore aborted requests
+            if (err.name === 'AbortError' || err.name === 'CanceledError' || err.code === 'ERR_CANCELED') {
+                return
+            }
+            console.error('Failed to fetch reports:', err)
+            throw err
+        } finally {
+            loading.value[key] = false
+            // Clear abort controller if it's still the current one
+            if (abortControllers.value[key] === abortController) {
+                abortControllers.value[key] = null
+            }
+        }
+    }
+
+    const fetchReport = async (id: string): Promise<FormReport> => {
+        try {
+            const response = await api.get<ApiResponse<FormReport>>(`/form-reports/${id}`)
+            return response.data
+        } catch (err: any) {
+            console.error('Failed to fetch report:', err)
+            throw err
+        }
+    }
+
+    const createReport = async (data: {
+        form_id: string
+        name: string
+        guidelines?: string | null
+        sources?: string[]
+        submissions_from?: string | null
+        submissions_to?: string | null
+    }): Promise<FormReport> => {
+        try {
+            const response = await api.post<ApiResponse<FormReport>>('/form-reports', data)
+            const report = response.data
+
+            // Add to reports list if exists
+            if (reports.value[data.form_id]) {
+                reports.value[data.form_id].unshift(report)
+            }
+
+            return report
+        } catch (err: any) {
+            console.error('Failed to create report:', err)
+            throw err
+        }
+    }
+
+    const deleteReport = async (id: string, formId: string): Promise<void> => {
+        try {
+            await api.delete(`/form-reports/${id}`)
+
+            // Remove from reports list
+            if (reports.value[formId]) {
+                reports.value[formId] = reports.value[formId].filter(r => r.id !== id)
+            }
+        } catch (err: any) {
+            console.error('Failed to delete report:', err)
+            throw err
+        }
+    }
+
+    const restoreReport = async (id: string, formId: string): Promise<FormReport> => {
+        try {
+            const response = await api.post<ApiResponse<FormReport>>(`/form-reports/${id}/restore`)
+            const report = response.data
+
+            // Add to reports list if exists
+            if (reports.value[formId]) {
+                reports.value[formId].unshift(report)
+            }
+
+            return report
+        } catch (err: any) {
+            console.error('Failed to restore report:', err)
+            throw err
+        }
+    }
+
+    // ============================================
     // HELPERS
     // ============================================
 
@@ -411,6 +574,7 @@ export const useFormsStore = defineStore('forms', () => {
         forms.value = []
         formById.value = {}
         submissions.value = {}
+        reports.value = {}
         cursors.value = {}
         hasMore.value = {}
         total.value = null
@@ -421,6 +585,7 @@ export const useFormsStore = defineStore('forms', () => {
         forms,
         formById,
         submissions,
+        reports,
         loading,
         cursors,
         hasMore,
@@ -447,6 +612,11 @@ export const useFormsStore = defineStore('forms', () => {
         deleteSubmission,
         forceDeleteSubmission,
         restoreSubmission,
+        fetchReports,
+        fetchReport,
+        createReport,
+        deleteReport,
+        restoreReport,
 
         // Helpers
         getFormById,

@@ -6,7 +6,6 @@ use App\Modules\Disk\Http\Resources\FileResource;
 use App\Modules\Users\Http\Resources\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Str;
 
 class FormReportResource extends JsonResource
 {
@@ -18,7 +17,6 @@ class FormReportResource extends JsonResource
             'form' => FormListResource::make($this->whenLoaded('form')),
             'name' => $this->name,
             'guidelines' => $this->guidelines,
-            'guidelines_truncated' => $this->guidelines ? Str::limit($this->guidelines, 100) : null,
             'sources' => $this->sources,
             'sources_formatted' => $this->getSourcesFormatted(),
             'submissions_from' => $this->submissions_from->format('Y-m-d'),
@@ -36,6 +34,10 @@ class FormReportResource extends JsonResource
 
     private function getSourcesFormatted(): array
     {
+        if (empty($this->sources)) {
+            return ['Wszystkie źródła'];
+        }
+
         return collect($this->sources)->map(function ($source) {
             return match ($source) {
                 'task' => 'Zadania',

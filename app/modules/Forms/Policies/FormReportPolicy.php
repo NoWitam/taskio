@@ -25,19 +25,6 @@ class FormReportPolicy
     }
 
     /**
-     * Determine whether the user can create form reports.
-     * Only the creator of the form can create reports for it.
-     */
-    public function createReport(?User $user, Form $form): bool
-    {
-        if ($user === null) {
-            return false;
-        }
-
-        return $form->creator_id === $user->id;
-    }
-
-    /**
      * Determine whether the user can delete the form report.
      * Only the creator of the form can delete reports.
      */

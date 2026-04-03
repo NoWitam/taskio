@@ -22,7 +22,7 @@ const DEFAULT_DOC: JSONContent = {
 const defaultConfig: EditorConfig = {
   features: {
     markdown: {
-      headings: [1, 2, 3],
+      headings: [1, 2, 3, 4, 5, 6],
       links: true,
       lists: true,
       bold: true,

@@ -250,6 +250,33 @@ export interface FormSubmission {
     updated_at: string
 }
 
+export interface FormReport {
+    id: string
+    form_id: string
+    form?: Form
+    name: string
+    guidelines: string | null
+    sources: string[] // ['task', 'form']
+    sources_formatted: string[]
+    submissions_from: string // YYYY-MM-DD
+    submissions_to: string // YYYY-MM-DD
+    date_range: string // "DD.MM.YYYY - DD.MM.YYYY"
+    is_completed: boolean
+    completed_at: string | null
+    file?: {
+        id: string
+        name: string
+        path: string
+        size: number
+        mime_type: string
+        created_at: string
+    } | null
+    creator?: User
+    created_at: string
+    updated_at: string
+    deleted_at?: string | null
+}
+
 // ============================================
 // FORM SUBMISSION DATA VALUES
 // ============================================

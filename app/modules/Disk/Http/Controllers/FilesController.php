@@ -16,6 +16,19 @@ class FilesController
 
     public function show(File $file)
     {
+        // If inline parameter is set, return file content
+        if (request()->query('inline')) {
+            $content = Storage::get($file->path);
+            
+            if ($content === null || $content === false) {
+                abort(404, 'File not found');
+            }
+            
+            return response($content, 200, [
+                'Content-Type' => $file->mime_type ?? 'text/plain',
+            ]);
+        }
+        
         return Storage::download($file->path);
     }
     public function uploadTemp(UploadTempFileRequest $request)

@@ -49,8 +49,8 @@ class FormReportService
                 )
             )
             ->when(
-                $request->has('creator_id'),
-                fn(Builder $query) => $query->where('creator_id', $request->get('creator_id'))
+                $request->array('creator_id'),
+                fn(Builder $query, $creators) => $query->whereIn('creator_id', $creators)
             )
             ->when(
                 $request->boolean('only_completed'),

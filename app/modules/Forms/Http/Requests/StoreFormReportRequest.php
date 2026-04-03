@@ -11,8 +11,8 @@ class StoreFormReportRequest extends FormRequest
     public function authorize(): bool
     {
         $form = Form::findOrFail($this->input('form_id'));
-        
-        return $this->user()?->can('createReport', $form) ?? false;
+        dump($this->user());
+        return $this->user()->can('createReport', $form) ?? false;
     }
 
     public function rules(): array

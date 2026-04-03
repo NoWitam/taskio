@@ -123,7 +123,7 @@ export interface VariableNodeAttrs extends VariableState {}
 export interface IfBlockNodeAttrs extends IfBlockState {}
 
 export interface MarkdownFeatureConfig {
-  headings: Array<1 | 2 | 3>;
+  headings: Array<1 | 2 | 3 | 4 | 5 | 6>;
   links: boolean;
   lists: boolean;
   bold: boolean;

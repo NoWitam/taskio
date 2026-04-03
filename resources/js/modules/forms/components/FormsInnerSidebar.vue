@@ -35,7 +35,7 @@ const navItems = computed(() => {
         {
             name: 'forms.detail.reports',
             label: t('forms.reports'),
-            icon: 'bar-chart-2',
+            icon: 'chart-bar',
             to: { name: 'forms.detail.reports', params: { formId: props.selectedForm.id } }
         }
     ]
