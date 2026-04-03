@@ -26,6 +26,91 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+// Helper function to flatten nested form data for internal use
+const flattenFormData = (nested: Record<string, any>, elements: FormElement[]): Record<string, any> => {
+    const result: Record<string, any> = {}
+    
+    const processElements = (els: FormElement[], source: any) => {
+        els.forEach(el => {
+            if (el.type === 'section') {
+                // Section: get data from nested object
+                const sectionData = source[el.id] || {}
+                const children = (el.config as any).children || []
+                processElements(children, sectionData)
+            } else if (el.type === 'checklist') {
+                // Checklist: convert array to individual checkboxes
+                const values = source[el.id] || []
+                const options = (el.config as any).options || []
+                options.forEach((opt: any) => {
+                    result[`${el.id}_${opt.value}`] = values.includes(opt.value)
+                })
+            } else if (el.type === 'grid') {
+                // Grid: process columns (no nesting)
+                const columns = (el.config as any).columns || []
+                columns.forEach((col: any) => {
+                    if (col.element) processElements([col.element], source)
+                })
+            } else if (el.type === 'repeater') {
+                // Repeater: TODO - handle array of objects
+                const children = (el.config as any).children || []
+                processElements(children, source)
+            } else if (el.type !== 'heading' && el.type !== 'text_block' && el.type !== 'divider') {
+                // Regular input fields
+                if (source[el.id] !== undefined) {
+                    result[el.id] = source[el.id]
+                }
+            }
+        })
+    }
+    
+    processElements(elements, nested)
+    return result
+}
+
+// Helper function to structure flat form data into nested format for submission
+const structureFormData = (flat: Record<string, any>, elements: FormElement[]): any => {
+    const result: any = {}
+    
+    const processElements = (els: FormElement[], target: any) => {
+        els.forEach(el => {
+            if (el.type === 'section') {
+                // Section: create nested object
+                const sectionKey = el.id // normalized ID
+                target[sectionKey] = {}
+                const children = (el.config as any).children || []
+                processElements(children, target[sectionKey])
+            } else if (el.type === 'checklist') {
+                // Checklist: collect checked options into array
+                const options = (el.config as any).options || []
+                const selected = options
+                    .filter((opt: any) => flat[`${el.id}_${opt.value}`])
+                    .map((opt: any) => opt.value)
+                if (selected.length > 0) {
+                    target[el.id] = selected
+                }
+            } else if (el.type === 'grid') {
+                // Grid: process columns (no nesting)
+                const columns = (el.config as any).columns || []
+                columns.forEach((col: any) => {
+                    if (col.element) processElements([col.element], target)
+                })
+            } else if (el.type === 'repeater') {
+                // Repeater: TODO - convert to array of objects
+                const children = (el.config as any).children || []
+                processElements(children, target)
+            } else if (el.type !== 'heading' && el.type !== 'text_block' && el.type !== 'divider') {
+                // Regular input fields
+                if (flat[el.id] !== undefined && flat[el.id] !== null && flat[el.id] !== '') {
+                    target[el.id] = flat[el.id]
+                }
+            }
+        })
+    }
+    
+    processElements(elements, result)
+    return result
+}
+
 // Form data
 const formData = ref<Record<string, any>>({})
 const errors = ref<FormValidationError[]>([])
@@ -35,15 +120,21 @@ const isInitializing = ref(true)
 // Initialize form data - Only on mount for auto-save mode, otherwise watch for changes
 if (props.autoSave) {
     // Auto-save mode: initialize once and never reset
-    formData.value = props.initialData ? { ...props.initialData } : {}
+    const initialFlat = props.initialData && props.form?.content 
+        ? flattenFormData(props.initialData, props.form.content) 
+        : {}
+    formData.value = initialFlat
     setTimeout(() => {
         isInitializing.value = false
     }, 100)
 } else {
     // Regular mode: watch for initialData changes
-    watch(() => props.initialData, (newData) => {
+    watch(() => [props.initialData, props.form?.content], ([newData, content]) => {
         isInitializing.value = true
-        formData.value = newData ? { ...newData } : {}
+        const initialFlat = newData && content && Array.isArray(content)
+            ? flattenFormData(newData, content)
+            : {}
+        formData.value = initialFlat
         setTimeout(() => {
             isInitializing.value = false
         }, 100)
@@ -56,7 +147,10 @@ watch(formData, () => {
     if (props.autoSave && !isInitializing.value && props.mode === 'fill') {
         if (autoSaveTimeout) clearTimeout(autoSaveTimeout)
         autoSaveTimeout = setTimeout(() => {
-            emit('submit', formData.value)
+            const structured = props.form?.content && Array.isArray(props.form.content)
+                ? structureFormData(formData.value, props.form.content)
+                : formData.value
+            emit('submit', structured)
         }, 1000)
     }
 }, { deep: true })
@@ -185,7 +279,13 @@ const handleSubmit = () => {
     }
 
     submitting.value = true
-    emit('submit', formData.value)
+    
+    // Structure data before submission
+    const structured = props.form?.content && Array.isArray(props.form.content)
+        ? structureFormData(formData.value, props.form.content)
+        : formData.value
+    
+    emit('submit', structured)
     
     // Reset submitting after emit (parent should handle loading)
     setTimeout(() => {

@@ -439,12 +439,24 @@ const updateElement = (elementId: string, newConfig: any) => {
                 }
             }
             
-            // Check grid columns
+            // Check grid columns - FIXED: directly update col.element instead of creating temporary array
             if (els[i].type === 'grid') {
                 const columns = (els[i].config as any).columns || []
-                for (const col of columns) {
-                    if (col.element && findAndUpdate([col.element])) {
-                        return true
+                for (let colIndex = 0; colIndex < columns.length; colIndex++) {
+                    const col = columns[colIndex]
+                    if (col.element) {
+                        if (col.element.id === elementId) {
+                            // Direct update to the column element
+                            col.element = { ...col.element, config: newConfig }
+                            return true
+                        }
+                        // Recursively check nested elements (in case grid column contains section/repeater)
+                        if (col.element.type === 'section' || col.element.type === 'repeater') {
+                            const children = (col.element.config as any).children
+                            if (children && findAndUpdate(children)) {
+                                return true
+                            }
+                        }
                     }
                 }
             }

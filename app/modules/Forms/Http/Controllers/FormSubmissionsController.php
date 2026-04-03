@@ -9,7 +9,6 @@ use App\Modules\Forms\Http\Requests\UpdateFormSubmissionRequest;
 use App\Modules\Forms\Http\Resources\FormSubmissionResource;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Forms\Services\FormSubmissionService;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 

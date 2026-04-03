@@ -3,6 +3,7 @@
 namespace App\Modules\Forms;
 
 use App\Modules\Forms\Models\Form;
+use App\Modules\Forms\Models\FormReport;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Forms\Policies\FormPolicy;
 use App\Modules\Forms\Policies\FormSubmissionPolicy;
@@ -27,6 +28,7 @@ class FormsModuleServiceProvider extends ServiceProvider
         Relation::enforceMorphMap([
             'form' => Form::class,
             'form_submission' => FormSubmission::class,
+            'form_report' => FormReport::class
         ]);
 
         // Register policies

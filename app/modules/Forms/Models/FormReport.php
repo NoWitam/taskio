@@ -3,7 +3,6 @@
 namespace App\Modules\Forms\Models;
 
 use App\Models\AbstractModel;
-use App\Models\User;
 use App\Modules\Disk\Models\File;
 use App\Modules\Forms\Jobs\CreateFormReport as CreateFormReportJob;
 use App\Traits\HasCreator;
@@ -64,7 +63,7 @@ class FormReport extends AbstractModel
 
     public function getViewName(): string
     {
-        return 'form_' . $this->form_id . '_submissions';
+        return 'form_' . str_replace('-', '_', $this->form_id) . '_submissions';
     }
 
     public function markAsCompleted(): void

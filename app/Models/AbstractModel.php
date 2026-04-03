@@ -21,7 +21,7 @@ class AbstractModel extends Model
             'this_week' => [now()->startOfWeek(), now()->endOfWeek()],
             'last_week' => [now()->subWeek()->startOfWeek(), now()->subWeek()->endOfWeek()],
             'this_month' => [now()->startOfMonth(), now()->endOfMonth()],
-            default => [$request->date($queryParam . '_from'), $request->date($queryParam . '_from')]
+            default => [$request->date($queryParam . '_from'), $request->date($queryParam . '_to')]
         };
     
         if(!is_null($from)) {
