@@ -63,7 +63,7 @@ class FormReport extends AbstractModel
 
     public function getViewName(): string
     {
-        return 'form_' . str_replace('-', '_', $this->form_id) . '_submissions';
+        return 'form_report_' . str_replace('-', '_', $this->id) . '_submissions';
     }
 
     public function markAsCompleted(): void

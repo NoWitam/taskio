@@ -8,7 +8,7 @@ use Laravel\Ai\Contracts\HasTools;
 use Laravel\Ai\Contracts\Tool;
 use Laravel\Ai\Promptable;
 
-#[MaxSteps(15)]
+#[MaxSteps(35)]
 class FormReportAgent implements Agent, HasTools
 {
     use Promptable;
