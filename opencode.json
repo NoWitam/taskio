@@ -7,7 +7,6 @@
     "list": "allow",
     "lsp": "allow",
     "edit": "allow",
-    "write": "ask",
     "bash": "ask",
     "websearch": "allow",
     "webfetch": "allow",
@@ -17,38 +16,6 @@
     "forms-maintainer": {
       "description": "Careful maintainer for the existing forms module. Must analyze first, preserve application spirit, reuse existing code, avoid duplication, and implement the smallest safe change set.",
       "prompt": "You are maintaining an existing production application. You must first study the current implementation before proposing or writing code. Your priority order is: preserve the spirit of the app, preserve local architecture, preserve coding style, reuse existing modules/components/services, avoid duplicate functionality, and implement the smallest safe change set. Always begin by identifying what already exists in the repository that can be reused or extended. Never create parallel implementations when an existing mechanism can be adapted. Before introducing any new abstraction, explicitly justify why reuse or extension is insufficient. For non-trivial work, always produce: (1) current-state analysis, (2) reusable pieces, (3) change plan, (4) implementation, (5) tests, (6) review for duplication and style mismatch. Respect AGENTS.md as the source of truth."
-    }
-  },
-  "command": {
-    "forms-analyze": {
-      "description": "Analyze the existing forms module, identify reusable parts, and propose a minimal migration plan without changing code.",
-      "agent": "forms-maintainer",
-      "template": "Analyze the current forms module in this repository. Do not change code. Identify: current data model, current state logic, validation paths, indexing paths, reporting/filtering paths, entity assignment logic, reusable services/components/hooks/utilities, existing migration patterns, and tests. Then provide: files inspected, reusable building blocks, risks of duplication, likely files to change, and the smallest safe implementation plan."
-    },
-    "forms-implement": {
-      "description": "Implement forms module changes using existing architecture and components wherever possible.",
-      "agent": "forms-maintainer",
-      "template": "Implement the required forms module changes according to AGENTS.md. Start by listing what already exists and what will be reused. Avoid duplication. Preserve architecture and style. Prefer extending existing services/components/policies over creating new ones. Before editing, show the files you plan to change. Then implement backend/domain changes first, API next, UI next, tests last. After implementation, review the diff for duplicated logic, duplicated UI, style mismatch, and hidden behavior changes."
-    },
-    "forms-review": {
-      "description": "Review the forms module implementation for duplication, style mismatch, regressions, and compliance with AGENTS.md.",
-      "agent": "forms-maintainer",
-      "template": "Review the current implementation of the forms module changes. Do not change code unless explicitly asked. Verify compliance with AGENTS.md. Focus on: preservation of existing patterns, reuse of existing abstractions, absence of duplicated functionality, legality of disabled + indexed, validation differences between disabled and enabled, assignment restrictions, indexing compatibility rules, reporting/filter differences, UI consistency, and test coverage. List findings grouped by severity."
-    },
-    "forms-backend": {
-      "description": "Implement only backend/domain and migration changes for the forms module.",
-      "agent": "forms-maintainer",
-      "template": "Implement only backend/domain/migration changes for the forms module according to AGENTS.md. First inspect and list existing reusable models, services, policies, validators, migrations, and tests. Reuse before creating anything new. Preserve the app's current architecture and style. Show the planned file changes before editing. After implementation, run the smallest relevant backend test set and summarize reuse decisions."
-    },
-    "forms-ui": {
-      "description": "Implement only frontend/UI changes for the forms module using existing UI patterns and components.",
-      "agent": "forms-maintainer",
-      "template": "Implement only frontend/UI changes for the forms module according to AGENTS.md. First inspect existing screen patterns, status components, buttons, modals, filters, report/search components, copy style, and hooks. Reuse existing components whenever possible. Do not introduce a visually or architecturally inconsistent pattern. Show planned file changes before editing. After implementation, review for duplicated components and inconsistent UX."
-    },
-    "forms-tests": {
-      "description": "Add or update tests for the forms module in the current repository style.",
-      "agent": "forms-maintainer",
-      "template": "Add or update tests for the forms module according to AGENTS.md. First inspect the existing testing stack, factories/builders, naming conventions, and organization. Reuse fixtures and helpers where possible. Cover state transitions, disabled + indexed legality, validation behavior, assignment rules, indexing compatibility, backup restore checks, and indexed/unindexed reporting differences."
     }
   }
 }
