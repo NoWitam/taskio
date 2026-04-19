@@ -11,7 +11,7 @@
             title?: string;
             description?: string;
             closeOnOverlay?: boolean;
-            width?: "sm" | "md" | "lg" | "xl" | "2xl";
+            width?: "sm" | "md" | "lg" | "xl" | "2xl" | "5xl";
             height?: string;
         }>(),
         { closeOnOverlay: true, width: "md", height: 'max-h-[90vh]' }
@@ -58,6 +58,7 @@
         lg: "max-w-4xl",
         xl: "max-w-6xl",
         "2xl": "max-w-[1600px]",
+        "5xl": "max-w-[1800px]",
     };
 </script>
 

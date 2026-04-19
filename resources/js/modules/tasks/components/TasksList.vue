@@ -9,7 +9,6 @@ import { useTasksStore } from '@/store/tasks';
 import { useInfiniteScroll } from '@/composables/useInfiniteScroll';
 import { useI18n } from '@/composables/useI18n';
 import type { TaskFilters } from '@/store/tasks';
-import HelpIcon from '../../../components/ui/HelpIcon.vue';
 
 const props = defineProps<{
     status: string;
@@ -90,20 +89,6 @@ watch(() => props.filters, () => {
             <h3 class="text-lg font-semibold text-foreground">
                 {{ label }}
             </h3>
-
-            <HelpIcon 
-                v-if="status === 'archive'"
-                size="md"
-            >
-                {{ t('tasks.archiveInfo') }}
-            </HelpIcon>
-            <HelpIcon
-                v-else-if="status === 'trash'"
-                size="md"
-            >
-                {{ t('tasks.trashInfo') }}
-            </HelpIcon>
-           
         </div>
 
         <Badge
@@ -111,6 +96,42 @@ watch(() => props.filters, () => {
         >
             {{ total ?? '-' }}
         </Badge>
+    </div>
+
+    <!-- Archive Warning Alert -->
+    <div 
+        v-if="status === 'archive'" 
+        class="flex items-start gap-3 p-3 mb-4 rounded-lg border border-blue-500/20 bg-blue-500/10"
+    >
+        <div class="shrink-0 text-blue-600 dark:text-blue-500">
+            <Icon name="info-circle" size="lg" />
+        </div>
+        <div class="flex-1 min-w-0">
+            <h4 class="font-medium text-sm mb-1 text-blue-900 dark:text-blue-100">
+                {{ t('tasks.archiveWarningTitle') }}
+            </h4>
+            <p class="text-sm text-blue-800 dark:text-blue-200">
+                {{ t('tasks.archiveWarningMessage') }}
+            </p>
+        </div>
+    </div>
+
+    <!-- Trash Warning Alert -->
+    <div 
+        v-else-if="status === 'trash'" 
+        class="flex items-start gap-3 p-3 mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10"
+    >
+        <div class="shrink-0 text-amber-600 dark:text-amber-500">
+            <Icon name="alert-triangle" size="lg" />
+        </div>
+        <div class="flex-1 min-w-0">
+            <h4 class="font-medium text-sm mb-1 text-amber-900 dark:text-amber-100">
+                {{ t('tasks.trashWarningTitle') }}
+            </h4>
+            <p class="text-sm text-amber-800 dark:text-amber-200">
+                {{ t('tasks.trashWarningMessage') }}
+            </p>
+        </div>
     </div>
 
     <div 

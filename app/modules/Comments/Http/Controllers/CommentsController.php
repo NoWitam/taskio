@@ -4,7 +4,9 @@ namespace App\Modules\Comments\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Comments\DTOs\CommentDTO;
+use App\Modules\Comments\Http\Requests\DeleteCommentRequest;
 use App\Modules\Comments\Http\Requests\StoreCommentRequest;
+use App\Modules\Comments\Http\Requests\UpdateCommentRequest;
 use App\Modules\Comments\Http\Resources\CommentResource;
 use App\Modules\Comments\Models\Comment;
 use App\Modules\Comments\Services\CommentService;
@@ -38,10 +40,8 @@ class CommentsController extends Controller
         return CommentResource::make($comment->load('author'));
     }
 
-    public function update(StoreCommentRequest $request, Comment $comment): CommentResource
+    public function update(UpdateCommentRequest $request, Comment $comment): CommentResource
     {
-        $this->authorize('update', $comment);
-
         $comment = $this->service->update(
             $comment,
             CommentDTO::fromRequest($request)
@@ -50,10 +50,8 @@ class CommentsController extends Controller
         return CommentResource::make($comment->load('author'));
     }
 
-    public function destroy(Comment $comment): \Illuminate\Http\JsonResponse
+    public function destroy(DeleteCommentRequest $request, Comment $comment): \Illuminate\Http\JsonResponse
     {
-        $this->authorize('delete', $comment);
-
         $this->service->delete($comment);
 
         return response()->json([

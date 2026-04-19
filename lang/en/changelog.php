@@ -36,5 +36,8 @@ return [
         'archived' => 'Archived',
         'unarchived' => 'Unarchived',
         'change_status' => 'Status changed',
+        'enabled' => 'Enabled',
+        'indexed' => 'Indexed',
     ],
+    'formFilled' => 'Form Filled',
 ];

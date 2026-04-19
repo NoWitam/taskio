@@ -317,7 +317,7 @@ const close = () => {
         </div>
       </div>
 
-      <TaskDetailsPanel v-else-if="task" :task="task" />
+      <TaskDetailsPanel v-else-if="task" :key="task.id" :task="task" @task-updated="onTaskUpdated" />
 
       <!-- Right panel - Comments -->
       <CommentPanel v-if="task" :entity-id="task.id" entity-type="task" />

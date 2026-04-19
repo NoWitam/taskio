@@ -91,6 +91,7 @@ const getModuleIcon = (module) => {
   const iconMap = {
     dashboard: 'home',
     tasks: 'check-circle',
+    forms: 'file-text',
     users: 'users',
     settings: 'settings',
   };

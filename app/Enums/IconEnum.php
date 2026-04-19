@@ -6,6 +6,7 @@ enum IconEnum: string
 {
     case ALERT_TRIANGLE = 'alert-triangle';
     case ARCHIVE = 'archive';
+    case ARROW_LEFT = 'arrow-left';
     case AT_SIGN = 'at-sign';
     case BADGE_CHECK = 'badge-check';
     case BELL = 'bell';
@@ -17,6 +18,7 @@ enum IconEnum: string
     case CHART_LINE = 'chart-line';
     case CHECK = 'check';
     case CHECK_CIRCLE = 'check-circle';
+    case CHECK_SQUARE = 'check-square';
     case CHEVRON_DOWN = 'chevron-down';
     case CHEVRON_LEFT = 'chevron-left';
     case CHEVRON_RIGHT = 'chevron-right';
@@ -49,15 +51,19 @@ enum IconEnum: string
     case FORWARD = 'forward';
     case GLOBE = 'globe';
     case GRID = 'grid';
+    case GRIP_VERTICAL = 'grip-vertical';
     case HASH = 'hash';
+    case HEADING = 'heading';
     case HOME = 'home';
     case IMAGE = 'image';
     case INBOX = 'inbox';
     case INFO_CIRCLE = 'info-circle';
     case KEY = 'key';
     case LABEL = 'label';
+    case LAYOUT_GRID = 'layout-grid';
     case LINK = 'link';
     case LIST = 'list';
+    case LIST_CHECK = 'list-check';
     case LOADER = 'loader';
     case LOCK = 'lock';
     case LOGOUT = 'logout';
@@ -66,6 +72,7 @@ enum IconEnum: string
     case MEGAPHONE = 'megaphone';
     case MENU = 'menu';
     case MESSAGE = 'message';
+    case MINUS = 'minus';
     case MINUS_CIRCLE = 'minus-circle';
     case MOON = 'moon';
     case PAPERCLIP = 'paperclip';
@@ -98,6 +105,8 @@ enum IconEnum: string
     case SUN = 'sun';
     case TABLE = 'table';
     case TAG = 'tag';
+    case TEXT = 'text';
+    case TYPE = 'type';
     case TIMER = 'timer';
     case TRASH = 'trash';
     case TRASH_RESTORE = 'trash-restore';

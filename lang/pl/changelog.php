@@ -36,5 +36,9 @@ return [
         'archived' => 'Zarchiwizowano',
         'unarchived' => 'Odarchiwizowano',
         'change_status' => 'Zmieniono status',
+        'enabled' => 'Włączono',
+        'indexed' => 'Zindeksowano',
     ],
+    
+    'formFilled' => 'Wypełniono formularz',
 ];

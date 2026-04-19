@@ -10,7 +10,7 @@ import type {
   VariablePipelineStep,
 } from '../types/editor';
 
-const HEADING_REGEX = /^(#{1,3})\s+(.*)$/;
+const HEADING_REGEX = /^(#{1,6})\s+(.*)$/;
 
 export function parseMarkdown(markdown: string): JSONContent {
   const lines = markdown.split(/\r?\n/);
@@ -35,7 +35,7 @@ export function parseMarkdown(markdown: string): JSONContent {
 
     const headingMatch = line.match(HEADING_REGEX);
     if (headingMatch) {
-      const level = headingMatch[1].length as 1 | 2 | 3;
+      const level = headingMatch[1].length as 1 | 2 | 3 | 4 | 5 | 6;
       const text = headingMatch[2] ?? '';
       content.push({
         type: 'heading',
