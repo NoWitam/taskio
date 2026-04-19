@@ -175,17 +175,60 @@ return [
     'allStatus' => 'All',
     'formEnabled' => 'Form has been enabled',
     'enableError' => 'Failed to enable form',
+    'loadError' => 'Failed to load form',
     'deleteError' => 'Failed to delete form',
     'restoreError' => 'Failed to restore form',
     'formPermanentlyDeleted' => 'Form has been permanently deleted',
     'forceDeleteError' => 'Failed to permanently delete form',
+    'formsTrashWarningTitle' => 'Automatic Deletion',
+    'formsTrashWarningMessage' => 'Forms in trash are automatically permanently deleted after 30 days.',
     
     // Enable dialog
     'enableFormTitle' => 'Enable Form',
     'enableFormDescription' => 'Enabling the form will allow users to submit responses.',
     'enableWarningTitle' => 'Warning',
-    'enableWarningDescription' => 'Once enabled, you will not be able to edit the form structure. Only name and description can be changed.',
+    'enableWarningDescription' => 'Once enabled, every save must pass full validation. You can disable the form later to return to draft mode.',
     'enableForm' => 'Enable Form',
+    
+    // Disable dialog
+    'disable' => 'Disable',
+    'disableFormTitle' => 'Disable Form',
+    'disableFormDescription' => 'Disabling the form will put it back into draft mode.',
+    'disableWarningTitle' => 'Warning',
+    'disableWarningDescription' => 'The form will no longer accept submissions. It can be re-enabled later once it passes full validation.',
+    'disableForm' => 'Disable Form',
+    'formDisabled' => 'Form has been disabled',
+    'disableError' => 'Failed to disable form',
+
+    // Index dialog
+    'indexed' => 'Indexed',
+    'unindexed' => 'Unindexed',
+    'indexFormTitle' => 'Index Form',
+    'indexFormDescription' => 'Indexing enables advanced filtering, reporting and AI-powered search.',
+    'indexInfoTitle' => 'What does indexing do?',
+    'indexInfoDescription' => 'Indexing creates analytical structures for form submissions, enabling field-level filtering, aggregate statistics and higher-quality reports.',
+    'indexForm' => 'Index Form',
+    'formIndexed' => 'Form has been indexed',
+    'indexError' => 'Failed to index form',
+
+    // Unindex dialog
+    'unindexFormTitle' => 'Unindex Form',
+    'unindexFormDescription' => 'Unindexing will remove advanced filtering and reporting capabilities.',
+    'unindexWarningTitle' => 'Warning',
+    'unindexWarningDescription' => 'Existing indexes will be removed. Only basic submission filtering will remain available.',
+    'unindexForm' => 'Unindex Form',
+    'formUnindexed' => 'Form has been unindexed',
+    'unindexError' => 'Failed to unindex form',
+    'backupIndexes' => 'Create backup of indexes',
+    'backupIndexesDescription' => 'Save an internal backup of the current indexes before removing them.',
+
+    // Restore index
+    'restoreIndexTitle' => 'Restore Index',
+    'restoreIndexDescription' => 'Restore the index from the internal backup.',
+    'restoreIndex' => 'Restore Index',
+    'indexRestored' => 'Index restore has been started',
+    'restoreIndexError' => 'Failed to restore index',
+    'restoreIndexIncompatible' => 'The backup is incompatible with the current form version.',
     
     // Submissions page
     'submissionsDescription' => 'Manage submissions for this form',
@@ -204,6 +247,7 @@ return [
     'sort' => 'Sort',
     'newest' => 'Newest',
     'oldest' => 'Oldest',
+    'allIndexStatuses' => 'Index status',
     'trashWarningTitle' => 'Automatic Deletion',
     'trashWarningMessage' => 'Submissions in trash are automatically permanently deleted after 30 days.',
     'noSubmissionsDescription' => 'This form has no submissions yet',

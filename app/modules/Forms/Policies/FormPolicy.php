@@ -72,6 +72,30 @@ class FormPolicy
     }
 
     /**
+     * Determine whether the user can disable the form.
+     */
+    public function disable(?User $user, Form $form): bool
+    {
+        return $user !== null && $form->creator_id === $user->id;
+    }
+
+    /**
+     * Determine whether the user can index the form.
+     */
+    public function index(?User $user, Form $form): bool
+    {
+        return $user !== null && $form->creator_id === $user->id;
+    }
+
+    /**
+     * Determine whether the user can unindex the form.
+     */
+    public function unindex(?User $user, Form $form): bool
+    {
+        return $user !== null && $form->creator_id === $user->id;
+    }
+
+    /**
      * Determine whether the user can create form reports.
      * Only the creator of the form can create reports for it.
      */

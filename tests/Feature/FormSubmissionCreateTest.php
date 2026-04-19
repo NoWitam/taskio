@@ -16,16 +16,19 @@ class FormSubmissionCreateTest extends TestCase
         $user = User::factory()->create();
         $form = Form::factory()->create([
             'content' => [
-                ['type' => 'short_text', 'label' => 'Name', 'id' => 'name']
+                ['type' => 'short_text', 'id' => 'name', 'config' => ['label' => 'Name']]
             ],
             'enabled_at' => now(),
         ]);
+
+        $form->refresh();
+        $fieldId = $form->content[0]['id'];
 
         $response = $this->actingAs($user)
             ->postJson('/api/form-submissions', [
                 'form_id' => $form->id,
                 'data' => [
-                    'name' => 'John Doe'
+                    $fieldId => 'John Doe'
                 ],
             ]);
 
@@ -38,7 +41,7 @@ class FormSubmissionCreateTest extends TestCase
         $user = User::factory()->create();
         $form = Form::factory()->create([
             'content' => [
-                ['type' => 'short_text', 'label' => 'Name']
+                ['type' => 'short_text', 'id' => 'name', 'config' => ['label' => 'Name']]
             ],
             'enabled_at' => null,
         ]);
@@ -60,17 +63,20 @@ class FormSubmissionCreateTest extends TestCase
         $user = User::factory()->create();
         $form = Form::factory()->create([
             'content' => [
-                ['type' => 'short_text', 'label' => 'Name']
+                ['type' => 'short_text', 'id' => 'name', 'config' => ['label' => 'Name']]
             ],
             'enabled_at' => now(),
         ]);
+
+        $form->refresh();
+        $fieldId = $form->content[0]['id'];
 
         // Not providing submittable_type and submittable_id
         $response = $this->actingAs($user)
             ->postJson('/api/form-submissions', [
                 'form_id' => $form->id,
                 'data' => [
-                    'name' => 'John Doe'
+                    $fieldId => 'John Doe'
                 ],
             ]);
 

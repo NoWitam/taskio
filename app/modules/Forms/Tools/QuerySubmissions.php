@@ -11,8 +11,15 @@ use Stringable;
 
 class QuerySubmissions implements Tool
 {
+    /**
+     * @param FormReport $report
+     * @param string[] $allowedTables Table/view names the agent is allowed to query
+     * @param string|null $formId When querying form_submissions directly, enforce WHERE form_id = $formId
+     */
     public function __construct(
-        private FormReport $report
+        private FormReport $report,
+        private array $allowedTables = [],
+        private ?string $formId = null,
     ) {}
 
     /**
@@ -20,16 +27,21 @@ class QuerySubmissions implements Tool
      */
     public function description(): Stringable|string
     {
-        $viewName = $this->report->getViewName();
-        $eavViewName = $viewName . '_eav';
+        $tables = implode(', ', array_map(fn($t) => "'{$t}'", $this->allowedTables));
         
-        return "Wykonuje zapytanie SQL (PostgreSQL 16) na widokach z wypełnieniami formularza. "
-            . "Zwraca wyniki jako JSON. Możesz używać tego narzędzia wielokrotnie do eksploracji danych. "
-            . "MASZ DOSTĘP DO DWÓCH WIDOKÓW: "
-            . "1) WIDOK GŁÓWNY (PIVOT): '{$viewName}' - UŻYJ TEGO - kolumny dla każdego pola formularza, jeden wiersz = jedno wypełnienie. "
-            . "2) WIDOK EAV: '{$eavViewName}' - opcjonalny - surowe dane pól, jeden wiersz = jedno pole. "
-            . "UŻYWAJ STANDARDOWEGO SQL - BRAK operatorów JSON (->, ->>, @>, ?). "
-            . "KOLUMNY WIDOKU GŁÓWNEGO: submission_id, source, creator_id, creator_name, created_at + kolumny pól formularza.";
+        $desc = "Wykonuje zapytanie SQL (PostgreSQL 16) na tabelach/widokach z wypełnieniami formularza. "
+            . "Zwraca wyniki jako JSON (max 50 rekordów). Możesz używać tego narzędzia wielokrotnie do eksploracji danych. "
+            . "DOSTĘPNE TABELE/WIDOKI: {$tables}. ";
+
+        if ($this->formId) {
+            $desc .= "WYMAGANE: WHERE form_id = '{$this->formId}' w każdym zapytaniu. "
+                . "Dane wypełnień w kolumnie 'data' (JSONB) — używaj operatorów ->, ->>. "
+                . "Do paginacji użyj LIMIT 50 OFFSET N.";
+        } else {
+            $desc .= "Wszystkie pola formularza są osobnymi kolumnami. UŻYWAJ STANDARDOWEGO SQL.";
+        }
+
+        return $desc;
     }
 
     /**
@@ -39,11 +51,7 @@ class QuerySubmissions implements Tool
     {
         try {
             $query = $request['query'];
-            $viewName = $this->report->getViewName();
-            $eavViewName = $viewName . '_eav';
 
-            // Security: ensure query only reads from the view
-            // Basic SQL injection protection - only allow SELECT
             if (!preg_match('/^\s*SELECT/i', $query)) {
                 return json_encode([
                     'error' => 'Only SELECT queries are allowed',
@@ -51,22 +59,37 @@ class QuerySubmissions implements Tool
                 ]);
             }
             
-            // Validate that query uses allowed view names
-            if (!str_contains($query, $viewName) && !str_contains($query, $eavViewName)) {
+            // Validate that query uses one of the allowed tables/views
+            $usesAllowedTable = false;
+            foreach ($this->allowedTables as $table) {
+                if (str_contains($query, $table)) {
+                    $usesAllowedTable = true;
+                    break;
+                }
+            }
+            
+            if (!$usesAllowedTable) {
+                $tables = implode(', ', $this->allowedTables);
                 return json_encode([
-                    'error' => "Query must use one of the allowed views: {$viewName} or {$eavViewName}",
+                    'error' => "Query must use one of the allowed tables: {$tables}",
                     'query' => $query,
                 ]);
             }
-            
-            // Block JSON operators - these don't exist in the new structure
-            if (preg_match('/(->|@>|\?&|\?\||#>|#>>)/', $query)) {
-                return json_encode([
-                    'error' => 'JSON operators (->, ->>, @>, ?, ?&, ?|, #>, #>>) are not allowed. Use column names directly (e.g., SELECT email instead of SELECT data->>\"email\")',
-                    'query' => $query,
-                ]);
+
+            // When querying form_submissions directly, enforce form_id filter
+            if ($this->formId && str_contains($query, 'form_submissions')) {
+                if (!str_contains($query, $this->formId)) {
+                    return json_encode([
+                        'error' => "Query on form_submissions must include WHERE form_id = '{$this->formId}'",
+                        'query' => $query,
+                    ]);
+                }
             }
-            
+
+            // Enforce LIMIT to prevent excessive data retrieval
+            if (!preg_match('/\bLIMIT\b/i', $query)) {
+                $query = rtrim(rtrim($query), ';') . ' LIMIT 50';
+            }
             dump($query);
             $results = DB::select($query);
 
@@ -76,7 +99,6 @@ class QuerySubmissions implements Tool
                 'data' => $results,
             ]);
         } catch (\Exception $e) {
-            dump($e->getMessage());
             return json_encode([
                 'error' => $e->getMessage(),
                 'query' => $request['query'] ?? null,
@@ -89,22 +111,26 @@ class QuerySubmissions implements Tool
      */
     public function schema(JsonSchema $schema): array
     {
-        $viewName = $this->report->getViewName();
-        $eavViewName = $viewName . '_eav';
-        $fieldColumns = $this->formatAvailableColumns();
+        $primaryTable = $this->allowedTables[0] ?? 'submissions';
+        $tablesList = implode(', ', $this->allowedTables);
+
+        if ($this->formId) {
+            $description = "Zapytanie SQL (PostgreSQL 16) do wykonania. "
+                . "TABELA: {$tablesList}. "
+                . "WYMAGANE: WHERE form_id = '{$this->formId}' AND approved_at IS NOT NULL AND deleted_at IS NULL. "
+                . "Dane w kolumnie 'data' (JSONB) — użyj ->, ->> do ekstrakcji pól. "
+                . "Max 50 rekordów (LIMIT 50). Paginacja: LIMIT 50 OFFSET N.";
+        } else {
+            $fieldColumns = $this->formatAvailableColumns();
+            $description = "Zapytanie SQL (PostgreSQL 16) do wykonania. "
+                . "DOSTĘPNE TABELE/WIDOKI: {$tablesList}. "
+                . "KOLUMNY ({$primaryTable}): submission_id, source, creator_id, creator_name, created_at + {$fieldColumns}. "
+                . "UŻYWAJ STANDARDOWEGO SQL. Max 50 rekordów (LIMIT 50).";
+        }
         
         return [
             'query' => $schema->string()
-                ->description(
-                    "Zapytanie SQL (PostgreSQL 16) do wykonania. "
-                    . "DOSTĘPNE WIDOKI: "
-                    . "1) WIDOK GŁÓWNY (UŻYJ TEGO): {$viewName} - kolumny: submission_id, source, creator_id, creator_name, created_at + {$fieldColumns}. "
-                    . "2) WIDOK EAV (opcjonalny): {$eavViewName} - kolumny: submission_id, source, creator_id, creator_name, created_at, field_path, field_key, field_value, field_value_numeric, field_value_boolean, field_value_date, field_type. "
-                    . "UŻYWAJ STANDARDOWEGO SQL - BEZ operatorów JSON! "
-                    . "PRZYKŁADY: SELECT COUNT(*) FROM {$viewName}; SELECT email, COUNT(*) FROM {$viewName} GROUP BY email; SELECT AVG(age) FROM {$viewName}. "
-                    . "NIE UŻYWAJ: data->>'pole', data @> '...', data ? 'klucz' (te składnie nie działają). "
-                    . "LIMIT: Maksymalnie 50 rekordów (LIMIT 50)."
-                )
+                ->description($description)
                 ->required(),
         ];
     }

@@ -190,7 +190,6 @@ const handleSubmit = async () => {
                     </label>
                     <DateInput
                         v-model="submissionsFrom"
-                        :min="minDate"
                         :max="submissionsTo || maxDate"
                         :placeholder="t('forms.selectDate')"
                     >

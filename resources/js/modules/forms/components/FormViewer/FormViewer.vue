@@ -199,7 +199,17 @@ const validateForm = (): boolean => {
 
         // Required validation
         if (config.required) {
-            if (value === undefined || value === null || value === '') {
+            if (element.type === 'checklist') {
+                // Checklist stores data as formData[elementId_optionValue] = true/false
+                const options = config.options || []
+                const hasSelection = options.some((opt: any) => formData.value[`${element.id}_${opt.value}`])
+                if (!hasSelection) {
+                    errors.value.push({
+                        elementId: element.id,
+                        message: t('forms.validation.required', '', { field: config.label })
+                    })
+                }
+            } else if (value === undefined || value === null || value === '') {
                 errors.value.push({
                     elementId: element.id,
                     message: t('forms.validation.required', '', { field: config.label })

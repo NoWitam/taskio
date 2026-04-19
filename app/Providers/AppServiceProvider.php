@@ -2,10 +2,6 @@
 
 namespace App\Providers;
 
-use App\Modules\Forms\Models\Form;
-use App\Modules\Forms\Models\FormSubmission;
-use App\Modules\Forms\Observers\FormObserver;
-use App\Modules\Forms\Observers\FormSubmissionObserver;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -23,7 +19,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        Form::observe(FormObserver::class);
-        FormSubmission::observe(FormSubmissionObserver::class);
+        //
     }
 }

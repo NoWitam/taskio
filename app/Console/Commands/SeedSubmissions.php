@@ -2,10 +2,14 @@
 
 namespace App\Console\Commands;
 
+use App\Enums\IconEnum;
+use App\Models\User;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
+use App\Modules\Forms\Services\FormService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Auth;
 
 class SeedSubmissions extends Command
 {
@@ -26,13 +30,25 @@ class SeedSubmissions extends Command
     /**
      * Execute the console command.
      */
-    public function handle()
+    public function handle(FormService $formService)
     {
-        $id = "019d53f8-6a08-715d-80b5-2f948e700ee8";
-        $form = Form::find($id);
+        $user = User::firstOrFail();
+        Auth::login($user);
 
-        $form->submissions()->delete();
+        $form = Form::create([
+            'name' => 'Ankieta onboardingowa 30-dniowa',
+            'icon' => IconEnum::CLIPBOARD,
+            'description' => 'Formularz oceny procesu onboardingu po 30 dniach pracy.',
+            'content' => $this->getFormContent(),
+            'is_anonymous' => false,
+            'creator_id' => $user->id,
+        ]);
 
+        $form = $formService->enable($form);
+
+        $this->info("Utworzono formularz: {$form->name} ({$form->id})");
+
+        $contentVersionId = $form->latestContentVersion()?->id;
         $data = $this->getData()->shuffle();
 
         $start = now()->subMonth()->startOfMonth();
@@ -40,7 +56,7 @@ class SeedSubmissions extends Command
         $perDay = floor($data->count() / $daysInMonth);
         $i = 0;
 
-        $this->withProgressBar($data, function (array $sub) use ($form, $i, $perDay, $start, $daysInMonth) {
+        $this->withProgressBar($data, function (array $sub) use ($form, $user, $contentVersionId, $i, $perDay, $start, $daysInMonth) {
             
             $approved = $start->clone();
 
@@ -62,10 +78,176 @@ class SeedSubmissions extends Command
                 'submittable_type' => 'form',
                 'submittable_id' => $form->id,
                 'data' => $sub,
-                'creator_id' => '019c7dde-80e7-703c-a755-1001990ac63b',
+                'form_content_version_id' => $contentVersionId,
+                'creator_id' => $user->id,
                 'approved_at' => $approved
             ]);
         });
+
+        $this->newLine();
+        $this->info("Utworzono {$data->count()} wypełnień.");
+    }
+
+    private function getFormContent(): array
+    {
+        return [
+            [
+                'id' => 'dane_pracownika',
+                'type' => 'section',
+                'config' => [
+                    'name' => 'Dane pracownika',
+                    'children' => [
+                        [
+                            'id' => 'imie_i_nazwisko',
+                            'type' => 'short_text',
+                            'config' => ['label' => 'Imię i nazwisko', 'required' => true],
+                        ],
+                        [
+                            'id' => 'wiek',
+                            'type' => 'number',
+                            'config' => ['label' => 'Wiek', 'required' => true, 'min' => 18, 'max' => 70, 'step' => 1],
+                        ],
+                        [
+                            'id' => 'stanowisko',
+                            'type' => 'short_text',
+                            'config' => ['label' => 'Stanowisko', 'required' => true],
+                        ],
+                        [
+                            'id' => 'dzial',
+                            'type' => 'checklist',
+                            'config' => [
+                                'label' => 'Dział',
+                                'required' => true,
+                                'options' => [
+                                    ['label' => 'IT', 'value' => 'it'],
+                                    ['label' => 'Sprzedaż', 'value' => 'sprzedaz'],
+                                    ['label' => 'Marketing', 'value' => 'marketing'],
+                                    ['label' => 'HR', 'value' => 'hr'],
+                                    ['label' => 'Zespół relacji z klientami', 'value' => 'zespol_relacji_z_klientami'],
+                                ],
+                            ],
+                        ],
+                        [
+                            'id' => 'tryb_pracy',
+                            'type' => 'select',
+                            'config' => [
+                                'label' => 'Tryb pracy',
+                                'required' => true,
+                                'options' => [
+                                    ['label' => 'Hybryda', 'value' => 'hybryda'],
+                                    ['label' => 'Zdalnie', 'value' => 'zdalnie'],
+                                    ['label' => 'Stacjonarnie', 'value' => 'stacjonarnie'],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'id' => 'ocena_onboardingu',
+                'type' => 'section',
+                'config' => [
+                    'name' => 'Ocena onboardingu',
+                    'children' => [
+                        [
+                            'id' => 'ocena_wsparcia_managera',
+                            'type' => 'number',
+                            'config' => ['label' => 'Ocena wsparcia managera', 'required' => true, 'min' => 1, 'max' => 5, 'step' => 1],
+                        ],
+                        [
+                            'id' => 'ocena_wsparcia_zespolu',
+                            'type' => 'number',
+                            'config' => ['label' => 'Ocena wsparcia zespołu', 'required' => true, 'min' => 1, 'max' => 5, 'step' => 1],
+                        ],
+                        [
+                            'id' => 'ocena_przygotowania_dostepow_i_narzedzi',
+                            'type' => 'number',
+                            'config' => ['label' => 'Ocena przygotowania dostępów i narzędzi', 'required' => true, 'min' => 1, 'max' => 5, 'step' => 1],
+                        ],
+                        [
+                            'id' => 'jasnosc_oczekiwan_dotyczacych_roli',
+                            'type' => 'number',
+                            'config' => ['label' => 'Jasność oczekiwań dotyczących roli', 'required' => true, 'min' => 1, 'max' => 5, 'step' => 1],
+                        ],
+                        [
+                            'id' => 'najwieksze_trudnosci',
+                            'type' => 'checklist',
+                            'config' => [
+                                'label' => 'Największe trudności',
+                                'required' => false,
+                                'options' => [
+                                    ['label' => 'Za dużo informacji naraz', 'value' => 'za_duzo_informacji_naraz'],
+                                    ['label' => 'Brak dostępu do narzędzi', 'value' => 'brak_dostepu_do_narzedzi'],
+                                    ['label' => 'Niejasne obowiązki', 'value' => 'niejasne_obowiazki'],
+                                    ['label' => 'Brak dokumentacji', 'value' => 'brak_dokumentacji'],
+                                    ['label' => 'Problemy techniczne', 'value' => 'problemy_techniczne'],
+                                ],
+                            ],
+                        ],
+                        [
+                            'id' => 'na_ile_pewnie_czujesz_sie_w_swojej_roli_po30_dniach',
+                            'type' => 'number',
+                            'config' => ['label' => 'Na ile pewnie czujesz się w swojej roli po 30 dniach', 'required' => true, 'min' => 1, 'max' => 5, 'step' => 1],
+                        ],
+                        [
+                            'id' => 'adekwatnosc_tempa_wdrozenia',
+                            'type' => 'select',
+                            'config' => [
+                                'label' => 'Adekwatność tempa wdrożenia',
+                                'required' => true,
+                                'options' => [
+                                    ['label' => 'W sam raz', 'value' => 'w_sam_raz'],
+                                    ['label' => 'Za szybko', 'value' => 'za_szybko'],
+                                    ['label' => 'Za wolno', 'value' => 'za_wolno'],
+                                ],
+                            ],
+                        ],
+                        [
+                            'id' => 'czy_polecilabys_ten_onboarding_innym',
+                            'type' => 'select',
+                            'config' => [
+                                'label' => 'Czy poleciłabyś ten onboarding innym',
+                                'required' => true,
+                                'options' => [
+                                    ['label' => 'Tak', 'value' => 'tak'],
+                                    ['label' => 'Nie', 'value' => 'nie'],
+                                    ['label' => 'Nie mam zdania', 'value' => 'nie_mam_zdania'],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'id' => 'feedback_onboardingu',
+                'type' => 'section',
+                'config' => [
+                    'name' => 'Feedback onboardingu',
+                    'children' => [
+                        [
+                            'id' => 'co_bylo_najbardziej_pomocne',
+                            'type' => 'long_text',
+                            'config' => ['label' => 'Co było najbardziej pomocne', 'required' => true],
+                        ],
+                        [
+                            'id' => 'czego_zabraklo_w_onboardingu',
+                            'type' => 'long_text',
+                            'config' => ['label' => 'Czego zabrakło w onboardingu', 'required' => false],
+                        ],
+                        [
+                            'id' => 'sugestie_usprawnien',
+                            'type' => 'long_text',
+                            'config' => ['label' => 'Sugestie usprawnień', 'required' => false],
+                        ],
+                        [
+                            'id' => 'czy_sa_jakies_sygnaly_ryzyka_wymagajace_reakcji',
+                            'type' => 'long_text',
+                            'config' => ['label' => 'Czy są jakieś sygnały ryzyka wymagające reakcji', 'required' => false],
+                        ],
+                    ],
+                ],
+            ],
+        ];
     }
 
     private function getData(): Collection

@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Models\User;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
+use App\Modules\Forms\Models\FormContentVersion;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 class FormSubmissionFactory extends Factory
@@ -22,9 +23,20 @@ class FormSubmissionFactory extends Factory
             'data' => [
                 'field' => $this->faker->word(),
             ],
+            'form_content_version_id' => null,
             'approved_at' => now(), // Default: approved
             'creator_id' => User::factory(),
         ];
+    }
+
+    /**
+     * Link the submission to a specific content version.
+     */
+    public function forVersion(FormContentVersion $version): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'form_content_version_id' => $version->id,
+        ]);
     }
 
     public function draft(): static

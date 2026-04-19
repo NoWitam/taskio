@@ -9,14 +9,28 @@ export interface FormFilters {
     is_anonymous?: boolean
     trashed?: boolean
     enabled?: boolean
+    indexed?: boolean
     date_from?: string | null
     date_to?: string | null
     date_preset?: '' | 'today' | 'this_week' | 'last_week' | 'this_month'
 }
 
+export interface CompatibilityInfo {
+    total_submissions: number
+    compatible_count: number
+    incompatible_count: number
+    incompatible_periods: {
+        version: number
+        submissions_count: number
+        period_from: string
+        period_to: string
+    }[]
+}
+
 export interface SubmissionFilters {
     search?: string
     sources?: string[] // Array of 'task' or 'form'
+    indexed?: 'true' | 'false' | null
     trashed?: boolean
     date_from?: string | null
     date_to?: string | null
@@ -68,6 +82,7 @@ export const useFormsStore = defineStore('forms', () => {
     const anonymousForms = computed(() => forms.value.filter(f => f.is_anonymous))
     const enabledForms = computed(() => forms.value.filter(f => f.is_enabled))
     const disabledForms = computed(() => forms.value.filter(f => !f.is_enabled))
+    const indexedForms = computed(() => forms.value.filter(f => f.is_indexed))
 
     // ============================================
     // FORMS CRUD
@@ -266,6 +281,94 @@ export const useFormsStore = defineStore('forms', () => {
             return form
         } catch (err: any) {
             console.error('Failed to enable form:', err)
+            throw err
+        }
+    }
+
+    const disableForm = async (id: string): Promise<Form> => {
+        try {
+            const response = await api.post<ApiResponse<Form>>(`/forms/${id}/disable`)
+            const form = response.data
+
+            formById.value[id] = form
+
+            const index = forms.value.findIndex(f => f.id === id)
+            if (index !== -1) {
+                forms.value[index] = form
+            }
+
+            return form
+        } catch (err: any) {
+            console.error('Failed to disable form:', err)
+            throw err
+        }
+    }
+
+    const indexForm = async (id: string): Promise<Form> => {
+        try {
+            const response = await api.post<ApiResponse<Form>>(`/forms/${id}/index`)
+            const form = response.data
+
+            formById.value[id] = form
+
+            const index = forms.value.findIndex(f => f.id === id)
+            if (index !== -1) {
+                forms.value[index] = form
+            }
+
+            return form
+        } catch (err: any) {
+            console.error('Failed to index form:', err)
+            throw err
+        }
+    }
+
+    const unindexForm = async (id: string, backupIndexes: boolean = false): Promise<Form> => {
+        try {
+            const response = await api.post<ApiResponse<Form>>(`/forms/${id}/unindex`, {
+                backup_indexes: backupIndexes,
+            })
+            const form = response.data
+
+            formById.value[id] = form
+
+            const index = forms.value.findIndex(f => f.id === id)
+            if (index !== -1) {
+                forms.value[index] = form
+            }
+
+            return form
+        } catch (err: any) {
+            console.error('Failed to unindex form:', err)
+            throw err
+        }
+    }
+
+    const fetchCompatibilityInfo = async (id: string): Promise<CompatibilityInfo> => {
+        try {
+            const response = await api.get<CompatibilityInfo>(`/forms/${id}/compatibility`)
+            return response
+        } catch (err: any) {
+            console.error('Failed to fetch compatibility info:', err)
+            throw err
+        }
+    }
+
+    const restoreIndex = async (id: string): Promise<Form> => {
+        try {
+            const response = await api.post<ApiResponse<Form>>(`/forms/${id}/restore-index`)
+            const form = response.data
+
+            formById.value[id] = form
+
+            const index = forms.value.findIndex(f => f.id === id)
+            if (index !== -1) {
+                forms.value[index] = form
+            }
+
+            return form
+        } catch (err: any) {
+            console.error('Failed to restore index:', err)
             throw err
         }
     }
@@ -596,6 +699,7 @@ export const useFormsStore = defineStore('forms', () => {
         anonymousForms,
         enabledForms,
         disabledForms,
+        indexedForms,
 
         // Actions
         fetchForms,
@@ -606,6 +710,11 @@ export const useFormsStore = defineStore('forms', () => {
         forceDeleteForm,
         restoreForm,
         enableForm,
+        disableForm,
+        indexForm,
+        unindexForm,
+        fetchCompatibilityInfo,
+        restoreIndex,
         fetchSubmissions,
         createSubmission,
         updateSubmission,

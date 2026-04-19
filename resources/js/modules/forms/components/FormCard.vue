@@ -4,7 +4,6 @@ import { useI18n } from '@/composables/useI18n'
 import type { Form } from '@/types/forms'
 import Icon from '@/components/ui/Icon.vue'
 import Button from '@/components/ui/Button.vue'
-import SwitchInput from '@/components/ui/inputs/SwitchInput.vue'
 
 interface Props {
     form: Form
@@ -16,6 +15,10 @@ interface Emits {
     (e: 'select', id: string): void
     (e: 'edit', id: string): void
     (e: 'enable', id: string): void
+    (e: 'disable', id: string): void
+    (e: 'index', id: string): void
+    (e: 'unindex', id: string): void
+    (e: 'restore-index', id: string): void
     (e: 'delete', id: string): void
     (e: 'restore', id: string): void
     (e: 'force-delete', id: string): void
@@ -33,13 +36,6 @@ const cardClass = computed(() => {
         ? 'border-primary/20 bg-background hover:border-primary/40'
         : 'border-border bg-background hover:border-border/80'
 })
-
-const handleEnableToggle = () => {
-    if (!props.form.is_enabled) {
-        emit('enable', props.form.id)
-    }
-    // Disable is not allowed via toggle - needs explicit confirmation
-}
 </script>
 
 <template>
@@ -63,6 +59,7 @@ const handleEnableToggle = () => {
                         {{ form.name }}
                     </h3>
                     <div class="flex items-center gap-2 mt-1">
+                        <!-- Activation status badge -->
                         <span 
                             class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full"
                             :class="form.is_enabled 
@@ -74,6 +71,21 @@ const handleEnableToggle = () => {
                                 :class="form.is_enabled ? 'bg-green-600 dark:bg-green-500' : 'bg-muted-foreground'"
                             ></span>
                             {{ form.is_enabled ? t('forms.enabled') : t('forms.disabled') }}
+                        </span>
+                        <!-- Index status badge (shown when indexed, regardless of activation status) -->
+                        <span 
+                            v-if="form.is_indexing"
+                            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-500"
+                        >
+                            <Icon name="loader-2" size="xs" class="animate-spin" />
+                            {{ t('common.loading') }}
+                        </span>
+                        <span 
+                            v-else-if="form.is_indexed"
+                            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-500"
+                        >
+                            <Icon name="database" size="xs" />
+                            {{ t('forms.indexed') }}
                         </span>
                     </div>
                 </div>
@@ -93,7 +105,6 @@ const handleEnableToggle = () => {
                     variant="ghost" 
                     size="sm" 
                     class="h-8 w-8 p-0"
-                    :disabled="!form.can_be_edited"
                     @click="$emit('edit', form.id)"
                 >
                     <Icon name="pencil" size="sm" />
@@ -107,28 +118,60 @@ const handleEnableToggle = () => {
                     <Icon name="trash" size="sm" />
                 </Button>
                 
-                <!-- Enable Switch or Select Button -->
-                <div v-if="form.is_enabled">
+                <!-- State Actions -->
+                <div class="flex items-center gap-1">
                     <Button 
+                        v-if="form.can_be_unindexed"
+                        variant="ghost" 
+                        size="sm" 
+                        class="h-8 w-8 p-0"
+                        @click="$emit('unindex', form.id)"
+                    >
+                        <Icon name="database" size="sm" class="text-blue-600 dark:text-blue-500" />
+                    </Button>
+                    <Button 
+                        v-else-if="form.can_be_indexed"
+                        variant="ghost" 
+                        size="sm" 
+                        class="h-8 w-8 p-0"
+                        @click="$emit('index', form.id)"
+                    >
+                        <Icon name="database" size="sm" />
+                    </Button>
+                    <Button 
+                        v-else-if="form.can_restore_index"
+                        variant="ghost" 
+                        size="sm" 
+                        class="h-8 w-8 p-0"
+                        :title="t('forms.restoreIndex')"
+                        @click="$emit('restore-index', form.id)"
+                    >
+                        <Icon name="database" size="sm" class="text-amber-600 dark:text-amber-500" />
+                    </Button>
+                    <Button 
+                        v-if="form.can_be_disabled"
+                        variant="ghost" 
+                        size="sm" 
+                        class="h-8 w-8 p-0"
+                        @click="$emit('disable', form.id)"
+                    >
+                        <Icon name="pause-circle" size="sm" />
+                    </Button>
+                    <Button 
+                        v-if="form.is_enabled"
                         variant="primary" 
                         size="sm"
                         @click="$emit('select', form.id)"
                     >
                         {{ t('common.select') }}
                     </Button>
-                </div>
-                <div v-else>
                     <Button 
+                        v-else
                         variant="primary" 
                         size="sm"
-                        @click="handleEnableToggle"
+                        @click="$emit('enable', form.id)"
                     >
                         {{ t('forms.enable') }}
-                        <SwitchInput
-                            :model-value="form.is_enabled"
-                            @update:model-value="handleEnableToggle"
-                            :disabled="form.is_enabled"
-                        />
                     </Button>
                 </div>
             </div>

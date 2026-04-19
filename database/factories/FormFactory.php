@@ -33,6 +33,8 @@ class FormFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'enabled_at' => now(),
+            'content_version' => 1,
+            'content_updated_at' => now(),
         ]);
     }
 
@@ -43,11 +45,30 @@ class FormFactory extends Factory
         ]);
     }
 
+    public function indexed(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'enabled_at' => $attributes['enabled_at'] ?? now(),
+            'indexed_at' => now(),
+            'content_version' => $attributes['content_version'] ?? 1,
+            'content_updated_at' => $attributes['content_updated_at'] ?? now(),
+        ]);
+    }
+
+    public function unindexed(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'indexed_at' => null,
+        ]);
+    }
+
     public function anonymous(): static
     {
         return $this->state(fn (array $attributes) => [
             'is_anonymous' => true,
             'enabled_at' => now(), // Anonymous forms are auto-enabled
+            'content_version' => 1,
+            'content_updated_at' => now(),
         ]);
     }
 

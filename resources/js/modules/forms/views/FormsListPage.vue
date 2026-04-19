@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useFormsStore } from '@/store/forms'
 import { useI18n } from '@/composables/useI18n'
@@ -16,6 +16,9 @@ import FormCard from '../components/FormCard.vue'
 import FormCardSkeleton from '../components/FormCardSkeleton.vue'
 import CreateFormDialog from '../components/Dialogs/CreateFormDialog.vue'
 import EnableFormDialog from '../components/Dialogs/EnableFormDialog.vue'
+import DisableFormDialog from '../components/Dialogs/DisableFormDialog.vue'
+import IndexFormDialog from '../components/Dialogs/IndexFormDialog.vue'
+import UnindexFormDialog from '../components/Dialogs/UnindexFormDialog.vue'
 import FormViewer from '../components/FormViewer/FormViewer.vue'
 
 const router = useRouter()
@@ -33,14 +36,22 @@ const loadingPreview = ref(false)
 const editFormId = ref<string | null>(null)
 const showEnableDialog = ref(false)
 const formToEnable = ref<string | null>(null)
+const showDisableDialog = ref(false)
+const formToDisable = ref<string | null>(null)
+const showIndexDialog = ref(false)
+const formToIndex = ref<string | null>(null)
+const showUnindexDialog = ref(false)
+const formToUnindex = ref<string | null>(null)
 const activeTab = ref<'all' | 'trash'>('all')
 const showEnabled = ref(false)
 const showDisabled = ref(false)
+const showIndexed = ref(false)
 const isInitializing = ref(true)
 const filters = ref<{
     search: string
     trashed: boolean
     enabled?: boolean
+    indexed?: boolean
 }>({
     search: '',
     trashed: false
@@ -70,7 +81,8 @@ const fetchForms = (resetCursor = true) => {
     formsStore.fetchForms({
         search: filters.value.search || undefined,
         trashed: filters.value.trashed,
-        enabled: filters.value.enabled
+        enabled: filters.value.enabled,
+        indexed: showIndexed.value ? true : undefined,
     }, resetCursor)
 }
 
@@ -110,6 +122,14 @@ watch(showDisabled, (newVal) => {
     if (newVal && showEnabled.value) {
         showEnabled.value = false
     } else if (!isInitializing.value) {
+        updateURLParams()
+        fetchForms()
+    }
+})
+
+// Watch indexed switch
+watch(showIndexed, () => {
+    if (!isInitializing.value) {
         updateURLParams()
         fetchForms()
     }
@@ -208,6 +228,116 @@ const handleEnableConfirmed = async () => {
             tone: 'danger',
             title: t('common.error'),
             message: err.response?.data?.message || t('forms.enableError'),
+            timeoutMs: 4500
+        })
+    }
+}
+
+// Handle disable request
+const handleDisableRequest = (formId: string) => {
+    formToDisable.value = formId
+    showDisableDialog.value = true
+}
+
+// Handle disable confirmed
+const handleDisableConfirmed = async () => {
+    if (!formToDisable.value) return
+
+    try {
+        await formsStore.disableForm(formToDisable.value)
+        toast.push({
+            tone: 'success',
+            title: t('common.success'),
+            message: t('forms.formDisabled'),
+            timeoutMs: 3500
+        })
+        showDisableDialog.value = false
+        formToDisable.value = null
+    } catch (err: any) {
+        toast.push({
+            tone: 'danger',
+            title: t('common.error'),
+            message: err.response?.data?.message || t('forms.disableError'),
+            timeoutMs: 4500
+        })
+    }
+}
+
+// Handle index request
+const handleIndexRequest = (formId: string) => {
+    formToIndex.value = formId
+    showIndexDialog.value = true
+}
+
+// Handle index confirmed
+const handleIndexConfirmed = async () => {
+    if (!formToIndex.value) return
+
+    try {
+        await formsStore.indexForm(formToIndex.value)
+        toast.push({
+            tone: 'success',
+            title: t('common.success'),
+            message: t('forms.formIndexed'),
+            timeoutMs: 3500
+        })
+        showIndexDialog.value = false
+        formToIndex.value = null
+    } catch (err: any) {
+        toast.push({
+            tone: 'danger',
+            title: t('common.error'),
+            message: err.response?.data?.message || t('forms.indexError'),
+            timeoutMs: 4500
+        })
+    }
+}
+
+// Handle unindex request
+const handleUnindexRequest = (formId: string) => {
+    formToUnindex.value = formId
+    showUnindexDialog.value = true
+}
+
+// Handle unindex confirmed
+const handleUnindexConfirmed = async (backupIndexes: boolean) => {
+    if (!formToUnindex.value) return
+
+    try {
+        await formsStore.unindexForm(formToUnindex.value, backupIndexes)
+        toast.push({
+            tone: 'success',
+            title: t('common.success'),
+            message: t('forms.formUnindexed'),
+            timeoutMs: 3500
+        })
+        showUnindexDialog.value = false
+        formToUnindex.value = null
+    } catch (err: any) {
+        toast.push({
+            tone: 'danger',
+            title: t('common.error'),
+            message: err.response?.data?.message || t('forms.unindexError'),
+            timeoutMs: 4500
+        })
+    }
+}
+
+// Handle restore index
+const handleRestoreIndex = async (formId: string) => {
+    try {
+        await formsStore.restoreIndex(formId)
+        toast.push({
+            tone: 'success',
+            title: t('common.success'),
+            message: t('forms.indexRestored'),
+            timeoutMs: 3500
+        })
+    } catch (err: any) {
+        toast.push({
+            tone: 'danger',
+            title: t('common.error'),
+            message: err.response?.data?.message || t('forms.restoreIndexError'),
             timeoutMs: 4500
         })
     }
@@ -328,11 +458,52 @@ const initFromURL = () => {
     }
 }
 
+// Polling for forms that are currently indexing
+let indexingPollInterval: ReturnType<typeof setInterval> | null = null
+
+const startIndexingPoll = () => {
+    if (indexingPollInterval) return
+    indexingPollInterval = setInterval(async () => {
+        const indexingForms = formsStore.publicForms.filter(f => f.is_indexing)
+        if (indexingForms.length === 0) {
+            stopIndexingPoll()
+            return
+        }
+        for (const form of indexingForms) {
+            try {
+                await formsStore.fetchForm(form.id)
+            } catch {
+                // Silently ignore polling errors
+            }
+        }
+    }, 5000)
+}
+
+const stopIndexingPoll = () => {
+    if (indexingPollInterval) {
+        clearInterval(indexingPollInterval)
+        indexingPollInterval = null
+    }
+}
+
+// Watch for forms entering indexing state to start polling
+watch(() => formsStore.publicForms.some(f => f.is_indexing), (hasIndexing) => {
+    if (hasIndexing) {
+        startIndexingPoll()
+    } else {
+        stopIndexingPoll()
+    }
+})
+
 // Initial load
 onMounted(() => {
     initFromURL()
     isInitializing.value = false
     fetchForms()
+})
+
+onUnmounted(() => {
+    stopIndexingPoll()
 })
 </script>
 
@@ -393,6 +564,14 @@ onMounted(() => {
                                     v-model="showDisabled"
                                 />
                             </div>
+                            <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-background border border-border">
+                                <span class="text-sm text-foreground font-medium">
+                                    {{ t('forms.indexed') }}
+                                </span>
+                                <SwitchInput
+                                    v-model="showIndexed"
+                                />
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -429,6 +608,10 @@ onMounted(() => {
                             @select="handleSelect"
                             @edit="handleEdit"
                             @enable="handleEnableRequest"
+                            @disable="handleDisableRequest"
+                            @index="handleIndexRequest"
+                            @unindex="handleUnindexRequest"
+                            @restore-index="handleRestoreIndex"
                             @delete="handleDelete"
                         />
                         
@@ -516,6 +699,27 @@ onMounted(() => {
             v-model="showEnableDialog"
             :form-id="formToEnable"
             @confirmed="handleEnableConfirmed"
+        />
+
+        <!-- Disable Dialog -->
+        <DisableFormDialog
+            v-model="showDisableDialog"
+            :form-id="formToDisable"
+            @confirmed="handleDisableConfirmed"
+        />
+
+        <!-- Index Dialog -->
+        <IndexFormDialog
+            v-model="showIndexDialog"
+            :form-id="formToIndex"
+            @confirmed="handleIndexConfirmed"
+        />
+
+        <!-- Unindex Dialog -->
+        <UnindexFormDialog
+            v-model="showUnindexDialog"
+            :form-id="formToUnindex"
+            @confirmed="handleUnindexConfirmed"
         />
 
         <!-- Preview Dialog -->

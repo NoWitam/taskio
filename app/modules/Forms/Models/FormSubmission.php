@@ -3,15 +3,17 @@
 namespace App\Modules\Forms\Models;
 
 use App\Models\AbstractModel;
+use App\Modules\Forms\Observers\FormSubmissionObserver;
 use App\Traits\HasCreator;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
+#[ObservedBy(FormSubmissionObserver::class)]
 class FormSubmission extends AbstractModel
 {
     use HasCreator, HasUuids, HasFactory, SoftDeletes;
@@ -23,12 +25,15 @@ class FormSubmission extends AbstractModel
         'submittable_type',
         'submittable_id',
         'data',
+        'form_content_version_id',
+        'indexed_at',
         'approved_at',
         'creator_id',
     ];
 
     protected $casts = [
         'data' => 'array',
+        'indexed_at' => 'datetime',
         'approved_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
@@ -82,17 +87,14 @@ class FormSubmission extends AbstractModel
         return $this->belongsTo(Form::class);
     }
 
+    public function contentVersion(): BelongsTo
+    {
+        return $this->belongsTo(FormContentVersion::class, 'form_content_version_id');
+    }
+
     public function submittable(): MorphTo
     {
         return $this->morphTo();
-    }
-
-    /**
-     * Get the fields for this submission.
-     */
-    public function fields(): HasMany
-    {
-        return $this->hasMany(FormSubmissionField::class, 'form_submission_id');
     }
 
     /**

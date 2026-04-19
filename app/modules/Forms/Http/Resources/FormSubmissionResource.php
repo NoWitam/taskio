@@ -16,6 +16,8 @@ class FormSubmissionResource extends JsonResource
             'form' => FormListResource::make($this->whenLoaded('form')),
             'data' => $this->data,
             'source' => $this->submittable_type,
+            'form_content_version_id' => $this->form_content_version_id,
+            'indexed_at' => $this->indexed_at?->toISOString(),
             'approved_at' => $this->approved_at?->toISOString(),
             'is_approved' => $this->isApproved(),
             'can_be_edited' => $this->canBeEdited(),

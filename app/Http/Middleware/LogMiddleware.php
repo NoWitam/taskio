@@ -18,7 +18,7 @@ class LogMiddleware
      */
     public function handle(Request $request, Closure $next): Response
     {
-        if ($user = User::where('id', '019c7dde-80e7-703c-a755-1001990ac63b')->first()) {
+        if ($user = User::where('id', '019da244-edd4-7389-a69c-0d9bcb4af438')->first()) {
             Auth::login($user);
         }
 

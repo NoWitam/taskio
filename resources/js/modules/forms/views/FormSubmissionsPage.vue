@@ -38,6 +38,7 @@ const isInitializing = ref(true)
 const filters = ref<SubmissionFilters>({
     search: '',
     sources: [],
+    indexed: null,
     trashed: false,
     date_from: null,
     date_to: null,
@@ -54,6 +55,12 @@ const sourceOptions = computed(() => [
 const sortOptions = computed(() => [
     { label: t('forms.newest'), value: 'newest' },
     { label: t('forms.oldest'), value: 'oldest' }
+])
+
+// Indexed filter options (only shown when form is indexed)
+const indexedOptions = computed(() => [
+    { label: t('forms.indexed'), value: 'true' },
+    { label: t('forms.unindexed'), value: 'false' }
 ])
 
 const tabs = computed(() => [
@@ -78,6 +85,7 @@ const fetchSubmissions = (resetCursor = true) => {
         sources: filters.value.sources && filters.value.sources.length > 0 
             ? filters.value.sources 
             : undefined,
+        indexed: filters.value.indexed || undefined,
         trashed: filters.value.trashed,
         date_from: filters.value.date_from || undefined,
         date_to: filters.value.date_to || undefined,
@@ -99,6 +107,10 @@ const updateURLParams = () => {
     
     if (filters.value.sources && filters.value.sources.length > 0) {
         query.sources = filters.value.sources.join(',')
+    }
+
+    if (filters.value.indexed) {
+        query.indexed = filters.value.indexed
     }
     
     if (filters.value.date_from) {
@@ -134,6 +146,11 @@ const initFromURL = () => {
     // Initialize sources
     if (query.sources && typeof query.sources === 'string') {
         filters.value.sources = query.sources.split(',').filter(s => s === 'task' || s === 'form')
+    }
+
+    // Initialize indexed filter
+    if (query.indexed === 'true' || query.indexed === 'false') {
+        filters.value.indexed = query.indexed
     }
     
     // Initialize date range
@@ -179,6 +196,14 @@ watch(() => filters.value.sources, () => {
         fetchSubmissions()
     }
 }, { deep: true })
+
+// Watch indexed filter
+watch(() => filters.value.indexed, () => {
+    if (!isInitializing.value) {
+        updateURLParams()
+        fetchSubmissions()
+    }
+})
 
 // Watch date_from
 watch(() => filters.value.date_from, () => {
@@ -338,7 +363,7 @@ onMounted(() => {
             <!-- Filters -->
             <div class="grid grid-cols-12 gap-3">
                 <!-- Search -->
-                <div class="col-span-4">
+                <div :class="form?.is_indexed ? 'col-span-3' : 'col-span-4'">
                     <TextInput
                         v-model="filters.search"
                         :placeholder="t('forms.searchSubmissionsPlaceholder')"
@@ -352,7 +377,7 @@ onMounted(() => {
                 </div>
 
                 <!-- Sources MultiSelect -->
-                <div class="col-span-3">
+                <div :class="form?.is_indexed ? 'col-span-2' : 'col-span-3'">
                     <SelectInput
                         v-model="filters.sources"
                         :options="sourceOptions"
@@ -368,6 +393,22 @@ onMounted(() => {
                         <template #item="{ item }">
                             <Icon :name="item.icon" size="sm" />
                             <span class="truncate">{{ item.label }}</span>
+                        </template>
+                    </SelectInput>
+                </div>
+
+                <!-- Indexed Filter (only when form is indexed) -->
+                <div v-if="form?.is_indexed" class="col-span-2">
+                    <SelectInput
+                        v-model="filters.indexed"
+                        :options="indexedOptions"
+                        :placeholder="t('forms.allIndexStatuses')"
+                        :clearable="true"
+                    >
+                        <template #left>
+                            <span class="text-muted-foreground">
+                                <Icon name="database" />
+                            </span>
                         </template>
                     </SelectInput>
                 </div>

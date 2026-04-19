@@ -227,9 +227,35 @@ export interface Form {
     description: string | null
     content: FormElement[]
     is_anonymous: boolean
+
+    // Activation status
     enabled_at: string | null
     is_enabled: boolean
+
+    // Index status
+    indexed_at: string | null
+    is_indexed: boolean
+    is_indexing: boolean
+
+    // Versioning
+    content_version: number
+    content_updated_at: string | null
+
+    // Centralized capabilities
     can_be_edited: boolean
+    can_be_filled: boolean
+    can_be_enabled: boolean
+    can_be_disabled: boolean
+    can_be_indexed: boolean
+    can_be_unindexed: boolean
+    can_restore_index: boolean
+    has_index_backup: boolean
+    is_draft: boolean
+
+    // Filter & reporting capabilities
+    available_filters: string[]
+    reporting_mode: 'basic' | 'advanced'
+
     creator?: User
     submissions_count?: number
     created_at: string
@@ -242,6 +268,8 @@ export interface FormSubmission {
     form?: Form
     data: Record<string, any> // { element_id: value }
     source: string
+    form_content_version_id: string | null
+    indexed_at: string | null
     approved_at: string | null
     is_approved: boolean
     can_be_edited: boolean

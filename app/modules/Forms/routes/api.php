@@ -9,6 +9,11 @@ Route::apiResource('forms', FormsController::class);
 Route::delete('forms/{form}/force', [FormsController::class, 'forceDestroy'])->name('forms.force-destroy');
 Route::post('forms/{id}/restore', [FormsController::class, 'restore'])->name('forms.restore');
 Route::post('forms/{form}/enable', [FormsController::class, 'enable'])->name('forms.enable');
+Route::post('forms/{form}/disable', [FormsController::class, 'disable'])->name('forms.disable');
+Route::post('forms/{form}/index', [FormsController::class, 'indexForm'])->name('forms.index-form');
+Route::post('forms/{form}/unindex', [FormsController::class, 'unindex'])->name('forms.unindex');
+Route::post('forms/{form}/restore-index', [FormsController::class, 'restoreIndex'])->name('forms.restore-index');
+Route::get('forms/{form}/compatibility', [FormsController::class, 'compatibilityInfo'])->name('forms.compatibility');
 Route::get('forms/{form}/preview', [FormsController::class, 'preview'])->name('forms.preview');
 
 Route::get('forms/{form}/submissions', [FormSubmissionsController::class, 'indexByForm'])->name('form-submissions.index-by-form');

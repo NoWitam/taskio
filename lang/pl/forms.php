@@ -176,17 +176,60 @@ return [
     'allStatus' => 'Wszystkie',
     'formEnabled' => 'Formularz został włączony',
     'enableError' => 'Nie udało się włączyć formularza',
+    'loadError' => 'Nie udało się załadować formularza',
     'deleteError' => 'Nie udało się usunąć formularza',
     'restoreError' => 'Nie udało się przywrócić formularza',
     'formPermanentlyDeleted' => 'Formularz został trwale usunięty',
     'forceDeleteError' => 'Nie udało się trwale usunąć formularza',
+    'formsTrashWarningTitle' => 'Automatyczne usuwanie',
+    'formsTrashWarningMessage' => 'Formularze w koszu są automatycznie trwale usuwane po 30 dniach.',
     
     // Enable dialog
     'enableFormTitle' => 'Włącz formularz',
     'enableFormDescription' => 'Włączenie formularza umożliwi użytkownikom jego wypełnianie.',
     'enableWarningTitle' => 'Uwaga',
-    'enableWarningDescription' => 'Po włączeniu formularza nie będzie można edytować jego struktury. Można będzie zmienić tylko nazwę i opis.',
+    'enableWarningDescription' => 'Po włączeniu formularza każdy zapis będzie musiał spełniać pełną walidację. Możesz później wyłączyć formularz, aby wrócić do trybu roboczego.',
     'enableForm' => 'Włącz formularz',
+    
+    // Disable dialog
+    'disable' => 'Wyłącz',
+    'disableFormTitle' => 'Wyłącz formularz',
+    'disableFormDescription' => 'Wyłączenie formularza przywróci go do trybu roboczego.',
+    'disableWarningTitle' => 'Uwaga',
+    'disableWarningDescription' => 'Formularz nie będzie już przyjmował wypełnień. Można go ponownie włączyć po spełnieniu pełnej walidacji.',
+    'disableForm' => 'Wyłącz formularz',
+    'formDisabled' => 'Formularz został wyłączony',
+    'disableError' => 'Nie udało się wyłączyć formularza',
+
+    // Index dialog
+    'indexed' => 'Zindeksowany',
+    'unindexed' => 'Niezindeksowany',
+    'indexFormTitle' => 'Zindeksuj formularz',
+    'indexFormDescription' => 'Indeksowanie umożliwia zaawansowane filtrowanie, raporty i wyszukiwanie AI.',
+    'indexInfoTitle' => 'Co robi indeksowanie?',
+    'indexInfoDescription' => 'Indeksowanie tworzy struktury analityczne dla wypełnień formularza, umożliwiając filtrowanie po polach, statystyki agregowane i raporty wyższej jakości.',
+    'indexForm' => 'Zindeksuj formularz',
+    'formIndexed' => 'Formularz został zindeksowany',
+    'indexError' => 'Nie udało się zindeksować formularza',
+
+    // Unindex dialog
+    'unindexFormTitle' => 'Usuń indeks formularza',
+    'unindexFormDescription' => 'Usunięcie indeksu wyłączy zaawansowane filtrowanie i raporty.',
+    'unindexWarningTitle' => 'Uwaga',
+    'unindexWarningDescription' => 'Istniejące indeksy zostaną usunięte. Dostępne będzie tylko podstawowe filtrowanie wypełnień.',
+    'unindexForm' => 'Usuń indeks',
+    'formUnindexed' => 'Indeks formularza został usunięty',
+    'unindexError' => 'Nie udało się usunąć indeksu formularza',
+    'backupIndexes' => 'Utwórz kopię zapasową indeksów',
+    'backupIndexesDescription' => 'Zapisz wewnętrzną kopię zapasową bieżących indeksów przed ich usunięciem.',
+
+    // Restore index
+    'restoreIndexTitle' => 'Przywróć indeks',
+    'restoreIndexDescription' => 'Przywróć indeks z wewnętrznej kopii zapasowej.',
+    'restoreIndex' => 'Przywróć indeks',
+    'indexRestored' => 'Przywracanie indeksu zostało rozpoczęte',
+    'restoreIndexError' => 'Nie udało się przywrócić indeksu',
+    'restoreIndexIncompatible' => 'Kopia zapasowa jest niezgodna z bieżącą wersją formularza.',
     
     // Submissions page
     'submissionsDescription' => 'Zarządzaj wypełnieniami tego formularza',
@@ -205,6 +248,7 @@ return [
     'sort' => 'Sortuj',
     'newest' => 'Najnowsze',
     'oldest' => 'Najstarsze',
+    'allIndexStatuses' => 'Status indeksowania',
     'trashWarningTitle' => 'Automatyczne usuwanie',
     'trashWarningMessage' => 'Wypełnienia w koszu są automatycznie trwale usuwane po 30 dniach.',
     'noSubmissionsDescription' => 'To formularz nie ma jeszcze żadnych wypełnień',

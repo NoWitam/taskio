@@ -16,7 +16,7 @@ class FormSubmissionService
         // Validate that the form exists and is enabled
         $form = Form::findOrFail($dto->form_id);
         
-        if (!$form->isEnabled()) {
+        if (!$form->canBeFilled()) {
             throw ValidationException::withMessages([
                 'form_id' => ['Formularz musi być włączony przed dodaniem uzupełnień.'],
             ]);
@@ -24,7 +24,7 @@ class FormSubmissionService
 
         // Manual submissions (submittable = Form) are approved immediately
         $approvedAt = null;
-        if ($dto->submittable_type === Form::class) {
+        if ($dto->submittable_type === $form->getMorphClass()) {
             $approvedAt = now();
         }
 
@@ -33,6 +33,7 @@ class FormSubmissionService
             'submittable_type' => $dto->submittable_type,
             'submittable_id' => $dto->submittable_id,
             'data' => $dto->data,
+            'form_content_version_id' => $form->latestContentVersion()?->id,
             'approved_at' => $approvedAt,
         ]);
     }
@@ -66,6 +67,12 @@ class FormSubmissionService
             ->when(
                 request()->array('sources'),
                 fn(Builder $query, $sources) => $query->whereIn('submittable_type', $sources)
+            )
+            ->when(
+                $request->filled('indexed'),
+                fn(Builder $query) => $request->boolean('indexed')
+                    ? $query->whereNotNull('indexed_at')
+                    : $query->whereNull('indexed_at')
             )
             ->when(
                 $request->has('search'),

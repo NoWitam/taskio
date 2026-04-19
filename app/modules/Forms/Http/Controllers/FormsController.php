@@ -4,11 +4,16 @@ namespace App\Modules\Forms\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Forms\DTOs\FormDTO;
+use App\Modules\Forms\Http\Requests\DisableFormRequest;
 use App\Modules\Forms\Http\Requests\EnableFormRequest;
+use App\Modules\Forms\Http\Requests\IndexFormRequest;
+use App\Modules\Forms\Http\Requests\RestoreIndexRequest;
 use App\Modules\Forms\Http\Requests\StoreFormRequest;
+use App\Modules\Forms\Http\Requests\UnindexFormRequest;
 use App\Modules\Forms\Http\Resources\FormListResource;
 use App\Modules\Forms\Http\Resources\FormResource;
 use App\Modules\Forms\Models\Form;
+use App\Modules\Forms\Services\FormAnalyticalTableService;
 use App\Modules\Forms\Services\FormService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,7 +22,8 @@ use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 class FormsController extends Controller
 {
     public function __construct(
-        private FormService $service
+        private FormService $service,
+        private FormAnalyticalTableService $analyticalTableService,
     ) {}
 
     public function index(Request $request): AnonymousResourceCollection
@@ -95,6 +101,59 @@ class FormsController extends Controller
     {
         return FormResource::make(
             $this->service->enable($form)->loadMissing(['creator'])
+        );
+    }
+
+    /**
+     * Disable the form, putting it back into draft mode
+     */
+    public function disable(DisableFormRequest $request, Form $form): FormResource
+    {
+        return FormResource::make(
+            $this->service->disable($form)->loadMissing(['creator'])
+        );
+    }
+
+    /**
+     * Index the form, enabling advanced filtering and reporting
+     */
+    public function indexForm(IndexFormRequest $request, Form $form): FormResource
+    {
+        return FormResource::make(
+            $this->service->indexForm($form)->loadMissing(['creator'])
+        );
+    }
+
+    /**
+     * Unindex the form, removing advanced filtering capabilities
+     */
+    public function unindex(UnindexFormRequest $request, Form $form): FormResource
+    {
+        return FormResource::make(
+            $this->service->unindex($form, $request->boolean('backup_indexes'))->loadMissing(['creator'])
+        );
+    }
+
+    /**
+     * Get compatibility information for indexing.
+     * Shows how many submissions are compatible/incompatible with the current version.
+     */
+    public function compatibilityInfo(Request $request, Form $form): JsonResponse
+    {
+        $this->authorize('update', $form);
+
+        $info = $this->analyticalTableService->getCompatibilityInfo($form);
+
+        return response()->json($info);
+    }
+
+    /**
+     * Restore indexes from backup
+     */
+    public function restoreIndex(RestoreIndexRequest $request, Form $form): FormResource
+    {
+        return FormResource::make(
+            $this->service->restoreIndex($form)->loadMissing(['creator'])
         );
     }
 

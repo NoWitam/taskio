@@ -8,6 +8,10 @@ use Illuminate\Contracts\Validation\ValidationRule;
 
 class ValidFormContent implements ValidationRule
 {
+    public function __construct(
+        private bool $requireMinimumFields = false
+    ) {}
+
     public function validate(string $attribute, mixed $value, Closure $fail): void
     {
         if (!is_array($value)) {
@@ -20,6 +24,49 @@ class ValidFormContent implements ValidationRule
         foreach ($errors as $error) {
             $fail($error);
         }
+
+        // Check minimum fields requirement (used for enabled forms)
+        if ($this->requireMinimumFields && empty($errors) && !$this->hasInputFields($value)) {
+            $fail('Włączony formularz musi zawierać co najmniej jedno pole wejściowe.');
+        }
+    }
+
+    /**
+     * Check if elements contain at least one input field (recursively)
+     */
+    private function hasInputFields(array $elements): bool
+    {
+        foreach ($elements as $element) {
+            if (!isset($element['type'])) {
+                continue;
+            }
+
+            $type = FormElementType::tryFrom($element['type']);
+
+            if ($type && $type->isInputElement()) {
+                return true;
+            }
+
+            // Check nested elements in sections and repeaters
+            if (isset($element['config']['children']) && is_array($element['config']['children'])) {
+                if ($this->hasInputFields($element['config']['children'])) {
+                    return true;
+                }
+            }
+
+            // Check grid columns
+            if (isset($element['config']['columns']) && is_array($element['config']['columns'])) {
+                foreach ($element['config']['columns'] as $column) {
+                    if (isset($column['element']) && is_array($column['element'])) {
+                        if ($this->hasInputFields([$column['element']])) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
