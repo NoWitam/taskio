@@ -7,14 +7,13 @@ use App\Models\AbstractModel;
 use App\Models\User;
 use App\Modules\Approvals\DTOs\ApprovalQueueItem;
 use App\Modules\Approvals\Interfaces\Approvable;
-use App\Modules\Approvals\Models\ApprovalPipeline;
 use App\Modules\Approvals\Models\ApprovalProcess;
 use App\Modules\Approvals\Traits\HasApprovalPipeline;
 use App\Modules\Changelog\Interfaces\HasChangelog as InterfacesHasChangelog;
-use App\Modules\Changelog\Managers\FieldTracker;
 use App\Modules\Changelog\Managers\BagTracker;
-use App\Modules\Changelog\Managers\StatusTracker;
+use App\Modules\Changelog\Managers\FieldTracker;
 use App\Modules\Changelog\Managers\ModelChangelogManager;
+use App\Modules\Changelog\Managers\StatusTracker;
 use App\Modules\Changelog\Traits\HasChangelog;
 use App\Modules\Comments\Traits\HasComments;
 use App\Modules\Disk\Models\File;
@@ -27,14 +26,15 @@ use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Traits\Archiving;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
-class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
+class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
 {
-    use HasCreator, HasFactory, HasUuids, SoftDeletes, HasFiles, HasLabels, HasComments, HasChangelog, Archiving, HasApprovalPipeline;
-    
+    use Archiving, HasApprovalPipeline, HasChangelog, HasComments, HasCreator, HasFactory, HasFiles, HasLabels, HasUuids, SoftDeletes, TenantAware;
+
     protected $table = 'tasks';
 
     protected $fillable = [
@@ -57,7 +57,7 @@ class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
-        'archived_at' => 'datetime'
+        'archived_at' => 'datetime',
     ];
 
     public function getChangelogManager(): ModelChangelogManager
@@ -67,7 +67,10 @@ class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
             FieldTracker::make('title')->withComparison(),
             FieldTracker::make('description')->withComparison(),
             FieldTracker::make('priority')->asComponent('badge')->withMap(function (?TaskPriority $priority, Task $task) {
-                if (!$priority) return null;
+                if (!$priority) {
+                    return null;
+                }
+
                 return [
                     'label' => $priority->label(),
                     'tone' => $priority->tone(),
@@ -79,8 +82,11 @@ class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
                 return $date ? $date->format('Y-m-d') : null;
             }),
             FieldTracker::make('assigned_id')->withMap(function ($userId, Task $task) {
-                if (!$userId) return null;
+                if (!$userId) {
+                    return null;
+                }
                 $user = User::find($userId);
+
                 return $user ? [
                     'id' => $user->id,
                     'name' => $user->name,
@@ -101,12 +107,15 @@ class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
                     'id' => $file->id,
                     'name' => $file->name,
                     'type' => $file->type,
-                    'size' => $file->size
+                    'size' => $file->size,
                 ];
             }),
             FieldTracker::make('form_id')->withMap(function ($formId, Task $task) {
-                if (!$formId) return null;
+                if (!$formId) {
+                    return null;
+                }
                 $form = Form::find($formId);
+
                 return $form ? [
                     'id' => $form->id,
                     'name' => $form->name,
@@ -138,7 +147,7 @@ class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
 
     public function isDeadlineOverdue(): bool
     {
-        if(is_null($this->deadline)) {
+        if (is_null($this->deadline)) {
             return false;
         }
 
@@ -147,11 +156,11 @@ class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
 
     public function isDeadlineAtRisk(): bool
     {
-        if(is_null($this->deadline)) {
+        if (is_null($this->deadline)) {
             return false;
         }
 
-        if($this->isDeadlineOverdue()) {
+        if ($this->isDeadlineOverdue()) {
             return false;
         }
 

@@ -5,6 +5,7 @@ namespace App\Modules\Approvals\Models;
 use App\Enums\IconEnum;
 use App\Models\AbstractModel;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -12,7 +13,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class ApprovalPipeline extends AbstractModel
 {
-    use HasCreator, HasFactory, HasUuids, SoftDeletes;
+    use HasCreator, HasFactory, HasUuids, SoftDeletes, TenantAware;
 
     protected $table = 'approval_pipelines';
 

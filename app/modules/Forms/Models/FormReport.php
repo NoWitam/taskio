@@ -6,6 +6,7 @@ use App\Models\AbstractModel;
 use App\Modules\Disk\Models\File;
 use App\Modules\Forms\Jobs\CreateFormReport as CreateFormReportJob;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -14,7 +15,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class FormReport extends AbstractModel
 {
-    use HasCreator, HasUuids, HasFactory, SoftDeletes;
+    use HasCreator, HasFactory, HasUuids, SoftDeletes, TenantAware;
 
     protected $table = 'form_reports';
 
@@ -69,7 +70,7 @@ class FormReport extends AbstractModel
     public function markAsCompleted(): void
     {
         $this->update([
-            'completed_at' => now()
+            'completed_at' => now(),
         ]);
     }
 }

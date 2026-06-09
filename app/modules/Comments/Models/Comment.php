@@ -5,6 +5,7 @@ namespace App\Modules\Comments\Models;
 use App\Casts\MarkdownTreeCast;
 use App\Models\AbstractModel;
 use App\Models\User;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
@@ -12,7 +13,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Comment extends AbstractModel
 {
-    use HasUuids, SoftDeletes;
+    use HasUuids, SoftDeletes, TenantAware;
 
     protected $table = 'comments';
 
@@ -20,7 +21,7 @@ class Comment extends AbstractModel
         'content',
         'commentable_type',
         'commentable_id',
-        'author_id'
+        'author_id',
     ];
 
     protected $casts = [

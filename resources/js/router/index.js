@@ -3,6 +3,8 @@ import dashboardRoutes from './modules/dashboard';
 import tasksRoutes from './modules/tasks';
 import formsRoutes from '@/modules/forms/routes';
 import approvalsRoutes from './modules/approvals';
+import authRoutes from '@/modules/auth/routes';
+import { useUserStore } from '@/store/user';
 
 function parseQuery(search = '') {
   const query = {};
@@ -54,6 +56,7 @@ function stringifyQuery(query = {}) {
 }
 
 const routes = [
+  ...authRoutes,
   {
     path: '/app',
     component: () => import('@/components/layouts/AppLayout.vue'),
@@ -92,14 +95,16 @@ const router = createRouter({
 });
 
 router.beforeEach((to, from, next) => {
-  // W przyszłości: sprawdzenie autentykacji
-  // const userStore = useUserStore();
-  // if (to.meta.requiresAuth && !userStore.isAuthenticated) {
-  //   next({ name: 'login' });
-  // } else {
-  //   next();
-  // }
-  next();
+  const userStore = useUserStore();
+  const requiresAuth = to.meta.requiresAuth !== false;
+
+  if (requiresAuth && !userStore.token) {
+    next({ name: 'login', query: { redirect: to.fullPath } });
+  } else if (to.name === 'login' && userStore.token) {
+    next('/app');
+  } else {
+    next();
+  }
 });
 
 export default router;

@@ -12,6 +12,7 @@ use App\Modules\Changelog\Traits\HasChangelog;
 use App\Modules\Forms\Enums\FormElementType;
 use App\Modules\Forms\Observers\FormObserver;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -23,7 +24,7 @@ use Illuminate\JsonSchema\JsonSchema;
 #[ObservedBy(FormObserver::class)]
 class Form extends AbstractModel implements InterfacesHasChangelog
 {
-    use HasCreator, HasUuids, SoftDeletes, HasChangelog, HasFactory;
+    use HasChangelog, HasCreator, HasFactory, HasUuids, SoftDeletes, TenantAware;
 
     protected $table = 'forms';
 
@@ -73,10 +74,10 @@ class Form extends AbstractModel implements InterfacesHasChangelog
             }),
             FieldTracker::make('description')->withComparison(),
             FieldTracker::make('enabled_at')
-                ->withMap(fn($value) => $value ? 'enabled' : 'disabled')
+                ->withMap(fn ($value) => $value ? 'enabled' : 'disabled')
                 ->forEvent(ChangelogEvent::ENABLED),
             FieldTracker::make('indexed_at')
-                ->withMap(fn($value) => $value ? 'indexed' : 'unindexed')
+                ->withMap(fn ($value) => $value ? 'indexed' : 'unindexed')
                 ->forEvent(ChangelogEvent::INDEXED),
         ]);
     }
@@ -316,7 +317,7 @@ class Form extends AbstractModel implements InterfacesHasChangelog
             }
 
             $type = FormElementType::tryFrom($element['type']);
-            
+
             if ($type && $type->isInputElement()) {
                 return true;
             }
@@ -391,7 +392,7 @@ class Form extends AbstractModel implements InterfacesHasChangelog
         }
 
         $properties = FormElementType::buildJsonSchema($this->content);
-        
+
         return JsonSchema::object($properties)->toArray();
     }
 

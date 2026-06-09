@@ -26,6 +26,18 @@ class ApiClient {
                     config.headers['X-CSRF-TOKEN'] = token;
                 }
 
+                // Bearer token authentication.
+                const authToken = localStorage.getItem('taskio_token');
+                if (authToken) {
+                    config.headers['Authorization'] = `Bearer ${authToken}`;
+                }
+
+                // Active workspace (tenant) for the request.
+                const workspaceId = localStorage.getItem('taskio_workspace');
+                if (workspaceId) {
+                    config.headers['X-Workspace-Id'] = workspaceId;
+                }
+
                 // When sending multipart/form-data, let the browser/axios set proper boundary.
                 // Our axios defaults should not force JSON content-type for FormData.
                 if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
@@ -50,7 +62,8 @@ class ApiClient {
                     // Handle different status codes
                     switch (error.response.status) {
                         case 401:
-                            // Unauthorized - redirect to login
+                            // Unauthorized - drop the stale token and redirect to login
+                            localStorage.removeItem('taskio_token');
                             window.location.href = '/login';
                             break;
                         case 403:

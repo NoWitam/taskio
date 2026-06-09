@@ -7,13 +7,14 @@ use App\Models\User;
 use App\Modules\Approvals\Enums\ApprovalProcessStatus;
 use App\Modules\Approvals\Enums\ApproverType;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 class ApprovalProcess extends AbstractModel
 {
-    use HasCreator, HasUuids;
+    use HasCreator, HasUuids, TenantAware;
 
     protected $table = 'approval_processes';
 

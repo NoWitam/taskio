@@ -5,6 +5,7 @@ namespace App\Modules\Disk\Models;
 use App\Models\AbstractModel;
 use App\Modules\Disk\Enums\FileType;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
@@ -12,7 +13,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class File extends AbstractModel
 {
-    use HasCreator, HasUuids, SoftDeletes;
+    use HasCreator, HasUuids, SoftDeletes, TenantAware;
 
     protected const CREATOR_ID_COLUMN = 'uploader_id';
 
@@ -26,7 +27,7 @@ class File extends AbstractModel
         'mime_type',
         'size',
         'fileable_id',
-        'fileable_type'
+        'fileable_type',
     ];
 
     protected $casts = [
@@ -42,7 +43,7 @@ class File extends AbstractModel
         return $this->morphTo();
     }
 
-    public function scopeTemp(Builder $query): void 
+    public function scopeTemp(Builder $query): void
     {
         $query->whereNull('fileable_type');
     }
