@@ -82,6 +82,7 @@
     "users": "Użytkownicy",
     "forms": "Formularze",
     "settings": "Ustawienia",
+    "approvals": "Zatwierdzenia",
     "example": "Przykład"
   },
   "forms": {
@@ -734,5 +735,68 @@
     "welcome": "Witaj w aplikacji TaskIO!",
     "availableModules": "Dostępne Moduły",
     "debugInfo": "Informacje debugowania"
+  },
+  "approvals": {
+    "module_name": "Zatwierdzenia",
+    "module_description": "Zarządzaj procesami zatwierdzania",
+    "labels": {
+      "queue": "Kolejka",
+      "queue_description": "Elementy oczekujące na Twoją decyzję",
+      "pipelines": "Lejki zatwierdzania",
+      "pipelines_description": "Zarządzaj lejkami zatwierdzania",
+      "pipeline_name": "Nazwa lejka",
+      "pipeline_name_placeholder": "Np. Zatwierdzanie zadań",
+      "description": "Opis",
+      "description_placeholder": "Opcjonalny opis lejka",
+      "stages": "Etapy",
+      "stage": "Etap",
+      "stage_name": "Nazwa etapu",
+      "stage_name_placeholder": "Nazwa etapu",
+      "stage_criteria": "Kryteria",
+      "stage_criteria_placeholder": "Kryteria zatwierdzenia etapu (opcjonalne, używane przez AI)...",
+      "select_approver": "Wybierz zatwierdzającego",
+      "select_pipeline": "Wybierz lejek zatwierdzania",
+      "pending": "oczekujących",
+      "review": "Przegląd",
+      "rejection_note": "Powód odrzucenia",
+      "rejection_note_placeholder": "Opisz powód odrzucenia...",
+      "note": "Notatka",
+      "note_placeholder": "Opcjonalna notatka do decyzji..."
+    },
+    "status": {
+      "pending": "Oczekujące",
+      "approved": "Zatwierdzone",
+      "rejected": "Odrzucone"
+    },
+    "approver_type": {
+      "user": "Użytkownik",
+      "ai": "AI"
+    },
+    "actions": {
+      "approve": "Zatwierdź",
+      "reject": "Odrzuć",
+      "create_pipeline": "Utwórz lejek",
+      "edit_pipeline": "Edytuj lejek",
+      "delete_pipeline": "Usuń lejek",
+      "add_stage": "Dodaj etap"
+    },
+    "messages": {
+      "approved": "Zatwierdzono pomyślnie",
+      "rejected": "Odrzucono",
+      "pipeline_created": "Lejek utworzony",
+      "pipeline_updated": "Lejek zaktualizowany",
+      "pipeline_deleted": "Lejek usunięty",
+      "delete_pipeline_confirm": "Czy na pewno chcesz usunąć ten lejek zatwierdzania?",
+      "queue_empty": "Brak elementów do zatwierdzenia",
+      "queue_empty_description": "Nie masz żadnych oczekujących zatwierdzeń",
+      "no_pipelines": "Brak lejków",
+      "no_pipelines_description": "Utwórz pierwszy lejek zatwierdzania"
+    },
+    "validation": {
+      "name_required": "Nazwa jest wymagana",
+      "stages_required": "Dodaj co najmniej jeden etap",
+      "stage_name_required": "Nazwa etapu jest wymagana",
+      "approver_required": "Wybierz zatwierdzającego"
+    }
   }
 }

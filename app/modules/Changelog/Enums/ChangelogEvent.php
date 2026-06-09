@@ -14,6 +14,10 @@ enum ChangelogEvent: string
     case ENABLED = 'enabled';
     case INDEXED = 'indexed';
     case FORM_FILLED = 'form_filled';
+    case APPROVAL_STARTED = 'approval_started';
+    case APPROVAL_STAGE_APPROVED = 'approval_stage_approved';
+    case APPROVAL_COMPLETED = 'approval_completed';
+    case APPROVAL_REJECTED = 'approval_rejected';
 
     public function getDescription(): string
     {
@@ -28,6 +32,10 @@ enum ChangelogEvent: string
             self::ENABLED => 'changelog.enabled',
             self::INDEXED => 'changelog.indexed',
             self::FORM_FILLED => 'changelog.formFilled',
+            self::APPROVAL_STARTED => 'changelog.approvalStarted',
+            self::APPROVAL_STAGE_APPROVED => 'changelog.approvalStageApproved',
+            self::APPROVAL_COMPLETED => 'changelog.approvalCompleted',
+            self::APPROVAL_REJECTED => 'changelog.approvalRejected',
         };
     }
 }

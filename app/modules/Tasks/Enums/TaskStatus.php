@@ -79,6 +79,11 @@ enum TaskStatus: string
             return false;
         }
 
+        // Block all manual status changes when task is in approval process
+        if ($task->isInApproval()) {
+            return false;
+        }
+
         if ($newStatus == self::ARCHIVE) {
             return $task->status == self::DONE && $task->creator_id == $user?->id;
         }
@@ -96,7 +101,12 @@ enum TaskStatus: string
         }
 
         if ($newStatus == self::DONE) {
-            return true; // TODO, jeśli jest na in_progress to tylko wtedy jeśli nie ma podpiętego flow testu, jeśli jest na in_test to jeśli przeszedł wszystkie testy pozytywnie
+            // If task has approval pipeline and is IN_TEST, it can only go to DONE through approval
+            if ($task->status == self::IN_TEST && $task->hasApprovalPipeline()) {
+                return false;
+            }
+
+            return true;
         }
 
         return false;

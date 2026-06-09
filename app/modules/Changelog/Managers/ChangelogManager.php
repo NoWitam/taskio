@@ -214,7 +214,10 @@ class ChangelogManager
      */
     function __destruct()
     {
-        // Wołaj flush() aby zapisać cache
-        $this->flush();
+        try {
+            $this->flush();
+        } catch (\Throwable) {
+            // Ignore errors during shutdown (e.g. container already destroyed)
+        }
     }
 }

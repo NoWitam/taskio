@@ -8,6 +8,7 @@ import SelectInput from '@/components/ui/inputs/SelectInput.vue';
 import DateInput from '@/components/ui/inputs/DateInput.vue';
 import UserSelect from '@/components/ui/inputs/reusable/UserSelect.vue';
 import LabelSelect from '@/modules/labels/components/LabelSelect.vue';
+import PipelineSelect from '@/modules/approvals/components/PipelineSelect.vue';
 import FileDropzone from '@/components/ui/inputs/FileDropzone.vue';
 import FormSelectDialog from '@/modules/forms/components/Dialogs/FormSelectDialog.vue';
 import CreateFormDialog from '@/modules/forms/components/Dialogs/CreateFormDialog.vue';
@@ -64,6 +65,7 @@ const form = reactive({
   assigned_id: null as string | number | null,
   labels: [] as string[],
   form_id: null as string | null,
+  approval_pipeline_id: null as string | null,
 });
 
 const attachments = ref<string[]>([]);
@@ -183,6 +185,7 @@ function resetForm() {
   form.assigned_id = null;
   form.labels = [];
   form.form_id = null;
+  form.approval_pipeline_id = null;
   attachments.value = [];
   existingAttachments.value = [];
   selectedForm.value = null;
@@ -229,6 +232,7 @@ watch(
           form.assigned_id = task.assigned?.id || null;
           form.labels = task.labels?.map((l) => String(l.id)) || [];
           form.form_id = task.form_id || null;
+          form.approval_pipeline_id = task.approval_pipeline_id || null;
           attachments.value = task.attachments?.map((a) => a.id) || [];
           existingAttachments.value = task.attachments || [];
           
@@ -306,6 +310,11 @@ function toFormData(isUpdate = false) {
   // Formularz
   if (form.form_id) {
     fd.append('form_id', form.form_id);
+  }
+
+  // Lejek zatwierdzania
+  if (form.approval_pipeline_id) {
+    fd.append('approval_pipeline_id', form.approval_pipeline_id);
   }
 
   // Załączniki
@@ -485,6 +494,13 @@ async function submit() {
             :label="t('tasks.labels')"
             addable
           />
+        </div>
+
+        <div class="col-span-12">
+          <div class="space-y-1.5">
+            <label class="text-sm font-medium text-foreground">{{ t('approvals.labels.select_pipeline') }}</label>
+            <PipelineSelect v-model="form.approval_pipeline_id" />
+          </div>
         </div>
 
         <div class="col-span-12">

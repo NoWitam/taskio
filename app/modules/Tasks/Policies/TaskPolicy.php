@@ -37,7 +37,10 @@ class TaskPolicy
      */
     public function update(?User $user, Task $task): bool
     {
-        // Creator lub assigned user może edytować zadanie
+        if ($task->isInApproval()) {
+            return false;
+        }
+
         return $task->creator_id === $user->id || $task->assigned_id === $user->id;
     }
 

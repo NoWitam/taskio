@@ -8,6 +8,7 @@
         label: string;
         badge?: number;
         icon?: string;
+        disabled?: boolean;
     };
 
     const props = defineProps<{
@@ -48,13 +49,22 @@
 
     function selectTab(idx: number, focus = true) {
         const t = props.tabs[idx];
-        if (!t) return;
+        if (!t || t.disabled) return;
         emit("update:modelValue", t.id);
 
         if (focus) {
             // po update warto dać tick, żeby roving tabindex był już poprawny
             nextTick(() => focusTab(idx));
         }
+    }
+
+    function findNextEnabled(from: number, direction: 1 | -1): number {
+        const len = props.tabs.length;
+        for (let i = 1; i <= len; i++) {
+            const idx = (from + i * direction + len) % len;
+            if (!props.tabs[idx].disabled) return idx;
+        }
+        return from;
     }
 
     function onKeyDown(e: KeyboardEvent) {
@@ -66,21 +76,25 @@
         switch (e.key) {
             case "ArrowRight":
             e.preventDefault();
-            next = (current + 1) % props.tabs.length;
+            next = findNextEnabled(current, 1);
             selectTab(next);
             break;
             case "ArrowLeft":
             e.preventDefault();
-            next = (current - 1 + props.tabs.length) % props.tabs.length;
+            next = findNextEnabled(current, -1);
             selectTab(next);
             break;
             case "Home":
             e.preventDefault();
-            selectTab(0);
+            next = props.tabs.findIndex((t) => !t.disabled);
+            if (next >= 0) selectTab(next);
             break;
             case "End":
             e.preventDefault();
-            selectTab(props.tabs.length - 1);
+            for (let i = props.tabs.length - 1; i >= 0; i--) {
+                if (!props.tabs[i].disabled) { next = i; break; }
+            }
+            selectTab(next);
             break;
         }
     }
@@ -124,14 +138,22 @@
         :id="tabId(t.id)"
         :aria-controls="panelId(t.id)"
         :aria-selected="t.id === activeId"
+        :aria-disabled="t.disabled || undefined"
         :tabindex="t.id === activeId ? 0 : -1"
+        :disabled="t.disabled"
         @click="selectTab(idx, false)"
         :class="cn(
-          'relative inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition cursor-pointer',
+          'relative inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
-          t.id === activeId
+          t.disabled
+            ? 'text-muted-foreground/40 cursor-not-allowed'
+            : 'cursor-pointer',
+          !t.disabled && t.id === activeId
             ? 'bg-primary text-background shadow-sm'
-            : 'text-foreground/70 hover:text-background hover:bg-primary/60'
+            : '',
+          !t.disabled && t.id !== activeId
+            ? 'text-foreground/70 hover:text-background hover:bg-primary/60'
+            : ''
         )"
       >
         <Icon v-if="t.icon" :name="t.icon" size="sm" />
