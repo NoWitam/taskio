@@ -6,7 +6,6 @@ use App\Modules\Approvals\DTOs\ApprovalPipelineDTO;
 use App\Modules\Approvals\Models\ApprovalPipeline;
 use App\Modules\Approvals\Models\ApprovalProcess;
 use App\Modules\Approvals\Models\ApprovalStage;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -17,13 +16,7 @@ class ApprovalPipelineService
     {
         return ApprovalPipeline::query()
             ->with('stages.approver')
-            ->when(
-                $request->has('search'),
-                function (Builder $query) use ($request) {
-                    $term = '%' . $request->get('search') . '%';
-                    $query->whereLike('name', $term);
-                }
-            )
+            ->search('name', $request->get('search'))
             ->orderBy('created_at', 'desc')
             ->cursorPaginate(8);
     }

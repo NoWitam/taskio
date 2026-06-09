@@ -108,15 +108,7 @@ class TaskService
                     $status->resolveSelectQuery($query);
                 }
             )
-            ->when(
-                $request->has('search'), 
-                function (Builder $query) use ($request) {
-                    $query->where(function (Builder $searchQuery) use ($request) {
-                        $term = '%' . $request->get('search') . '%';
-                        $searchQuery->whereLike('title', $term)->orWhereLike('description', $term);
-                    });
-                }
-            )
+            ->search(['title', 'description'], $request->get('search'))
             ->when(
                 $priority = $request->enum('priority', TaskPriority::class),
                 function (Builder $query) use ($priority) {

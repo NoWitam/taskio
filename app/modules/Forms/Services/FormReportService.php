@@ -41,13 +41,7 @@ class FormReportService
                 $request->boolean('trashed'),
                 fn(Builder $query) => $query->onlyTrashed()
             )
-            ->when(
-                $request->has('search'),
-                fn(Builder $query) => $query->where(fn(Builder $sq) => 
-                    $sq->where('name', 'like', '%' . $request->get('search') . '%')
-                       ->orWhere('guidelines', 'like', '%' . $request->get('search') . '%')
-                )
-            )
+            ->search(['name', 'guidelines'], $request->get('search'))
             ->when(
                 $request->array('creator_id'),
                 fn(Builder $query, $creators) => $query->whereIn('creator_id', $creators)

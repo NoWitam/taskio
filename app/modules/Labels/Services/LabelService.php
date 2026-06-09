@@ -4,7 +4,6 @@ namespace App\Modules\Labels\Services;
 
 use App\Modules\Labels\DTOs\LabelDTO;
 use App\Modules\Labels\Models\Label;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 
 class LabelService
@@ -22,9 +21,7 @@ class LabelService
     public function index(Request $request)
     {
         return Label::query()
-            ->when($request->has('search'), function (Builder $query) use ($request) {
-                $query->whereLike('name', '%' . $request->get('search') . '%');
-            })
+            ->search('name', $request->get('search'))
             ->cursorPaginate(8);
     }
 

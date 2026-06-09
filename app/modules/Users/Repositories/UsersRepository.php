@@ -24,12 +24,7 @@ class UsersRepository
         $search = is_string($search) ? trim($search) : null;
 
         return User::query()
-            ->when($search, function ($query) use ($search) {
-                $query->where(function ($searchQuery) use ($search) {
-                    $searchQuery->where('name', 'like', '%' . $search . '%')
-                        ->orWhere('email', 'like', '%' . $search . '%');
-                });
-            })
+            ->search(['name', 'email'], $search)
             ->orderBy('id')
             ->cursorPaginate(8);
     }

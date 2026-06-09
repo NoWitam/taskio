@@ -301,13 +301,7 @@ class FormService
                 request()->filled('indexed'),
                 fn(Builder $query) => request()->boolean('indexed') ? $query->whereNotNull('indexed_at') : $query->whereNull('indexed_at')
             )
-            ->when(
-                $request->has('search'),
-                fn(Builder $query) => $query->where(fn(Builder $sq) => 
-                    $sq->whereLike('name', '%' . $request->get('search') . '%')
-                        ->orWhereLike('description', '%' . $request->get('search') . '%')
-                )
-            )
+            ->search(['name', 'description'], $request->get('search'))
             ->latest('created_at');
     }
 

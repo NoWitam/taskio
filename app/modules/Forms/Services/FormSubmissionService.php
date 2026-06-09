@@ -74,12 +74,7 @@ class FormSubmissionService
                     ? $query->whereNotNull('indexed_at')
                     : $query->whereNull('indexed_at')
             )
-            ->when(
-                $request->has('search'),
-                fn(Builder $query) => $query->where(fn(Builder $sq) => 
-                    $sq->where('data', 'like', '%' . $request->get('search') . '%')
-                )
-            )
+            ->search('data', $request->get('search'))
             ->filterByDate('approved_at', $request)
             ->orderBy(
                 'approved_at', 
