@@ -6,15 +6,19 @@ namespace App\Models;
 
 use App\Models\Concerns\Searchable;
 use App\Modules\Disk\Traits\HasFiles;
+use App\Modules\Workspaces\Models\Workspace;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable, HasUuids, HasFiles, Searchable;
+    use HasApiTokens, HasFactory, HasFiles, HasUuids, Notifiable, Searchable;
 
     /**
      * The attributes that are mass assignable.
@@ -52,8 +56,23 @@ class User extends Authenticatable
         ];
     }
 
+    public function workspaces(): BelongsToMany
+    {
+        return $this->belongsToMany(Workspace::class, 'workspace_user');
+    }
+
+    public function groups(): BelongsToMany
+    {
+        return $this->belongsToMany(\App\Modules\Auth\Models\Group::class, 'group_user');
+    }
+
+    public function ownedWorkspaces(): HasMany
+    {
+        return $this->hasMany(Workspace::class, 'owner_id');
+    }
+
     public function getPermissions(): array
     {
-        return []; //TODO
+        return []; // TODO
     }
 }
