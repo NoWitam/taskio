@@ -94,8 +94,9 @@ const getModuleIcon = (module) => {
     forms: 'file-text',
     users: 'users',
     settings: 'settings',
+    approvals: 'workflow',
   };
-  return iconMap[module] || 'check-circle';
+  return iconMap[module] || 'grid';
 };
 
 const formatModuleName = (module) => {

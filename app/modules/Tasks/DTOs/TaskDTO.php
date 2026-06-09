@@ -16,7 +16,8 @@ class TaskDTO
         public readonly string $assigned,
         public readonly array $labels,
         public readonly array $attachments,
-        public readonly ?string $form_id
+        public readonly ?string $form_id,
+        public readonly ?string $approval_pipeline_id,
     ) {}
 
     public static function fromRequest(Request $request): self
@@ -29,7 +30,8 @@ class TaskDTO
             assigned: $request->string('assigned_id'),
             labels: $request->array('labels'),
             attachments: $request->array('attachments'),
-            form_id: $request->string('form_id')
+            form_id: $request->string('form_id')->value() ?: null,
+            approval_pipeline_id: $request->string('approval_pipeline_id')->value() ?: null,
         );
     }
 }

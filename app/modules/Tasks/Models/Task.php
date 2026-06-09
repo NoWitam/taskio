@@ -5,6 +5,11 @@ namespace App\Modules\Tasks\Models;
 use App\Casts\MarkdownTreeCast;
 use App\Models\AbstractModel;
 use App\Models\User;
+use App\Modules\Approvals\DTOs\ApprovalQueueItem;
+use App\Modules\Approvals\Interfaces\Approvable;
+use App\Modules\Approvals\Models\ApprovalPipeline;
+use App\Modules\Approvals\Models\ApprovalProcess;
+use App\Modules\Approvals\Traits\HasApprovalPipeline;
 use App\Modules\Changelog\Interfaces\HasChangelog as InterfacesHasChangelog;
 use App\Modules\Changelog\Managers\FieldTracker;
 use App\Modules\Changelog\Managers\BagTracker;
@@ -23,11 +28,12 @@ use App\Modules\Tasks\Enums\TaskStatus;
 use App\Traits\Archiving;
 use App\Traits\HasCreator;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
-class Task extends AbstractModel implements InterfacesHasChangelog
+class Task extends AbstractModel implements InterfacesHasChangelog, Approvable
 {
-    use HasCreator, HasUuids, SoftDeletes, HasFiles, HasLabels, HasComments, HasChangelog, Archiving;
+    use HasCreator, HasFactory, HasUuids, SoftDeletes, HasFiles, HasLabels, HasComments, HasChangelog, Archiving, HasApprovalPipeline;
     
     protected $table = 'tasks';
 
@@ -40,6 +46,7 @@ class Task extends AbstractModel implements InterfacesHasChangelog
         'creator_id',
         'assigned_id',
         'form_id',
+        'approval_pipeline_id',
     ];
 
     protected $casts = [
@@ -149,5 +156,80 @@ class Task extends AbstractModel implements InterfacesHasChangelog
         }
 
         return $this->deadline->clone()->subDays(2)->format('Y-m-d') >= now()->format('Y-m-d');
+    }
+
+    // -- Approvable interface --
+
+    public function onApprovalCompleted(ApprovalProcess $process): void
+    {
+        $this->update([
+            'status' => TaskStatus::DONE,
+            'assigned_id' => $this->creator_id,
+        ]);
+    }
+
+    public function onApprovalRejected(ApprovalProcess $process): void
+    {
+        $context = $process->context ?? [];
+
+        $this->update([
+            'status' => TaskStatus::TO_DO,
+            'assigned_id' => $context['original_assigned_id'] ?? $this->creator_id,
+        ]);
+    }
+
+    public function toApprovalQueueItem(): ApprovalQueueItem
+    {
+        $this->loadMissing(['form', 'formSubmission', 'labels']);
+
+        $extraFields = [
+            [
+                'label' => __('changelog.fields.priority'),
+                'value' => $this->priority->label(),
+                'icon' => $this->priority->icon(),
+            ],
+        ];
+
+        if ($this->deadline) {
+            $extraFields[] = [
+                'label' => __('changelog.fields.deadline'),
+                'value' => $this->deadline->format('d.m.Y'),
+                'icon' => 'calendar',
+            ];
+        }
+
+        $form = null;
+        if ($this->form) {
+            $form = [
+                'id' => $this->form->id,
+                'name' => $this->form->name,
+                'content' => $this->form->content,
+                'submission' => $this->formSubmission?->data,
+            ];
+        }
+
+        $commentsUrl = route('comments.index', ['module' => 'tasks', 'id' => $this->id]);
+
+        return new ApprovalQueueItem(
+            type_label: __('approvals.entity_types.task'),
+            type_icon: 'check-circle',
+            name: $this->title,
+            description: $this->description,
+            extra_fields: $extraFields,
+            form: $form,
+            comments_url: $commentsUrl,
+        );
+    }
+
+    public function getApprovalContext(): array
+    {
+        return [
+            'original_assigned_id' => $this->assigned_id,
+        ];
+    }
+
+    protected static function newFactory()
+    {
+        return \Database\Factories\TaskFactory::new();
     }
 }

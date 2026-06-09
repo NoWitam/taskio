@@ -32,6 +32,9 @@ export interface Task {
     labels: Label[];
     attachments?: TaskAttachment[];
     form_id?: string | null;
+    approval_pipeline_id?: string | null;
+    is_in_approval?: boolean;
+    pending_approval_process?: import('@/types/approvals').ApprovalProcess | null;
     form?: {
         id: string;
         name: string;

@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import dashboardRoutes from './modules/dashboard';
 import tasksRoutes from './modules/tasks';
 import formsRoutes from '@/modules/forms/routes';
+import approvalsRoutes from './modules/approvals';
 
 function parseQuery(search = '') {
   const query = {};
@@ -60,6 +61,7 @@ const routes = [
       ...dashboardRoutes,
       ...tasksRoutes,
       ...formsRoutes,
+      ...approvalsRoutes,
       {
         path: 'example',
         name: 'example',

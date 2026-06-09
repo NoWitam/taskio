@@ -9,4 +9,5 @@ return [
     App\Modules\Comments\CommentsModuleServiceProvider::class,
     App\Modules\Changelog\ChangelogModuleServiceProvider::class,
     App\Modules\Forms\FormsModuleServiceProvider::class,
+    App\Modules\Approvals\ApprovalsModuleServiceProvider::class,
 ];

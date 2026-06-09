@@ -102,10 +102,10 @@ class TasksController extends Controller
             ]);
         }
 
-        $task->update(['status' => $status]);
+        $task = $this->service->changeStatus($task, $status);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission', 'pendingApprovalProcess'])
         );
     }
 

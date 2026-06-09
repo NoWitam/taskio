@@ -31,6 +31,10 @@ class TaskResource extends JsonResource
             'form_id' => $this->form_id,
             'form' => FormResource::make($this->whenLoaded('form')),
             'form_submission' => FormSubmissionResource::make($this->whenLoaded('formSubmission')),
+            'approval_pipeline_id' => $this->approval_pipeline_id,
+            'approval_pipeline' => $this->whenLoaded('approvalPipeline'),
+            'is_in_approval' => $this->isInApproval(),
+            'pending_approval_process' => $this->whenLoaded('pendingApprovalProcess'),
         ];
     }
 }

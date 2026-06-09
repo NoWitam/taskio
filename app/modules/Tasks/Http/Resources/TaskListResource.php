@@ -22,6 +22,7 @@ class TaskListResource extends JsonResource
             'comments' => $this->whenCounted('comments'),
             'assigned' => UserResource::make($this->assigned),
             'labels' => LabelResource::collection($this->labels),
+            'is_in_approval' => $this->isInApproval(),
         ];
     }
 }

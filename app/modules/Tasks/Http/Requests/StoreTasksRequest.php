@@ -34,6 +34,7 @@ class StoreTasksRequest extends FormRequest
             'attachments' => ['array', 'min:0', 'max:5'],
             'attachments.*' => ['required', 'uuid'],
             'form_id' => ['nullable', 'uuid', 'exists:forms,id'],
+            'approval_pipeline_id' => ['nullable', 'uuid', 'exists:approval_pipelines,id'],
         ];
     }
 

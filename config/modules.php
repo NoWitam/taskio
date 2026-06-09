@@ -12,6 +12,7 @@ return [
         'dashboard',
         'tasks',
         'forms',
+        'approvals',
         'example',
         // 'settings',
     ],
@@ -30,6 +31,11 @@ return [
         'forms' => [
             'name' => 'Forms',
             'icon' => 'file-text',
+            'permissions' => [],
+        ],
+        'approvals' => [
+            'name' => 'Approvals',
+            'icon' => 'badge-check',
             'permissions' => [],
         ],
         'example' => [

@@ -40,4 +40,8 @@ return [
         'indexed' => 'Indexed',
     ],
     'formFilled' => 'Form Filled',
+    'approvalStarted' => 'Approval Started',
+    'approvalStageApproved' => 'Approval Stage Approved',
+    'approvalCompleted' => 'Approval Completed',
+    'approvalRejected' => 'Approval Rejected',
 ];

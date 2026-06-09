@@ -2,6 +2,7 @@
 
 namespace App\Modules\Tasks\Services;
 
+use App\Modules\Approvals\Services\ApprovalService;
 use App\Modules\Changelog\Enums\ChangelogEvent;
 use App\Modules\Changelog\Managers\ChangelogManager;
 use App\Modules\Disk\Models\File;
@@ -37,6 +38,7 @@ class TaskService
                 'deadline' => $dto->deadline,
                 'assigned_id' => $dto->assigned,
                 'form_id' => $dto->form_id,
+                'approval_pipeline_id' => $dto->approval_pipeline_id,
             ]);
 
             $this->fileService->attachToModel($task, $dto->attachments);
@@ -59,6 +61,7 @@ class TaskService
                 'deadline' => $dto->deadline,
                 'assigned_id' => $dto->assigned,
                 'form_id' => $dto->form_id,
+                'approval_pipeline_id' => $dto->approval_pipeline_id,
             ]);
 
             $this->fileService->attachToModel($task, $dto->attachments, deleteAnother: true);
@@ -182,5 +185,27 @@ class TaskService
         $task->restore();
         $task->update(['status' => TaskStatus::TO_DO]);
         return $task;
+    }
+
+    public function changeStatus(Task $task, TaskStatus $status): Task
+    {
+        return DB::transaction(function () use ($task, $status) {
+            $task->update(['status' => $status]);
+
+            // If task moves to IN_TEST and has an approval pipeline, start approval process
+            if ($status === TaskStatus::IN_TEST && $task->hasApprovalPipeline()) {
+                $task->loadMissing('approvalPipeline.stages');
+
+                $approvalService = app(ApprovalService::class);
+                $process = $approvalService->startProcess($task);
+
+                // Assign task to the first stage approver (if user)
+                if ($process->approver_id) {
+                    $task->update(['assigned_id' => $process->approver_id]);
+                }
+            }
+
+            return $task;
+        });
     }
 }

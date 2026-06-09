@@ -40,5 +40,9 @@ return [
         'indexed' => 'Zindeksowano',
     ],
     
-    'formFilled' => 'Wypełniono formularz',
+    'formFilled' => 'Wypłuniono formularz',
+    'approvalStarted' => 'Rozpoczęto zatwierdzanie',
+    'approvalStageApproved' => 'Etap zatwierdzony',
+    'approvalCompleted' => 'Zatwierdzanie zakończone',
+    'approvalRejected' => 'Zatwierdzanie odrzucone',
 ];
