@@ -15,4 +15,9 @@ class AppController extends Controller
     {
         return view('app');
     }
+
+    public function next(Request $request)
+    {
+        return view('next');
+    }
 }

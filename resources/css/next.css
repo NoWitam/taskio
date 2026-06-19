@@ -1,0 +1,502 @@
+/* =============================================================================
+   Taskio "next" frontend — design foundations (Tailwind v4, CSS-first @theme)
+   -----------------------------------------------------------------------------
+   ISOLATION CONTRACT
+   - This is a SEPARATE Vite entry from the legacy app. It must never reuse or
+     leak into `resources/css/app.css` or `resources/js/components/ui`.
+   - The app mounts inside an element carrying the class `.next-root`.
+   - Dark mode is a token-override scheme scoped to `.next-root.dark` (no ad-hoc
+     color inversion at the component level).
+   - All bespoke color/spacing/etc. tokens are namespaced with a `next-` prefix
+     (e.g. `--color-next-bg`, `--spacing-next-4`) so that if both this stylesheet
+     and the legacy `app.css` ever load on the same page, NOTHING collides.
+   - The ONLY value carried over from the legacy design is the primary hue.
+     Everything else below is re-chosen from scratch.
+
+   Utilities therefore read `bg-next-bg`, `text-next-fg`, `rounded-next-lg`,
+   `shadow-next-md`, `p-next-4`, `text-next-sm`, etc.  See
+   `docs/next/design-foundations.md` for full rationale + usage guidance.
+   ============================================================================= */
+
+@import "tailwindcss";
+
+/* Dark variant scoped to the next app only. The legacy app uses `.dark`;
+   we use `.next-root.dark` so the two cannot trigger each other. */
+@custom-variant dark (&:where(.next-root.dark, .next-root.dark *));
+
+@theme {
+  /* ---------------------------------------------------------------------------
+     COLOR — Primary (carried over, magenta/pink)
+     The single thread of continuity with the legacy brand.
+     --------------------------------------------------------------------------- */
+  --color-next-primary: hsl(325 60% 45%);
+  --color-next-primary-foreground: hsl(0 0% 100%);
+  --color-next-primary-hover: hsl(325 60% 40%);   /* darker for hover on solid */
+  --color-next-primary-active: hsl(325 62% 34%);  /* darker still for press */
+  --color-next-primary-subtle: hsl(325 60% 96%);  /* tinted surface (light) */
+  --color-next-primary-subtle-foreground: hsl(325 60% 32%);
+
+  /* ---------------------------------------------------------------------------
+     COLOR — Neutral ramp
+     A SLIGHTLY warm/cool-neutral gray with a faint magenta whisper (hue 320,
+     very low saturation) so neutrals feel related to the primary instead of
+     clashing. 0 = lightest, 950 = darkest. Used to derive surfaces & text.
+     --------------------------------------------------------------------------- */
+  --color-next-neutral-0:   hsl(320 20% 99%);
+  --color-next-neutral-50:  hsl(320 16% 97%);
+  --color-next-neutral-100: hsl(320 12% 94%);
+  --color-next-neutral-200: hsl(318 10% 88%);
+  --color-next-neutral-300: hsl(316 8% 80%);
+  --color-next-neutral-400: hsl(315 6% 64%);
+  --color-next-neutral-500: hsl(315 5% 48%);
+  --color-next-neutral-600: hsl(316 6% 38%);
+  --color-next-neutral-700: hsl(318 8% 28%);
+  --color-next-neutral-800: hsl(320 10% 18%);
+  --color-next-neutral-900: hsl(322 12% 12%);
+  --color-next-neutral-950: hsl(324 14% 8%);
+
+  /* ---------------------------------------------------------------------------
+     COLOR — Semantic surfaces & text (LIGHT defaults; dark overrides below)
+     Always reference these in components, never the raw ramp/hex.
+     --------------------------------------------------------------------------- */
+  --color-next-bg:              hsl(320 16% 97%);  /* app canvas (neutral-50) */
+  --color-next-fg:              hsl(322 12% 12%);  /* primary text (neutral-900) */
+  --color-next-card:            hsl(320 20% 99%);  /* raised surface (neutral-0) */
+  --color-next-card-foreground: hsl(322 12% 12%);
+  --color-next-popover:         hsl(320 20% 99%);
+  --color-next-popover-foreground: hsl(322 12% 12%);
+  --color-next-border:          hsl(318 10% 88%);  /* hairlines (neutral-200) */
+  --color-next-input:           hsl(316 8% 80%);   /* input border (neutral-300) */
+  --color-next-ring:            hsl(325 60% 45%);  /* focus ring = primary */
+  --color-next-muted:           hsl(320 12% 94%);  /* muted fill (neutral-100) */
+  --color-next-muted-foreground: hsl(315 5% 48%);  /* secondary text (neutral-500) */
+  --color-next-accent:          hsl(325 60% 96%);  /* hover tint = primary-subtle */
+  --color-next-accent-foreground: hsl(325 60% 32%);
+  --color-next-overlay:         hsl(322 24% 8% / 0.55); /* modal scrim */
+
+  /* ---------------------------------------------------------------------------
+     COLOR — Semantic status (success / warning / danger / info)
+     Each has solid + foreground + subtle surface + subtle foreground so badges,
+     alerts, and toasts can be built without per-component color math.
+     Hues chosen to be distinguishable from the magenta primary and from each
+     other; all solids hit AA (>=4.5:1) against white foreground.
+     --------------------------------------------------------------------------- */
+  --color-next-success:                  hsl(152 58% 34%);
+  --color-next-success-foreground:       hsl(0 0% 100%);
+  --color-next-success-subtle:           hsl(152 50% 95%);
+  --color-next-success-subtle-foreground: hsl(153 60% 22%);
+
+  --color-next-warning:                  hsl(36 92% 42%);
+  --color-next-warning-foreground:       hsl(0 0% 100%);
+  --color-next-warning-subtle:           hsl(40 90% 94%);
+  --color-next-warning-subtle-foreground: hsl(30 80% 28%);
+
+  --color-next-danger:                   hsl(356 70% 48%);
+  --color-next-danger-foreground:        hsl(0 0% 100%);
+  --color-next-danger-subtle:            hsl(356 76% 96%);
+  --color-next-danger-subtle-foreground: hsl(356 64% 36%);
+
+  --color-next-info:                     hsl(214 78% 47%);
+  --color-next-info-foreground:          hsl(0 0% 100%);
+  --color-next-info-subtle:              hsl(214 80% 96%);
+  --color-next-info-subtle-foreground:   hsl(216 70% 34%);
+
+  /* ---------------------------------------------------------------------------
+     SPACING / PADDING — 4px base scale (--spacing-next-*)
+     Utilities: p-next-4, gap-next-2, m-next-6, etc.
+     --------------------------------------------------------------------------- */
+  --spacing-next-0:   0px;
+  --spacing-next-px:  1px;
+  --spacing-next-0_5: 0.125rem; /* 2px  */
+  --spacing-next-1:   0.25rem;  /* 4px  */
+  --spacing-next-1_5: 0.375rem; /* 6px  */
+  --spacing-next-2:   0.5rem;   /* 8px  */
+  --spacing-next-2_5: 0.625rem; /* 10px */
+  --spacing-next-3:   0.75rem;  /* 12px */
+  --spacing-next-4:   1rem;     /* 16px */
+  --spacing-next-5:   1.25rem;  /* 20px */
+  --spacing-next-6:   1.5rem;   /* 24px */
+  --spacing-next-8:   2rem;     /* 32px */
+  --spacing-next-10:  2.5rem;   /* 40px */
+  --spacing-next-12:  3rem;     /* 48px */
+  --spacing-next-16:  4rem;     /* 64px */
+  --spacing-next-20:  5rem;     /* 80px */
+  --spacing-next-24:  6rem;     /* 96px */
+
+  /* ---------------------------------------------------------------------------
+     BORDER RADIUS (--radius-next-*)
+     Utilities: rounded-next-md, rounded-next-lg, etc.
+     --------------------------------------------------------------------------- */
+  --radius-next-none: 0px;
+  --radius-next-xs:   0.125rem; /* 2px  */
+  --radius-next-sm:   0.25rem;  /* 4px  */
+  --radius-next-md:   0.375rem; /* 6px  control default */
+  --radius-next-lg:   0.5rem;   /* 8px  cards */
+  --radius-next-xl:   0.75rem;  /* 12px panels/modals */
+  --radius-next-2xl:  1rem;     /* 16px large surfaces */
+  --radius-next-full: 9999px;   /* pills / avatars */
+
+  /* ---------------------------------------------------------------------------
+     TYPOGRAPHY — family, size scale, weights, line-heights, tracking
+     --------------------------------------------------------------------------- */
+  --font-next-sans: "Inter", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-next-mono: "JetBrains Mono", ui-monospace, SFMono-Regular,
+    "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Size scale (font-size paired with a sensible default line-height) */
+  --text-next-2xs: 0.6875rem;  /* 11px */
+  --text-next-2xs--line-height: 1rem;
+  --text-next-xs:  0.75rem;    /* 12px */
+  --text-next-xs--line-height: 1.125rem;
+  --text-next-sm:  0.875rem;   /* 14px */
+  --text-next-sm--line-height: 1.25rem;
+  --text-next-base: 1rem;      /* 16px */
+  --text-next-base--line-height: 1.5rem;
+  --text-next-lg:  1.125rem;   /* 18px */
+  --text-next-lg--line-height: 1.75rem;
+  --text-next-xl:  1.25rem;    /* 20px */
+  --text-next-xl--line-height: 1.75rem;
+  --text-next-2xl: 1.5rem;     /* 24px */
+  --text-next-2xl--line-height: 2rem;
+  --text-next-3xl: 1.875rem;   /* 30px */
+  --text-next-3xl--line-height: 2.25rem;
+  --text-next-4xl: 2.25rem;    /* 36px */
+  --text-next-4xl--line-height: 2.5rem;
+
+  --font-weight-next-normal:   400;
+  --font-weight-next-medium:   500;
+  --font-weight-next-semibold: 600;
+  --font-weight-next-bold:     700;
+
+  --leading-next-tight:   1.2;
+  --leading-next-snug:    1.35;
+  --leading-next-normal:  1.5;
+  --leading-next-relaxed: 1.65;
+
+  --tracking-next-tight:  -0.01em;
+  --tracking-next-normal: 0em;
+  --tracking-next-wide:   0.02em;
+
+  /* ---------------------------------------------------------------------------
+     SHADOWS / ELEVATION (--shadow-next-*)
+     Tuned with the neutral hue so shadows feel part of the palette, not pure
+     black. Dark mode keeps the same utility names; depth there relies more on
+     borders + surface lightness (see notes), so shadows stay subtle.
+     --------------------------------------------------------------------------- */
+  --shadow-next-xs: 0 1px 2px 0 hsl(322 20% 10% / 0.05);
+  --shadow-next-sm: 0 1px 3px 0 hsl(322 20% 10% / 0.08),
+                    0 1px 2px -1px hsl(322 20% 10% / 0.08);
+  --shadow-next-md: 0 4px 8px -2px hsl(322 20% 10% / 0.10),
+                    0 2px 4px -2px hsl(322 20% 10% / 0.06);
+  --shadow-next-lg: 0 12px 20px -4px hsl(322 20% 10% / 0.12),
+                    0 4px 8px -4px hsl(322 20% 10% / 0.08);
+  --shadow-next-xl: 0 24px 40px -8px hsl(322 24% 8% / 0.18),
+                    0 8px 16px -8px hsl(322 24% 8% / 0.10);
+  --shadow-next-focus: 0 0 0 3px hsl(325 60% 45% / 0.35); /* focus glow */
+
+  /* ---------------------------------------------------------------------------
+     Z-INDEX LAYERS (--z-next-*)
+     Single source of truth for stacking. Reference via arbitrary value:
+     z-[var(--z-next-modal)].
+     --------------------------------------------------------------------------- */
+  --z-next-base:     0;
+  --z-next-raised:   10;   /* sticky table headers, pinned columns */
+  --z-next-dropdown: 1000; /* menus, selects, autocompletes */
+  --z-next-sticky:   1010; /* sticky page chrome */
+  --z-next-overlay:  1020; /* modal scrim */
+  --z-next-modal:    1030; /* dialogs, drawers */
+  --z-next-popover:  1040; /* popovers anchored above modals */
+  --z-next-toast:    1050; /* transient notifications (topmost) */
+  --z-next-tooltip:  1060; /* tooltips ride above everything */
+
+  /* ---------------------------------------------------------------------------
+     MOTION — durations + easing (--duration-next-*, --ease-next-*)
+     --------------------------------------------------------------------------- */
+  --duration-next-instant: 75ms;   /* micro feedback (press) */
+  --duration-next-fast:    150ms;  /* hover, focus, small toggles */
+  --duration-next-normal:  220ms;  /* default enter/leave */
+  --duration-next-slow:    320ms;  /* larger surfaces (modal, drawer) */
+
+  --ease-next-standard: cubic-bezier(0.2, 0, 0, 1);     /* most transitions */
+  --ease-next-emphasized: cubic-bezier(0.3, 0, 0, 1);   /* entrances */
+  --ease-next-exit: cubic-bezier(0.4, 0, 1, 1);         /* exits */
+
+  /* ---------------------------------------------------------------------------
+     BREAKPOINTS (--breakpoint-next-*)
+     Distinct names so utilities read `next-md:flex` and never collide with the
+     legacy app's default `md:`.
+     --------------------------------------------------------------------------- */
+  --breakpoint-next-sm: 40rem;  /* 640px  */
+  --breakpoint-next-md: 48rem;  /* 768px  */
+  --breakpoint-next-lg: 64rem;  /* 1024px */
+  --breakpoint-next-xl: 80rem;  /* 1280px */
+  --breakpoint-next-2xl: 96rem; /* 1536px */
+}
+
+/* =============================================================================
+   DARK MODE — token overrides only, scoped to `.next-root.dark`.
+   Surfaces use a tinted (not pure-black) neutral so the magenta primary stays
+   vivid. Depth in dark mode comes from lighter card surfaces + borders rather
+   than heavy shadows. Subtle status surfaces become low-lightness tints with
+   light foregrounds (re-derived, not just inverted).
+   ============================================================================= */
+.next-root.dark {
+  --color-next-bg:              hsl(324 14% 8%);   /* neutral-950 */
+  --color-next-fg:              hsl(320 16% 97%);  /* neutral-50 */
+  --color-next-card:            hsl(322 12% 12%);  /* neutral-900 — raised */
+  --color-next-card-foreground: hsl(320 16% 97%);
+  --color-next-popover:         hsl(320 10% 18%);  /* neutral-800 */
+  --color-next-popover-foreground: hsl(320 16% 97%);
+  --color-next-border:          hsl(318 8% 28%);   /* neutral-700 */
+  --color-next-input:           hsl(316 6% 38%);   /* neutral-600 */
+  --color-next-ring:            hsl(325 60% 60%);  /* brighter ring for contrast */
+  --color-next-muted:           hsl(320 10% 18%);  /* neutral-800 */
+  --color-next-muted-foreground: hsl(315 6% 64%);  /* neutral-400 */
+  --color-next-accent:          hsl(325 40% 20%);  /* dark magenta tint */
+  --color-next-accent-foreground: hsl(325 70% 88%);
+  --color-next-overlay:         hsl(324 30% 4% / 0.65);
+
+  /* Primary stays the same hue but lifts slightly for dark-surface contrast */
+  --color-next-primary:            hsl(325 64% 58%);
+  --color-next-primary-foreground: hsl(324 30% 6%);
+  --color-next-primary-hover:      hsl(325 64% 64%);
+  --color-next-primary-active:     hsl(325 66% 70%);
+  --color-next-primary-subtle:     hsl(325 40% 18%);
+  --color-next-primary-subtle-foreground: hsl(325 70% 86%);
+
+  --color-next-success:                  hsl(152 52% 46%);
+  --color-next-success-foreground:       hsl(150 40% 8%);
+  --color-next-success-subtle:           hsl(153 40% 16%);
+  --color-next-success-subtle-foreground: hsl(150 60% 80%);
+
+  --color-next-warning:                  hsl(38 88% 54%);
+  --color-next-warning-foreground:       hsl(30 60% 8%);
+  --color-next-warning-subtle:           hsl(34 60% 18%);
+  --color-next-warning-subtle-foreground: hsl(40 90% 78%);
+
+  --color-next-danger:                   hsl(356 72% 58%);
+  --color-next-danger-foreground:        hsl(356 40% 8%);
+  --color-next-danger-subtle:            hsl(356 50% 20%);
+  --color-next-danger-subtle-foreground: hsl(356 84% 84%);
+
+  --color-next-info:                     hsl(214 80% 60%);
+  --color-next-info-foreground:          hsl(216 50% 8%);
+  --color-next-info-subtle:              hsl(214 60% 20%);
+  --color-next-info-subtle-foreground:   hsl(212 90% 82%);
+
+  --color-next-ring: hsl(325 64% 62%);
+}
+
+/* =============================================================================
+   BASE STYLES — scoped to `.next-root` so they never touch the legacy app.
+   ============================================================================= */
+@layer base {
+  .next-root {
+    color-scheme: light;
+    background-color: var(--color-next-bg);
+    color: var(--color-next-fg);
+    font-family: var(--font-next-sans);
+    font-size: var(--text-next-base);
+    line-height: var(--leading-next-normal);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .next-root.dark {
+    color-scheme: dark;
+  }
+
+  /* Teleported overlay roots (modal scrim wrapper, toast viewport, …) carry the
+     `.next-root` class ONLY to inherit tokens + dark scoping — they must NOT paint
+     the opaque app background, or the modal scrim would look fully opaque and an
+     empty toast viewport would show as a stray solid rectangle. */
+  .next-root.next-overlay-root {
+    background-color: transparent;
+  }
+
+  /* Sensible resets confined to the next app */
+  .next-root *,
+  .next-root *::before,
+  .next-root *::after {
+    border-color: var(--color-next-border);
+  }
+
+  .next-root :where(h1, h2, h3, h4, h5, h6) {
+    font-weight: var(--font-weight-next-semibold);
+    line-height: var(--leading-next-tight);
+    letter-spacing: var(--tracking-next-tight);
+  }
+
+  /* Consistent, token-driven focus ring for keyboard users only. */
+  .next-root :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-next-ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-next-sm);
+  }
+
+  /* Respect reduced-motion: collapse all token-driven transitions/animations. */
+  @media (prefers-reduced-motion: reduce) {
+    .next-root *,
+    .next-root *::before,
+    .next-root *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* =============================================================================
+   MARKDOWN EDITOR + VIEWER PROSE (Tier 7)
+   -----------------------------------------------------------------------------
+   Token-driven typography shared by the editable ProseMirror surface
+   (`.next-md-content`) and the read-only renderer (`.next-md-prose`). Kept here
+   (not scoped in the SFC) because the editor content is rendered by ProseMirror
+   OUTSIDE Vue's scoped-style attribute reach, and the viewer's HTML comes from
+   `marked` (also un-scopable). Everything stays under `.next-root` so it never
+   leaks into the legacy app. Code/mono uses `--font-next-mono` per project rule.
+   ============================================================================= */
+@layer components {
+  .next-root :where(.next-md-content, .next-md-prose) {
+    color: var(--color-next-fg);
+    font-size: var(--text-next-sm);
+    line-height: var(--leading-next-relaxed);
+    padding: var(--spacing-next-3) var(--spacing-next-4);
+    outline: none;
+  }
+  .next-root :where(.next-md-content) {
+    min-height: 100%;
+  }
+
+  /* Block rhythm */
+  .next-root :where(.next-md-content, .next-md-prose) > * + * {
+    margin-top: var(--spacing-next-3);
+  }
+
+  .next-root :where(.next-md-content, .next-md-prose) h1 {
+    font-size: var(--text-next-2xl);
+    font-weight: var(--font-weight-next-semibold);
+    line-height: var(--leading-next-tight);
+  }
+  .next-root :where(.next-md-content, .next-md-prose) h2 {
+    font-size: var(--text-next-xl);
+    font-weight: var(--font-weight-next-semibold);
+    line-height: var(--leading-next-tight);
+  }
+  .next-root :where(.next-md-content, .next-md-prose) h3 {
+    font-size: var(--text-next-lg);
+    font-weight: var(--font-weight-next-semibold);
+    line-height: var(--leading-next-snug);
+  }
+
+  .next-root :where(.next-md-content, .next-md-prose) a {
+    color: var(--color-next-primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .next-root :where(.next-md-content, .next-md-prose) strong {
+    font-weight: var(--font-weight-next-semibold);
+  }
+
+  .next-root :where(.next-md-content, .next-md-prose) ul,
+  .next-root :where(.next-md-content, .next-md-prose) ol {
+    padding-inline-start: var(--spacing-next-6);
+  }
+  .next-root :where(.next-md-content, .next-md-prose) ul {
+    list-style: disc;
+  }
+  .next-root :where(.next-md-content, .next-md-prose) ol {
+    list-style: decimal;
+  }
+  .next-root :where(.next-md-content, .next-md-prose) li > * + * {
+    margin-top: var(--spacing-next-1);
+  }
+  .next-root :where(.next-md-content, .next-md-prose) li + li {
+    margin-top: var(--spacing-next-1);
+  }
+
+  .next-root :where(.next-md-content, .next-md-prose) blockquote {
+    border-inline-start: 3px solid var(--color-next-primary);
+    padding-inline-start: var(--spacing-next-3);
+    color: var(--color-next-muted-foreground);
+    font-style: italic;
+  }
+
+  /* Inline code + fenced blocks — mono token. */
+  .next-root :where(.next-md-content, .next-md-prose) code {
+    font-family: var(--font-next-mono);
+    font-size: 0.85em;
+    background-color: var(--color-next-muted);
+    padding: 0.1em 0.35em;
+    border-radius: var(--radius-next-sm);
+  }
+  .next-root :where(.next-md-content, .next-md-prose) pre {
+    font-family: var(--font-next-mono);
+    font-size: var(--text-next-xs);
+    line-height: var(--leading-next-normal);
+    background-color: var(--color-next-muted);
+    color: var(--color-next-fg);
+    padding: var(--spacing-next-3);
+    border-radius: var(--radius-next-md);
+    overflow-x: auto;
+  }
+  .next-root :where(.next-md-content, .next-md-prose) pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  .next-root :where(.next-md-content, .next-md-prose) hr {
+    border: 0;
+    border-top: 1px solid var(--color-next-border);
+  }
+
+  /* GFM tables */
+  .next-root :where(.next-md-content, .next-md-prose) table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-next-sm);
+    overflow: hidden;
+  }
+  .next-root :where(.next-md-content, .next-md-prose) :where(th, td) {
+    border: 1px solid var(--color-next-border);
+    padding: var(--spacing-next-1_5) var(--spacing-next-2_5);
+    text-align: start;
+    vertical-align: top;
+  }
+  .next-root :where(.next-md-content, .next-md-prose) th {
+    background-color: var(--color-next-muted);
+    font-weight: var(--font-weight-next-semibold);
+  }
+  /* Editable table cells get a selection highlight from the table extension. */
+  .next-root .next-md-content .selectedCell::after {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--color-next-primary) 16%, transparent);
+    pointer-events: none;
+    content: '';
+  }
+  .next-root .next-md-content :where(th, td) {
+    position: relative;
+  }
+  .next-root .next-md-content .column-resize-handle {
+    position: absolute;
+    right: -2px;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background-color: var(--color-next-primary);
+    pointer-events: none;
+  }
+
+  /* Empty-doc placeholder (local Placeholder extension). */
+  .next-root .next-md-content p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    color: var(--color-next-muted-foreground);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+}

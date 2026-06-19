@@ -1,0 +1,145 @@
+// extensions/types.ts — runtime payloads + feature configs for the PART 2
+// app-specific editor nodes (mention, variable, if-block, AI chip). These mirror
+// the LEGACY `types/editor.ts` shapes EXACTLY so the serialized markdown
+// directives are byte-compatible between the old and the "next" editor (see
+// FORMAT.md), AND so the full operations-pipeline / boolean-condition / AI-panel
+// BEHAVIOR can be replicated with next components.
+
+/** The directive payload schema version. Legacy FORMAT.md pins this at 1. */
+export const DATA_VERSION = 1 as const;
+
+export type VariablePrimitive = 'text' | 'number' | 'boolean';
+
+// --- Mention ----------------------------------------------------------------
+// FORMAT.md: `@[mention]("{…}")` with at least `id`, `name`, `avatar`.
+export interface MentionNodeAttrs {
+  id: string;
+  name: string;
+  avatar?: string | null;
+}
+
+/** Item shape returned by the async `fetchMentions(query)` source. */
+export interface MentionItem {
+  id: string;
+  /** Display label (legacy serializes this as `name`). */
+  label: string;
+  avatar?: string | null;
+}
+
+// --- Variable ---------------------------------------------------------------
+// FORMAT.md: `@[variable]("{id,name,type,locked,pipeline,resultType,v}")`.
+
+/** A predefined source variable the user can insert / build a pipeline on. */
+export interface VariableDefinition {
+  id: string;
+  name: string;
+  type: VariablePrimitive;
+}
+
+export type VariableOperationArgumentType = VariablePrimitive | 'select';
+
+export interface VariableOperationArgumentDefinition {
+  id: string;
+  label: string;
+  type: VariableOperationArgumentType;
+  placeholder?: string;
+  options?: Array<{ label: string; value: string }>;
+  defaultValue?: string | number | boolean;
+}
+
+/** An operation in the catalog: valid on `inputTypes`, yields `outputType`. */
+export interface VariableOperationDefinition {
+  id: string;
+  label: string;
+  description?: string;
+  inputTypes: VariablePrimitive[];
+  outputType: VariablePrimitive;
+  args?: VariableOperationArgumentDefinition[];
+}
+
+export interface VariablePipelineStep {
+  stepId: string;
+  operationId: string;
+  args: Record<string, string | number | boolean>;
+  outputType: VariablePrimitive;
+}
+
+export interface VariableNodeAttrs {
+  id: string;
+  name: string;
+  type: VariablePrimitive;
+  locked: boolean;
+  pipeline: VariablePipelineStep[];
+  resultType: VariablePrimitive;
+}
+
+// --- AI text ----------------------------------------------------------------
+// FORMAT.md: `@[ai-text]("{id,personaId|persona,prompt,labels,v}")`. The legacy
+// node attr is `personaId`; the FORMAT sample shows `persona` — we read both on
+// parse and write `personaId` (matching the legacy node), staying portable.
+export interface AiLabelOption {
+  id: string;
+  name: string;
+  color?: string;
+}
+
+export interface AiPersona {
+  id: string;
+  label: string;
+}
+
+export interface AiTextNodeAttrs {
+  id: string;
+  personaId: string | null;
+  /** Markdown (may itself contain inline directives + if-blocks). */
+  prompt: string;
+  labels: string[];
+}
+
+// --- If-block ---------------------------------------------------------------
+// FORMAT.md fenced container with `[[IF …]] / [[ELSE_IF …]] / [[ELSE]] / [[/IF]]`.
+export type IfBranchKind = 'if' | 'else-if' | 'else';
+
+export interface IfConditionState {
+  variableId: string;
+  pipeline: VariablePipelineStep[];
+  resultType: 'boolean';
+}
+
+/** Attrs carried on each `ifBranch` node (its body is editable node content). */
+export interface IfBranchNodeAttrs {
+  id: string;
+  kind: IfBranchKind;
+  condition: IfConditionState | null;
+}
+
+export interface IfBlockNodeAttrs {
+  id: string;
+}
+
+// --- Feature configs --------------------------------------------------------
+
+/** Variable feature: predefined variables + the operations catalog. */
+export interface VariableFeatureConfig {
+  variables: VariableDefinition[];
+  operationsCatalog: VariableOperationDefinition[];
+  /** Trigger char for the insert suggestion (default `{`). */
+  trigger?: string;
+}
+
+export interface IfBlockFeatureConfig {
+  maxElseIf?: number;
+  /** Max nesting depth (an ifBlock counts as one level). Default 3. */
+  maxDepth?: number;
+}
+
+export interface AiTextFeatureConfig {
+  personas?: AiPersona[];
+  labelsEnabled?: boolean;
+  labelsCatalog?: AiLabelOption[];
+}
+
+/** Small id helper (legacy parity: `prefix_xxxxxx`). */
+export function generateId(prefix: string): string {
+  return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
+}

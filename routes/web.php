@@ -13,3 +13,7 @@ Route::get('/app{path?}', [AppController::class, 'index'])
     ->where('path', '.*')
     ->name('app');
 
+Route::get('/next{path?}', [AppController::class, 'next'])
+    ->where('path', '.*')
+    ->name('next');
+
