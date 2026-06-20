@@ -12,6 +12,7 @@
 // otherwise — so it announces on insertion.
 import { computed } from 'vue';
 import Icon, { type IconName } from '../primitives/Icon.vue';
+import Button from '../primitives/Button.vue';
 import type { ToastVariant, ToastAction } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
 
@@ -84,23 +85,24 @@ function onAction(): void {
       <p v-if="description" class="mt-next-0_5 text-next-sm text-next-muted-foreground">
         {{ description }}
       </p>
-      <button
+      <Button
         v-if="action"
-        type="button"
-        class="mt-next-2 rounded-next-sm text-next-sm font-next-medium text-next-primary underline-offset-4 hover:underline"
+        variant="link"
+        class="mt-next-2 text-next-sm"
         @click="onAction"
       >
         {{ action.label }}
-      </button>
+      </Button>
     </div>
 
-    <button
-      type="button"
-      class="-mr-next-1 -mt-next-1 shrink-0 rounded-next-md p-next-1 text-next-muted-foreground transition-colors duration-[var(--duration-next-fast)] hover:bg-next-accent hover:text-next-accent-foreground"
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      class="-mr-next-1 -mt-next-1 shrink-0 text-next-muted-foreground"
       :aria-label="t('toast.dismiss', 'Dismiss notification')"
       @click="emit('dismiss')"
     >
       <Icon name="x" class="text-next-base" />
-    </button>
+    </Button>
   </div>
 </template>

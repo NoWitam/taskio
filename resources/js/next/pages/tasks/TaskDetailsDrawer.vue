@@ -36,10 +36,8 @@ import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Badge from '../../ui/primitives/Badge.vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import Button from '../../ui/primitives/Button.vue';
+import Avatar from '../../ui/primitives/Avatar.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
-import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
-import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
-import DropdownMenuLabel from '../../ui/overlay/DropdownMenuLabel.vue';
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import UserSelect from '../../ui/forms/UserSelect.vue';
@@ -52,15 +50,20 @@ import Alert from '../../ui/feedback/Alert.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Timeline, { type TimelineEntry } from '../../ui/patterns/Timeline.vue';
 import TaskComments from './TaskComments.vue';
+import TaskAttachmentsField from './TaskAttachmentsField.vue';
 import { useTasksStore } from '../../app/stores/tasks';
 import { useToast } from '../../app/composables/useToast';
 import { useConfirm } from '../../app/composables/useConfirm';
+import { useDebounce } from '../../app/composables/useDebounce';
+import { useOutsideClick } from '../../app/composables/useOutsideClick';
+import { useInfiniteScroll } from '../../app/composables/useInfiniteScroll';
 import { useI18n } from '../../app/i18n';
+import type { IconName } from '../../ui/primitives/icons';
 import {
   ALL_PRIORITIES,
-  offerableStatuses,
   priorityMeta,
   statusDescriptor,
+  type TaskAttachment,
   type TaskDetail,
   type TaskPriority,
   type TaskStatus,
@@ -103,6 +106,18 @@ const deleting = ref(false);
 const restoring = ref(false);
 const forceDeleting = ref(false);
 
+// --- Responsive pane switching -------------------------------------------
+// On wide screens the workspace shows three columns at once (properties /
+// content / comments). Below `next-lg` they collapse into a single column whose
+// visible region is driven by this SegmentedControl-backed toggle.
+type DetailPane = 'content' | 'comments' | 'properties';
+const mobilePane = ref<DetailPane>('content');
+const paneOptions = computed<SegmentOption<DetailPane>[]>(() => [
+  { value: 'content', label: t('tasks.detail.paneContent') },
+  { value: 'comments', label: t('tasks.detail.paneComments') },
+  { value: 'properties', label: t('tasks.detail.paneProperties') },
+]);
+
 // --- Load on open / id change --------------------------------------------
 watch(
   () => [open.value, props.taskId] as const,
@@ -143,13 +158,39 @@ const priorityLabel = computed(() =>
 const isTrashed = computed(() => task.value?.status === 'trash');
 const isLocked = computed(() => !!task.value?.is_in_approval);
 
-// Allowed next statuses to offer in the switcher (advisory; server is final).
-const offerable = computed<TaskStatus[]>(() =>
-  task.value ? offerableStatuses(task.value) : [],
-);
-function statusOptionMap(status: TaskStatus) {
-  return { [status]: statusDescriptor(status, t(`tasks.statuses.${status}`)) };
+// Status transitions modelled as SEMANTIC actions (mirrors the legacy task
+// dialog): the offered next steps depend on the current status, each with its
+// own label/variant/icon. Shown in the footer alongside the lifecycle actions.
+interface StatusAction {
+  label: string;
+  status: TaskStatus;
+  variant: 'primary' | 'secondary';
+  icon: IconName;
 }
+const statusActions = computed<StatusAction[]>(() => {
+  const tk = task.value;
+  if (!tk || isTrashed.value || isLocked.value) return [];
+  const actions: StatusAction[] = [];
+  switch (tk.status) {
+    case 'to_do':
+      actions.push({ label: 'startTask', status: 'in_progress', variant: 'primary', icon: 'arrow-right' });
+      break;
+    case 'in_progress':
+      actions.push({ label: 'sendToTest', status: 'in_test', variant: 'secondary', icon: 'flag' });
+      actions.push({ label: 'complete', status: 'done', variant: 'primary', icon: 'check' });
+      break;
+    case 'in_test':
+      actions.push({ label: 'backToProgress', status: 'in_progress', variant: 'secondary', icon: 'undo' });
+      actions.push({ label: 'complete', status: 'done', variant: 'primary', icon: 'check' });
+      break;
+    case 'done':
+      actions.push({ label: 'backToProgress', status: 'in_progress', variant: 'secondary', icon: 'undo' });
+      break;
+    default:
+      break;
+  }
+  return actions;
+});
 
 // --- Editable field models (mirror the FULL StoreTasksRequest payload) ----
 // A local mirror so a control can show the new value optimistically; reverted
@@ -161,6 +202,8 @@ interface EditState {
   deadline: string | null;
   assigned_id: string | null;
   labels: string[];
+  /** Temp file ids of NEW uploads (existing attachments live in attachmentSeed). */
+  attachments: string[];
 }
 const editState = reactive<EditState>({
   title: '',
@@ -169,6 +212,7 @@ const editState = reactive<EditState>({
   deadline: null,
   assigned_id: null,
   labels: [],
+  attachments: [],
 });
 
 // Seeds so already-selected assignee/labels render before async pages load.
@@ -178,6 +222,7 @@ const assigneeSeed = ref<
 const labelSeed = ref<
   Array<{ id: string; name: string; color?: string | null; icon?: string | null }>
 >([]);
+const attachmentSeed = ref<TaskAttachment[]>([]);
 
 // Per-field saving + 422 error state, keyed by the backend field name.
 const savingField = ref<keyof EditState | null>(null);
@@ -208,6 +253,8 @@ function syncEditFromTask(t0: TaskDetail | null): void {
     color: l.color ?? null,
     icon: l.icon ?? null,
   }));
+  editState.attachments = [];
+  attachmentSeed.value = t0.attachments ?? [];
 }
 
 watch(task, (t0) => syncEditFromTask(t0), { immediate: true });
@@ -253,9 +300,32 @@ async function commitDescription(): Promise<void> {
   editingDescription.value = false;
 }
 
+// Clicking away from an open inline editor commits it (exits edit mode). The
+// edit containers are excluded from the "outside" set, so Save/Cancel still work.
+const titleEditRef = ref<HTMLElement | null>(null);
+const descEditRef = ref<HTMLElement | null>(null);
+useOutsideClick(
+  titleEditRef,
+  () => {
+    if (editingTitle.value) void commitTitle();
+  },
+  editingTitle,
+);
+useOutsideClick(
+  descEditRef,
+  () => {
+    if (editingDescription.value) void commitDescription();
+  },
+  editingDescription,
+);
+
 // --- Priority options -----------------------------------------------------
 const priorityOptions = computed<SegmentOption<TaskPriority>[]>(() =>
-  ALL_PRIORITIES.map((p) => ({ value: p, label: t(`tasks.priorities.${p}`) })),
+  ALL_PRIORITIES.map((p) => ({
+    value: p,
+    label: t(`tasks.priorities.${p}`),
+    icon: priorityMeta(p).icon,
+  })),
 );
 
 // --- Persist a single field via the FULL update payload -------------------
@@ -267,14 +337,17 @@ function buildPayload(): TaskWritePayload {
     deadline: editState.deadline ?? null,
     assigned_id: editState.assigned_id ?? '',
     labels: editState.labels,
+    // Only NEW uploads are sent; the backend attaches them additively, so
+    // existing attachments are preserved and removed only via the dedicated
+    // delete endpoint.
+    attachments: editState.attachments,
   };
-  // Preserve form/pipeline links + current attachments (no pickers here) so an
-  // inline edit never wipes them.
+  // Preserve form/pipeline links (no pickers here) so an inline edit never
+  // wipes them.
   if (task.value) {
     if (task.value.form_id) payload.form_id = task.value.form_id;
     if (task.value.approval_pipeline_id)
       payload.approval_pipeline_id = task.value.approval_pipeline_id;
-    payload.attachments = (task.value.attachments ?? []).map((a) => String(a.id));
   }
   return payload;
 }
@@ -308,6 +381,38 @@ async function persist(field: keyof EditState): Promise<void> {
     syncEditFromTask(task.value);
   } finally {
     savingField.value = null;
+  }
+}
+
+// Inline metadata edits (assignee / deadline / priority / labels) are debounced
+// so rapid changes coalesce into a single request instead of firing on every
+// interaction. Title/description still commit explicitly (Save / click-away).
+const debouncedPersist = useDebounce((field: keyof EditState) => {
+  void persist(field);
+}, 500);
+
+function selectPriority(value: TaskPriority): void {
+  if (isTrashed.value) return;
+  editState.priority = value;
+  debouncedPersist('priority');
+}
+
+// New uploads land in editState.attachments as their temp ids resolve; persist
+// (debounced) so several quick uploads coalesce into one additive update.
+function onAttachmentsChanged(): void {
+  if (isTrashed.value) return;
+  debouncedPersist('attachments');
+}
+
+// Removing an EXISTING attachment hits the dedicated delete endpoint; the store
+// refreshes the task, which re-seeds the field via the `task` watcher.
+async function removeExistingAttachment(fileId: string): Promise<void> {
+  if (!task.value) return;
+  try {
+    await store.removeAttachment(task.value.id, fileId);
+    toast.success(t('tasks.toasts.updated'));
+  } catch {
+    toast.danger(t('attachments.removeError', 'Could not remove the attachment.'));
   }
 }
 
@@ -397,17 +502,16 @@ function extractMessage(err: unknown, fallback: string): string {
   return firstFieldError ?? res?.data?.message ?? fallback;
 }
 
-// --- Deadline tone --------------------------------------------------------
-const deadlineStatusLabel = computed(() => {
-  if (task.value?.is_overdue) return t('tasks.deadline.overdue');
-  if (task.value?.is_at_risk) return t('tasks.deadline.atRisk');
-  return '';
-});
-const deadlineToneClass = computed(() => {
-  if (!task.value?.deadline) return 'text-next-muted-foreground';
-  if (task.value.is_overdue) return 'text-next-danger';
-  if (task.value.is_at_risk) return 'text-next-warning';
-  return 'text-next-fg';
+// Deadline badge shown directly under the title (overdue / at-risk only — the
+// most important state must be visible at a glance).
+const deadlineBadge = computed<{ variant: 'danger' | 'warning'; icon: 'alert-triangle' | 'alert-circle'; label: string } | null>(() => {
+  if (task.value?.is_overdue) {
+    return { variant: 'danger', icon: 'alert-triangle', label: t('tasks.deadline.overdue') };
+  }
+  if (task.value?.is_at_risk) {
+    return { variant: 'warning', icon: 'alert-circle', label: t('tasks.deadline.atRisk') };
+  }
+  return null;
 });
 
 // --- Changelog → Timeline -------------------------------------------------
@@ -432,14 +536,29 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
     tone: 'neutral',
   })),
 );
+
+// Auto-load the next changelog page when the sentinel scrolls into view.
+const activityScrollRef = ref<HTMLElement | null>(null);
+const { sentinelRef: changelogSentinelRef } = useInfiniteScroll({
+  root: activityScrollRef,
+  onLoadMore: () => {
+    if (props.taskId != null) void store.loadMoreChangelog(props.taskId);
+  },
+  canLoadMore: () =>
+    store.changelogHasMore &&
+    !store.changelogLoading &&
+    !store.changelogLoadingMore &&
+    !store.changelogError,
+});
 </script>
 
 <template>
   <Drawer
     v-model:open="open"
     side="right"
-    size="lg"
+    size="cover"
     floating
+    :scroll-body="false"
     :aria-label="t('tasks.detail.title')"
     @close="onClose"
   >
@@ -449,7 +568,7 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
       </span>
       <span v-else-if="task" class="block">
         <!-- Inline-editable title -->
-        <span v-if="editingTitle" class="flex items-center gap-next-2">
+        <span v-if="editingTitle" ref="titleEditRef" class="flex items-center gap-next-2">
           <TextInput
             v-model="editState.title"
             class="flex-1"
@@ -477,19 +596,47 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
         <button
           v-else
           type="button"
-          class="group flex w-full items-start gap-next-2 rounded-next-sm text-left text-next-lg font-next-semibold text-next-fg hover:text-next-primary disabled:cursor-default disabled:hover:text-next-fg"
+          class="flex w-full items-start rounded-next-sm text-left text-next-2xl font-next-semibold text-next-fg transition-colors hover:text-next-primary disabled:cursor-default disabled:hover:text-next-fg"
+          :class="isTrashed ? '' : 'cursor-text'"
           :disabled="isTrashed"
           :aria-label="t('tasks.detail.editTitle')"
           @click="startTitleEdit"
         >
           <span class="min-w-0 flex-1 break-words">{{ task.title }}</span>
-          <Icon
-            v-if="!isTrashed"
-            name="pencil"
-            class="mt-1 shrink-0 text-next-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-            aria-hidden="true"
-          />
         </button>
+
+        <!-- Key state at a glance, in importance order: deadline alert →
+             status → priority → in-approval lock → labels. -->
+        <div class="mt-next-2 flex flex-wrap items-center gap-next-2">
+          <Badge
+            v-if="deadlineBadge"
+            :variant="deadlineBadge.variant"
+            tone="subtle"
+            :icon="deadlineBadge.icon"
+          >
+            {{ deadlineBadge.label }}
+          </Badge>
+          <StatusBadge :status="task.status" :status-map="statusMap" size="sm" />
+          <Badge
+            v-if="priority"
+            :variant="priority.tone"
+            tone="subtle"
+            :icon="priority.icon"
+          >
+            {{ priorityLabel }}
+          </Badge>
+          <Badge v-if="task.is_in_approval" variant="info" tone="subtle" icon="lock">
+            {{ t('tasks.detail.inApproval') }}
+          </Badge>
+          <Badge
+            v-for="label in task.labels ?? []"
+            :key="label.id"
+            variant="neutral"
+            tone="subtle"
+          >
+            {{ label.name }}
+          </Badge>
+        </div>
       </span>
       <span v-else>{{ t('tasks.detail.title') }}</span>
     </template>
@@ -521,94 +668,40 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
     </EmptyState>
 
     <!-- SUCCESS -->
-    <div v-else-if="task" class="flex flex-col gap-next-5">
+    <div v-else-if="task" class="flex h-full min-h-0 flex-col gap-next-4">
       <!-- A page-level save error (e.g. 422 message) surfaced once. -->
-      <Alert v-if="fieldErrors.form" variant="danger" size="sm" :title="t('tasks.form.errorTitle')">
+      <Alert v-if="fieldErrors.form" variant="danger" size="sm" class="shrink-0" :title="t('tasks.form.errorTitle')">
         {{ fieldErrors.form }}
       </Alert>
 
-      <!-- Header controls: PROMINENT status switcher + priority + approval. -->
-      <section class="flex flex-col gap-next-2" :aria-label="t('tasks.detail.status')">
-        <span class="text-next-xs font-next-medium text-next-muted-foreground">
-          {{ t('tasks.detail.status') }}
-        </span>
-        <div class="flex flex-wrap items-center gap-next-2">
-          <!-- Trashed tasks can't transition (restore/force-delete only). -->
-          <StatusBadge
-            v-if="isTrashed"
-            :status="task.status"
-            :status-map="statusMap"
-          />
-          <!-- Locked (in approval) → show the status but no switcher. -->
-          <StatusBadge
-            v-else-if="isLocked"
-            :status="task.status"
-            :status-map="statusMap"
-          />
-          <DropdownMenu
-            v-else
-            :aria-label="t('tasks.detail.changeStatusLabel')"
-          >
-            <template #trigger="{ props: triggerProps }">
-              <button
-                type="button"
-                class="flex items-center gap-next-2 rounded-next-md border border-next-border bg-next-card px-next-2 py-next-1 text-next-sm transition-colors duration-[var(--duration-next-fast)] hover:bg-next-accent hover:text-next-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="changingStatus || offerable.length === 0"
-                :aria-label="t('tasks.detail.changeStatusLabel')"
-                :aria-haspopup="triggerProps['aria-haspopup']"
-                :aria-expanded="triggerProps['aria-expanded'] === 'true'"
-                :aria-controls="triggerProps['aria-controls']"
-              >
-                <StatusBadge :status="task.status" :status-map="statusMap" size="sm" />
-                <Icon
-                  :name="changingStatus ? 'loader' : 'chevron-down'"
-                  :class="changingStatus ? 'animate-spin' : ''"
-                  class="shrink-0 text-next-muted-foreground"
-                  aria-hidden="true"
-                />
-              </button>
-            </template>
-
-            <DropdownMenuLabel>{{ t('tasks.detail.changeStatusLabel') }}</DropdownMenuLabel>
-            <DropdownMenuItem
-              v-for="status in offerable"
-              :key="status"
-              :label="t(`tasks.statuses.${status}`)"
-              @select="onChangeStatus(status)"
-            >
-              <StatusBadge :status="status" :status-map="statusOptionMap(status)" size="sm" />
-            </DropdownMenuItem>
-          </DropdownMenu>
-
-          <Badge
-            v-if="priority"
-            :variant="priority.tone"
-            tone="subtle"
-            :icon="priority.icon"
-            :title="t('tasks.priorityLabel', '', { label: priorityLabel })"
-          >
-            {{ priorityLabel }}
-          </Badge>
-          <Badge v-if="task.is_in_approval" variant="info" tone="subtle" icon="lock">
-            {{ t('tasks.detail.inApproval') }}
-          </Badge>
-        </div>
-        <!-- Live region so a status change is announced to AT. -->
-        <span class="sr-only" role="status" aria-live="polite">
-          {{ t('tasks.statuses.' + task.status) }}
-        </span>
-      </section>
-
       <!-- Approval lock hint -->
-      <Alert v-if="task.is_in_approval" variant="info" size="sm">
+      <Alert v-if="task.is_in_approval" variant="info" size="sm" class="shrink-0">
         {{ t('tasks.detail.inApprovalHint') }}
       </Alert>
 
-      <!-- Editable metadata: assignee / priority / deadline / labels. -->
-      <section
-        class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2"
-        :aria-label="t('tasks.detail.metadata')"
-      >
+      <!-- Narrow-screen pane switcher (hidden once the 3 panes fit side by side). -->
+      <div class="shrink-0 next-lg:hidden">
+        <SegmentedControl
+          v-model="mobilePane"
+          :options="paneOptions"
+          equal-width
+          :aria-label="t('tasks.detail.title')"
+        />
+      </div>
+
+      <!-- Three-pane workspace: properties | content | comments. -->
+      <div class="flex min-h-0 flex-1 flex-col gap-next-4 next-lg:flex-row next-lg:gap-next-6">
+        <!-- LEFT RAIL: properties (assignee, priority, deadline, labels, creator, attachments). -->
+        <aside
+          class="min-h-0 overflow-y-auto next-lg:w-[24rem] next-lg:shrink-0 next-lg:border-r next-lg:border-next-border next-lg:pr-next-6"
+          :class="mobilePane === 'properties' ? 'flex flex-1 flex-col' : 'hidden next-lg:flex next-lg:flex-col'"
+          :aria-label="t('tasks.detail.paneProperties')"
+        >
+          <!-- Editable metadata: assignee / priority / deadline / labels. -->
+          <section
+            class="flex flex-col gap-next-4"
+            :aria-label="t('tasks.detail.metadata')"
+          >
         <FormField :label="t('tasks.detail.assignee')" :error="fieldErrors.assigned_id">
           <UserSelect
             v-model="editState.assigned_id"
@@ -617,7 +710,7 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
             :aria-invalid="!!fieldErrors.assigned_id"
             :placeholder="t('tasks.form.assigneePlaceholder')"
             :aria-label="t('tasks.detail.assignee')"
-            @update:model-value="persist('assigned_id')"
+            @update:model-value="debouncedPersist('assigned_id')"
           />
         </FormField>
 
@@ -627,33 +720,26 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
             :readonly="isTrashed"
             :aria-invalid="!!fieldErrors.deadline"
             :aria-label="t('tasks.detail.deadline')"
-            @update:model-value="persist('deadline')"
+            @update:model-value="debouncedPersist('deadline')"
           />
-          <template v-if="deadlineStatusLabel">
-            <span class="mt-next-1 flex items-center gap-next-1 text-next-xs" :class="deadlineToneClass">
-              <Icon name="alert-triangle" aria-hidden="true" />
-              {{ deadlineStatusLabel }}
-            </span>
-          </template>
         </FormField>
 
         <FormField
-          class="next-sm:col-span-2"
           :label="t('tasks.detail.priority')"
           :error="fieldErrors.priority"
         >
           <SegmentedControl
             v-model="editState.priority"
             :options="priorityOptions"
+            size="sm"
             equal-width
             :disabled="isTrashed"
             :aria-label="t('tasks.detail.priority')"
-            @update:model-value="persist('priority')"
+            @update:model-value="selectPriority"
           />
         </FormField>
 
         <FormField
-          class="next-sm:col-span-2"
           :label="t('tasks.detail.labels')"
           :error="fieldErrors.labels"
         >
@@ -663,22 +749,50 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
             :readonly="isTrashed"
             :placeholder="t('tasks.form.labelsPlaceholder')"
             :aria-label="t('tasks.detail.labels')"
-            @update:model-value="persist('labels')"
+            @update:model-value="debouncedPersist('labels')"
           />
         </FormField>
 
         <!-- Creator stays read-only (not part of the write contract). -->
-        <div class="flex flex-col gap-next-1 next-sm:col-span-2">
-          <span class="text-next-xs font-next-medium text-next-muted-foreground">
+        <div class="flex flex-col gap-next-1_5">
+          <span class="text-next-sm font-next-medium text-next-fg">
             {{ t('tasks.detail.creator') }}
           </span>
-          <span class="text-next-sm text-next-fg">{{ task.creator?.name }}</span>
+          <span class="flex items-center gap-next-2">
+            <Avatar :name="task.creator?.name" size="sm" class="shrink-0" />
+            <span class="min-w-0 truncate text-next-sm text-next-fg">{{ task.creator?.name }}</span>
+          </span>
         </div>
-      </section>
 
-      <!-- Description: view ⇄ inline edit. -->
-      <section :aria-label="t('tasks.detail.description')">
-        <div class="mb-next-2 flex items-center justify-between gap-next-2">
+            <!-- Attachments: existing (removable) + new uploads, or read-only when trashed. -->
+            <section :aria-label="t('tasks.detail.attachments')">
+              <h3 class="mb-next-2 text-next-sm font-next-semibold text-next-fg">
+                {{ t('tasks.detail.attachments') }}
+              </h3>
+              <TaskAttachmentsField
+                v-model="editState.attachments"
+                :seed="attachmentSeed"
+                :max="5"
+                :readonly="isTrashed"
+                @update:model-value="onAttachmentsChanged"
+                @remove-existing="removeExistingAttachment"
+              />
+            </section>
+          </section>
+        </aside>
+
+        <!-- CENTER: description + work tabs. The column is a flex column so the
+             tabs fill the remaining height down to the bottom of the modal. -->
+        <section
+          class="min-w-0 min-h-0 next-lg:flex-1"
+          :class="mobilePane === 'content' ? 'flex flex-1 flex-col gap-next-5' : 'hidden next-lg:flex next-lg:flex-1 next-lg:flex-col next-lg:gap-next-5'"
+          :aria-label="t('tasks.detail.paneContent')"
+        >
+
+      <!-- Description: view ⇄ inline edit. Taller top part of the center column;
+           only the description body scrolls (heading + edit button stay fixed). -->
+      <section class="flex min-h-0 flex-2 flex-col" :aria-label="t('tasks.detail.description')">
+        <div class="mb-next-2 flex shrink-0 items-center gap-next-2">
           <h3 class="text-next-sm font-next-semibold text-next-fg">
             {{ t('tasks.detail.description') }}
           </h3>
@@ -693,112 +807,164 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
           </Button>
         </div>
 
-        <template v-if="editingDescription">
-          <MarkdownEditor
-            v-model="editState.description"
-            :placeholder="t('tasks.form.descriptionPlaceholder')"
-            :aria-label="t('tasks.detail.description')"
-          />
-          <div class="mt-next-2 flex items-center gap-next-2">
-            <Button
-              size="sm"
-              :loading="savingField === 'description'"
-              @click="commitDescription"
-            >
-              {{ t('tasks.form.save') }}
-            </Button>
-            <Button size="sm" variant="ghost" @click="cancelDescriptionEdit">
-              {{ t('tasks.form.cancel') }}
-            </Button>
-          </div>
-        </template>
-        <template v-else>
-          <MarkdownViewer
-            v-if="descriptionMarkdown"
-            :source="descriptionMarkdown"
-            :aria-label="t('tasks.detail.description')"
-          />
-          <p v-else class="text-next-sm italic text-next-muted-foreground">
-            {{ t('tasks.detail.noDescription') }}
-          </p>
-        </template>
-      </section>
-
-      <!-- Attachments (read-only) -->
-      <section v-if="task.attachments?.length" :aria-label="t('tasks.detail.attachments')">
-        <h3 class="mb-next-2 text-next-sm font-next-semibold text-next-fg">
-          {{ t('tasks.detail.attachments') }}
-        </h3>
-        <ul class="flex flex-col gap-next-2">
-          <li
-            v-for="file in task.attachments"
-            :key="file.id"
-            class="flex items-center gap-next-3 rounded-next-md border border-next-border bg-next-card p-next-2"
-          >
-            <Icon name="file-text" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
-            <span class="min-w-0 flex-1 truncate text-next-sm text-next-fg">{{ file.name }}</span>
-            <span v-if="file.size_human" class="shrink-0 text-next-xs text-next-muted-foreground">
-              {{ file.size_human }}
-            </span>
-            <a
-              :href="file.path"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="shrink-0 rounded-next-sm p-next-1 text-next-muted-foreground hover:text-next-fg"
-              :aria-label="t('tasks.detail.download', '', { name: file.name })"
-            >
-              <Icon name="download" aria-hidden="true" />
-            </a>
-          </li>
-        </ul>
-      </section>
-
-      <!-- Tabs: Comments + Activity -->
-      <Tabs
-        :items="[
-          { value: 'comments', label: t('tasks.detail.tabComments'), icon: 'mail' },
-          { value: 'activity', label: t('tasks.detail.tabActivity'), icon: 'clock' },
-        ]"
-        :aria-label="t('tasks.detail.title')"
-      >
-        <template #panel-comments>
-          <TaskComments :task-id="task.id" class="pt-next-3" />
-        </template>
-        <template #panel-activity>
-          <div class="pt-next-3">
-            <Alert v-if="store.changelogError" variant="danger" size="sm">
-              {{ t('tasks.changelog.loadError') }}
-            </Alert>
-            <Timeline
-              v-else
-              :items="changelogEntries"
-              :loading="store.changelogLoading"
-              compact
-              :aria-label="t('tasks.changelog.title')"
-              :empty-title="t('tasks.changelog.empty')"
-              :empty-description="t('tasks.changelog.emptyDescription')"
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          <template v-if="editingDescription">
+            <!-- Edit mode: the editor fills the area and scrolls INTERNALLY (its
+                 toolbar stays put), while Save/Cancel stay pinned at the bottom. -->
+            <div ref="descEditRef" class="flex h-full min-h-0 flex-col gap-next-2">
+              <MarkdownEditor
+                v-model="editState.description"
+                class="next-desc-editor flex min-h-0 flex-1 flex-col"
+                max-height="100%"
+                :placeholder="t('tasks.form.descriptionPlaceholder')"
+                :aria-label="t('tasks.detail.description')"
+              />
+              <div class="flex shrink-0 items-center gap-next-2">
+                <Button
+                  size="sm"
+                  :loading="savingField === 'description'"
+                  @click="commitDescription"
+                >
+                  {{ t('tasks.form.save') }}
+                </Button>
+                <Button size="sm" variant="ghost" @click="cancelDescriptionEdit">
+                  {{ t('tasks.form.cancel') }}
+                </Button>
+              </div>
+            </div>
+          </template>
+          <template v-else>
+            <MarkdownViewer
+              v-if="descriptionMarkdown"
+              :source="descriptionMarkdown"
+              :aria-label="t('tasks.detail.description')"
             />
+            <p v-else class="text-next-sm italic text-next-muted-foreground">
+              {{ t('tasks.detail.noDescription') }}
+            </p>
+          </template>
+        </div>
+      </section>
+
+          <!-- Work tabs (shorter bottom part): Activity (live) + Form / Checklist / Approval. -->
+          <div class="flex min-h-0 flex-3 flex-col">
+          <Tabs
+            variant="pills"
+            fill
+            :items="[
+              { value: 'activity', label: t('tasks.detail.tabActivity'), icon: 'clock' },
+              { value: 'form', label: t('tasks.detail.tabForm'), icon: 'file-text' },
+              { value: 'checklist', label: t('tasks.detail.tabChecklist'), icon: 'list-checks' },
+              { value: 'approval', label: t('tasks.detail.tabApproval'), icon: 'check-circle' },
+            ]"
+            :aria-label="t('tasks.detail.paneContent')"
+          >
+            <template #panel-activity>
+              <div ref="activityScrollRef" class="min-h-0 flex-1 overflow-y-auto pt-next-3">
+                <Alert v-if="store.changelogError" variant="danger" size="sm">
+                  {{ t('tasks.changelog.loadError') }}
+                </Alert>
+                <template v-else>
+                  <Timeline
+                    :items="changelogEntries"
+                    :loading="store.changelogLoading"
+                    compact
+                    :aria-label="t('tasks.changelog.title')"
+                    :empty-title="t('tasks.changelog.empty')"
+                    :empty-description="t('tasks.changelog.emptyDescription')"
+                  />
+                  <div
+                    v-if="store.changelogHasMore && !store.changelogLoading"
+                    ref="changelogSentinelRef"
+                    class="h-px w-full"
+                    aria-hidden="true"
+                  />
+                  <div
+                    v-if="store.changelogLoadingMore"
+                    class="flex justify-center py-next-2 text-next-muted-foreground"
+                  >
+                    <Icon name="loader" class="animate-spin" />
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template #panel-form>
+              <EmptyState
+                class="pt-next-3"
+                icon="file-text"
+                :title="t('tasks.detail.tabForm')"
+                :description="t('tasks.detail.comingSoon')"
+              />
+            </template>
+            <template #panel-checklist>
+              <EmptyState
+                class="pt-next-3"
+                icon="list-checks"
+                :title="t('tasks.detail.tabChecklist')"
+                :description="t('tasks.detail.comingSoon')"
+              />
+            </template>
+            <template #panel-approval>
+              <EmptyState
+                class="pt-next-3"
+                icon="check-circle"
+                :title="t('tasks.detail.tabApproval')"
+                :description="t('tasks.detail.comingSoon')"
+              />
+            </template>
+          </Tabs>
           </div>
-        </template>
-      </Tabs>
+        </section>
+
+        <!-- RIGHT: comments are ALWAYS visible alongside the work content.
+             This pane does NOT scroll itself — TaskComments owns its internal
+             scroll region (fixed composer on top, scrollable list below). -->
+        <aside
+          class="min-h-0 next-lg:w-[24rem] next-lg:shrink-0 next-lg:border-l next-lg:border-next-border next-lg:pl-next-6"
+          :class="mobilePane === 'comments' ? 'flex flex-1 flex-col' : 'hidden next-lg:flex next-lg:flex-col'"
+          :aria-label="t('tasks.detail.tabComments')"
+        >
+          <h3 class="mb-next-3 shrink-0 text-next-sm font-next-semibold text-next-fg">
+            {{ t('tasks.detail.tabComments') }}
+          </h3>
+          <TaskComments :task-id="task.id" class="min-h-0 flex-1" />
+        </aside>
+      </div>
     </div>
 
-    <!-- Footer: lifecycle actions only (status + fields are inline above). -->
+    <!-- Footer: status transitions (left) + lifecycle actions (right). -->
     <template v-if="task && !loading && !error" #footer>
-      <div class="flex w-full items-center justify-end gap-next-2">
-        <template v-if="isTrashed">
-          <Button variant="outline" leading-icon="undo" :loading="restoring" @click="onRestore">
-            {{ t('tasks.detail.restore') }}
+      <div class="flex w-full items-center justify-between gap-next-2">
+        <!-- Status transition actions (semantic, depend on current status). -->
+        <div class="flex flex-wrap items-center gap-next-2">
+          <Button
+            v-for="action in statusActions"
+            :key="action.status"
+            :variant="action.variant"
+            :leading-icon="action.icon"
+            :loading="changingStatus"
+            :disabled="changingStatus"
+            @click="onChangeStatus(action.status)"
+          >
+            {{ t(`tasks.detail.${action.label}`) }}
           </Button>
-          <Button variant="danger" leading-icon="trash" :loading="forceDeleting" @click="onForceDelete">
-            {{ t('tasks.detail.forceDelete') }}
-          </Button>
-        </template>
-        <template v-else>
-          <Button variant="danger" leading-icon="trash" :loading="deleting" @click="onDelete">
-            {{ t('tasks.detail.delete') }}
-          </Button>
-        </template>
+        </div>
+        <!-- Lifecycle actions. -->
+        <div class="flex items-center gap-next-2">
+          <template v-if="isTrashed">
+            <Button variant="outline" leading-icon="undo" :loading="restoring" @click="onRestore">
+              {{ t('tasks.detail.restore') }}
+            </Button>
+            <Button variant="danger" leading-icon="trash" :loading="forceDeleting" @click="onForceDelete">
+              {{ t('tasks.detail.forceDelete') }}
+            </Button>
+          </template>
+          <template v-else>
+            <Button variant="danger" leading-icon="trash" :loading="deleting" @click="onDelete">
+              {{ t('tasks.detail.delete') }}
+            </Button>
+          </template>
+        </div>
       </div>
     </template>
   </Drawer>
@@ -815,5 +981,20 @@ const changelogEntries = computed<TimelineEntry[]>(() =>
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* Description editor in edit mode: the editor shell fills the available height
+   and only its content area scrolls, so the toolbar + the Save/Cancel row below
+   stay visible without scrolling the whole panel. */
+.next-desc-editor :deep(.next-md-shell) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0%;
+  flex-direction: column;
+}
+.next-desc-editor :deep(.next-md-content-wrap) {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 0%;
 }
 </style>

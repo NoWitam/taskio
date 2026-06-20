@@ -21,6 +21,7 @@ import SidebarSection from '../ui/layout/SidebarSection.vue';
 import SidebarItem from '../ui/layout/SidebarItem.vue';
 import Navbar from '../ui/layout/Navbar.vue';
 import Icon from '../ui/primitives/Icon.vue';
+import Button from '../ui/primitives/Button.vue';
 import Avatar from '../ui/primitives/Avatar.vue';
 import LocaleSwitcher from '../ui/LocaleSwitcher.vue';
 import DropdownMenu from '../ui/overlay/DropdownMenu.vue';
@@ -115,29 +116,28 @@ async function onLogout(): Promise<void> {
     <template #navbar="{ openDrawer, drawerOpen }">
       <Navbar>
         <template #leading>
-          <button
-            type="button"
-            class="rounded-next-md p-next-2 text-next-fg hover:bg-next-accent hover:text-next-accent-foreground next-md:hidden"
+          <Button
+            variant="ghost"
+            size="icon"
+            class="next-md:hidden"
+            leading-icon="menu"
             :aria-label="t('app.openNavigation', 'Open navigation')"
             :aria-expanded="drawerOpen"
             @click="openDrawer"
-          >
-            <Icon name="menu" class="text-next-xl" />
-          </button>
+          />
           <h1 class="truncate text-next-lg font-next-semibold">{{ pageTitle }}</h1>
         </template>
 
         <template #trailing>
           <LocaleSwitcher />
 
-          <button
-            type="button"
-            class="rounded-next-md border border-next-border bg-next-bg p-next-2 text-next-fg transition-colors duration-[var(--duration-next-fast)] hover:bg-next-accent hover:text-next-accent-foreground"
+          <Button
+            variant="outline"
+            size="icon"
+            :leading-icon="isDark ? 'sun' : 'moon'"
             :aria-label="isDark ? t('app.themeToLight', 'Switch to light theme') : t('app.themeToDark', 'Switch to dark theme')"
             @click="toggleTheme"
-          >
-            <Icon :name="isDark ? 'sun' : 'moon'" class="text-next-lg" />
-          </button>
+          />
 
           <!-- User menu: avatar + name → dropdown with workspace switcher + logout. -->
           <DropdownMenu placement="bottom-end" :aria-label="t('userMenu.label', 'Account menu')">

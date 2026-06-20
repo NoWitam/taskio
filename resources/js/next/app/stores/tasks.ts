@@ -122,10 +122,14 @@ export const useTasksStore = defineStore('next-tasks', () => {
   const commentsError = ref<string | null>(null);
   let commentsToken = 0;
 
-  // --- Changelog (cursor-paginated, optional) ------------------------------
+  // --- Changelog (cursor-paginated) ----------------------------------------
   const changelog = ref<ChangelogEntry[]>([]);
+  const changelogCursor = ref<string | null>(null);
+  const changelogHasMore = ref(true);
   const changelogLoading = ref(false);
+  const changelogLoadingMore = ref(false);
   const changelogError = ref<string | null>(null);
+  let changelogToken = 0;
 
   // --- Getters (plain helpers; the page reads the maps directly) -----------
   function itemsFor(status: TaskStatus): TaskListItem[] {
@@ -315,6 +319,19 @@ export const useTasksStore = defineStore('next-tasks', () => {
     return res.data;
   }
 
+  /** Remove a single attachment from a task (`DELETE /api/tasks/{id}/attachments/{fileId}`). */
+  async function removeAttachment(
+    id: string | number,
+    fileId: string | number,
+  ): Promise<TaskDetail> {
+    const res = await api.delete<TaskDetailResponse>(`/tasks/${id}/attachments/${fileId}`);
+    upsertIntoLists(res.data);
+    if (detail.value && String(detail.value.id) === String(id)) {
+      detail.value = res.data;
+    }
+    return res.data;
+  }
+
   /** Move a task to trash (`DELETE /api/tasks/{id}`). */
   async function deleteTask(id: string | number): Promise<void> {
     await api.delete(`/tasks/${id}`);
@@ -439,17 +456,51 @@ export const useTasksStore = defineStore('next-tasks', () => {
 
   // --- Changelog (optional) ------------------------------------------------
   /** Fetch the task changelog (`GET /api/task/{id}/changelog`, morph alias `task`). */
-  async function fetchChangelog(id: string | number): Promise<void> {
-    changelogLoading.value = true;
+  async function fetchChangelog(
+    id: string | number,
+    { reset = true }: FetchOptions = {},
+  ): Promise<void> {
+    if (!reset && (changelogLoadingMore.value || !changelogHasMore.value)) return;
+
+    const token = (changelogToken += 1);
+    if (reset) {
+      changelogLoading.value = true;
+      changelog.value = [];
+      changelogCursor.value = null;
+      changelogHasMore.value = true;
+    } else {
+      changelogLoadingMore.value = true;
+    }
     changelogError.value = null;
     try {
-      const res = await api.get<ChangelogResponse>(`/task/${id}/changelog`);
-      changelog.value = res.data ?? [];
+      const params = new URLSearchParams();
+      const cursor = changelogCursor.value;
+      if (cursor && !reset) params.set('cursor', cursor);
+      const qs = params.toString();
+      const res = await api.get<ChangelogResponse>(
+        `/task/${id}/changelog${qs ? `?${qs}` : ''}`,
+      );
+      if (token !== changelogToken) return;
+
+      const incoming = res.data ?? [];
+      changelog.value = reset ? incoming : [...changelog.value, ...incoming];
+      changelogCursor.value = res.meta?.next_cursor ?? null;
+      changelogHasMore.value = (res.meta?.next_cursor ?? null) !== null;
     } catch (err: unknown) {
+      if (token !== changelogToken) return;
       changelogError.value = extractMessage(err);
+      changelogHasMore.value = false;
     } finally {
-      changelogLoading.value = false;
+      if (token === changelogToken) {
+        changelogLoading.value = false;
+        changelogLoadingMore.value = false;
+      }
     }
+  }
+
+  /** Append the next page of changelog entries. */
+  async function loadMoreChangelog(id: string | number): Promise<void> {
+    await fetchChangelog(id, { reset: false });
   }
 
   /** Clear the detail/comment/changelog state (e.g. on Drawer close). */
@@ -461,6 +512,8 @@ export const useTasksStore = defineStore('next-tasks', () => {
     commentsHasMore.value = true;
     commentsError.value = null;
     changelog.value = [];
+    changelogCursor.value = null;
+    changelogHasMore.value = true;
     changelogError.value = null;
   }
 
@@ -491,6 +544,8 @@ export const useTasksStore = defineStore('next-tasks', () => {
     // changelog state
     changelog,
     changelogLoading,
+    changelogLoadingMore,
+    changelogHasMore,
     changelogError,
     // getters
     itemsFor,
@@ -509,6 +564,7 @@ export const useTasksStore = defineStore('next-tasks', () => {
     fetchTask,
     createTask,
     updateTask,
+    removeAttachment,
     deleteTask,
     forceDeleteTask,
     restoreTask,
@@ -522,5 +578,6 @@ export const useTasksStore = defineStore('next-tasks', () => {
     deleteComment,
     // changelog
     fetchChangelog,
+    loadMoreChangelog,
   };
 });

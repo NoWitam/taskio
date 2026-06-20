@@ -17,14 +17,17 @@ use App\Modules\Tasks\Models\Task;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class TaskService
 {
+    private const MAX_ATTACHMENTS = 5;
+
     private FileService $fileService;
 
     public function __construct()
     {
-        $this->fileService = new FileService();
+        $this->fileService = new FileService;
     }
 
     public function create(TaskDTO $dto)
@@ -41,6 +44,7 @@ class TaskService
                 'approval_pipeline_id' => $dto->approval_pipeline_id,
             ]);
 
+            $this->guardAttachmentLimit($task, $dto->attachments);
             $this->fileService->attachToModel($task, $dto->attachments);
 
             $task->labels()->attach(
@@ -64,19 +68,23 @@ class TaskService
                 'approval_pipeline_id' => $dto->approval_pipeline_id,
             ]);
 
-            $this->fileService->attachToModel($task, $dto->attachments, deleteAnother: true);
+            // Załączniki dodawane są addytywnie — przesłane ID to wyłącznie nowe
+            // pliki tymczasowe; istniejące pozostają i usuwane są tylko przez
+            // dedykowany endpoint removeAttachment.
+            $this->guardAttachmentLimit($task, $dto->attachments);
+            $this->fileService->attachToModel($task, $dto->attachments);
 
             // Synchronize labels with manual tracking
             $newLabelIds = Label::whereIn('id', $dto->labels)->pluck('id');
             $changes = $task->labels()->sync($newLabelIds);
-            
+
             // Log label changes using manual()
             if (!empty($changes['attached']) || !empty($changes['detached'])) {
                 app(\App\Modules\Changelog\Managers\ChangelogManager::class)->manual($task, 'labels', function ($tracker) use ($changes) {
                     foreach ($changes['attached'] as $labelId) {
                         $tracker->attach($labelId);
                     }
-                    
+
                     foreach ($changes['detached'] as $labelId) {
                         $tracker->detach($labelId);
                     }
@@ -85,6 +93,28 @@ class TaskService
 
             return $task;
         });
+    }
+
+    public function removeAttachment(Task $task, File $file): void
+    {
+        if ($file->fileable_type !== $task->getMorphClass() || $file->fileable_id !== $task->getKey()) {
+            throw ValidationException::withMessages([
+                'file' => ['This attachment does not belong to the task.'],
+            ]);
+        }
+
+        $this->fileService->detach($task, $file);
+    }
+
+    private function guardAttachmentLimit(Task $task, array $newFileIds): void
+    {
+        $current = $task->files()->whereNotIn('id', $newFileIds)->count();
+
+        if ($current + count($newFileIds) > self::MAX_ATTACHMENTS) {
+            throw ValidationException::withMessages([
+                'attachments' => ['A task can have at most ' . self::MAX_ATTACHMENTS . ' attachments.'],
+            ]);
+        }
     }
 
     public function index(Request $request)
@@ -146,7 +176,7 @@ class TaskService
                 $submissionService->update($task->formSubmission, $data);
             } else {
                 $submissionService->create(
-                    new  FormSubmissionDTO(
+                    new FormSubmissionDTO(
                         form_id: $task->form_id,
                         submittable_type: $task->getMorphClass(),
                         submittable_id: $task->getKey(),
@@ -176,6 +206,7 @@ class TaskService
     {
         $task->restore();
         $task->update(['status' => TaskStatus::TO_DO]);
+
         return $task;
     }
 

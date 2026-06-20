@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('tasks', TasksController::class);
     Route::patch('tasks/{task}/status/{status}', [TasksController::class, 'changeStatus'])->name('tasks.change-status');
+    Route::delete('tasks/{task}/attachments/{file}', [TasksController::class, 'removeAttachment'])->name('tasks.attachments.destroy');
     Route::delete('tasks/{task}/force', [TasksController::class, 'forceDestroy'])->name('tasks.force-destroy');
     Route::post('tasks/{id}/restore', [TasksController::class, 'restore'])->name('tasks.restore');
     Route::post('tasks/{task}/form-submission', [TasksController::class, 'submitForm'])->name('tasks.submit-form');

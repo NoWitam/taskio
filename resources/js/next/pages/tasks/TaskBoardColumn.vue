@@ -43,11 +43,12 @@ const statusMap = computed(() => ({
     class="flex min-h-0 w-full flex-col rounded-next-lg border border-next-border bg-next-muted/40"
     :aria-label="t(`tasks.statuses.${status}`)"
   >
-    <!-- Column header: status label + total count badge. -->
+    <!-- Column header: status label + total count badge. A solid surface + a
+         stronger bottom border make the header stand out from the tinted body. -->
     <header
-      class="flex items-center justify-between gap-next-2 border-b border-next-border px-next-3 py-next-2"
+      class="flex items-center justify-between gap-next-2 rounded-t-next-lg border-b-2 border-next-border bg-next-card px-next-3 py-next-3"
     >
-      <StatusBadge :status="status" :status-map="statusMap" size="sm" />
+      <StatusBadge :status="status" :status-map="statusMap" size="md" />
       <Badge v-if="total !== null" variant="neutral" tone="subtle" size="sm">
         {{ total }}
       </Badge>

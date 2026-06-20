@@ -3,9 +3,11 @@
 namespace App\Modules\Tasks\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Modules\Disk\Models\File;
 use App\Modules\Tasks\DTOs\TaskDTO;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Http\Requests\ChangeTaskStatusRequest;
+use App\Modules\Tasks\Http\Requests\DeleteTaskAttachmentRequest;
 use App\Modules\Tasks\Http\Requests\DeleteTaskRequest;
 use App\Modules\Tasks\Http\Requests\ForceDeleteTaskRequest;
 use App\Modules\Tasks\Http\Requests\RestoreTaskRequest;
@@ -29,9 +31,9 @@ class TasksController extends Controller
         $paginator = $this->service->index($request);
 
         return TaskListResource::collection($paginator)->additional(['meta' => [
-            'total' => !$request->has('cursor') 
-                ? $this->service->count($request) 
-                : null
+            'total' => !$request->has('cursor')
+                ? $this->service->count($request)
+                : null,
         ]]);
     }
 
@@ -59,10 +61,10 @@ class TasksController extends Controller
             $task,
             TaskDTO::fromRequest($request)
         );
-        
+
         return TaskResource::make(
             $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
-        ); 
+        );
     }
 
     public function destroy(DeleteTaskRequest $request, Task $task): \Illuminate\Http\JsonResponse
@@ -70,8 +72,17 @@ class TasksController extends Controller
         $this->service->delete($task);
 
         return response()->json([
-            'message' => 'Task moved to trash successfully'
+            'message' => 'Task moved to trash successfully',
         ]);
+    }
+
+    public function removeAttachment(DeleteTaskAttachmentRequest $request, Task $task, File $file): TaskResource
+    {
+        $this->service->removeAttachment($task, $file);
+
+        return TaskResource::make(
+            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+        );
     }
 
     public function forceDestroy(ForceDeleteTaskRequest $request, Task $task): \Illuminate\Http\JsonResponse
@@ -79,7 +90,7 @@ class TasksController extends Controller
         $task->forceDelete();
 
         return response()->json([
-            'message' => 'Task permanently deleted'
+            'message' => 'Task permanently deleted',
         ]);
     }
 
@@ -89,7 +100,7 @@ class TasksController extends Controller
 
         return TaskResource::make(
             $this->service->restore($task)->loadMissing([
-                'assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'
+                'assigned', 'creator', 'labels', 'files', 'form', 'formSubmission',
             ])
         );
     }
@@ -98,7 +109,7 @@ class TasksController extends Controller
     {
         if ($status === TaskStatus::TRASH) {
             throw \Illuminate\Validation\ValidationException::withMessages([
-                'status' => ['Use DELETE endpoint for moving task to trash']
+                'status' => ['Use DELETE endpoint for moving task to trash'],
             ]);
         }
 

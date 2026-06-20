@@ -72,14 +72,13 @@ async function submit(): Promise<void> {
     <!-- Corner controls: language + theme, usable before signing in. -->
     <div class="flex items-center justify-end gap-next-2 p-next-4">
       <LocaleSwitcher />
-      <button
-        type="button"
-        class="rounded-next-md border border-next-border bg-next-bg p-next-2 text-next-fg transition-colors duration-[var(--duration-next-fast)] hover:bg-next-accent hover:text-next-accent-foreground"
+      <Button
+        variant="outline"
+        size="icon"
+        :leading-icon="isDark ? 'sun' : 'moon'"
         :aria-label="isDark ? t('app.themeToLight', 'Switch to light theme') : t('app.themeToDark', 'Switch to dark theme')"
         @click="toggleTheme"
-      >
-        <Icon :name="isDark ? 'sun' : 'moon'" class="text-next-lg" />
-      </button>
+      />
     </div>
 
     <div class="flex flex-1 items-center justify-center px-next-4 pb-next-12">

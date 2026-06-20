@@ -18,7 +18,7 @@
 // v-model is `string[]` (label ids). v-model:operator is 'AND' | 'OR'. Built-in
 // `searchable` drives the `search` query param; cursor pagination + skeletons
 // come from Select. i18n + a11y throughout; no legacy imports; namespaced tokens.
-import { computed, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import Select, {
   type SelectFetchArgs,
   type SelectFetchResult,
@@ -27,6 +27,13 @@ import Select, {
 } from './Select.vue';
 import SegmentedControl, { type SegmentOption } from './SegmentedControl.vue';
 import Icon from '../primitives/Icon.vue';
+import { type IconName } from '../primitives/icons';
+import Modal from '../overlay/Modal.vue';
+import FormField from './FormField.vue';
+import TextInput from './TextInput.vue';
+import ColorInput from './ColorInput.vue';
+import IconInput from './IconInput.vue';
+import Button from '../primitives/Button.vue';
 import { resolveLabelIcon } from './labelIcon';
 import { api } from '../../app/lib/api';
 import { useI18n } from '../../app/i18n';
@@ -60,6 +67,8 @@ const props = withDefaults(
     /** Multi trigger display: 'chips' (default) or 'summary'. */
     display?: 'chips' | 'summary';
     summary?: boolean;
+    /** Show a "New label" button in the dropdown that opens a create dialog. */
+    addable?: boolean;
     /**
      * Seed already-known labels so their chips render before (or without) an async
      * page that contains them — e.g. a task's current labels.
@@ -77,6 +86,7 @@ const props = withDefaults(
     disabled: false,
     readonly: false,
     summary: false,
+    addable: true,
   },
 );
 
@@ -172,6 +182,67 @@ const ariaLabelText = computed(
   () => props.ariaLabel ?? t('labelSelect.ariaLabel', 'Select labels'),
 );
 
+// --- Create-label dialog --------------------------------------------------
+// Opening the dialog mirrors the legacy LabelSelect: a small form (name + color
+// + icon) that POSTs to /labels, then seeds + auto-selects the new label so its
+// chip renders immediately (the dropdown refetches its list on the next open).
+const createOpen = ref(false);
+const createSubmitting = ref(false);
+const createTouched = ref(false);
+const createError = ref<string | null>(null);
+const createForm = reactive<{ name: string; color: string | null; icon: IconName | null }>({
+  name: '',
+  color: null,
+  icon: null,
+});
+
+const createNameError = computed(() =>
+  createTouched.value && !createForm.name.trim()
+    ? t('labelSelect.nameRequired', 'Label name is required.')
+    : undefined,
+);
+
+function openCreate(): void {
+  createForm.name = '';
+  createForm.color = null;
+  createForm.icon = null;
+  createTouched.value = false;
+  createError.value = null;
+  createOpen.value = true;
+}
+
+async function submitCreate(): Promise<void> {
+  createTouched.value = true;
+  createError.value = null;
+  if (!createForm.name.trim()) {
+    return;
+  }
+  createSubmitting.value = true;
+  try {
+    const res = await api.post<{ data: ApiLabel }>('/labels', {
+      name: createForm.name.trim(),
+      color: createForm.color,
+      icon: createForm.icon,
+    });
+    const created = res.data;
+    const option = toOption(created);
+    const known = new Set(seededOptions.value.map((o) => o.value));
+    if (!known.has(option.value)) {
+      seededOptions.value = [...seededOptions.value, option];
+    }
+    if (!model.value.includes(option.value)) {
+      model.value = [...model.value, option.value];
+    }
+    createOpen.value = false;
+  } catch (err: unknown) {
+    const message =
+      (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? null;
+    createError.value = message ?? t('labelSelect.createError', 'Could not create the label.');
+  } finally {
+    createSubmitting.value = false;
+  }
+}
+
 defineExpose({ fetchLabels });
 </script>
 
@@ -194,21 +265,34 @@ defineExpose({ fetchLabels });
     :search-placeholder="t('labelSelect.search', 'Search labels…')"
     :aria-label="ariaLabelText"
   >
-    <!-- AND/OR operator lives INSIDE the dropdown; shown whenever the consumer
-         binds v-model:operator (regardless of how many labels are selected). -->
-    <template v-if="operatorBound" #header>
-      <div v-if="showOperator" class="flex flex-col gap-next-1">
-        <SegmentedControl
+    <!-- AND/OR operator (when bound) + the "New label" action live INSIDE the
+         dropdown header, shown whenever the consumer binds operator or addable. -->
+    <template v-if="operatorBound || addable" #header>
+      <div class="flex flex-col gap-next-2">
+        <div v-if="showOperator" class="flex flex-col gap-next-1">
+          <SegmentedControl
+            size="sm"
+            equal-width
+            :model-value="operator ?? 'OR'"
+            :options="operatorOptions"
+            :aria-label="t('labelSelect.operatorLabel', 'Match labels')"
+            @update:model-value="(v) => onOperator(v as 'AND' | 'OR')"
+          />
+          <span class="text-next-xs leading-snug text-next-muted-foreground">
+            {{ operatorHelp }}
+          </span>
+        </div>
+        <Button
+          v-if="addable"
+          type="button"
+          variant="secondary"
           size="sm"
-          equal-width
-          :model-value="operator ?? 'OR'"
-          :options="operatorOptions"
-          :aria-label="t('labelSelect.operatorLabel', 'Match labels')"
-          @update:model-value="(v) => onOperator(v as 'AND' | 'OR')"
-        />
-        <span class="text-next-xs leading-snug text-next-muted-foreground">
-          {{ operatorHelp }}
-        </span>
+          leading-icon="plus"
+          class="w-full"
+          @click="openCreate"
+        >
+          {{ t('labelSelect.create', 'New label') }}
+        </Button>
       </div>
     </template>
 
@@ -244,4 +328,44 @@ defineExpose({ fetchLabels });
       </span>
     </template>
   </Select>
+
+  <!-- Create-label dialog (only mounted/used when addable). -->
+  <Modal
+    v-if="addable"
+    v-model:open="createOpen"
+    size="sm"
+    :aria-label="t('labelSelect.createTitle', 'Create label')"
+  >
+    <template #title>{{ t('labelSelect.createTitle', 'Create label') }}</template>
+
+    <form class="flex flex-col gap-next-4" @submit.prevent="submitCreate">
+      <FormField :label="t('labelSelect.nameLabel', 'Name')" required :error="createNameError">
+        <TextInput
+          v-model="createForm.name"
+          :placeholder="t('labelSelect.namePlaceholder', 'Enter a name…')"
+          :aria-label="t('labelSelect.nameLabel', 'Name')"
+        />
+      </FormField>
+
+      <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2">
+        <FormField :label="t('labelSelect.colorLabel', 'Color (optional)')">
+          <ColorInput v-model="createForm.color" :aria-label="t('labelSelect.colorLabel', 'Color (optional)')" />
+        </FormField>
+        <FormField :label="t('labelSelect.iconLabel', 'Icon (optional)')">
+          <IconInput v-model="createForm.icon" :aria-label="t('labelSelect.iconLabel', 'Icon (optional)')" />
+        </FormField>
+      </div>
+
+      <p v-if="createError" class="text-next-sm text-next-danger" role="alert">{{ createError }}</p>
+    </form>
+
+    <template #footer="{ close }">
+      <Button type="button" variant="ghost" :disabled="createSubmitting" @click="close">
+        {{ t('labelSelect.cancel', 'Cancel') }}
+      </Button>
+      <Button type="button" variant="primary" :loading="createSubmitting" @click="submitCreate">
+        {{ t('labelSelect.submit', 'Create') }}
+      </Button>
+    </template>
+  </Modal>
 </template>

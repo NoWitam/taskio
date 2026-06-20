@@ -37,9 +37,10 @@ import { useOverlayStack, type OverlayHandle } from '../../app/composables/useOv
 import { useTheme } from '../../app/lib/theme';
 import { useI18n } from '../../app/i18n';
 import Icon from '../primitives/Icon.vue';
+import Button from '../primitives/Button.vue';
 
 type DrawerSide = 'left' | 'right' | 'top' | 'bottom';
-type DrawerSize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
+type DrawerSize = 'sm' | 'md' | 'lg' | 'xl' | 'cover' | 'full';
 
 const props = withDefaults(
   defineProps<{
@@ -61,6 +62,13 @@ const props = withDefaults(
      * its edge. Defaults to false (edge-pinned, inner-corner rounding only).
      */
     floating?: boolean;
+    /**
+     * Whether the body owns a single vertical scroll region (default). Set to
+     * false when the slotted content manages its OWN scroll areas (e.g. a
+     * multi-column workspace with independently scrolling panes) so the body
+     * stays a fixed-height, non-scrolling flex container.
+     */
+    scrollBody?: boolean;
   }>(),
   {
     side: 'right',
@@ -69,6 +77,7 @@ const props = withDefaults(
     closeOnScrim: true,
     showClose: true,
     floating: false,
+    scrollBody: true,
   },
 );
 
@@ -106,6 +115,8 @@ const SIZE_W: Record<DrawerSize, string> = {
   md: 'w-[24rem]',
   lg: 'w-[32rem]',
   xl: 'w-[42rem]',
+  // Cover most of the screen but keep the app navigation visible on the side.
+  cover: 'w-[calc(100vw-2rem)] next-md:w-[calc(100vw-18rem)]',
   full: 'w-screen',
 };
 const SIZE_H: Record<DrawerSize, string> = {
@@ -113,6 +124,7 @@ const SIZE_H: Record<DrawerSize, string> = {
   md: 'h-[20rem]',
   lg: 'h-[28rem]',
   xl: 'h-[36rem]',
+  cover: 'h-[calc(100vh-2rem)]',
   full: 'h-screen',
 };
 
@@ -296,19 +308,23 @@ onBeforeUnmount(() => {
               <slot name="title" />
             </div>
             <div v-else class="flex-1" />
-            <button
+            <Button
               v-if="showClose"
-              type="button"
-              class="-mr-next-1 -mt-next-1 shrink-0 rounded-next-md p-next-1 text-next-muted-foreground transition-colors duration-[var(--duration-next-fast)] hover:bg-next-accent hover:text-next-accent-foreground"
+              variant="outline"
+              size="icon-sm"
+              class="-mr-next-1 -mt-next-1 shrink-0"
               :aria-label="t('drawer.close', 'Close panel')"
               @click="requestClose"
             >
-              <Icon name="x" class="text-next-lg" />
-            </button>
+              <Icon name="x" class="text-next-xl" />
+            </Button>
           </header>
 
           <!-- Body -->
-          <div class="min-w-0 flex-1 overflow-y-auto p-next-4">
+          <div
+            class="min-w-0 flex-1 p-next-4"
+            :class="scrollBody ? 'overflow-y-auto' : 'flex min-h-0 flex-col overflow-hidden'"
+          >
             <div v-if="$slots.description" :id="descId" data-drawer-desc class="mb-next-3 text-next-sm text-next-muted-foreground">
               <slot name="description" />
             </div>

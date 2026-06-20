@@ -25,7 +25,10 @@ type ButtonVariant =
   | 'subtle'
   | 'danger'
   | 'link';
-type ButtonSize = 'xs' | 'sm' | 'md' | 'lg' | 'icon';
+// `icon` is the standard 40px square icon button; `icon-sm` (32px) / `icon-xs`
+// (28px) are the compact square variants for dense affordances (overlay close
+// buttons, inline row actions) where the 40px control is too heavy.
+type ButtonSize = 'xs' | 'sm' | 'md' | 'lg' | 'icon' | 'icon-sm' | 'icon-xs';
 
 const props = withDefaults(
   defineProps<{
@@ -64,7 +67,10 @@ const emit = defineEmits<{ (e: 'click', event: MouseEvent): void }>();
 const slots = useSlots();
 
 const isLink = computed(() => props.href !== undefined);
-const isIconOnly = computed(() => props.size === 'icon');
+const isIconOnly = computed(
+  () =>
+    props.size === 'icon' || props.size === 'icon-sm' || props.size === 'icon-xs',
+);
 // "Inert" = visually/behaviorally disabled, whether via disabled or loading.
 const isInert = computed(() => props.disabled || props.loading);
 
@@ -92,6 +98,8 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
   md: 'h-10 px-next-4 text-next-sm gap-next-2 rounded-next-md',
   lg: 'h-12 px-next-5 text-next-base gap-next-2 rounded-next-md',
   icon: 'h-10 w-10 text-next-lg justify-center rounded-next-md',
+  'icon-sm': 'h-8 w-8 text-next-base justify-center rounded-next-md',
+  'icon-xs': 'h-7 w-7 text-next-sm justify-center rounded-next-md',
 };
 
 const baseClass =
@@ -104,7 +112,7 @@ const classes = computed(() => [
   VARIANT_CLASS[props.variant],
   // `link` variant manages its own height/padding.
   props.variant === 'link' ? '' : SIZE_CLASS[props.size],
-  props.variant === 'link' && props.size === 'icon' ? SIZE_CLASS.icon : '',
+  props.variant === 'link' && isIconOnly.value ? SIZE_CLASS[props.size] : '',
   props.fullWidth ? 'w-full' : '',
   isInert.value ? 'opacity-60 pointer-events-none cursor-not-allowed' : 'cursor-pointer',
 ]);

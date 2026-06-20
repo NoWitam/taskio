@@ -259,6 +259,20 @@ function remove(entry: DropzoneFile): void {
   localError.value = '';
 }
 
+/**
+ * Imperatively drop a tracked file by its id. Lets a controlled parent retire a
+ * file once it has been consumed elsewhere (e.g. an upload finished and moved to
+ * a persisted list), without the user clicking remove.
+ */
+function removeById(id: string): void {
+  const entry = tracked.value.find((t) => t.id === id);
+  if (entry) {
+    remove(entry);
+  }
+}
+
+defineExpose({ removeById });
+
 // --- events ----------------------------------------------------------------
 function openDialog(): void {
   if (inert.value) return;

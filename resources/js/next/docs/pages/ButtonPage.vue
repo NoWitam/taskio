@@ -18,7 +18,7 @@ function fakeSubmit() {
 
 const propRows: ApiRow[] = [
   { name: 'variant', type: "'primary' | 'secondary' | 'outline' | 'ghost' | 'subtle' | 'danger' | 'link'", default: "'primary'", description: 'Visual intent.' },
-  { name: 'size', type: "'xs' | 'sm' | 'md' | 'lg' | 'icon'", default: "'md'", description: 'Control height + padding + text scale. `icon` is square.' },
+  { name: 'size', type: "'xs' | 'sm' | 'md' | 'lg' | 'icon' | 'icon-sm' | 'icon-xs'", default: "'md'", description: 'Control height + padding + text scale. `icon` (40px) / `icon-sm` (32px) / `icon-xs` (28px) are square icon-only buttons.' },
   { name: 'href', type: 'string', default: '—', description: 'Renders an <a> instead of <button>.' },
   { name: 'target', type: 'string', default: '—', description: 'Anchor target; `_blank` adds rel="noopener noreferrer".' },
   { name: 'type', type: "'button' | 'submit' | 'reset'", default: "'button'", description: 'Native button type (ignored for anchors).' },
@@ -61,13 +61,19 @@ const slotRows: ApiRow[] = [
       </StoryGrid>
     </StorySection>
 
-    <StorySection title="Sizes" description="xs · sm · md · lg, plus the square icon size.">
+    <StorySection title="Sizes" description="xs · sm · md · lg, plus the square icon sizes (icon · icon-sm · icon-xs).">
       <StoryGrid align="center">
         <StoryCell v-for="s in sizes" :key="s" :label="s">
           <Button :size="s">Label</Button>
         </StoryCell>
         <StoryCell label="icon">
           <Button size="icon" aria-label="Add item" leading-icon="plus" />
+        </StoryCell>
+        <StoryCell label="icon-sm">
+          <Button size="icon-sm" variant="ghost" aria-label="Add item" leading-icon="plus" />
+        </StoryCell>
+        <StoryCell label="icon-xs">
+          <Button size="icon-xs" variant="ghost" aria-label="Add item" leading-icon="plus" />
         </StoryCell>
       </StoryGrid>
     </StorySection>

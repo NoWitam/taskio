@@ -134,7 +134,7 @@ const hasHeader = computed(() => !!slots.header);
       :class="[
         'next-card__header flex items-start justify-between gap-next-3',
         padded ? 'p-next-4' : '',
-        hasFooter || $slots.default ? 'border-b border-next-border' : '',
+        loading || empty || $slots.default ? 'border-b border-next-border' : '',
       ]"
     >
       <component
@@ -163,8 +163,13 @@ const hasHeader = computed(() => !!slots.header);
       </div>
     </header>
 
-    <!-- Body region: loading skeleton, empty placeholder, or default content. -->
-    <div :class="['next-card__body min-w-0', padded ? 'p-next-4' : '']">
+    <!-- Body region: loading skeleton, empty placeholder, or default content.
+         Skipped entirely when there is no body content (so header-only / footer-only
+         cards don't render an empty padded band). -->
+    <div
+      v-if="loading || empty || $slots.default"
+      :class="['next-card__body min-w-0', padded ? 'p-next-4' : '']"
+    >
       <template v-if="loading">
         <div class="flex flex-col gap-next-3" aria-hidden="true">
           <div class="h-4 w-2/3 animate-pulse rounded-next-sm bg-next-muted" />

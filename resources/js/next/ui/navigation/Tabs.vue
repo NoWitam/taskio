@@ -210,16 +210,16 @@ function tabClass(item: TabItem<T>): string[] {
     base.push('rounded-next-md');
     base.push(
       isActive
-        ? 'bg-next-card text-next-fg shadow-next-xs'
-        : 'text-next-muted-foreground hover:text-next-fg',
+        ? 'bg-next-primary text-next-primary-foreground shadow-next-xs'
+        : 'text-next-muted-foreground hover:text-next-primary',
     );
   } else {
     // underline
     base.push('rounded-next-sm');
     base.push(
       isActive
-        ? 'text-next-fg'
-        : 'text-next-muted-foreground hover:text-next-fg',
+        ? 'text-next-primary'
+        : 'text-next-muted-foreground hover:text-next-primary',
     );
   }
   return base;

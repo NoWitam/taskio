@@ -23,6 +23,7 @@ import LabelSelect from '../../ui/forms/LabelSelect.vue';
 import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedControl.vue';
 import DatePicker from '../../ui/forms/DatePicker.vue';
 import MarkdownEditor from '../../ui/editor/MarkdownEditor.vue';
+import TaskAttachmentsField from './TaskAttachmentsField.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Button from '../../ui/primitives/Button.vue';
 import { useTasksStore } from '../../app/stores/tasks';
@@ -30,6 +31,8 @@ import { useToast } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
 import {
   ALL_PRIORITIES,
+  priorityMeta,
+  type TaskAttachment,
   type TaskDetail,
   type TaskPriority,
   type TaskWritePayload,
@@ -65,6 +68,8 @@ interface FormState {
   deadline: string | null;
   assigned_id: string | null;
   labels: string[];
+  /** Temp file ids of NEW uploads (existing attachments are managed via seed). */
+  attachments: string[];
 }
 
 function blankForm(): FormState {
@@ -75,6 +80,7 @@ function blankForm(): FormState {
     deadline: null,
     assigned_id: null,
     labels: [],
+    attachments: [],
   };
 }
 
@@ -88,6 +94,7 @@ const formError = ref<string | null>(null);
 // Shapes match UserSelect / LabelSelect `seed` props (entity-ish, not SelectOption).
 const assigneeSeed = ref<Array<{ id: string; name: string; email?: string | null; avatar?: string | null }>>([]);
 const labelSeed = ref<Array<{ id: string; name: string; color?: string | null; icon?: string | null }>>([]);
+const attachmentSeed = ref<TaskAttachment[]>([]);
 
 // Reset/prefill whenever the modal opens (or the task changes while open).
 watch(
@@ -120,10 +127,13 @@ watch(
         color: l.color ?? null,
         icon: l.icon ?? null,
       }));
+      form.attachments = [];
+      attachmentSeed.value = task.attachments ?? [];
     } else {
       Object.assign(form, blankForm());
       assigneeSeed.value = [];
       labelSeed.value = [];
+      attachmentSeed.value = [];
     }
   },
   { immediate: true },
@@ -131,7 +141,7 @@ watch(
 
 // --- Options --------------------------------------------------------------
 const priorityOptions = computed<SegmentOption<TaskPriority>[]>(() =>
-  ALL_PRIORITIES.map((p) => ({ value: p, label: t(`tasks.priorities.${p}`) })),
+  ALL_PRIORITIES.map((p) => ({ value: p, label: t(`tasks.priorities.${p}`), icon: priorityMeta(p).icon })),
 );
 
 // --- Submit ---------------------------------------------------------------
@@ -146,14 +156,16 @@ function buildPayload(): TaskWritePayload {
     deadline: form.deadline ?? null,
     assigned_id: form.assigned_id ?? '',
     labels: form.labels,
+    // Only NEW uploads are sent; the backend attaches them additively, so
+    // existing attachments are preserved without re-sending their ids.
+    attachments: form.attachments,
   };
   // Preserve form/pipeline links on edit (no picker in this batch) so they are
-  // not wiped by the update. Attachments are managed elsewhere (deferred).
+  // not wiped by the update.
   if (props.task) {
     if (props.task.form_id) payload.form_id = props.task.form_id;
     if (props.task.approval_pipeline_id)
       payload.approval_pipeline_id = props.task.approval_pipeline_id;
-    payload.attachments = (props.task.attachments ?? []).map((a) => String(a.id));
   }
   return payload;
 }
@@ -208,6 +220,19 @@ async function submit(): Promise<void> {
 const modalTitle = computed(() =>
   isEdit.value ? t('tasks.form.editTitle') : t('tasks.form.createTitle'),
 );
+
+// Removing an EXISTING attachment is a standalone action (edit mode only):
+// it hits the dedicated delete endpoint immediately and never touches the
+// other attachments.
+async function removeExistingAttachment(fileId: string): Promise<void> {
+  if (!props.task) return;
+  try {
+    await store.removeAttachment(props.task.id, fileId);
+    attachmentSeed.value = attachmentSeed.value.filter((a) => String(a.id) !== fileId);
+  } catch {
+    toast.danger(t('attachments.removeError', 'Could not remove the attachment.'));
+  }
+}
 </script>
 
 <template>
@@ -286,6 +311,16 @@ const modalTitle = computed(() =>
           v-model="form.description"
           :placeholder="t('tasks.form.descriptionPlaceholder')"
           :aria-label="t('tasks.form.description')"
+        />
+      </FormField>
+
+      <!-- Attachments (existing via seed + new uploads, additive on the backend) -->
+      <FormField :label="t('tasks.detail.attachments')" :error="fieldErrors.attachments">
+        <TaskAttachmentsField
+          v-model="form.attachments"
+          :seed="attachmentSeed"
+          :max="5"
+          @remove-existing="removeExistingAttachment"
         />
       </FormField>
     </form>

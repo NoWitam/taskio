@@ -180,7 +180,16 @@ const showClear = computed(
         :focused="open || undefined"
       >
         <template #leading>
-          <Icon name="calendar" class="text-next-muted-foreground" />
+          <button
+            type="button"
+            class="flex items-center rounded-next-sm text-next-muted-foreground hover:text-next-fg disabled:cursor-not-allowed"
+            :disabled="disabled || readonly"
+            :aria-label="t('pickers.openCalendar', 'Open calendar')"
+            tabindex="-1"
+            @click.stop="openPanel"
+          >
+            <Icon name="calendar" />
+          </button>
         </template>
 
         <input
@@ -209,32 +218,21 @@ const showClear = computed(
           @click="openPanel"
         />
 
-        <template #trailing>
-          <span class="flex items-center gap-next-1">
-            <!-- Clear box is always reserved when clearable, visibility toggled,
-                 so the input width never shifts as the value comes/goes. -->
-            <span v-if="clearable" class="flex h-5 w-5 items-center justify-center">
-              <button
-                type="button"
-                class="flex items-center rounded-next-sm p-next-0_5 text-next-muted-foreground hover:text-next-fg"
-                :class="showClear ? '' : 'invisible'"
-                :aria-hidden="showClear ? undefined : 'true'"
-                tabindex="-1"
-                :aria-label="t('pickers.clearDate', 'Clear date')"
-                @click.stop="clear"
-              >
-                <Icon name="x" />
-              </button>
-            </span>
+        <template v-if="clearable" #trailing>
+          <!-- Clear box is always reserved when clearable, visibility toggled,
+               so the input width never shifts as the value comes/goes. The
+               calendar affordance lives in the leading icon + click-to-open. -->
+          <span class="flex h-5 w-5 items-center justify-center">
             <button
               type="button"
-              class="flex items-center rounded-next-sm p-next-0_5 text-next-muted-foreground hover:text-next-fg disabled:cursor-not-allowed"
-              :disabled="disabled || readonly"
-              :aria-label="t('pickers.openCalendar', 'Open calendar')"
+              class="flex items-center rounded-next-sm p-next-0_5 text-next-muted-foreground hover:text-next-fg"
+              :class="showClear ? '' : 'invisible'"
+              :aria-hidden="showClear ? undefined : 'true'"
               tabindex="-1"
-              @click.stop="openPanel"
+              :aria-label="t('pickers.clearDate', 'Clear date')"
+              @click.stop="clear"
             >
-              <Icon name="calendar" />
+              <Icon name="x" />
             </button>
           </span>
         </template>

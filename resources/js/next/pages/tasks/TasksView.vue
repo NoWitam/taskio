@@ -40,6 +40,7 @@ import { useI18n } from '../../app/i18n';
 import {
   ALL_PRIORITIES,
   BOARD_STATUSES,
+  priorityMeta,
   statusMeta,
   type TaskFilters,
   type TaskListItem,
@@ -77,7 +78,7 @@ const tab = ref<BoardTab>('active');
 
 // --- Options --------------------------------------------------------------
 const priorityOptions = computed<SelectOption[]>(() =>
-  ALL_PRIORITIES.map((p) => ({ value: p, label: t(`tasks.priorities.${p}`) })),
+  ALL_PRIORITIES.map((p) => ({ value: p, label: t(`tasks.priorities.${p}`), icon: priorityMeta(p).icon })),
 );
 const datePresetOptions = computed<SelectOption[]>(() =>
   (['today', 'this_week', 'last_week', 'this_month'] as const).map((p) => ({
@@ -254,6 +255,15 @@ function hydrateFromQuery(): void {
 function syncQuery(): void {
   if (hydrating) return;
   const query: Record<string, string | string[]> = {};
+  // Preserve the overlay state keys (detail Drawer / form Modal) so a filter
+  // change — or the initial hydrate watcher — never strips a deep-linked task.
+  const keep = (key: string): void => {
+    const v = route.query[key];
+    if (v != null && v !== '') query[key] = Array.isArray(v) ? v.map(String) : String(v);
+  };
+  keep('task');
+  keep('edit');
+  keep('new');
   if (search.value) query.search = search.value;
   if (priority.value) query.priority = priority.value;
   if (assignees.value.length) query.user_id = assignees.value;

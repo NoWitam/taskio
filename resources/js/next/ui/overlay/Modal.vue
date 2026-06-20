@@ -29,6 +29,7 @@ import { useOverlayStack, type OverlayHandle } from '../../app/composables/useOv
 import { useTheme } from '../../app/lib/theme';
 import { useI18n } from '../../app/i18n';
 import Icon from '../primitives/Icon.vue';
+import Button from '../primitives/Button.vue';
 
 type ModalSize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
 
@@ -202,15 +203,16 @@ onBeforeUnmount(() => {
                 <slot name="title" />
               </div>
               <div v-else class="flex-1" />
-              <button
+              <Button
                 v-if="showClose"
-                type="button"
-                class="-mr-next-1 -mt-next-1 shrink-0 rounded-next-md p-next-1 text-next-muted-foreground transition-colors duration-[var(--duration-next-fast)] hover:bg-next-accent hover:text-next-accent-foreground"
+                variant="ghost"
+                size="icon-sm"
+                class="-mr-next-1 -mt-next-1 shrink-0 text-next-muted-foreground"
                 :aria-label="t('modal.close', 'Close dialog')"
                 @click="requestClose"
               >
                 <Icon name="x" class="text-next-lg" />
-              </button>
+              </Button>
             </header>
 
             <!-- Body -->

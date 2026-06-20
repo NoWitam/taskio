@@ -90,7 +90,7 @@ class QuerySubmissions implements Tool
             if (!preg_match('/\bLIMIT\b/i', $query)) {
                 $query = rtrim(rtrim($query), ';') . ' LIMIT 50';
             }
-            dump($query);
+      
             $results = DB::select($query);
 
             return json_encode([

@@ -61,7 +61,7 @@ const headingTag = computed(() => `h${props.level}`);
         </div>
         <span
           v-else-if="icon"
-          class="flex h-11 w-11 shrink-0 items-center justify-center rounded-next-lg bg-next-muted text-next-muted-foreground"
+          class="flex h-11 w-11 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
           aria-hidden="true"
         >
           <Icon :name="icon" class="text-next-xl" />

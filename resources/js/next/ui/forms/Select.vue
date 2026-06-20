@@ -377,6 +377,14 @@ const { isDark } = useTheme();
 // is anchored to the trigger via useAnchoredPosition. `matchTriggerWidth` keeps
 // the menu at least as wide as the field.
 const popoverWidth = ref(0);
+// Width FROZEN to the menu's natural (max-content) width — at least the trigger
+// width, capped to the viewport — ONCE the first page of real options has
+// rendered. With the width pinned, appending more (longer) options while
+// scrolling, or filtering via search, can no longer resize the menu mid-interaction
+// (the previous bug); longer rows truncate within the frozen width instead. Reset
+// on every open and on each data reset so the next content re-measures.
+const lockedWidth = ref<number | null>(null);
+let widthLocked = false;
 const { style: popoverPos, update: updatePopoverPos } = useAnchoredPosition(
   rootRef,
   popoverRef,
@@ -385,6 +393,18 @@ const { style: popoverPos, update: updatePopoverPos } = useAnchoredPosition(
 function repositionPopover(): void {
   if (rootRef.value) popoverWidth.value = rootRef.value.offsetWidth;
   updatePopoverPos();
+}
+// Freeze the menu to its current natural width, but only ONCE per open and only
+// after REAL options have rendered (never the loading skeleton). Measured while
+// still auto-width (unlocked), so it captures the full max-content width.
+function lockMenuWidth(): void {
+  if (widthLocked || showInitialLoading.value) return;
+  const el = popoverRef.value;
+  if (!el) return;
+  const max = window.innerWidth - 16;
+  lockedWidth.value = Math.min(Math.max(popoverWidth.value, el.offsetWidth), max);
+  widthLocked = true;
+  nextTick(updatePopoverPos);
 }
 
 function optionId(index: number): string {
@@ -418,6 +438,9 @@ function openList(): void {
   if (disabled.value || readonly.value) return;
   open.value = true;
   emit('open');
+  // Release any prior width lock so this open re-measures the natural width.
+  lockedWidth.value = null;
+  widthLocked = false;
   // Start on the first selected option, else the first enabled one.
   const selectedIdx = flatOptions.value.findIndex((o) => isSelected(o.value));
   activeIndex.value = selectedIdx >= 0 ? selectedIdx : firstEnabledIndex();
@@ -431,7 +454,12 @@ function openList(): void {
   // preventScroll, so a body-teleported panel never scroll-jumps the page (Issue 3).
   nextTick(() => {
     repositionPopover();
-    requestAnimationFrame(repositionPopover);
+    requestAnimationFrame(() => {
+      repositionPopover();
+      // Static / already-cached async options are present now → freeze the width.
+      // A fresh async load locks later (after its first page) via refetch().
+      lockMenuWidth();
+    });
     if (props.searchable) searchRef.value?.focus({ preventScroll: true });
     scrollActiveIntoView();
     observeSentinel();
@@ -443,6 +471,8 @@ function closeList(returnFocus = true): void {
   if (!open.value) return;
   open.value = false;
   activeIndex.value = -1;
+  lockedWidth.value = null;
+  widthLocked = false;
   unobserveSentinel();
   window.removeEventListener('scroll', updatePopoverPos, true);
   window.removeEventListener('resize', updatePopoverPos);
@@ -669,6 +699,9 @@ async function refetch(): Promise<void> {
   await loadPage(true);
   nextTick(() => {
     observeSentinel();
+    // First async page is rendered → freeze the width (guarded to once per open,
+    // so later search-driven refetches keep the established width and stay stable).
+    lockMenuWidth();
     if (props.searchable) searchRef.value?.focus({ preventScroll: true });
   });
 }
@@ -988,11 +1021,13 @@ const headerSlotProps = computed(() => ({
         >
           <div
             ref="popoverRef"
-            class="fixed z-[var(--z-next-popover)] flex max-h-80 flex-col overflow-hidden rounded-next-md border border-next-border bg-next-popover text-next-popover-foreground shadow-next-lg"
+            class="fixed z-[var(--z-next-popover)] flex max-h-[28rem] flex-col overflow-hidden rounded-next-md border border-next-border bg-next-popover text-next-popover-foreground shadow-next-lg"
             :style="{
               top: `${popoverPos.top}px`,
               left: `${popoverPos.left}px`,
               minWidth: `${popoverWidth}px`,
+              maxWidth: 'calc(100vw - 1rem)',
+              ...(lockedWidth != null ? { width: `${lockedWidth}px` } : {}),
             }"
           >
         <!-- Sticky header: built-in search + the #header slot. The slot receives
@@ -1006,7 +1041,7 @@ const headerSlotProps = computed(() => ({
           <div v-if="searchable" class="relative flex items-center">
             <Icon
               name="search"
-              class="pointer-events-none absolute left-next-2 text-next-muted-foreground"
+              class="pointer-events-none absolute left-next-3 top-1/2 -translate-y-1/2 text-next-muted-foreground"
             />
             <input
               :id="searchId"
@@ -1015,7 +1050,7 @@ const headerSlotProps = computed(() => ({
               type="text"
               role="searchbox"
               :placeholder="searchPlaceholderText"
-              class="h-9 w-full rounded-next-sm border border-next-input bg-next-card pl-next-7 pr-next-2 text-next-sm text-next-fg outline-none placeholder:text-next-muted-foreground focus-visible:border-next-ring focus-visible:ring-2 focus-visible:ring-next-ring/30"
+              class="h-9 w-full rounded-next-sm border border-next-input bg-next-card pl-next-8 pr-next-2 text-next-sm text-next-fg outline-none placeholder:text-next-muted-foreground focus-visible:border-next-ring focus-visible:ring-2 focus-visible:ring-next-ring/30"
               :aria-controls="listId"
               :aria-label="t('select.searchLabel', 'Search options')"
               @input="onQueryInput(($event.target as HTMLInputElement).value)"

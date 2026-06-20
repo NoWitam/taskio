@@ -296,7 +296,7 @@ const triggerPadding = computed(() => FIELD_PADDING_X[props.size]);
           <div class="relative flex items-center">
             <Icon
               name="search"
-              class="pointer-events-none absolute left-next-2 text-next-muted-foreground"
+              class="pointer-events-none absolute left-next-3 top-1/2 -translate-y-1/2 text-next-muted-foreground"
             />
             <input
               ref="searchRef"
@@ -306,7 +306,7 @@ const triggerPadding = computed(() => FIELD_PADDING_X[props.size]);
               :placeholder="searchPlaceholderText"
               :aria-label="t('iconInput.searchLabel', 'Search icons')"
               :aria-controls="gridId"
-              class="h-9 w-full rounded-next-sm border border-next-input bg-next-card pl-next-7 pr-next-2 text-next-sm text-next-fg outline-none placeholder:text-next-muted-foreground focus-visible:border-next-ring focus-visible:ring-2 focus-visible:ring-next-ring/30"
+              class="h-9 w-full rounded-next-sm border border-next-input bg-next-card pl-next-8 pr-next-2 text-next-sm text-next-fg outline-none placeholder:text-next-muted-foreground focus-visible:border-next-ring focus-visible:ring-2 focus-visible:ring-next-ring/30"
               @keydown="onSearchKeydown"
             />
           </div>
