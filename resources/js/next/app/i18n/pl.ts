@@ -187,6 +187,8 @@ export const pl: MessageSchema = {
         assignee: 'Przypisani: {count}',
         labels: 'Etykiety: {count}',
         dateRange: 'Termin: {from} – {to}',
+        dateFrom: 'Termin od: {value}',
+        dateTo: 'Termin do: {value}',
         datePreset: 'Termin: {value}',
         hideWithoutDeadline: 'Bez terminu ukryte',
       },
@@ -508,6 +510,14 @@ export const pl: MessageSchema = {
     clearAll: 'Wyczyść wszystko',
     noFilters: 'Brak aktywnych filtrów',
     removeFilter: 'Usuń filtr: {label}',
+  },
+
+  // Pojedyncza kontrolka filtra zakresu dat (trigger + popover z presetami/zakresem).
+  dateRangeFilter: {
+    placeholder: 'Dowolna data',
+    label: 'Filtr daty',
+    from: 'od',
+    to: 'do',
   },
 
   chipOverflow: {

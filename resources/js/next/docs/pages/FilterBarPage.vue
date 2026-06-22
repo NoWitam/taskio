@@ -124,6 +124,35 @@ function clearMany(): void {
   manyFilters.value = [];
 }
 
+// --- Multi-value group + operator note demo ---------------------------------
+// A single filter "group" (e.g. labels) renders ONE chip per value, plus an
+// operator note when ≥2 values are selected, so the user sees exactly what is
+// selected AND how the values combine — never a bare "3 selected".
+const groupFilters = ref<ActiveFilter[]>([
+  { key: 'priority', label: 'Priority: High' },
+  {
+    key: 'labels',
+    values: [
+      { key: 'labels:1', label: 'marketing' },
+      { key: 'labels:2', label: 'high-priority' },
+      { key: 'labels:3', label: 'q2' },
+    ],
+    operatorLabel: 'Labels: Any',
+  },
+]);
+function removeGroup(key: string): void {
+  groupFilters.value = groupFilters.value
+    .map((f) =>
+      f.values
+        ? { ...f, values: f.values.filter((v) => v.key !== key) }
+        : f,
+    )
+    .filter((f) => f.key !== key && (f.values ? f.values.length > 0 : true));
+}
+function clearGroups(): void {
+  groupFilters.value = [];
+}
+
 const propRows: ApiRow[] = [
   { name: 'v-model:search', type: 'string', default: "''", description: 'The DEBOUNCED committed search value.' },
   { name: 'searchable', type: 'boolean', default: 'true', description: 'Show the debounced search input + make the bar role="search".' },
@@ -131,17 +160,18 @@ const propRows: ApiRow[] = [
   { name: 'searchDebounce', type: 'number', default: '300', description: 'Debounce (ms) before committing the search.' },
   { name: 'searchLabel', type: 'string', default: "'Search and filter'", description: 'Accessible label for the search region.' },
   { name: 'ariaLabel', type: 'string', default: "'Filters'", description: 'Bar label when there is no search.' },
-  { name: 'activeFilters', type: 'ActiveFilter[]', default: '[]', description: 'Chips: { key, label }. Removable; >1 shows Clear all.' },
+  { name: 'activeFilters', type: 'ActiveFilter[]', default: '[]', description: 'Chips. Single: { key, label }. Multi-value group: { key, values: { key, label }[], operatorLabel? } → one removable chip per value + an Any/All note when ≥2 values. Removable; >1 chip shows Clear all.' },
   { name: 'clearAllLabel', type: 'string', default: "'Clear all'", description: 'Clear-all button label.' },
   { name: 'noFiltersLabel', type: 'string', default: '—', description: 'Text shown when no filters are active (omit to render nothing).' },
   { name: 'sticky', type: 'boolean', default: 'false', description: 'Stick the bar to the top of its scroll container.' },
+  { name: 'controlSize', type: "'sm' | 'md' | 'lg'", default: "'md'", description: 'Ambient size provided to ALL slotted controls + the search input (each inherits it unless it sets its own size). Makes "filter controls are md" a structural rule.' },
 ];
 const eventRows: ApiRow[] = [
   { name: 'remove-filter', type: '(key: string)', description: 'A chip ✕ (visible or via the +N panel) was clicked.' },
   { name: 'clear-all', type: '()', description: 'The "Clear all" button was clicked.' },
 ];
 const slotRows: ApiRow[] = [
-  { name: 'default', type: 'slot', description: 'Filter controls (Selects, DateRangePicker, switches…).' },
+  { name: 'default', type: 'slot', description: 'Filter controls (Selects, DateRangeFilter, switches…). They inherit the bar’s controlSize.' },
   { name: 'results', type: 'slot', description: 'Results-count text (right-aligned).' },
   { name: 'actions', type: 'slot', description: 'Trailing actions (e.g. a New button).' },
 ];
@@ -150,13 +180,13 @@ const slotRows: ApiRow[] = [
 <template>
   <StoryPage
     title="FilterBar"
-    description="The standard list-screen filter row: a debounced search, arbitrary filter controls, a removable active-filters chip row (with clear-all + overflow), a results count, and a trailing actions slot. role=search; chips are keyboard-removable."
+    description="The standard list-screen filter row: a debounced search, arbitrary filter controls, a removable active-filters chip row (wraps to show all; clear-all + operator notes pinned right), a results count, and a trailing actions slot. role=search; chips are keyboard-removable."
   >
     <template #a11y>
       <ul class="ml-next-4 list-disc space-y-next-1">
         <li>With search, the bar is a <code>role="search"</code> region labelled by <code>searchLabel</code>; otherwise a labelled <code>group</code>.</li>
         <li>Each chip's ✕ is keyboard-removable (it's a real Badge remove button); "Clear all" is a real Button.</li>
-        <li>Overflowing chips collapse into the shared <code>+N</code> ChipOverflow pill — hover/focus shows a tooltip, click/Enter/↓ opens a teleported remove panel.</li>
+        <li>All active filters are shown — the chip row simply WRAPS onto more lines (no <code>+N</code> collapse). The Clear-all button + any operator notes stay pinned to the right of the first line.</li>
         <li>Search is debounced: the input updates instantly but only commits to <code>v-model:search</code> after <code>searchDebounce</code> ms; clearing commits immediately.</li>
       </ul>
     </template>
@@ -171,23 +201,27 @@ const slotRows: ApiRow[] = [
           @remove-filter="removeFilter"
           @clear-all="clearAll"
         >
-          <Select
-            v-model="statusFilter"
-            :options="statusOptions"
-            size="sm"
-            placeholder="Status"
-            aria-label="Filter by status"
-            class="min-w-[8rem]"
-          />
-          <Select
-            v-model="ownerFilter"
-            :options="ownerOptions"
-            size="sm"
-            placeholder="Owner"
-            aria-label="Filter by owner"
-            class="min-w-[10rem]"
-          />
-          <DateRangePicker v-model="range" size="sm" aria-label="Created date range" />
+          <div class="min-w-0 flex-1 basis-36">
+            <Select
+              v-model="statusFilter"
+              :options="statusOptions"
+              leading-icon="check-circle"
+              placeholder="Status"
+              aria-label="Filter by status"
+            />
+          </div>
+          <div class="min-w-0 flex-1 basis-40">
+            <Select
+              v-model="ownerFilter"
+              :options="ownerOptions"
+              leading-icon="user"
+              placeholder="Owner"
+              aria-label="Filter by owner"
+            />
+          </div>
+          <div class="min-w-0 flex-1 basis-44">
+            <DateRangePicker v-model="range" aria-label="Created date range" />
+          </div>
 
           <template #results>
             {{ filteredForms.length }} of {{ allForms.length }} forms
@@ -222,7 +256,7 @@ const slotRows: ApiRow[] = [
       </div>
     </StorySection>
 
-    <StorySection title="Chip overflow + clear-all" description="When the active filters don't fit one line they collapse into a shared +N pill. Remove chips (visible or hidden); >1 chip shows Clear all.">
+    <StorySection title="Wrapping + clear-all" description="Every active filter is shown; when they don't fit one line the row wraps. Remove individual chips; >1 chip shows Clear all (pinned right, first line).">
       <FilterBar
         :searchable="false"
         :active-filters="manyFilters"
@@ -230,8 +264,18 @@ const slotRows: ApiRow[] = [
         @remove-filter="removeMany"
         @clear-all="clearMany"
       >
-        <span class="text-next-sm text-next-muted-foreground">Resize the window to see the +N collapse.</span>
+        <span class="text-next-sm text-next-muted-foreground">Narrow the window to see the chips wrap.</span>
       </FilterBar>
+    </StorySection>
+
+    <StorySection title="Multi-value groups + operator note" description="A filter group with multiple values renders one removable chip per value (showing the real label, not a count) plus an Any/All operator note once ≥2 values are selected.">
+      <FilterBar
+        :searchable="false"
+        :active-filters="groupFilters"
+        aria-label="Grouped filters"
+        @remove-filter="removeGroup"
+        @clear-all="clearGroups"
+      />
     </StorySection>
 
     <StorySection title="Sticky" description="Set :sticky to pin the bar to the top of its scroll container while the list scrolls.">

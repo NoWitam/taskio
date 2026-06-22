@@ -18,7 +18,7 @@
 // v-model is `string[]` (label ids). v-model:operator is 'AND' | 'OR'. Built-in
 // `searchable` drives the `search` query param; cursor pagination + skeletons
 // come from Select. i18n + a11y throughout; no legacy imports; namespaced tokens.
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import Select, {
   type SelectFetchArgs,
   type SelectFetchResult,
@@ -56,6 +56,8 @@ interface ApiLabel {
 const props = withDefaults(
   defineProps<{
     size?: ControlSize;
+    /** Leading icon (defaults to `tag`; pass `null` to drop it). */
+    leadingIcon?: IconName | null;
     disabled?: boolean;
     readonly?: boolean;
     placeholder?: string;
@@ -82,12 +84,16 @@ const props = withDefaults(
     fetchOptions?: SelectFetchOptions;
   }>(),
   {
-    size: 'md',
     disabled: false,
     readonly: false,
     summary: false,
     addable: true,
   },
+);
+
+// Default the leading icon to `tag`; `:leading-icon="null"` opts out explicitly.
+const resolvedLeadingIcon = computed<IconName | undefined>(() =>
+  props.leadingIcon === null ? undefined : props.leadingIcon ?? 'tag',
 );
 
 // v-model: label ids. operator is filter-only and OPTIONAL — when no `operator`
@@ -111,7 +117,41 @@ function toOption(l: ApiLabel): LabelOption {
 const seededOptions = ref<LabelOption[]>(
   (props.seed ?? []).map((l) => toOption(l as ApiLabel)),
 );
+
+// Merge late-arriving seeds (e.g. ids resolved by name AFTER mount, on a refresh).
+watch(
+  () => props.seed,
+  (seed) => {
+    if (!seed?.length) return;
+    const known = new Set(seededOptions.value.map((o) => o.value));
+    const add = seed.map((l) => toOption(l as ApiLabel)).filter((o) => !known.has(o.value));
+    if (add.length) seededOptions.value = [...seededOptions.value, ...add];
+  },
+  { deep: true },
+);
+
 const selectedSeed = computed<SelectOption[]>(() => seededOptions.value);
+
+// Surface the RESOLVED selected labels (id → {value,label,color,icon}) so a
+// consumer (e.g. a FilterBar) can render a chip per label with its real name.
+const emit = defineEmits<{
+  (e: 'update:selected', options: LabelOption[]): void;
+}>();
+const selectedResolved = computed<LabelOption[]>(() => {
+  const byId = new Map(seededOptions.value.map((o) => [o.value, o]));
+  return model.value.map(
+    (id) =>
+      byId.get(String(id)) ?? {
+        value: String(id),
+        label: String(id),
+        color: null,
+      },
+  );
+});
+watch(selectedResolved, (v) => emit('update:selected', v), {
+  deep: true,
+  immediate: true,
+});
 
 // GET /labels?cursor=&search= → { data, meta: { next_cursor } }.
 async function fetchLabels(args: SelectFetchArgs): Promise<SelectFetchResult> {
@@ -254,6 +294,7 @@ defineExpose({ fetchLabels });
     :display="display"
     :summary="summary"
     :size="size"
+    :leading-icon="resolvedLeadingIcon"
     :disabled="disabled"
     :readonly="readonly"
     :aria-invalid="ariaInvalid"

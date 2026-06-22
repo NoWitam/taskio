@@ -62,7 +62,7 @@ import { useChipOverflow } from '../../app/composables/useChipOverflow';
 import { useAnchoredPosition } from '../../app/composables/useAnchoredPosition';
 import { useTheme } from '../../app/lib/theme';
 import { useI18n } from '../../app/i18n';
-import { type ControlSize } from './fieldShell';
+import { type ControlSize, useControlSize } from './fieldShell';
 
 const { t } = useI18n();
 
@@ -110,6 +110,12 @@ const props = withDefaults(
     groups?: SelectGroup[];
     /** Async cursor-paginated data source (replaces options/groups). */
     fetchOptions?: SelectFetchOptions;
+    /**
+     * Leading icon rendered inside the field (FieldShell #leading), mirroring the
+     * search input's magnifier — the "every filter control names itself with an
+     * icon" rule. Wrappers (UserSelect → `users`, LabelSelect → `tag`) default it.
+     */
+    leadingIcon?: IconName;
     /** Allow selecting multiple values (v-model becomes string[]). */
     multiple?: boolean;
     /**
@@ -164,7 +170,6 @@ const props = withDefaults(
   {
     multiple: false,
     summary: false,
-    size: 'md',
     disabled: false,
     readonly: false,
     searchable: false,
@@ -201,6 +206,8 @@ const filters = defineModel<Record<string, unknown>>('filters', {
 });
 
 const field = useFormField();
+// Effective size: explicit prop > ambient (FilterBar) > family default `md`.
+const controlSize = useControlSize(() => props.size);
 const generatedId = nextId('next-select');
 const resolvedId = computed(() => props.id ?? field?.id.value ?? generatedId);
 const listId = computed(() => `${resolvedId.value}-listbox`);
@@ -235,9 +242,13 @@ const summaryMode = computed(
 // always have a label to render in chips/trigger, even off-page.
 const asyncOptions = ref<SelectOption[]>([]);
 const labelCache = new Map<string, SelectOption>();
+// Bumped whenever labelCache changes so computed refs that read the cache
+// (e.g. selectedOptions) re-run even though Map itself is not reactive.
+const cacheVersion = ref(0);
 
 function cacheOption(opt: SelectOption): void {
   labelCache.set(opt.value, opt);
+  cacheVersion.value++;
 }
 
 // Static flat list (for keyboard nav / lookup) + grouped view (render).
@@ -300,12 +311,14 @@ function resolveOption(value: string): SelectOption {
 const selectedValues = computed<string[]>(() =>
   props.multiple ? multi.value ?? [] : single.value != null ? [single.value] : [],
 );
-const selectedOptions = computed<SelectOption[]>(() =>
-  selectedValues.value.map(resolveOption),
-);
-const selectedSingle = computed<SelectOption | null>(() =>
-  !props.multiple && single.value != null ? resolveOption(single.value) : null,
-);
+const selectedOptions = computed<SelectOption[]>(() => {
+  cacheVersion.value; // subscribe so late-arriving seeds (async seed prop) re-resolve
+  return selectedValues.value.map(resolveOption);
+});
+const selectedSingle = computed<SelectOption | null>(() => {
+  cacheVersion.value;
+  return !props.multiple && single.value != null ? resolveOption(single.value) : null;
+});
 function isSelected(value: string): boolean {
   return selectedValues.value.includes(value);
 }
@@ -810,7 +823,7 @@ const headerSlotProps = computed(() => ({
   <div ref="rootRef" class="relative w-full">
     <!-- Trigger renders through FieldShell so it shares the border + state line. -->
     <FieldShell
-      :size="size"
+      :size="controlSize"
       :disabled="disabled"
       :readonly="readonly"
       :error="invalid"
@@ -818,12 +831,18 @@ const headerSlotProps = computed(() => ({
       :dirty="dirty"
       :focused="open || undefined"
     >
+      <!-- Leading icon: names the control like the search field's magnifier. -->
+      <template v-if="leadingIcon" #leading>
+        <Icon :name="leadingIcon" />
+      </template>
+
       <button
         :id="resolvedId"
         ref="triggerRef"
         type="button"
         role="combobox"
-        class="flex h-full w-full min-w-0 flex-1 items-center gap-next-2 px-next-3 text-left outline-none disabled:cursor-not-allowed"
+        class="flex h-full w-full min-w-0 flex-1 items-center gap-next-2 pr-next-3 text-left outline-none disabled:cursor-not-allowed"
+        :class="leadingIcon ? 'pl-next-2' : 'pl-next-3'"
         :disabled="disabled"
         :aria-expanded="open"
         :aria-controls="listId"
@@ -1113,7 +1132,7 @@ const headerSlotProps = computed(() => ({
           ref="listRef"
           class="min-h-0 flex-1 overflow-y-auto py-next-1"
         >
-          <ul :id="listId" role="listbox" :aria-multiselectable="multiple ? 'true' : undefined" tabindex="-1">
+          <ul :id="listId" role="listbox" :aria-multiselectable="multiple ? 'true' : undefined" tabindex="-1" class="flex flex-col gap-next-0_5">
             <template v-for="(group, gi) in renderGroups" :key="gi">
               <li
                 v-if="group.label"

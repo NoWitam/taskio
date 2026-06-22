@@ -16,7 +16,7 @@
 //
 // A11y + i18n: placeholders/labels resolve through t(); the trigger keeps
 // Select's full combobox ARIA. No legacy imports; namespaced tokens only.
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import Select, {
   type SelectFetchArgs,
   type SelectFetchResult,
@@ -24,6 +24,7 @@ import Select, {
   type SelectOption,
 } from './Select.vue';
 import Avatar from '../primitives/Avatar.vue';
+import { type IconName } from '../primitives/icons';
 import { api } from '../../app/lib/api';
 import { useI18n } from '../../app/i18n';
 import { type ControlSize } from './fieldShell';
@@ -53,6 +54,8 @@ const props = withDefaults(
     display?: 'chips' | 'summary';
     summary?: boolean;
     size?: ControlSize;
+    /** Leading icon (defaults to `users`; pass `null` to drop it). */
+    leadingIcon?: IconName | null;
     disabled?: boolean;
     readonly?: boolean;
     placeholder?: string;
@@ -76,10 +79,14 @@ const props = withDefaults(
   {
     multiple: false,
     summary: false,
-    size: 'md',
     disabled: false,
     readonly: false,
   },
+);
+
+// Default the leading icon to `users`; `:leading-icon="null"` opts out explicitly.
+const resolvedLeadingIcon = computed<IconName | undefined>(() =>
+  props.leadingIcon === null ? undefined : props.leadingIcon ?? 'users',
 );
 
 // v-model: single id OR string[] in multiple mode (mirrors Select's two models).
@@ -101,7 +108,48 @@ const seededOptions = ref<UserOption[]>(
   (props.seed ?? []).map((u) => toOption(u as ApiUser)),
 );
 
+// Merge late-arriving seeds (e.g. ids resolved by name AFTER mount, on a refresh)
+// so chips/trigger swap the id fallback for the real name without a reselect.
+watch(
+  () => props.seed,
+  (seed) => {
+    if (!seed?.length) return;
+    const known = new Set(seededOptions.value.map((o) => o.value));
+    const add = seed.map((u) => toOption(u as ApiUser)).filter((o) => !known.has(o.value));
+    if (add.length) seededOptions.value = [...seededOptions.value, ...add];
+  },
+  { deep: true },
+);
+
 const selectedSeed = computed<SelectOption[]>(() => seededOptions.value);
+
+// Surface the RESOLVED selected options (id → {value,label,…}) so a consumer can
+// render per-value chips elsewhere (e.g. a FilterBar) showing actual names, not a
+// count. Unknown ids (not yet loaded/seeded) fall back to the id as the label.
+const emit = defineEmits<{
+  (e: 'update:selected', options: UserOption[]): void;
+}>();
+const selectedResolved = computed<UserOption[]>(() => {
+  const byId = new Map(seededOptions.value.map((o) => [o.value, o]));
+  const ids = props.multiple
+    ? multi.value ?? []
+    : single.value != null
+      ? [single.value]
+      : [];
+  return ids.map(
+    (id) =>
+      byId.get(String(id)) ?? {
+        value: String(id),
+        label: String(id),
+        avatar: null,
+        email: null,
+      },
+  );
+});
+watch(selectedResolved, (v) => emit('update:selected', v), {
+  deep: true,
+  immediate: true,
+});
 
 // GET /users?cursor=&q=&per_page=20 → { data, meta: { next_cursor } }.
 async function fetchUsers(args: SelectFetchArgs): Promise<SelectFetchResult> {
@@ -157,6 +205,7 @@ defineExpose({ fetchUsers });
     :display="display"
     :summary="summary"
     :size="size"
+    :leading-icon="resolvedLeadingIcon"
     :disabled="disabled"
     :readonly="readonly"
     :aria-invalid="ariaInvalid"
@@ -212,6 +261,7 @@ defineExpose({ fetchUsers });
     v-model="single"
     searchable
     :size="size"
+    :leading-icon="resolvedLeadingIcon"
     :disabled="disabled"
     :readonly="readonly"
     :aria-invalid="ariaInvalid"

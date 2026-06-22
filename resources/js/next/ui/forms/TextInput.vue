@@ -18,7 +18,7 @@ import Icon, { type IconName } from '../primitives/Icon.vue';
 import Spinner from '../primitives/Spinner.vue';
 import FieldShell from './FieldShell.vue';
 import { useFormField } from './formField';
-import { FIELD_PADDING_X, type ControlSize } from './fieldShell';
+import { FIELD_PADDING_X, type ControlSize, useControlSize } from './fieldShell';
 
 type TextInputType = 'text' | 'email' | 'password' | 'search' | 'url' | 'tel';
 
@@ -54,7 +54,6 @@ const props = withDefaults(
   }>(),
   {
     type: 'text',
-    size: 'md',
     disabled: false,
     readonly: false,
     success: false,
@@ -68,6 +67,8 @@ const emit = defineEmits<{ (e: 'clear'): void }>();
 const model = defineModel<string>({ default: '' });
 
 const field = useFormField();
+// Effective size: explicit prop > ambient (FilterBar) > family default `md`.
+const controlSize = useControlSize(() => props.size);
 
 const resolvedId = computed(() => props.id ?? field?.id.value);
 const resolvedDescribedBy = computed(
@@ -127,15 +128,15 @@ const hasTrailing = computed(
 
 // Drop the input's edge padding when an adornment provides the inset there.
 const inputPadding = computed(() => {
-  const l = hasLeading.value ? 'pl-next-2' : FIELD_PADDING_X[props.size];
-  const r = hasTrailing.value ? 'pr-next-2' : FIELD_PADDING_X[props.size];
+  const l = hasLeading.value ? 'pl-next-2' : FIELD_PADDING_X[controlSize.value];
+  const r = hasTrailing.value ? 'pr-next-2' : FIELD_PADDING_X[controlSize.value];
   return [l, r];
 });
 </script>
 
 <template>
   <FieldShell
-    :size="size"
+    :size="controlSize"
     :disabled="disabled"
     :readonly="readonly"
     :error="invalid"
@@ -178,7 +179,7 @@ const inputPadding = computed(() => {
         >
           <Spinner
             v-if="loading"
-            :size="size === 'lg' ? 'sm' : 'xs'"
+            :size="controlSize === 'lg' ? 'sm' : 'xs'"
             tone="muted"
             decorative
           />
@@ -216,3 +217,14 @@ const inputPadding = computed(() => {
     </template>
   </FieldShell>
 </template>
+
+<style scoped>
+/* Suppress the BROWSER's native clear control for `type="search"` (WebKit/Blink
+   render their own ✕). We provide our own clear button in the trailing slot, so
+   the native one would show a duplicate second ✕. */
+input[type='search']::-webkit-search-cancel-button,
+input[type='search']::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+</style>

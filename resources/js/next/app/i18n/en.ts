@@ -195,6 +195,8 @@ export const en = {
         assignee: 'Assignee: {count}',
         labels: 'Labels: {count}',
         dateRange: 'Deadline: {from} – {to}',
+        dateFrom: 'Deadline from: {value}',
+        dateTo: 'Deadline to: {value}',
         datePreset: 'Deadline: {value}',
         hideWithoutDeadline: 'Without deadline hidden',
       },
@@ -531,6 +533,14 @@ export const en = {
     clearAll: 'Clear all',
     noFilters: 'No active filters',
     removeFilter: 'Remove filter: {label}',
+  },
+
+  // Single date-range filter control (trigger + popover with presets/range/toggle).
+  dateRangeFilter: {
+    placeholder: 'Any date',
+    label: 'Date filter',
+    from: 'From',
+    to: 'To',
   },
 
   // Shared overflow "+N" pill (Select / PillGroupInput / FilterBar).

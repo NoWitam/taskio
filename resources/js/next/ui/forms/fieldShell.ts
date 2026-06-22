@@ -3,7 +3,42 @@
 // inline number, Select trigger, …). Keeping the state resolution + size scale in
 // one place guarantees the whole control family draws an identical border and an
 // identical "state line" (the colored line ON the border).
+import {
+  computed,
+  inject,
+  provide,
+  type ComputedRef,
+  type InjectionKey,
+  type Ref,
+} from 'vue';
+
 export type ControlSize = 'sm' | 'md' | 'lg';
+
+/**
+ * Ambient control size for a region of the UI. A container (e.g. FilterBar) can
+ * `provideControlSize('md')` so every form control rendered in its slots inherits
+ * that size WITHOUT each consumer threading a `size` prop. An explicit `size` prop
+ * on a control still wins; the ambient value is only the fallback. This is what
+ * makes "all controls in a FilterBar are `md`" a structural rule, not a per-view
+ * convention every screen must remember.
+ */
+export const ControlSizeKey: InjectionKey<Ref<ControlSize> | ComputedRef<ControlSize>> =
+  Symbol('next-control-size');
+
+/** Provide an ambient control size to descendants (reactive). */
+export function provideControlSize(size: Ref<ControlSize> | ComputedRef<ControlSize>): void {
+  provide(ControlSizeKey, size);
+}
+
+/**
+ * Resolve a control's effective size: the explicit prop wins, else the ambient
+ * provided size (FilterBar, …), else the family default `md`. Pass a getter for
+ * the prop so the result stays reactive to prop changes.
+ */
+export function useControlSize(explicit: () => ControlSize | undefined): ComputedRef<ControlSize> {
+  const ambient = inject(ControlSizeKey, null);
+  return computed(() => explicit() ?? ambient?.value ?? 'md');
+}
 
 /**
  * The visual states a field can express, in PRECEDENCE order (first match wins):

@@ -25,17 +25,45 @@ import { computed, ref, watch } from 'vue';
 import TextInput from '../forms/TextInput.vue';
 import Badge from '../primitives/Badge.vue';
 import Button from '../primitives/Button.vue';
-import ChipOverflow from '../forms/ChipOverflow.vue';
-import { useChipOverflow } from '../../app/composables/useChipOverflow';
+import { provideControlSize, type ControlSize } from '../forms/fieldShell';
 import { useDebounce } from '../../app/composables/useDebounce';
 import { useI18n } from '../../app/i18n';
 
 const { t } = useI18n();
 
-export interface ActiveFilter {
-  /** Stable key emitted on remove. */
+/** One removable value inside a multi-value filter group (e.g. one assignee). */
+export interface ActiveFilterValue {
+  /** Stable key emitted on remove (e.g. `user_id:42`). */
   key: string;
-  /** Display label (e.g. "Status: Active"). */
+  /** Display label (e.g. a person's name). */
+  label: string;
+}
+
+export interface ActiveFilter {
+  /** Stable key emitted on remove for a SINGLE-value filter. */
+  key: string;
+  /**
+   * Display label for a single-value filter (e.g. "Status: Active"). Omit when
+   * using `values` for a multi-value group.
+   */
+  label?: string;
+  /**
+   * Multi-value group: each value renders as its OWN removable chip (so the user
+   * sees exactly what is selected, not "3 selected"), removed by its own `key`.
+   */
+  values?: ActiveFilterValue[];
+  /**
+   * Optional operator note shown (non-removable, muted) when the group has ≥2
+   * values — e.g. "Any" / "All" for how labels combine. Surfaced by EVERY filter
+   * bar so the combination mode is always discoverable.
+   */
+  operatorLabel?: string;
+}
+
+/** A single flattened, removable chip rendered in the active-filter row. */
+interface FlatChip {
+  /** Key emitted on remove. */
+  key: string;
   label: string;
 }
 
@@ -61,13 +89,24 @@ const props = withDefaults(
 
     /** Stick the bar to the top of its scroll container. */
     sticky?: boolean;
+
+    /**
+     * Ambient size for the form controls placed in the default slot (and the
+     * built-in search). Provided to descendants so every control in the bar shares
+     * one size without each consumer threading a `size` prop. Defaults to `md`.
+     */
+    controlSize?: ControlSize;
   }>(),
   {
     searchable: true,
     searchDebounce: 300,
     activeFilters: () => [],
+    controlSize: 'md',
   },
 );
+
+// Make the bar's control size ambient for its slotted controls + the search input.
+provideControlSize(computed(() => props.controlSize));
 
 // i18n-defaulted strings (overridable via props).
 const searchPlaceholderText = computed(
@@ -108,36 +147,29 @@ function onClearSearch(): void {
   search.value = '';
 }
 
-const hasActive = computed(() => (props.activeFilters?.length ?? 0) > 0);
-const showClearAll = computed(() => (props.activeFilters?.length ?? 0) > 1);
-
-// Overflow: chips render in one clipped row; overflowing chips collapse into a
-// shared +N pill. Measured against the real available width (no fixed count).
-const chipTrackRef = ref<HTMLElement | null>(null);
-const chipMeasureRef = ref<HTMLElement | null>(null);
-
-const { visibleCount, hiddenCount, recompute } = useChipOverflow({
-  trackRef: chipTrackRef,
-  measureRef: chipMeasureRef,
-  total: () => props.activeFilters?.length ?? 0,
-  // Reserve room for the "Clear all" button when it shows (lives in the same row).
-  reserved: () => (showClearAll.value ? 96 : 0),
-});
-
-watch(
-  () => props.activeFilters,
-  () => recompute(),
-  { deep: true },
+// Flatten the filter groups into individual removable chips: a single-value
+// filter contributes one chip; a multi-value group contributes one chip PER value
+// (so the user sees each selected item, never "3 selected").
+const flatChips = computed<FlatChip[]>(() =>
+  (props.activeFilters ?? []).flatMap((f) =>
+    f.values?.length
+      ? f.values.map((v) => ({ key: v.key, label: v.label }))
+      : f.label != null
+        ? [{ key: f.key, label: f.label }]
+        : [],
+  ),
 );
 
-const visibleFilters = computed(() =>
-  (props.activeFilters ?? []).slice(0, visibleCount.value),
+// Operator notes (e.g. labels "Any"/"All"): shown non-removably when a group has
+// ≥2 values, so the combination mode is always visible — like the legacy bar.
+const operatorNotes = computed(() =>
+  (props.activeFilters ?? [])
+    .filter((f) => f.operatorLabel && (f.values?.length ?? 0) > 1)
+    .map((f) => ({ key: f.key, label: f.operatorLabel as string })),
 );
-const hiddenFilters = computed(() =>
-  (props.activeFilters ?? []).slice(visibleCount.value),
-);
-const hiddenLabels = computed(() => hiddenFilters.value.map((f) => f.label));
-const hiddenKeys = computed(() => hiddenFilters.value.map((f) => f.key));
+
+const hasActive = computed(() => flatChips.value.length > 0);
+const showClearAll = computed(() => flatChips.value.length > 1);
 
 function removeFilter(key: string): void {
   emit('remove-filter', key);
@@ -154,13 +186,15 @@ function clearAll(): void {
     :role="searchable ? 'search' : 'group'"
     :aria-label="searchable ? searchLabelText : barLabelText"
   >
-    <!-- Top row: search + controls + results + actions. Wraps on narrow screens. -->
+    <!-- Top row: search + controls + results + actions. Every control STRETCHES to
+         share the full width (each is flex-1); the row wraps on narrow screens.
+         The slot wrapper is `display:contents` so the consumer's controls become
+         direct flex items of this row and grow alongside the search. -->
     <div class="flex flex-wrap items-center gap-next-3">
-      <div v-if="searchable" class="min-w-[12rem] flex-1">
+      <div v-if="searchable" class="min-w-[12rem] flex-[2_1_12rem]">
         <TextInput
           v-model="local"
           type="search"
-          size="sm"
           leading-icon="search"
           :placeholder="searchPlaceholderText"
           :aria-label="searchPlaceholderText"
@@ -168,12 +202,15 @@ function clearAll(): void {
         />
       </div>
 
-      <!-- Arbitrary filter controls. -->
-      <div v-if="$slots.default" class="flex flex-wrap items-center gap-next-2">
+      <!-- Arbitrary filter controls (each child should be `flex-1` to stretch). -->
+      <template v-if="$slots.default">
         <slot />
-      </div>
+      </template>
 
-      <div class="ml-auto flex items-center gap-next-3">
+      <div
+        v-if="$slots.results || $slots.actions"
+        class="ml-auto flex items-center gap-next-3"
+      >
         <span v-if="$slots.results" class="text-next-sm text-next-muted-foreground">
           <slot name="results" />
         </span>
@@ -186,59 +223,42 @@ function clearAll(): void {
     <!-- Active-filters chip row (only when there are chips, or a noFiltersLabel). -->
     <div
       v-if="hasActive || noFiltersLabel"
-      class="relative mt-next-3 flex items-center gap-next-2 border-t border-next-border pt-next-3"
+      class="mt-next-3 flex items-start gap-next-3 border-t border-next-border pt-next-3"
     >
       <template v-if="hasActive">
-        <!-- The visible chips render in a single clipped track; overflow → +N. -->
-        <div
-          ref="chipTrackRef"
-          class="flex min-w-0 flex-1 items-center gap-next-1_5 overflow-hidden"
-        >
+        <!-- All chips are shown — the line simply WRAPS (no +N collapse). Each value
+             is its own removable chip. -->
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-next-1_5">
           <Badge
-            v-for="f in visibleFilters"
-            :key="f.key"
+            v-for="chip in flatChips"
+            :key="chip.key"
             variant="neutral"
             tone="subtle"
             removable
-            :remove-label="t('filterBar.removeFilter', 'Remove filter: {label}', { label: f.label })"
-            class="shrink-0"
-            @remove="removeFilter(f.key)"
+            :remove-label="t('filterBar.removeFilter', 'Remove filter: {label}', { label: chip.label })"
+            @remove="removeFilter(chip.key)"
           >
-            {{ f.label }}
+            {{ chip.label }}
           </Badge>
-
-          <ChipOverflow
-            v-if="hiddenCount > 0"
-            :items="hiddenLabels"
-            :values="hiddenKeys"
-            :count="hiddenCount"
-            panel-id="next-filter-bar-overflow"
-            @remove="removeFilter"
-          />
         </div>
 
-        <!-- Hidden measuring row: every chip at natural width for the fit math. -->
-        <div
-          ref="chipMeasureRef"
-          aria-hidden="true"
-          class="pointer-events-none invisible absolute flex items-center gap-next-1_5"
-        >
+        <!-- Right rail, pinned to the FIRST line: operator notes (e.g. labels
+             "Any"/"All") + the Clear-all button. `shrink-0` so they never wrap. -->
+        <div class="flex shrink-0 items-center gap-next-2">
           <Badge
-            v-for="f in activeFilters"
-            :key="f.key"
-            data-measure-chip
+            v-for="note in operatorNotes"
+            :key="`op-${note.key}`"
             variant="neutral"
             tone="subtle"
-            removable
-            class="shrink-0"
+            class="italic"
           >
-            {{ f.label }}
+            {{ note.label }}
           </Badge>
-        </div>
 
-        <Button v-if="showClearAll" size="xs" variant="ghost" class="shrink-0" @click="clearAll">
-          {{ clearAllLabelText }}
-        </Button>
+          <Button v-if="showClearAll" size="xs" variant="ghost" @click="clearAll">
+            {{ clearAllLabelText }}
+          </Button>
+        </div>
       </template>
 
       <span v-else class="text-next-xs font-next-medium text-next-muted-foreground">

@@ -16,7 +16,7 @@ import FieldShell from './FieldShell.vue';
 import FieldPopover from './FieldPopover.vue';
 import CalendarPanel from './date/CalendarPanel.vue';
 import { useFormField, nextId } from './formField';
-import { FIELD_PADDING_X, type ControlSize } from './fieldShell';
+import { FIELD_PADDING_X, type ControlSize, useControlSize } from './fieldShell';
 import { useI18n } from '../../app/i18n';
 import {
   addDays,
@@ -69,7 +69,6 @@ const props = withDefaults(
     ariaLabel?: string;
   }>(),
   {
-    size: 'md',
     disabled: false,
     readonly: false,
     min: null,
@@ -94,6 +93,8 @@ const { t, currentLocale } = useI18n();
 const effectiveLocale = computed(() => props.locale ?? currentLocale.value);
 
 const field = useFormField();
+// Effective size: explicit prop > ambient (FilterBar) > family default `md`.
+const controlSize = useControlSize(() => props.size);
 const generatedId = nextId('next-range');
 const resolvedId = computed(() => props.id ?? field?.id.value ?? generatedId);
 const panelId = computed(() => `${resolvedId.value}-panel`);
@@ -292,7 +293,7 @@ const segmentClass =
   >
     <template #trigger="{ open }">
       <FieldShell
-        :size="size"
+        :size="controlSize"
         :disabled="disabled"
         :readonly="readonly"
         :error="invalid"
@@ -307,7 +308,7 @@ const segmentClass =
         <!-- Two text segments under one shell, divided by an arrow. -->
         <div
           class="flex h-full min-w-0 flex-1 items-center gap-next-2 pl-next-2"
-          :class="FIELD_PADDING_X[size]"
+          :class="FIELD_PADDING_X[controlSize]"
           role="group"
           :aria-label="ariaLabel ?? t('pickers.rangeLabel', 'Date range')"
         >

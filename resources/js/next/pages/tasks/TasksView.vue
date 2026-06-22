@@ -6,11 +6,13 @@
 // Composition (all design-system components, all strings via t()):
 //   • PageHeader with a "New task" primary action (SEAM → Batch 2 create Modal;
 //     for now routes to `?new=1`).
-//   • FilterBar: debounced search, priority Select, assignee UserSelect (global
-//     people picker), labels LabelSelect (global label picker with the AND/OR
-//     operator INSIDE its dropdown via v-model:operator), a DateRangePicker, a
-//     date-preset Select, and a "hide without deadline" Switch. Active-filter
-//     chips + clear-all.
+//   • FilterBar (all controls `md` via the bar's ambient size): debounced search,
+//     priority Select (flag icon), assignee UserSelect (people picker, chips show
+//     who is selected), labels LabelSelect (label picker with the AND/OR operator
+//     INSIDE its dropdown via v-model:operator), and a SINGLE DateRangeFilter that
+//     bundles deadline presets + an explicit from/to range + the "hide without
+//     deadline" toggle in one popover. Active-filter chips list each selected
+//     person/label by name + an "Any/All" note for labels; clear-all.
 //   • A board-only view with Active / Archive / Trash Tabs (legacy parity). The
 //     active tab drives which statuses are fetched + shown: Active = the four
 //     primary columns (to_do, in_progress, in_test, done); Archive = the archive
@@ -28,14 +30,17 @@ import Alert from '../../ui/feedback/Alert.vue';
 import Select, { type SelectOption } from '../../ui/forms/Select.vue';
 import UserSelect from '../../ui/forms/UserSelect.vue';
 import LabelSelect from '../../ui/forms/LabelSelect.vue';
-import DateRangePicker, { type DateRangeValue } from '../../ui/forms/DateRangePicker.vue';
-import Switch from '../../ui/forms/Switch.vue';
+import DateRangeFilter, {
+  type DateRangeFilterPreset,
+  type DateRangeFilterValue,
+} from '../../ui/forms/DateRangeFilter.vue';
 import Button from '../../ui/primitives/Button.vue';
 import TaskBoardColumn from './TaskBoardColumn.vue';
 import TaskDetailsDrawer from './TaskDetailsDrawer.vue';
 import TaskFormModal from './TaskFormModal.vue';
 import { useTasksStore } from '../../app/stores/tasks';
 import { useDebounce } from '../../app/composables/useDebounce';
+import { api } from '../../app/lib/api';
 import { useI18n } from '../../app/i18n';
 import {
   ALL_PRIORITIES,
@@ -70,9 +75,60 @@ const priority = ref<TaskPriority | null>(null);
 const assignees = ref<string[]>([]);
 const labels = ref<string[]>([]);
 const labelOperator = ref<'AND' | 'OR'>('OR');
-const dateRange = ref<DateRangeValue>({ start: null, end: null });
-const datePreset = ref<string | null>(null);
-const hideWithoutDeadline = ref(false);
+// Deadline filter is now a SINGLE control: preset + explicit range + the
+// "hide without deadline" toggle all live in one model (mirrors the backend
+// query params date_preset / date_from / date_to / hide_without_deadline).
+const deadline = ref<DateRangeFilterValue>({
+  preset: '',
+  from: null,
+  to: null,
+  hide_without_deadline: false,
+});
+
+// Resolved option objects (id → {value,label}) surfaced by the multi-selects, so
+// the FilterBar can render a chip PER selected person/label with the real name.
+const selectedAssignees = ref<{ value: string; label: string }[]>([]);
+const selectedLabels = ref<{ value: string; label: string }[]>([]);
+
+// Seeds fed to the multi-selects so a HARD REFRESH (ids from the URL) resolves to
+// real names immediately — the backend resolves ids via `?ids[]=` (same contract
+// the legacy app used). Without this the chips would show `#id` until the dropdown
+// is opened.
+const assigneeSeed = ref<Array<{ id: string; name: string; email?: string | null; avatar?: string | null }>>([]);
+const labelSeed = ref<Array<{ id: string; name: string; color?: string | null; icon?: string | null }>>([]);
+
+async function resolveSeedNames(): Promise<void> {
+  if (assignees.value.length) {
+    try {
+      const qs = new URLSearchParams();
+      assignees.value.forEach((id) => qs.append('ids[]', id));
+      const res = await api.get<{ data: Array<Record<string, unknown>> }>(`/users?${qs.toString()}`);
+      assigneeSeed.value = (res.data ?? []).map((u) => ({
+        id: String(u.id),
+        name: String(u.name ?? u.id),
+        email: (u.email as string | null) ?? null,
+        avatar: (u.avatar as string | null) ?? null,
+      }));
+    } catch {
+      /* best-effort: chips fall back to the id until a dropdown loads */
+    }
+  }
+  if (labels.value.length) {
+    try {
+      const qs = new URLSearchParams();
+      labels.value.forEach((id) => qs.append('ids[]', id));
+      const res = await api.get<{ data: Array<Record<string, unknown>> }>(`/labels?${qs.toString()}`);
+      labelSeed.value = (res.data ?? []).map((l) => ({
+        id: String(l.id),
+        name: String(l.name ?? l.id),
+        color: (l.color as string | null) ?? null,
+        icon: (l.icon as string | null) ?? null,
+      }));
+    } catch {
+      /* best-effort */
+    }
+  }
+}
 
 const tab = ref<BoardTab>('active');
 
@@ -80,9 +136,9 @@ const tab = ref<BoardTab>('active');
 const priorityOptions = computed<SelectOption[]>(() =>
   ALL_PRIORITIES.map((p) => ({ value: p, label: t(`tasks.priorities.${p}`), icon: priorityMeta(p).icon })),
 );
-const datePresetOptions = computed<SelectOption[]>(() =>
+const deadlinePresets = computed<DateRangeFilterPreset[]>(() =>
   (['today', 'this_week', 'last_week', 'this_month'] as const).map((p) => ({
-    value: p,
+    id: p,
     label: t(`tasks.datePresets.${p}`),
   })),
 );
@@ -104,10 +160,10 @@ const filters = computed<TaskFilters>(() => ({
   labels: labels.value.length ? labels.value : undefined,
   // labelOperator only matters when labels are selected.
   labelOperator: labels.value.length ? labelOperator.value : undefined,
-  date_from: dateRange.value.start ?? undefined,
-  date_to: dateRange.value.end ?? undefined,
-  date_preset: (datePreset.value as TaskFilters['date_preset']) ?? undefined,
-  hide_without_deadline: hideWithoutDeadline.value || undefined,
+  date_from: deadline.value.from ?? undefined,
+  date_to: deadline.value.to ?? undefined,
+  date_preset: (deadline.value.preset || undefined) as TaskFilters['date_preset'],
+  hide_without_deadline: deadline.value.hide_without_deadline || undefined,
 }));
 
 const hasActiveFilters = computed(
@@ -116,13 +172,26 @@ const hasActiveFilters = computed(
     !!priority.value ||
     assignees.value.length > 0 ||
     labels.value.length > 0 ||
-    !!dateRange.value.start ||
-    !!dateRange.value.end ||
-    !!datePreset.value ||
-    hideWithoutDeadline.value,
+    !!deadline.value.from ||
+    !!deadline.value.to ||
+    !!deadline.value.preset ||
+    deadline.value.hide_without_deadline,
 );
 
 // --- Active-filter chips for the FilterBar ---------------------------------
+// Map a selected id → its resolved display name (from the multi-select), falling
+// back to the id when the option hasn't been loaded/seeded yet.
+function nameFor(list: { value: string; label: string }[], id: string): string {
+  return list.find((o) => o.value === id)?.label ?? `#${id}`;
+}
+
+// ISO `yyyy-mm-dd` → display `dd.mm.yyyy` for the deadline chips.
+function displayDateYmd(ymd: string | null): string {
+  if (!ymd) return '';
+  const m = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : String(ymd);
+}
+
 const activeFilters = computed<ActiveFilter[]>(() => {
   const chips: ActiveFilter[] = [];
   if (search.value) {
@@ -134,34 +203,66 @@ const activeFilters = computed<ActiveFilter[]>(() => {
       label: t('tasks.filters.chip.priority', '', { value: t(`tasks.priorities.${priority.value}`) }),
     });
   }
+  // Assignees: one chip PER person, prefixed so the source input is clear.
   if (assignees.value.length) {
-    chips.push({ key: 'user_id', label: t('tasks.filters.chip.assignee', '', { count: assignees.value.length }) });
-  }
-  if (labels.value.length) {
-    chips.push({ key: 'labels', label: t('tasks.filters.chip.labels', '', { count: labels.value.length }) });
-  }
-  if (dateRange.value.start || dateRange.value.end) {
     chips.push({
-      key: 'dateRange',
-      label: t('tasks.filters.chip.dateRange', '', {
-        from: dateRange.value.start ?? '…',
-        to: dateRange.value.end ?? '…',
-      }),
+      key: 'user_id',
+      values: assignees.value.map((id) => ({
+        key: `user_id:${id}`,
+        label: `${t('tasks.filters.assignee')}: ${nameFor(selectedAssignees.value, id)}`,
+      })),
     });
   }
-  if (datePreset.value) {
+  // Labels: one chip PER label (prefixed) + the AND/OR operator note when ≥2.
+  if (labels.value.length) {
+    chips.push({
+      key: 'labels',
+      values: labels.value.map((id) => ({
+        key: `labels:${id}`,
+        label: `${t('tasks.filters.labels')}: ${nameFor(selectedLabels.value, id)}`,
+      })),
+      operatorLabel: t('tasks.filters.labels') + ': ' +
+        (labelOperator.value === 'AND' ? t('tasks.filters.and') : t('tasks.filters.or')),
+    });
+  }
+  // Deadline range: from and to are INDEPENDENT, so each shows as its own chip.
+  if (deadline.value.from) {
+    chips.push({
+      key: 'date_from',
+      label: t('tasks.filters.chip.dateFrom', '', { value: displayDateYmd(deadline.value.from) }),
+    });
+  }
+  if (deadline.value.to) {
+    chips.push({
+      key: 'date_to',
+      label: t('tasks.filters.chip.dateTo', '', { value: displayDateYmd(deadline.value.to) }),
+    });
+  }
+  if (deadline.value.preset) {
     chips.push({
       key: 'datePreset',
-      label: t('tasks.filters.chip.datePreset', '', { value: t(`tasks.datePresets.${datePreset.value}`) }),
+      label: t('tasks.filters.chip.datePreset', '', { value: t(`tasks.datePresets.${deadline.value.preset}`) }),
     });
   }
-  if (hideWithoutDeadline.value) {
+  if (deadline.value.hide_without_deadline) {
     chips.push({ key: 'hideWithoutDeadline', label: t('tasks.filters.chip.hideWithoutDeadline') });
   }
   return chips;
 });
 
 function removeFilter(key: string): void {
+  // Multi-value chips carry a composite key (e.g. `user_id:42`) → remove one value.
+  if (key.startsWith('user_id:')) {
+    const id = key.slice('user_id:'.length);
+    assignees.value = assignees.value.filter((x) => x !== id);
+    return;
+  }
+  if (key.startsWith('labels:')) {
+    const id = key.slice('labels:'.length);
+    labels.value = labels.value.filter((x) => x !== id);
+    if (!labels.value.length) labelOperator.value = 'OR';
+    return;
+  }
   switch (key) {
     case 'search':
       search.value = '';
@@ -174,15 +275,19 @@ function removeFilter(key: string): void {
       break;
     case 'labels':
       labels.value = [];
+      labelOperator.value = 'OR';
       break;
-    case 'dateRange':
-      dateRange.value = { start: null, end: null };
+    case 'date_from':
+      deadline.value = { ...deadline.value, preset: '', from: null };
+      break;
+    case 'date_to':
+      deadline.value = { ...deadline.value, preset: '', to: null };
       break;
     case 'datePreset':
-      datePreset.value = null;
+      deadline.value = { ...deadline.value, preset: '', from: null, to: null };
       break;
     case 'hideWithoutDeadline':
-      hideWithoutDeadline.value = false;
+      deadline.value = { ...deadline.value, hide_without_deadline: false };
       break;
   }
 }
@@ -193,9 +298,7 @@ function clearAll(): void {
   assignees.value = [];
   labels.value = [];
   labelOperator.value = 'OR';
-  dateRange.value = { start: null, end: null };
-  datePreset.value = null;
-  hideWithoutDeadline.value = false;
+  deadline.value = { preset: '', from: null, to: null, hide_without_deadline: false };
 }
 
 // --- Fetch orchestration --------------------------------------------------
@@ -208,8 +311,9 @@ function refetchVisible(): void {
   );
 }
 
-// Debounce only refetch-on-search; other filters refetch immediately.
-const debouncedRefetch = useDebounce(refetchVisible, 350);
+// Debounce when filters are "applied" (the API call): wait until the user has
+// finished choosing rather than firing on every intermediate pick.
+const debouncedRefetch = useDebounce(refetchVisible, 800);
 
 // Refetch when the (debounced) filter object changes.
 watch(
@@ -237,15 +341,13 @@ function hydrateFromQuery(): void {
   assignees.value = arr(q.user_id);
   labels.value = arr(q.labels);
   labelOperator.value = str(q.labelOperator) === 'AND' ? 'AND' : 'OR';
-  dateRange.value = {
-    start: str(q.date_from) || null,
-    end: str(q.date_to) || null,
-  };
   const preset = str(q.date_preset);
-  datePreset.value = ['today', 'this_week', 'last_week', 'this_month'].includes(preset)
-    ? preset
-    : null;
-  hideWithoutDeadline.value = str(q.hide_without_deadline) === '1';
+  deadline.value = {
+    from: str(q.date_from) || null,
+    to: str(q.date_to) || null,
+    preset: ['today', 'this_week', 'last_week', 'this_month'].includes(preset) ? preset : '',
+    hide_without_deadline: str(q.hide_without_deadline) === '1',
+  };
 
   const tb = str(q.tab);
   tab.value = (ALL_TABS as string[]).includes(tb) ? (tb as BoardTab) : 'active';
@@ -271,10 +373,10 @@ function syncQuery(): void {
     query.labels = labels.value;
     query.labelOperator = labelOperator.value;
   }
-  if (dateRange.value.start) query.date_from = dateRange.value.start;
-  if (dateRange.value.end) query.date_to = dateRange.value.end;
-  if (datePreset.value) query.date_preset = datePreset.value;
-  if (hideWithoutDeadline.value) query.hide_without_deadline = '1';
+  if (deadline.value.from) query.date_from = deadline.value.from;
+  if (deadline.value.to) query.date_to = deadline.value.to;
+  if (deadline.value.preset) query.date_preset = deadline.value.preset;
+  if (deadline.value.hide_without_deadline) query.hide_without_deadline = '1';
   if (tab.value !== 'active') query.tab = tab.value;
 
   void router.replace({ query });
@@ -355,6 +457,7 @@ function onFormSaved(): void {
 
 onMounted(() => {
   hydrateFromQuery();
+  void resolveSeedNames();
   refetchVisible();
 });
 </script>
@@ -382,67 +485,60 @@ onMounted(() => {
       @remove-filter="removeFilter"
       @clear-all="clearAll"
     >
-      <!-- Priority -->
-      <div class="min-w-[10rem]">
+      <!-- Each control is `flex-1` so the row fills 100% width; `min-w-0` lets it
+           shrink/truncate (and wrap on narrow screens) rather than overflow.
+           Priority: the leading flag names the field; the selected value shows just
+           the label (no per-option icon) to avoid two flags side by side — the
+           colored icons still show in the menu. -->
+      <div class="min-w-0 flex-1 basis-5">
         <Select
           v-model="priority"
           :options="priorityOptions"
-          size="sm"
+          leading-icon="flag"
           :placeholder="t('tasks.filters.priority')"
           :aria-label="t('tasks.filters.priority')"
-        />
+        >
+          <template #value="{ option }">
+            <span class="truncate">{{ option.label }}</span>
+          </template>
+        </Select>
       </div>
 
-      <!-- Assignee (global UserSelect, multiple) -->
-      <div class="min-w-[12rem]">
+      <!-- Assignee (global UserSelect, multiple → shows selected people as chips) -->
+      <div class="min-w-0 flex-1 basis-85">
         <UserSelect
           v-model:values="assignees"
           multiple
-          summary
-          size="sm"
+          :seed="assigneeSeed"
           :placeholder="t('tasks.filters.assignee')"
           :aria-label="t('tasks.filters.assignee')"
+          @update:selected="selectedAssignees = $event"
         />
       </div>
 
       <!-- Labels (global LabelSelect, multiple) + in-dropdown AND/OR operator -->
-      <div class="min-w-[12rem]">
+      <div class="min-w-0 flex-1 basis-55">
         <LabelSelect
           v-model="labels"
           v-model:operator="labelOperator"
-          summary
-          size="sm"
+          :seed="labelSeed"
           :placeholder="t('tasks.filters.labels')"
           :aria-label="t('tasks.filters.labels')"
+          @update:selected="selectedLabels = $event"
         />
       </div>
 
-      <!-- Deadline range -->
-      <div class="min-w-[14rem]">
-        <DateRangePicker
-          v-model="dateRange"
-          size="sm"
+      <!-- Deadline: ONE control (presets + independent from/to + hide-without-deadline) -->
+      <div class="min-w-0 flex-1 basis-30">
+        <DateRangeFilter
+          v-model="deadline"
+          :presets="deadlinePresets"
+          show-empty-toggle
+          :empty-toggle-label="t('tasks.filters.hideWithoutDeadline')"
+          :placeholder="t('tasks.filters.datePresetAll')"
           :aria-label="t('tasks.filters.dateRange')"
         />
       </div>
-
-      <!-- Deadline preset -->
-      <div class="min-w-[10rem]">
-        <Select
-          v-model="datePreset"
-          :options="datePresetOptions"
-          size="sm"
-          :placeholder="t('tasks.filters.datePreset')"
-          :aria-label="t('tasks.filters.datePreset')"
-        />
-      </div>
-
-      <!-- Hide without deadline -->
-      <Switch
-        v-model="hideWithoutDeadline"
-        size="sm"
-        :label="t('tasks.filters.hideWithoutDeadline')"
-      />
     </FilterBar>
 
     <!-- Board with Active / Archive / Trash tabs. The active tab drives which

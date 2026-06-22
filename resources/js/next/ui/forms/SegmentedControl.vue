@@ -37,6 +37,20 @@ const props = withDefaults(
     /** Hide labels, show only icons (each option still needs an aria-label). */
     iconOnly?: boolean;
     disabled?: boolean;
+    /**
+     * Allow a truly unselected state (model = null → no thumb shown). By default
+     * the thumb always falls back to the first enabled option so it is never hidden.
+     * Pass `allow-none` when the control should appear with no selection
+     * (e.g. a preset picker where "none chosen" is a valid state).
+     */
+    allowNone?: boolean;
+    /**
+     * Render options in a CSS grid with this many columns instead of a single
+     * flex row. Use when options don't fit on one line (e.g. columns=2 for a
+     * 2×N grid). In grid mode the sliding thumb is replaced by a per-button
+     * card background on the active option.
+     */
+    columns?: number;
     /** Accessible label for the whole group (recommended). */
     ariaLabel?: string;
   }>(),
@@ -45,6 +59,7 @@ const props = withDefaults(
     equalWidth: false,
     iconOnly: false,
     disabled: false,
+    allowNone: false,
   },
 );
 
@@ -60,6 +75,8 @@ const firstEnabled = computed<T | null>(() => enabled.value[0]?.value ?? null);
 const active = computed<T | null>(() => {
   const v = model.value;
   if (v != null && props.options.some((o) => o.value === v && !o.disabled)) return v;
+  // With allowNone, a null model means "nothing selected" — no thumb fallback.
+  if (props.allowNone) return null;
   return firstEnabled.value;
 });
 
@@ -135,9 +152,12 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-// --- Sliding thumb ----------------------------------------------------------
-// The thumb is positioned over the active option by measuring its DOM rect
-// relative to the track. Recomputed on selection, option changes, and resize.
+// `columns` switches to a CSS-grid layout. In grid mode the 1-D sliding thumb
+// can't track multi-row positions, so it is suppressed; the active button gets
+// a card background directly. The thumb stays fully functional in row mode.
+const isGrid = computed(() => (props.columns ?? 0) > 1);
+
+// --- Sliding thumb (row mode only) ------------------------------------------
 const thumb = ref<{ left: number; width: number; visible: boolean }>({
   left: 0,
   width: 0,
@@ -145,6 +165,10 @@ const thumb = ref<{ left: number; width: number; visible: boolean }>({
 });
 
 function updateThumb(): void {
+  if (isGrid.value) {
+    thumb.value = { left: 0, width: 0, visible: false };
+    return;
+  }
   const track = trackRef.value;
   const value = active.value;
   if (!track || value == null) {
@@ -165,7 +189,7 @@ function updateThumb(): void {
 
 let ro: ResizeObserver | undefined;
 watch(
-  [active, () => props.options, () => props.size, () => props.iconOnly],
+  [active, () => props.options, () => props.size, () => props.iconOnly, isGrid],
   () => nextTick(updateThumb),
   { deep: true, immediate: true },
 );
@@ -184,17 +208,30 @@ const SIZE_TRACK: Record<SegmentedSize, string> = {
   sm: 'h-8 p-next-0_5 gap-next-0_5',
   md: 'h-10 p-next-1 gap-next-1',
 };
+// Grid-mode track: no fixed height (rows auto-size), keep the same padding/gap.
+const SIZE_TRACK_GRID: Record<SegmentedSize, string> = {
+  sm: 'p-next-0_5 gap-next-0_5',
+  md: 'p-next-1 gap-next-1',
+};
+// Option sizes for row mode (no vertical padding — height comes from the track).
 const SIZE_OPTION: Record<SegmentedSize, string> = {
   sm: 'px-next-2 text-next-xs gap-next-1',
   md: 'px-next-3 text-next-sm gap-next-1_5',
+};
+// Option sizes for grid mode (explicit vertical padding so buttons have height).
+const SIZE_OPTION_GRID: Record<SegmentedSize, string> = {
+  sm: 'px-next-2 py-next-1_5 text-next-xs gap-next-1',
+  md: 'px-next-3 py-next-2 text-next-sm gap-next-1_5',
 };
 
 function optionTabIndex(value: T): number {
   if (props.disabled) return -1;
   const opt = props.options.find((o) => o.value === value);
   if (opt?.disabled) return -1;
-  // Roving tabindex: only the active option is a tab stop.
-  return value === active.value ? 0 : -1;
+  // Roving tabindex: active option is the tab stop; when nothing is active
+  // (allowNone + null model), fall back to the first enabled option.
+  const tabStop = active.value ?? firstEnabled.value;
+  return value === tabStop ? 0 : -1;
 }
 </script>
 
@@ -204,11 +241,18 @@ function optionTabIndex(value: T): number {
     role="radiogroup"
     :aria-label="ariaLabel"
     :aria-disabled="disabled ? 'true' : undefined"
-    class="next-segmented relative inline-flex items-stretch rounded-next-lg border border-next-border bg-next-muted align-middle"
-    :class="[SIZE_TRACK[size], equalWidth ? 'w-full' : '', disabled ? 'opacity-60' : '']"
+    class="next-segmented relative rounded-next-lg border border-next-border bg-next-muted"
+    :class="[
+      isGrid
+        ? ['grid w-full', SIZE_TRACK_GRID[size]]
+        : ['inline-flex items-stretch align-middle', SIZE_TRACK[size], equalWidth ? 'w-full' : ''],
+      disabled ? 'opacity-60' : '',
+    ]"
+    :style="isGrid && columns ? { gridTemplateColumns: `repeat(${columns}, 1fr)` } : undefined"
     @keydown="onKeydown"
   >
-    <!-- Sliding thumb (decorative): a card-tinted surface behind the active option. -->
+    <!-- Sliding thumb (row-mode only): a card-tinted surface that slides behind
+         the active option. Hidden in grid mode — the button carries its own bg. -->
     <span
       v-show="thumb.visible"
       class="next-segmented__thumb pointer-events-none absolute top-0 bottom-0 my-[var(--spacing-next-0_5)] rounded-next-md bg-next-card shadow-next-xs transition-[transform,width] duration-[var(--duration-next-fast)] ease-[var(--ease-next-standard)]"
@@ -231,13 +275,14 @@ function optionTabIndex(value: T): number {
       :aria-disabled="opt.disabled || disabled ? 'true' : undefined"
       :tabindex="optionTabIndex(opt.value)"
       :disabled="opt.disabled || disabled"
-      class="next-segmented__option relative z-[1] inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-next-md outline-none transition-colors duration-[var(--duration-next-fast)] focus-visible:ring-2 focus-visible:ring-next-ring"
+      class="next-segmented__option relative z-[1] inline-flex items-center justify-center whitespace-nowrap rounded-next-md outline-none transition-colors duration-[var(--duration-next-fast)] focus-visible:ring-2 focus-visible:ring-next-ring"
       :class="[
-        SIZE_OPTION[size],
-        equalWidth ? 'flex-1' : '',
+        isGrid ? SIZE_OPTION_GRID[size] : [SIZE_OPTION[size], 'shrink-0', equalWidth ? 'flex-1' : ''],
         opt.disabled || disabled ? 'cursor-not-allowed' : 'cursor-pointer',
         opt.value === active
-          ? 'font-next-medium text-next-fg'
+          ? isGrid
+            ? 'bg-next-card font-next-medium text-next-fg shadow-next-xs'
+            : 'font-next-medium text-next-fg'
           : 'text-next-muted-foreground hover:text-next-fg',
         opt.disabled ? 'opacity-50' : '',
       ]"
