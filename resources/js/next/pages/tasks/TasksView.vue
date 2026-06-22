@@ -25,6 +25,12 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import PageHeader from '../../ui/patterns/PageHeader.vue';
 import FilterBar, { type ActiveFilter } from '../../ui/patterns/FilterBar.vue';
+import FilterTabBar from '../../ui/patterns/FilterTabBar.vue';
+import SaveViewModal, {
+  type SaveViewSubmit,
+  type SaveViewDateModes,
+} from '../../ui/patterns/SaveViewModal.vue';
+import ConfirmDialog from '../../ui/overlay/ConfirmDialog.vue';
 import Tabs, { type TabItem } from '../../ui/navigation/Tabs.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Select, { type SelectOption } from '../../ui/forms/Select.vue';
@@ -42,6 +48,15 @@ import { useTasksStore } from '../../app/stores/tasks';
 import { useDebounce } from '../../app/composables/useDebounce';
 import { api } from '../../app/lib/api';
 import { useI18n } from '../../app/i18n';
+import { useToast } from '../../app/composables/useToast';
+import {
+  useFilterTabs,
+  type FilterSnapshot,
+} from '../../app/composables/useFilterTabs';
+import type { FilterTab } from '../../app/stores/filterTabs';
+import { useFilterTabsStore } from '../../app/stores/filterTabs';
+import { toIconEnumValue } from '../../ui/forms/filterTabIcon';
+import { today, fromIsoDate, toIsoDate, addDays } from '../../ui/forms/date/dateCore';
 import {
   ALL_PRIORITIES,
   BOARD_STATUSES,
@@ -57,6 +72,11 @@ const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const store = useTasksStore();
+const toast = useToast();
+const filterTabsStore = useFilterTabsStore();
+
+// Saved-views context for the Tasks list (per the verified backend contract).
+const SAVED_VIEWS_CONTEXT = 'tasks';
 
 // The board exposes three tabs (legacy parity): the Active board (4 columns),
 // the Archive bucket (1 column), and the Trash bucket (1 column). The active tab
@@ -90,6 +110,44 @@ const deadline = ref<DateRangeFilterValue>({
 const selectedAssignees = ref<{ value: string; label: string }[]>([]);
 const selectedLabels = ref<{ value: string; label: string }[]>([]);
 
+// Sticky id→name caches. They ACCUMULATE every name we ever resolve (from the
+// multi-selects + the seed lookups) and never forget — so a value REMOVED from
+// the active saved view (now a `tab-disabled` "ghost" chip) still shows its real
+// name, not its id, even though it's no longer in `selected*`.
+const assigneeNameCache = ref<Record<string, string>>({});
+const labelNameCache = ref<Record<string, string>>({});
+
+function rememberAssigneeNames(pairs: Array<{ id: string; name: string }>): void {
+  if (!pairs.length) return;
+  const next = { ...assigneeNameCache.value };
+  for (const p of pairs) next[p.id] = p.name;
+  assigneeNameCache.value = next;
+}
+function rememberLabelNames(pairs: Array<{ id: string; name: string }>): void {
+  if (!pairs.length) return;
+  const next = { ...labelNameCache.value };
+  for (const p of pairs) next[p.id] = p.name;
+  labelNameCache.value = next;
+}
+
+watch(
+  selectedAssignees,
+  (list) => rememberAssigneeNames(list.map((o) => ({ id: o.value, name: o.label }))),
+  { deep: true },
+);
+watch(
+  selectedLabels,
+  (list) => rememberLabelNames(list.map((o) => ({ id: o.value, name: o.label }))),
+  { deep: true },
+);
+
+function assigneeName(id: string): string {
+  return assigneeNameCache.value[id] ?? `#${id}`;
+}
+function labelName(id: string): string {
+  return labelNameCache.value[id] ?? `#${id}`;
+}
+
 // Seeds fed to the multi-selects so a HARD REFRESH (ids from the URL) resolves to
 // real names immediately — the backend resolves ids via `?ids[]=` (same contract
 // the legacy app used). Without this the chips would show `#id` until the dropdown
@@ -109,6 +167,7 @@ async function resolveSeedNames(): Promise<void> {
         email: (u.email as string | null) ?? null,
         avatar: (u.avatar as string | null) ?? null,
       }));
+      rememberAssigneeNames(assigneeSeed.value.map((u) => ({ id: u.id, name: u.name })));
     } catch {
       /* best-effort: chips fall back to the id until a dropdown loads */
     }
@@ -124,6 +183,7 @@ async function resolveSeedNames(): Promise<void> {
         color: (l.color as string | null) ?? null,
         icon: (l.icon as string | null) ?? null,
       }));
+      rememberLabelNames(labelSeed.value.map((l) => ({ id: l.id, name: l.name })));
     } catch {
       /* best-effort */
     }
@@ -179,11 +239,8 @@ const hasActiveFilters = computed(
 );
 
 // --- Active-filter chips for the FilterBar ---------------------------------
-// Map a selected id → its resolved display name (from the multi-select), falling
-// back to the id when the option hasn't been loaded/seeded yet.
-function nameFor(list: { value: string; label: string }[], id: string): string {
-  return list.find((o) => o.value === id)?.label ?? `#${id}`;
-}
+// Names come from the sticky caches (assigneeName / labelName) so chips keep the
+// real name even after a value leaves `selected*` (e.g. a removed view value).
 
 // ISO `yyyy-mm-dd` → display `dd.mm.yyyy` for the deadline chips.
 function displayDateYmd(ymd: string | null): string {
@@ -192,14 +249,20 @@ function displayDateYmd(ymd: string | null): string {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : String(ymd);
 }
 
+// Scalar chip keys ENCODE their value (e.g. `priority=high`) so a scalar whose
+// value changed against the active view reads as two distinct chips: the new
+// value as `extra` and the old value as `tab-disabled` — instead of one chip
+// wrongly marked as still matching the view. Multi-value keys already carry the
+// id (`user_id:42`), so only scalars need this. Keys MUST stay in lockstep with
+// `normalizeSnapshot` so the trit-state comparison lines up.
 const activeFilters = computed<ActiveFilter[]>(() => {
   const chips: ActiveFilter[] = [];
   if (search.value) {
-    chips.push({ key: 'search', label: t('tasks.filters.chip.search', '', { value: search.value }) });
+    chips.push({ key: `search=${search.value}`, label: t('tasks.filters.chip.search', '', { value: search.value }) });
   }
   if (priority.value) {
     chips.push({
-      key: 'priority',
+      key: `priority=${priority.value}`,
       label: t('tasks.filters.chip.priority', '', { value: t(`tasks.priorities.${priority.value}`) }),
     });
   }
@@ -209,7 +272,7 @@ const activeFilters = computed<ActiveFilter[]>(() => {
       key: 'user_id',
       values: assignees.value.map((id) => ({
         key: `user_id:${id}`,
-        label: `${t('tasks.filters.assignee')}: ${nameFor(selectedAssignees.value, id)}`,
+        label: `${t('tasks.filters.assignee')}: ${assigneeName(id)}`,
       })),
     });
   }
@@ -219,7 +282,7 @@ const activeFilters = computed<ActiveFilter[]>(() => {
       key: 'labels',
       values: labels.value.map((id) => ({
         key: `labels:${id}`,
-        label: `${t('tasks.filters.labels')}: ${nameFor(selectedLabels.value, id)}`,
+        label: `${t('tasks.filters.labels')}: ${labelName(id)}`,
       })),
       operatorLabel: t('tasks.filters.labels') + ': ' +
         (labelOperator.value === 'AND' ? t('tasks.filters.and') : t('tasks.filters.or')),
@@ -228,19 +291,19 @@ const activeFilters = computed<ActiveFilter[]>(() => {
   // Deadline range: from and to are INDEPENDENT, so each shows as its own chip.
   if (deadline.value.from) {
     chips.push({
-      key: 'date_from',
+      key: `date_from=${deadline.value.from}`,
       label: t('tasks.filters.chip.dateFrom', '', { value: displayDateYmd(deadline.value.from) }),
     });
   }
   if (deadline.value.to) {
     chips.push({
-      key: 'date_to',
+      key: `date_to=${deadline.value.to}`,
       label: t('tasks.filters.chip.dateTo', '', { value: displayDateYmd(deadline.value.to) }),
     });
   }
   if (deadline.value.preset) {
     chips.push({
-      key: 'datePreset',
+      key: `datePreset=${deadline.value.preset}`,
       label: t('tasks.filters.chip.datePreset', '', { value: t(`tasks.datePresets.${deadline.value.preset}`) }),
     });
   }
@@ -248,6 +311,57 @@ const activeFilters = computed<ActiveFilter[]>(() => {
     chips.push({ key: 'hideWithoutDeadline', label: t('tasks.filters.chip.hideWithoutDeadline') });
   }
   return chips;
+});
+
+// Split a value-encoded scalar key (`priority=high`) into its base + value.
+// Multi-value keys use `:` and have no `=`, so they pass through untouched.
+function splitKey(key: string): { base: string; value: string } {
+  const eq = key.indexOf('=');
+  return eq >= 0
+    ? { base: key.slice(0, eq), value: key.slice(eq + 1) }
+    : { base: key, value: '' };
+}
+
+// Build a readable label for a snapshot-only (`tab-disabled`) chip key. The value
+// is carried IN the key (the normalized snapshot key), so the struck-through chip
+// names the removed filter using the SNAPSHOT's value — and names persist via the
+// sticky caches even after the value left `selected*`.
+function disabledChipLabel(key: string): string | null {
+  if (key.startsWith('user_id:')) {
+    return `${t('tasks.filters.assignee')}: ${assigneeName(key.slice('user_id:'.length))}`;
+  }
+  if (key.startsWith('labels:')) {
+    return `${t('tasks.filters.labels')}: ${labelName(key.slice('labels:'.length))}`;
+  }
+  const { base, value } = splitKey(key);
+  switch (base) {
+    case 'search':
+      return t('tasks.filters.chip.search', '', { value });
+    case 'priority':
+      return t('tasks.filters.chip.priority', '', { value: t(`tasks.priorities.${value}`) });
+    case 'date_from':
+      return t('tasks.filters.chip.dateFrom', '', { value: displayDateYmd(value) });
+    case 'date_to':
+      return t('tasks.filters.chip.dateTo', '', { value: displayDateYmd(value) });
+    case 'datePreset':
+      return t('tasks.filters.chip.datePreset', '', { value: t(`tasks.datePresets.${value}`) });
+    case 'hideWithoutDeadline':
+      return t('tasks.filters.chip.hideWithoutDeadline');
+    default:
+      return null;
+  }
+}
+
+// Decorate the page's chips with their saved-view trit-state (no-op when no
+// view is active → identical to today). Also injects `tab-disabled` chips for
+// snapshot keys removed from the current state, relabeled for readability.
+const decoratedFilters = computed<ActiveFilter[]>(() => {
+  const decorated = savedViews.decorateActiveFilters(activeFilters.value);
+  return decorated.map((f) =>
+    f.tabState === 'tab-disabled' && f.label === f.key
+      ? { ...f, label: disabledChipLabel(f.key) ?? f.label }
+      : f,
+  );
 });
 
 function removeFilter(key: string): void {
@@ -263,7 +377,8 @@ function removeFilter(key: string): void {
     if (!labels.value.length) labelOperator.value = 'OR';
     return;
   }
-  switch (key) {
+  // Scalar chip keys encode their value (`priority=high`) → switch on the base.
+  switch (splitKey(key).base) {
     case 'search':
       search.value = '';
       break;
@@ -299,6 +414,291 @@ function clearAll(): void {
   labels.value = [];
   labelOperator.value = 'OR';
   deadline.value = { preset: '', from: null, to: null, hide_without_deadline: false };
+}
+
+// --- Saved views (FilterTabs Stage 2) -------------------------------------
+// D1 date coding: a concrete deadline endpoint is persisted as either
+//   { mode:'absolute', date:'yyyy-mm-dd' }  — a fixed calendar day, or
+//   { mode:'relative', offset:<int days from today> } — recomputed on apply.
+// Presets persist as-is (date_preset). The bucket (Active/Archive/Trash) is
+// NEVER part of the snapshot (D3). Search participates as a plain scalar (D2).
+type CodedDate =
+  | null
+  | { mode: 'absolute'; date: string }
+  | { mode: 'relative'; offset: number };
+
+// The per-endpoint date format chosen in the modal for the NEXT save. Live
+// serialization (dirty/trit-state) ignores the mode (it only compares
+// presence), so a default of 'absolute' is fine outside of an explicit save.
+const pendingDateModes = ref<SaveViewDateModes>({ from: 'absolute', to: 'absolute' });
+
+function codeDate(ymd: string | null, mode: 'absolute' | 'relative'): CodedDate {
+  if (!ymd) return null;
+  if (mode === 'absolute') return { mode: 'absolute', date: ymd };
+  const d = fromIsoDate(ymd);
+  if (!d) return { mode: 'absolute', date: ymd };
+  const offset = Math.round((d.getTime() - today().getTime()) / 86_400_000);
+  return { mode: 'relative', offset };
+}
+
+function decodeDate(coded: unknown): string | null {
+  if (!coded || typeof coded !== 'object') return null;
+  const c = coded as { mode?: string; date?: string; offset?: number };
+  if (c.mode === 'absolute' && typeof c.date === 'string') return c.date;
+  if (c.mode === 'relative' && typeof c.offset === 'number') {
+    return toIsoDate(addDays(today(), c.offset));
+  }
+  return null;
+}
+
+function serializeFiltersSnapshot(): FilterSnapshot {
+  const snap: FilterSnapshot = {};
+  if (search.value) snap.search = search.value;
+  if (priority.value) snap.priority = priority.value;
+  if (assignees.value.length) snap.user_id = [...assignees.value];
+  if (labels.value.length) {
+    snap.labels = [...labels.value];
+    snap.labelOperator = labelOperator.value;
+  }
+  if (deadline.value.preset) snap.date_preset = deadline.value.preset;
+  const from = codeDate(deadline.value.from, pendingDateModes.value.from);
+  const to = codeDate(deadline.value.to, pendingDateModes.value.to);
+  if (from) snap.date_from = from;
+  if (to) snap.date_to = to;
+  if (deadline.value.hide_without_deadline) snap.hide_without_deadline = true;
+  return snap;
+}
+
+function applyFiltersSnapshot(snap: FilterSnapshot): void {
+  search.value = typeof snap.search === 'string' ? snap.search : '';
+  priority.value =
+    typeof snap.priority === 'string' && (ALL_PRIORITIES as string[]).includes(snap.priority)
+      ? (snap.priority as TaskPriority)
+      : null;
+  assignees.value = Array.isArray(snap.user_id) ? snap.user_id.map(String) : [];
+  labels.value = Array.isArray(snap.labels) ? snap.labels.map(String) : [];
+  labelOperator.value = snap.labelOperator === 'AND' ? 'AND' : 'OR';
+  const preset =
+    typeof snap.date_preset === 'string' &&
+    ['today', 'this_week', 'last_week', 'this_month'].includes(snap.date_preset)
+      ? (snap.date_preset as TaskFilters['date_preset'])
+      : '';
+  deadline.value = {
+    preset: preset ?? '',
+    from: decodeDate(snap.date_from),
+    to: decodeDate(snap.date_to),
+    hide_without_deadline: snap.hide_without_deadline === true,
+  };
+  // Re-resolve names for assignees/labels restored from the snapshot.
+  void resolveSeedNames();
+}
+
+// Canonical key SET for dirty-state + chip trit-state (order-insensitive). Keys
+// MATCH the chip `key`s produced by `activeFilters` below.
+function normalizeSnapshot(snap: FilterSnapshot): string[] {
+  const keys: string[] = [];
+  // Scalars are value-encoded (matching `activeFilters`) so a changed value
+  // produces a DIFFERENT key → old reads as removed, new as added.
+  if (snap.search) keys.push(`search=${String(snap.search)}`);
+  if (snap.priority) keys.push(`priority=${String(snap.priority)}`);
+  if (Array.isArray(snap.user_id)) snap.user_id.map(String).sort().forEach((id) => keys.push(`user_id:${id}`));
+  if (Array.isArray(snap.labels)) snap.labels.map(String).sort().forEach((id) => keys.push(`labels:${id}`));
+  if (snap.date_preset) keys.push(`datePreset=${String(snap.date_preset)}`);
+  const from = decodeDate(snap.date_from);
+  const to = decodeDate(snap.date_to);
+  if (from) keys.push(`date_from=${from}`);
+  if (to) keys.push(`date_to=${to}`);
+  if (snap.hide_without_deadline === true) keys.push('hideWithoutDeadline');
+  return keys;
+}
+
+// Restore ONE chip key from the active view's snapshot (FilterBar "restore").
+function restoreSnapshotValue(key: string, snap: FilterSnapshot): void {
+  if (key.startsWith('user_id:')) {
+    const id = key.slice('user_id:'.length);
+    if (!assignees.value.includes(id)) assignees.value = [...assignees.value, id];
+    void resolveSeedNames();
+    return;
+  }
+  if (key.startsWith('labels:')) {
+    const id = key.slice('labels:'.length);
+    if (!labels.value.includes(id)) labels.value = [...labels.value, id];
+    if (typeof snap.labelOperator === 'string') {
+      labelOperator.value = snap.labelOperator === 'AND' ? 'AND' : 'OR';
+    }
+    void resolveSeedNames();
+    return;
+  }
+  switch (splitKey(key).base) {
+    case 'search':
+      search.value = typeof snap.search === 'string' ? snap.search : '';
+      break;
+    case 'priority':
+      priority.value =
+        typeof snap.priority === 'string' ? (snap.priority as TaskPriority) : null;
+      break;
+    case 'date_from':
+      deadline.value = { ...deadline.value, preset: '', from: decodeDate(snap.date_from) };
+      break;
+    case 'date_to':
+      deadline.value = { ...deadline.value, preset: '', to: decodeDate(snap.date_to) };
+      break;
+    case 'datePreset':
+      deadline.value = {
+        ...deadline.value,
+        preset: (snap.date_preset as TaskFilters['date_preset']) ?? '',
+        from: null,
+        to: null,
+      };
+      break;
+    case 'hideWithoutDeadline':
+      deadline.value = { ...deadline.value, hide_without_deadline: true };
+      break;
+  }
+}
+
+const savedViews = useFilterTabs(SAVED_VIEWS_CONTEXT, {
+  serialize: serializeFiltersSnapshot,
+  apply: applyFiltersSnapshot,
+  normalize: normalizeSnapshot,
+  restoreValue: restoreSnapshotValue,
+});
+
+// Mutation-in-flight flag for the bar's Save / Save-as buttons + delete dialog.
+const savingView = ref(false);
+
+function onActivateView(tab: FilterTab): void {
+  savedViews.applyTab(tab);
+}
+
+async function onSaveActiveView(): Promise<void> {
+  savingView.value = true;
+  try {
+    await savedViews.saveActive();
+    toast.success(t('tasks.savedViews.toast.updated'));
+  } catch {
+    toast.danger(t('tasks.savedViews.toast.saveError'));
+  } finally {
+    savingView.value = false;
+  }
+}
+
+// --- Save / edit modal ----------------------------------------------------
+const saveModalOpen = ref(false);
+const saveModalMode = ref<'create' | 'edit'>('create');
+const editingView = ref<FilterTab | null>(null);
+const saveModalNameError = ref<string | null>(null);
+
+function onSaveAs(): void {
+  saveModalMode.value = 'create';
+  editingView.value = null;
+  saveModalNameError.value = null;
+  saveModalOpen.value = true;
+}
+function onEditView(tab: FilterTab): void {
+  saveModalMode.value = 'edit';
+  editingView.value = tab;
+  saveModalNameError.value = null;
+  saveModalOpen.value = true;
+}
+
+/** Map a 422 fieldErrors map → a name-field i18n key (raw backend key). */
+function nameErrorKey(fieldErrors: Record<string, string>): string | null {
+  // The backend returns the i18n key as the message (e.g. filter_tabs.errors.name_taken).
+  return fieldErrors.name ?? null;
+}
+/** Non-name 422 keys → a single toast key. */
+function otherErrorKey(fieldErrors: Record<string, string>): string | null {
+  return (
+    fieldErrors.context ?? fieldErrors.filters ?? fieldErrors.icon ?? null
+  );
+}
+
+async function onSaveModalSubmit(payload: SaveViewSubmit): Promise<void> {
+  saveModalNameError.value = null;
+  pendingDateModes.value = payload.dateModes;
+  savingView.value = true;
+  const iconEnum = toIconEnumValue(payload.icon);
+  try {
+    if (saveModalMode.value === 'edit' && editingView.value) {
+      await filterTabsStore.update(SAVED_VIEWS_CONTEXT, editingView.value.id, {
+        name: payload.name,
+        icon: iconEnum,
+        filters: serializeFiltersSnapshot(),
+      });
+      toast.success(t('tasks.savedViews.toast.updated'));
+    } else {
+      await savedViews.saveAs(payload.name, iconEnum);
+      toast.success(t('tasks.savedViews.toast.created'));
+    }
+    saveModalOpen.value = false;
+  } catch (err: unknown) {
+    const e = err as { status?: number; fieldErrors?: Record<string, string> };
+    const fieldErrors = e.fieldErrors ?? {};
+    const nameKey = nameErrorKey(fieldErrors);
+    if (nameKey) {
+      saveModalNameError.value = nameKey;
+    } else {
+      const otherKey = otherErrorKey(fieldErrors);
+      toast.danger(otherKey ? t(otherKey) : t('tasks.savedViews.toast.saveError'));
+    }
+  } finally {
+    savingView.value = false;
+    // Reset the modes so live dirty-state comparison uses the default again.
+    pendingDateModes.value = { from: 'absolute', to: 'absolute' };
+  }
+}
+
+// --- Delete view (ConfirmDialog) ------------------------------------------
+const deleteConfirmOpen = ref(false);
+const viewToDelete = ref<FilterTab | null>(null);
+
+function onDeleteView(tab: FilterTab): void {
+  viewToDelete.value = tab;
+  deleteConfirmOpen.value = true;
+}
+const deleteMessage = computed(() =>
+  t('tasks.savedViews.confirm.deleteMessage', '', { name: viewToDelete.value?.name ?? '' }),
+);
+async function onConfirmDeleteView(): Promise<void> {
+  if (!viewToDelete.value) return;
+  savingView.value = true;
+  const wasActive = String(viewToDelete.value.id) === String(savedViews.activeTabId.value);
+  try {
+    await filterTabsStore.remove(SAVED_VIEWS_CONTEXT, viewToDelete.value.id);
+    if (wasActive) savedViews.clearActive();
+    toast.success(t('tasks.savedViews.toast.deleted'));
+    deleteConfirmOpen.value = false;
+    viewToDelete.value = null;
+  } catch {
+    toast.danger(t('tasks.savedViews.toast.saveError'));
+  } finally {
+    savingView.value = false;
+  }
+}
+
+// --- Reorder via menu (move up/down) --------------------------------------
+async function moveView(tab: FilterTab, dir: -1 | 1): Promise<void> {
+  const list = savedViews.tabs.value;
+  const idx = list.findIndex((t) => String(t.id) === String(tab.id));
+  const target = idx + dir;
+  if (idx < 0 || target < 0 || target >= list.length) return;
+  const ids = list.map((t) => t.id);
+  [ids[idx], ids[target]] = [ids[target], ids[idx]];
+  try {
+    await filterTabsStore.reorder(SAVED_VIEWS_CONTEXT, ids);
+    toast.success(t('tasks.savedViews.toast.reordered'));
+  } catch (err: unknown) {
+    const e = err as { fieldErrors?: Record<string, string> };
+    const key = e.fieldErrors?.ids ?? null;
+    toast.danger(key ? t(key) : t('tasks.savedViews.errors.invalidReorder'));
+    // Refetch to recover the authoritative order on an invalid set.
+    void savedViews.load();
+  }
+}
+
+function onRestoreFilter(key: string): void {
+  savedViews.restoreFilter(key);
 }
 
 // --- Fetch orchestration --------------------------------------------------
@@ -458,6 +858,7 @@ function onFormSaved(): void {
 onMounted(() => {
   hydrateFromQuery();
   void resolveSeedNames();
+  void savedViews.load();
   refetchVisible();
 });
 </script>
@@ -480,11 +881,34 @@ onMounted(() => {
     <FilterBar
       v-model:search="search"
       :search-placeholder="t('tasks.filters.search')"
-      :active-filters="activeFilters"
+      :active-filters="decoratedFilters"
       :clear-all-label="t('tasks.filters.clearAll')"
       @remove-filter="removeFilter"
       @clear-all="clearAll"
+      @restore-filter="onRestoreFilter"
     >
+      <!-- Saved Views toolbar, embedded inside the bar to save vertical space. -->
+      <template #top>
+        <FilterTabBar
+          :tabs="savedViews.tabs.value"
+          :active-tab-id="savedViews.activeTabId.value"
+          :dirty="savedViews.dirty.value"
+          :loading="savedViews.loading.value"
+          :error="savedViews.loadError.value"
+          :has-active-filters="hasActiveFilters"
+          :busy="savingView"
+          @activate="onActivateView"
+          @deactivate="savedViews.clearActive()"
+          @save="onSaveActiveView"
+          @save-as="onSaveAs"
+          @edit="onEditView"
+          @delete="onDeleteView"
+          @move-up="(tab) => moveView(tab, -1)"
+          @move-down="(tab) => moveView(tab, 1)"
+          @retry="savedViews.load"
+        />
+      </template>
+
       <!-- Each control is `flex-1` so the row fills 100% width; `min-w-0` lets it
            shrink/truncate (and wrap on narrow screens) rather than overflow.
            Priority: the leading flag names the field; the selected value shows just
@@ -635,6 +1059,31 @@ onMounted(() => {
       v-model:open="formOpen"
       :task="formTask"
       @saved="onFormSaved"
+    />
+
+    <!-- Saved view: create / edit modal. -->
+    <SaveViewModal
+      v-model:open="saveModalOpen"
+      :mode="saveModalMode"
+      :initial-name="editingView?.name ?? ''"
+      :initial-icon="editingView?.icon ?? null"
+      :snapshot-from="deadline.from"
+      :snapshot-to="deadline.to"
+      :submitting="savingView"
+      :name-error="saveModalNameError"
+      @submit="onSaveModalSubmit"
+    />
+
+    <!-- Saved view: delete confirmation (danger). -->
+    <ConfirmDialog
+      v-model:open="deleteConfirmOpen"
+      variant="danger"
+      :title="t('tasks.savedViews.confirm.deleteTitle')"
+      :message="deleteMessage"
+      :confirm-label="t('common.delete')"
+      :cancel-label="t('common.cancel')"
+      :loading="savingView"
+      @confirm="onConfirmDeleteView"
     />
   </div>
 </template>

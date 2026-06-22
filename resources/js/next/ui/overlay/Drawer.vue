@@ -40,7 +40,7 @@ import Icon from '../primitives/Icon.vue';
 import Button from '../primitives/Button.vue';
 
 type DrawerSide = 'left' | 'right' | 'top' | 'bottom';
-type DrawerSize = 'sm' | 'md' | 'lg' | 'xl' | 'cover' | 'full';
+type DrawerSize = 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'cover' | 'full';
 
 const props = withDefaults(
   defineProps<{
@@ -76,7 +76,9 @@ const props = withDefaults(
     closeOnEsc: true,
     closeOnScrim: true,
     showClose: true,
-    floating: false,
+    // Always detached from the screen edges (a consistent gap) by default, like
+    // the Tasks detail drawer; pass `:floating="false"` for an edge-pinned sheet.
+    floating: true,
     scrollBody: true,
   },
 );
@@ -115,6 +117,7 @@ const SIZE_W: Record<DrawerSize, string> = {
   md: 'w-[24rem]',
   lg: 'w-[32rem]',
   xl: 'w-[42rem]',
+  '2xl': 'w-[50rem]',
   // Cover most of the screen but keep the app navigation visible on the side.
   cover: 'w-[calc(100vw-2rem)] next-md:w-[calc(100vw-18rem)]',
   full: 'w-screen',
@@ -124,6 +127,7 @@ const SIZE_H: Record<DrawerSize, string> = {
   md: 'h-[20rem]',
   lg: 'h-[28rem]',
   xl: 'h-[36rem]',
+  '2xl': 'h-[44rem]',
   cover: 'h-[calc(100vh-2rem)]',
   full: 'h-screen',
 };

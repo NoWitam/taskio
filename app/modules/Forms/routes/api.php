@@ -21,9 +21,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('form-submissions', [FormSubmissionsController::class, 'store'])->name('form-submissions.store');
     Route::get('form-submissions/{submission}', [FormSubmissionsController::class, 'show'])->name('form-submissions.show');
     Route::put('form-submissions/{submission}', [FormSubmissionsController::class, 'update'])->name('form-submissions.update');
+    Route::delete('form-submissions/{submission}', [FormSubmissionsController::class, 'destroy'])->name('form-submissions.destroy');
+    Route::post('form-submissions/{id}/restore', [FormSubmissionsController::class, 'restore'])->name('form-submissions.restore');
+    Route::delete('form-submissions/{id}/force', [FormSubmissionsController::class, 'forceDestroy'])->name('form-submissions.force-destroy');
 
     Route::get('forms/{form}/reports', [FormReportsController::class, 'indexByForm'])->name('form-reports.index-by-form');
     Route::post('form-reports', [FormReportsController::class, 'store'])->name('form-reports.store');
     Route::get('form-reports/{report}', [FormReportsController::class, 'show'])->name('form-reports.show');
     Route::delete('form-reports/{report}', [FormReportsController::class, 'destroy'])->name('form-reports.destroy');
+    Route::post('form-reports/{id}/restore', [FormReportsController::class, 'restore'])->name('form-reports.restore');
+    Route::delete('form-reports/{id}/force', [FormReportsController::class, 'forceDestroy'])->name('form-reports.force-destroy');
 });

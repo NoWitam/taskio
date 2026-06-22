@@ -39,6 +39,44 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../../pages/tasks/TasksView.vue'),
         meta: { requiresAuth: true, titleKey: 'nav.tasks' },
       },
+      {
+        // Forms module shell: inner sub-nav + the list / per-form sub-views.
+        path: 'forms',
+        component: () => import('../../pages/forms/FormsModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.forms' },
+        children: [
+          {
+            path: '',
+            name: 'next.forms',
+            component: () => import('../../pages/forms/FormsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.forms' },
+          },
+          {
+            // Opening a form lands on its submissions.
+            path: ':id',
+            name: 'next.forms.detail',
+            redirect: (to) => ({ name: 'next.forms.submissions', params: { id: to.params.id } }),
+          },
+          {
+            path: ':id/preview',
+            name: 'next.forms.preview',
+            component: () => import('../../pages/forms/FormPreviewView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.forms' },
+          },
+          {
+            path: ':id/submissions',
+            name: 'next.forms.submissions',
+            component: () => import('../../pages/forms/FormSubmissionsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.forms' },
+          },
+          {
+            path: ':id/reports',
+            name: 'next.forms.reports',
+            component: () => import('../../pages/forms/FormReportsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.forms' },
+          },
+        ],
+      },
     ],
   },
   {

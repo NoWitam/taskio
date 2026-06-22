@@ -31,12 +31,29 @@ import { useI18n } from '../../app/i18n';
 
 const { t } = useI18n();
 
+/**
+ * The chip's relationship to the active saved-view snapshot (Saved Views,
+ * Stage 2). Optional + additive: when ABSENT every chip renders exactly as
+ * before (neutral/subtle, removable) — zero visual/behavioral regression for
+ * bars without saved views.
+ *   • `tab-active`   — filter is in BOTH the snapshot and the current state
+ *                      (baseline; renders like today, removable).
+ *   • `extra`        — filter is only in the current state (added on top of the
+ *                      view) → primary tint + `plus` icon, removable.
+ *   • `tab-disabled` — filter was in the snapshot but removed from the current
+ *                      state → struck-through, dashed, NOT removable; a trailing
+ *                      "restore" affordance emits `restore-filter`.
+ */
+export type FilterTabState = 'tab-active' | 'extra' | 'tab-disabled';
+
 /** One removable value inside a multi-value filter group (e.g. one assignee). */
 export interface ActiveFilterValue {
   /** Stable key emitted on remove (e.g. `user_id:42`). */
   key: string;
   /** Display label (e.g. a person's name). */
   label: string;
+  /** Saved-view relationship of this individual value (optional, additive). */
+  tabState?: FilterTabState;
 }
 
 export interface ActiveFilter {
@@ -58,6 +75,8 @@ export interface ActiveFilter {
    * bar so the combination mode is always discoverable.
    */
   operatorLabel?: string;
+  /** Saved-view relationship of a SINGLE-value filter (optional, additive). */
+  tabState?: FilterTabState;
 }
 
 /** A single flattened, removable chip rendered in the active-filter row. */
@@ -65,6 +84,8 @@ interface FlatChip {
   /** Key emitted on remove. */
   key: string;
   label: string;
+  /** Saved-view relationship (undefined = baseline, like before). */
+  tabState?: FilterTabState;
 }
 
 const props = withDefaults(
@@ -123,6 +144,8 @@ const clearAllLabelText = computed(
 const emit = defineEmits<{
   (e: 'remove-filter', key: string): void;
   (e: 'clear-all'): void;
+  /** Restore a `tab-disabled` filter back to the active saved view. */
+  (e: 'restore-filter', key: string): void;
 }>();
 
 // v-model:search is the COMMITTED (debounced) value. `local` mirrors keystrokes
@@ -150,15 +173,33 @@ function onClearSearch(): void {
 // Flatten the filter groups into individual removable chips: a single-value
 // filter contributes one chip; a multi-value group contributes one chip PER value
 // (so the user sees each selected item, never "3 selected").
-const flatChips = computed<FlatChip[]>(() =>
-  (props.activeFilters ?? []).flatMap((f) =>
+//
+// Chips are ordered by their saved-view relationship so the user reads the
+// "delta" from the active view at a glance: added (extra) → removed
+// (tab-disabled) → from the view (tab-active). The sort is STABLE, so without an
+// active view (every chip undefined) the consumer's original order is preserved.
+const CHIP_RANK: Record<FilterTabState, number> = {
+  extra: 0,
+  'tab-disabled': 1,
+  'tab-active': 2,
+};
+const flatChips = computed<FlatChip[]>(() => {
+  const chips = (props.activeFilters ?? []).flatMap((f) =>
     f.values?.length
-      ? f.values.map((v) => ({ key: v.key, label: v.label }))
+      ? f.values.map((v) => ({ key: v.key, label: v.label, tabState: v.tabState ?? f.tabState }))
       : f.label != null
-        ? [{ key: f.key, label: f.label }]
+        ? [{ key: f.key, label: f.label, tabState: f.tabState }]
         : [],
-  ),
-);
+  );
+  return chips
+    .map((chip, index) => ({ chip, index }))
+    .sort(
+      (a, b) =>
+        (a.chip.tabState ? CHIP_RANK[a.chip.tabState] : 0) -
+          (b.chip.tabState ? CHIP_RANK[b.chip.tabState] : 0) || a.index - b.index,
+    )
+    .map((entry) => entry.chip);
+});
 
 // Operator notes (e.g. labels "Any"/"All"): shown non-removably when a group has
 // ≥2 values, so the combination mode is always visible — like the legacy bar.
@@ -177,6 +218,9 @@ function removeFilter(key: string): void {
 function clearAll(): void {
   emit('clear-all');
 }
+function restoreFilter(key: string): void {
+  emit('restore-filter', key);
+}
 </script>
 
 <template>
@@ -186,6 +230,16 @@ function clearAll(): void {
     :role="searchable ? 'search' : 'group'"
     :aria-label="searchable ? searchLabelText : barLabelText"
   >
+    <!-- Optional top strip (e.g. the Saved Views toolbar) embedded INSIDE the bar
+         to save vertical space; separated from the filter row by a divider. Renders
+         nothing — and adds no spacing — when the slot is unused. -->
+    <div
+      v-if="$slots.top"
+      class="mb-next-3 border-b border-next-border pb-next-3"
+    >
+      <slot name="top" />
+    </div>
+
     <!-- Top row: search + controls + results + actions. Every control STRETCHES to
          share the full width (each is flex-1); the row wraps on narrow screens.
          The slot wrapper is `display:contents` so the consumer's controls become
@@ -229,17 +283,53 @@ function clearAll(): void {
         <!-- All chips are shown — the line simply WRAPS (no +N collapse). Each value
              is its own removable chip. -->
         <div class="flex min-w-0 flex-1 flex-wrap items-center gap-next-1_5">
-          <Badge
-            v-for="chip in flatChips"
-            :key="chip.key"
-            variant="neutral"
-            tone="subtle"
-            removable
-            :remove-label="t('filterBar.removeFilter', 'Remove filter: {label}', { label: chip.label })"
-            @remove="removeFilter(chip.key)"
-          >
-            {{ chip.label }}
-          </Badge>
+          <template v-for="chip in flatChips" :key="chip.key">
+            <!-- tab-disabled: in the saved view but removed from the current
+                 state. NOT removable; struck-through + dashed border (pattern,
+                 not just color) + a "restore" trailing action. -->
+            <Badge
+              v-if="chip.tabState === 'tab-disabled'"
+              variant="neutral"
+              tone="subtle"
+              class="border border-dashed border-next-border line-through opacity-70"
+              :aria-label="t('tasks.filters.chip.disabledAria', '{label} (removed from the view — activate to restore)', { label: chip.label })"
+              :trailing-action="{
+                icon: 'rotate-ccw',
+                label: t('tasks.filters.chip.restore', 'Restore filter: {label}', { label: chip.label }),
+              }"
+              @action="restoreFilter(chip.key)"
+            >
+              {{ chip.label }}
+            </Badge>
+
+            <!-- extra: added on top of the view. Primary tint + `plus` icon +
+                 ring (multiple non-color signals). Removable as usual. -->
+            <Badge
+              v-else-if="chip.tabState === 'extra'"
+              variant="primary"
+              tone="subtle"
+              icon="plus"
+              class="ring-1 ring-next-primary/30"
+              removable
+              :remove-label="t('filterBar.removeFilter', 'Remove filter: {label}', { label: chip.label })"
+              :aria-label="t('tasks.filters.chip.extraAria', '{label} (added on top of the view)', { label: chip.label })"
+              @remove="removeFilter(chip.key)"
+            >
+              {{ chip.label }}
+            </Badge>
+
+            <!-- tab-active / no saved view (baseline) — IDENTICAL to before. -->
+            <Badge
+              v-else
+              variant="neutral"
+              tone="subtle"
+              removable
+              :remove-label="t('filterBar.removeFilter', 'Remove filter: {label}', { label: chip.label })"
+              @remove="removeFilter(chip.key)"
+            >
+              {{ chip.label }}
+            </Badge>
+          </template>
         </div>
 
         <!-- Right rail, pinned to the FIRST line: operator notes (e.g. labels

@@ -48,11 +48,11 @@ interface NavLink {
 const primaryNav: NavLink[] = [
   { key: 'dashboard', labelKey: 'nav.dashboard', icon: 'layout-dashboard', to: '/dashboard' },
   { key: 'tasks', labelKey: 'nav.tasks', icon: 'list-checks', to: '/tasks' },
+  { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', to: '/forms' },
 ];
 
 // IA preview — modules not built yet are shown disabled so the structure is visible.
 const upcomingNav: NavLink[] = [
-  { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', comingSoon: true },
   { key: 'approvals', labelKey: 'nav.approvals', icon: 'check-circle', comingSoon: true },
   { key: 'labels', labelKey: 'nav.labels', icon: 'hash', comingSoon: true },
 ];

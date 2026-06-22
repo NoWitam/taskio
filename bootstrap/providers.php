@@ -5,6 +5,7 @@ return [
     App\Modules\Users\UsersModuleServiceProvider::class,
     App\Modules\Tasks\TasksModuleServiceProvider::class,
     App\Modules\Labels\LabelsModuleServiceProvider::class,
+    App\Modules\FilterTabs\FilterTabsModuleServiceProvider::class,
     App\Modules\Disk\DiskModuleServiceProvider::class,
     App\Modules\Comments\CommentsModuleServiceProvider::class,
     App\Modules\Changelog\ChangelogModuleServiceProvider::class,

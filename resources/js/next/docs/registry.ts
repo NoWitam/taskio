@@ -373,6 +373,11 @@ export const stories: StyleguideStory[] = [
   },
   {
     section: 'Patterns',
+    name: 'Saved Views',
+    component: () => import('./pages/SavedViewsPage.vue'),
+  },
+  {
+    section: 'Patterns',
     name: 'PageHeader',
     component: () => import('./pages/PageHeaderPage.vue'),
   },

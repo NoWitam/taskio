@@ -35,6 +35,15 @@ const props = withDefaults(
     removeLabel?: string;
     /** Constrain width + ellipsis the label. */
     truncate?: boolean;
+    /**
+     * An OPTIONAL trailing action button rendered after the label (additive,
+     * reusable). Unlike `removable` (a fixed ✕ → `remove`), this renders an
+     * arbitrary icon with its own `aria-label` and emits `action` on activate.
+     * Use it for non-remove trailing affordances (e.g. a "restore" rotate-ccw on
+     * a struck-through chip). Renders ALONGSIDE `removable` if both are set, but
+     * the two are normally mutually exclusive per use case.
+     */
+    trailingAction?: { icon: IconName; label: string };
   }>(),
   {
     variant: 'neutral',
@@ -47,7 +56,7 @@ const props = withDefaults(
   },
 );
 
-const emit = defineEmits<{ (e: 'remove'): void }>();
+const emit = defineEmits<{ (e: 'remove'): void; (e: 'action'): void }>();
 
 // solid + subtle token pairs per family. Neutral has no status token, so it
 // borrows muted / fg.
@@ -101,6 +110,9 @@ const classes = computed(() => [
 function onRemove(): void {
   emit('remove');
 }
+function onAction(): void {
+  emit('action');
+}
 </script>
 
 <template>
@@ -124,6 +136,15 @@ function onRemove(): void {
       @click.stop="onRemove"
     >
       <Icon name="x" class="text-[0.85em]" :stroke-width="2.5" />
+    </button>
+    <button
+      v-if="trailingAction"
+      type="button"
+      class="ml-next-0_5 -mr-next-1 inline-flex shrink-0 items-center justify-center rounded-next-full p-[1px] transition-colors duration-[var(--duration-next-fast)] hover:bg-next-fg/15"
+      :aria-label="trailingAction.label"
+      @click.stop="onAction"
+    >
+      <Icon :name="trailingAction.icon" class="text-[0.85em]" :stroke-width="2.5" />
     </button>
   </span>
 </template>

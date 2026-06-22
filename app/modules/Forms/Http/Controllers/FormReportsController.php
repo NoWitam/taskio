@@ -55,4 +55,34 @@ class FormReportsController extends Controller
 
         return response()->noContent();
     }
+
+    /**
+     * Restore a soft-deleted report.
+     */
+    public function restore(string $id): FormReportResource
+    {
+        $report = FormReport::withTrashed()->findOrFail($id);
+
+        $this->authorize('restore', $report);
+
+        $report->restore();
+
+        return FormReportResource::make(
+            $report->loadMissing(['form', 'creator', 'file'])
+        );
+    }
+
+    /**
+     * Permanently delete a soft-deleted report.
+     */
+    public function forceDestroy(string $id): Response
+    {
+        $report = FormReport::withTrashed()->findOrFail($id);
+
+        $this->authorize('forceDelete', $report);
+
+        $report->forceDelete();
+
+        return response()->noContent();
+    }
 }
