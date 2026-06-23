@@ -130,7 +130,10 @@ class TaskService
     protected function listQuery(Request $request)
     {
         return Task::query()
-            ->with('assigned', 'labels')
+            // `pendingApprovalProcess` feeds TaskListResource::is_in_approval via
+            // Task::isInApproval()'s relationLoaded() short-circuit — eager-loading
+            // it here turns a per-row exists() query into one batched query.
+            ->with('assigned', 'labels', 'pendingApprovalProcess')
             ->withCount('comments')
             ->when(
                 $status = $request->enum('status', TaskStatus::class),

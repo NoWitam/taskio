@@ -40,7 +40,7 @@ import Icon from '../primitives/Icon.vue';
 import Button from '../primitives/Button.vue';
 
 type DrawerSide = 'left' | 'right' | 'top' | 'bottom';
-type DrawerSize = 'sm' | 'md' | 'lg' | 'xl' | '2xl' | 'cover' | 'full';
+type DrawerSize = 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl' | 'cover' | 'full';
 
 const props = withDefaults(
   defineProps<{
@@ -118,6 +118,8 @@ const SIZE_W: Record<DrawerSize, string> = {
   lg: 'w-[32rem]',
   xl: 'w-[42rem]',
   '2xl': 'w-[50rem]',
+  '3xl': 'w-[64rem]',
+  '4xl': 'w-[72rem]',
   // Cover most of the screen but keep the app navigation visible on the side.
   cover: 'w-[calc(100vw-2rem)] next-md:w-[calc(100vw-18rem)]',
   full: 'w-screen',
@@ -128,6 +130,8 @@ const SIZE_H: Record<DrawerSize, string> = {
   lg: 'h-[28rem]',
   xl: 'h-[36rem]',
   '2xl': 'h-[44rem]',
+  '3xl': 'h-[52rem]',
+  '4xl': 'h-[60rem]',
   cover: 'h-[calc(100vh-2rem)]',
   full: 'h-screen',
 };

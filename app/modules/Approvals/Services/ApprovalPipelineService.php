@@ -16,6 +16,9 @@ class ApprovalPipelineService
     {
         return ApprovalPipeline::query()
             ->with('stages.approver')
+            // Existence flag consumed by ApprovalPipeline::hasActiveProcesses()
+            // (can_be_edited / can_be_deleted) — avoids two exists() per row.
+            ->withExists('pendingProcesses')
             ->search('name', $request->get('search'))
             ->orderBy('created_at', 'desc')
             ->cursorPaginate(8);

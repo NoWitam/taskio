@@ -53,6 +53,7 @@ import Timeline, { type TimelineEntry } from '../../ui/patterns/Timeline.vue';
 import TaskComments from './TaskComments.vue';
 import TaskAttachmentsField from './TaskAttachmentsField.vue';
 import FormViewer from '../forms/FormViewer.vue';
+import type { FormElement } from '../forms/types';
 import { api } from '../../app/lib/api';
 import { groupRunHistory } from '../../app/stores/approvalQueue';
 import { approvalStatusMap, approverTypeIcon } from '../approvals/approvalStatus';
@@ -60,6 +61,7 @@ import { resolvePipelineIcon } from '../../ui/forms/pipelineIcon';
 import { buildApprovalTabModel, type StageStep } from './approvalTabModel';
 import type { ApprovalProcess, RunHistoryResponse } from '../approvals/queue-types';
 import { useTasksStore } from '../../app/stores/tasks';
+import { useAuthStore } from '../../app/stores/auth';
 import { useToast } from '../../app/composables/useToast';
 import { useConfirm } from '../../app/composables/useConfirm';
 import { useDebounce } from '../../app/composables/useDebounce';
@@ -103,6 +105,7 @@ const emit = defineEmits<{
 const { t, currentLocale } = useI18n();
 const router = useRouter();
 const store = useTasksStore();
+const auth = useAuthStore();
 const toast = useToast();
 const confirm = useConfirm();
 
@@ -168,38 +171,83 @@ const priorityLabel = computed(() =>
 const isTrashed = computed(() => task.value?.status === 'trash');
 const isLocked = computed(() => !!task.value?.is_in_approval);
 
-// Status transitions modelled as SEMANTIC actions (mirrors the legacy task
-// dialog): the offered next steps depend on the current status, each with its
-// own label/variant/icon. Shown in the footer alongside the lifecycle actions.
+// Form editability: the attached form may be FILLED only while the task is "in
+// progress" AND the current user is the assignee. In every other case (any other
+// status, a non-assignee, or during approval) the form is strictly read-only.
+const currentUserId = computed(() =>
+  auth.user?.id != null ? String(auth.user.id) : null,
+);
+const isAssignedToMe = computed(
+  () =>
+    !!task.value &&
+    currentUserId.value != null &&
+    String(task.value.assigned?.id) === currentUserId.value,
+);
+const canEditForm = computed(
+  () => task.value?.status === 'in_progress' && isAssignedToMe.value,
+);
+
+// Server-authoritative capability flags (TaskPolicy). The UI only ever offers
+// actions the user can actually perform — never a button that would 403.
+const canUpdate = computed(() => !!task.value?.can_update);
+const canDelete = computed(() => !!task.value?.can_delete);
+const canRestore = computed(() => !!task.value?.can_restore);
+const canForceDelete = computed(() => !!task.value?.can_force_delete);
+// Inline editing is off when trashed OR when the user lacks update rights (e.g.
+// not the creator/assignee, or the task is locked in an approval process).
+const readonly = computed(() => isTrashed.value || !canUpdate.value);
+
+// Status transitions are SERVER-AUTHORITATIVE: the resource lists exactly the
+// statuses this user may set right now (`available_status_transitions`, computed
+// via TaskStatus::canSetOn). We render one button per entry — so the assignee/
+// creator gating, the "in_test + pipeline → no direct done" rule, and the
+// in-approval lock are all honoured without duplicating that logic here.
 interface StatusAction {
   label: string;
   status: TaskStatus;
-  variant: 'primary' | 'secondary';
+  variant: 'primary' | 'secondary' | 'outline';
   icon: IconName;
+}
+const STATUS_RANK: Record<TaskStatus, number> = {
+  to_do: 0, in_progress: 1, in_test: 2, done: 3, archive: 4, trash: 5,
+};
+function actionMeta(current: TaskStatus, target: TaskStatus): { label: string; icon: IconName } {
+  switch (target) {
+    case 'to_do':
+      return { label: 'backToTodo', icon: 'undo' };
+    case 'in_progress':
+      return current === 'to_do'
+        ? { label: 'startTask', icon: 'arrow-right' }
+        : { label: 'backToProgress', icon: 'undo' };
+    case 'in_test':
+      return { label: 'sendToTest', icon: 'flag' };
+    case 'done':
+      return { label: 'complete', icon: 'check' };
+    case 'archive':
+      return { label: 'archive', icon: 'inbox' };
+    default:
+      return { label: target, icon: 'arrow-right' };
+  }
 }
 const statusActions = computed<StatusAction[]>(() => {
   const tk = task.value;
-  if (!tk || isTrashed.value || isLocked.value) return [];
-  const actions: StatusAction[] = [];
-  switch (tk.status) {
-    case 'to_do':
-      actions.push({ label: 'startTask', status: 'in_progress', variant: 'primary', icon: 'arrow-right' });
-      break;
-    case 'in_progress':
-      actions.push({ label: 'sendToTest', status: 'in_test', variant: 'secondary', icon: 'flag' });
-      actions.push({ label: 'complete', status: 'done', variant: 'primary', icon: 'check' });
-      break;
-    case 'in_test':
-      actions.push({ label: 'backToProgress', status: 'in_progress', variant: 'secondary', icon: 'undo' });
-      actions.push({ label: 'complete', status: 'done', variant: 'primary', icon: 'check' });
-      break;
-    case 'done':
-      actions.push({ label: 'backToProgress', status: 'in_progress', variant: 'secondary', icon: 'undo' });
-      break;
-    default:
-      break;
-  }
-  return actions;
+  if (!tk) return [];
+  const current = tk.status;
+  const targets = tk.available_status_transitions ?? [];
+  // The furthest-forward target is the primary action; backward moves stay subtle.
+  const forwardMost = [...targets]
+    .filter((s) => STATUS_RANK[s] > STATUS_RANK[current])
+    .sort((a, b) => STATUS_RANK[b] - STATUS_RANK[a])[0];
+  return targets.map((target) => {
+    const meta = actionMeta(current, target);
+    const backward = STATUS_RANK[target] < STATUS_RANK[current];
+    return {
+      status: target,
+      label: meta.label,
+      icon: meta.icon,
+      variant: target === forwardMost ? 'primary' : backward ? 'outline' : 'secondary',
+    } satisfies StatusAction;
+  });
 });
 
 // --- Editable field models (mirror the FULL StoreTasksRequest payload) ----
@@ -272,7 +320,7 @@ watch(task, (t0) => syncEditFromTask(t0), { immediate: true });
 // --- Title inline edit ----------------------------------------------------
 const editingTitle = ref(false);
 function startTitleEdit(): void {
-  if (isTrashed.value) return;
+  if (readonly.value) return;
   editState.title = task.value?.title ?? '';
   editingTitle.value = true;
 }
@@ -297,7 +345,7 @@ const descriptionMarkdown = computed(() =>
   taskDescriptionToMarkdown(task.value?.description),
 );
 function startDescriptionEdit(): void {
-  if (isTrashed.value) return;
+  if (readonly.value) return;
   editState.description = descriptionMarkdown.value;
   editingDescription.value = true;
 }
@@ -398,7 +446,7 @@ const debouncedPersist = useDebounce((field: keyof EditState) => {
 }, 500);
 
 function selectPriority(value: TaskPriority): void {
-  if (isTrashed.value) return;
+  if (readonly.value) return;
   editState.priority = value;
   debouncedPersist('priority');
 }
@@ -406,7 +454,7 @@ function selectPriority(value: TaskPriority): void {
 // New uploads land in editState.attachments as their temp ids resolve; persist
 // (debounced) so several quick uploads coalesce into one additive update.
 function onAttachmentsChanged(): void {
-  if (isTrashed.value) return;
+  if (readonly.value) return;
   debouncedPersist('attachments');
 }
 
@@ -437,13 +485,17 @@ const formGate = computed(() => {
   return 'fillable' as const;
 });
 
-// Snapshot the submission ONCE per task: an auto-save replaces `detail` (which
-// would otherwise re-hydrate FormViewer and could clobber the user's in-flight
-// input), so we feed FormViewer a value that only changes when the TASK changes.
+// Snapshot the form's CONTENT + submission, refreshed only when the task or its
+// attached form changes. An auto-save replaces `detail`, which would otherwise hand
+// FormViewer new `content`/`initialData` references and trigger its re-hydration —
+// wiping the user's in-flight input. Keying on [task id, form id] keeps both props
+// STABLE across saves while still refreshing on a real task/form switch.
+const formContent = ref<FormElement[] | null>(null);
 const formInitialData = ref<Record<string, unknown> | null>(null);
 watch(
-  () => task.value?.id,
+  () => [task.value?.id, task.value?.form?.id] as const,
   () => {
+    formContent.value = task.value?.form?.content ?? null;
     formInitialData.value = task.value?.form_submission?.data ?? null;
     formSaveState.value = 'idle';
   },
@@ -451,7 +503,7 @@ watch(
 );
 
 async function saveForm(data: Record<string, unknown>): Promise<void> {
-  if (!task.value || isLocked.value) return;
+  if (!task.value || !canEditForm.value) return;
   formSaveState.value = 'saving';
   try {
     await store.submitTaskForm(task.value.id, data);
@@ -468,7 +520,7 @@ const debouncedSaveForm = useDebounce((data: Record<string, unknown>) => {
 }, 1000);
 
 function onFormChange(data: Record<string, unknown>): void {
-  if (isLocked.value) return;
+  if (!canEditForm.value) return;
   formSaveState.value = 'saving';
   debouncedSaveForm(data);
 }
@@ -638,7 +690,9 @@ const hasPipeline = computed(
 // Pipeline attached but the task is NOT currently in an approval process.
 const notInApproval = computed(() => hasPipeline.value && !pendingProcess.value);
 
-const runId = computed(() => pendingProcess.value?.run_id ?? null);
+// Prefer the pending run, but fall back to the latest (completed) run id so the
+// Approval tab still shows decided stages + history after a run has finished.
+const runId = computed(() => pendingProcess.value?.run_id ?? task.value?.approval_run_id ?? null);
 
 async function loadRunHistory(): Promise<void> {
   const id = runId.value;
@@ -745,8 +799,8 @@ function goToApprovals(): void {
           v-else
           type="button"
           class="flex w-full items-start rounded-next-sm text-left text-next-2xl font-next-semibold text-next-fg transition-colors hover:text-next-primary disabled:cursor-default disabled:hover:text-next-fg"
-          :class="isTrashed ? '' : 'cursor-text'"
-          :disabled="isTrashed"
+          :class="readonly ? '' : 'cursor-text'"
+          :disabled="readonly"
           :aria-label="t('tasks.detail.editTitle')"
           @click="startTitleEdit"
         >
@@ -849,7 +903,7 @@ function goToApprovals(): void {
           <UserSelect
             v-model="editState.assigned_id"
             :seed="assigneeSeed"
-            :readonly="isTrashed"
+            :readonly="readonly"
             :aria-invalid="!!fieldErrors.assigned_id"
             :placeholder="t('tasks.form.assigneePlaceholder')"
             :aria-label="t('tasks.detail.assignee')"
@@ -860,7 +914,7 @@ function goToApprovals(): void {
         <FormField :label="t('tasks.detail.deadline')" :error="fieldErrors.deadline">
           <DatePicker
             v-model="editState.deadline"
-            :readonly="isTrashed"
+            :readonly="readonly"
             :aria-invalid="!!fieldErrors.deadline"
             :aria-label="t('tasks.detail.deadline')"
             @update:model-value="debouncedPersist('deadline')"
@@ -876,7 +930,7 @@ function goToApprovals(): void {
             :options="priorityOptions"
             size="sm"
             equal-width
-            :disabled="isTrashed"
+            :disabled="readonly"
             :aria-label="t('tasks.detail.priority')"
             @update:model-value="selectPriority"
           />
@@ -889,7 +943,7 @@ function goToApprovals(): void {
           <LabelSelect
             v-model="editState.labels"
             :seed="labelSeed"
-            :readonly="isTrashed"
+            :readonly="readonly"
             :placeholder="t('tasks.form.labelsPlaceholder')"
             :aria-label="t('tasks.detail.labels')"
             @update:model-value="debouncedPersist('labels')"
@@ -916,7 +970,7 @@ function goToApprovals(): void {
                 v-model="editState.attachments"
                 :seed="attachmentSeed"
                 :max="5"
-                :readonly="isTrashed"
+                :readonly="readonly"
                 @update:model-value="onAttachmentsChanged"
                 @remove-existing="removeExistingAttachment"
               />
@@ -940,7 +994,7 @@ function goToApprovals(): void {
             {{ t('tasks.detail.description') }}
           </h3>
           <Button
-            v-if="!editingDescription && !isTrashed"
+            v-if="!editingDescription && !readonly"
             size="sm"
             variant="ghost"
             leading-icon="pencil"
@@ -1051,9 +1105,15 @@ function goToApprovals(): void {
                 <!-- Fillable: auto-saving form (editable) or read-only preview
                      while the task is in approval. -->
                 <div v-else class="flex flex-col gap-next-3">
-                  <!-- In approval → strictly read-only. -->
-                  <Alert v-if="isLocked" variant="info" size="sm" icon="lock">
-                    {{ t('tasks.detail.form.locked') }}
+                  <!-- Read-only: explain WHY (in approval vs not editable now). The
+                       form is only fillable while In-progress AND you're the assignee. -->
+                  <Alert
+                    v-if="!canEditForm"
+                    variant="info"
+                    size="sm"
+                    :icon="isLocked ? 'lock' : 'info'"
+                  >
+                    {{ isLocked ? t('tasks.detail.form.locked') : t('tasks.detail.form.readOnlyHint') }}
                   </Alert>
                   <!-- Editable → auto-save status (no submit button). -->
                   <div
@@ -1079,11 +1139,11 @@ function goToApprovals(): void {
                     </template>
                   </div>
                   <FormViewer
-                    :content="task.form!.content"
-                    :mode="isLocked ? 'preview' : 'fill'"
+                    :content="formContent ?? []"
+                    :mode="canEditForm ? 'fill' : 'preview'"
                     :initial-data="formInitialData"
                     hide-submit
-                    :track-changes="!isLocked"
+                    :track-changes="canEditForm"
                     @change="onFormChange"
                   />
                 </div>
@@ -1240,8 +1300,8 @@ function goToApprovals(): void {
                     </li>
                   </ol>
 
-                  <!-- Decision history states (only meaningful when in approval). -->
-                  <template v-if="pendingProcess?.run_id">
+                  <!-- Decision history (pending OR a completed run). -->
+                  <template v-if="runId">
                     <!-- Loading: skeleton rows mimicking the history entries. -->
                     <div
                       v-if="runHistoryLoading"
@@ -1353,21 +1413,19 @@ function goToApprovals(): void {
             {{ t(`tasks.detail.${action.label}`) }}
           </Button>
         </div>
-        <!-- Lifecycle actions. -->
+        <!-- Lifecycle actions (gated by the server capability flags). -->
         <div class="flex items-center gap-next-2">
           <template v-if="isTrashed">
-            <Button variant="outline" leading-icon="undo" :loading="restoring" @click="onRestore">
+            <Button v-if="canRestore" variant="outline" leading-icon="undo" :loading="restoring" @click="onRestore">
               {{ t('tasks.detail.restore') }}
             </Button>
-            <Button variant="danger" leading-icon="trash" :loading="forceDeleting" @click="onForceDelete">
+            <Button v-if="canForceDelete" variant="danger" leading-icon="trash" :loading="forceDeleting" @click="onForceDelete">
               {{ t('tasks.detail.forceDelete') }}
             </Button>
           </template>
-          <template v-else>
-            <Button variant="danger" leading-icon="trash" :loading="deleting" @click="onDelete">
-              {{ t('tasks.detail.delete') }}
-            </Button>
-          </template>
+          <Button v-else-if="canDelete" variant="danger" leading-icon="trash" :loading="deleting" @click="onDelete">
+            {{ t('tasks.detail.delete') }}
+          </Button>
         </div>
       </div>
     </template>

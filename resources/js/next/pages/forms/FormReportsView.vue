@@ -498,7 +498,7 @@ onMounted(() => {
             </template>
           </EmptyState>
 
-          <div v-else-if="initialLoading" class="flex flex-col gap-next-3">
+          <div v-else-if="initialLoading" class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2 next-xl:grid-cols-3">
             <EntityCard v-for="n in skeletonKeys" :key="`sk-${n}`" loading />
           </div>
 
@@ -515,7 +515,7 @@ onMounted(() => {
           </EmptyState>
 
           <template v-else>
-            <div class="flex flex-col gap-next-3">
+            <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2 next-xl:grid-cols-3">
               <ReportCard
                 v-for="report in items"
                 :key="report.id"

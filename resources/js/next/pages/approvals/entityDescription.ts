@@ -8,7 +8,7 @@
 // through here to a readable plain-text snippet (block boundaries → spaces).
 //
 // Tolerates: a doc object, a JSON STRING of a doc, a plain string, or null.
-import type { JSONNode } from '../../ui/editor/markdown';
+import { docToMarkdown, type JSONNode } from '../../ui/editor/markdown';
 
 /** A description as it can arrive on an approvable entity (or be absent). */
 export type EntityDescription = JSONNode | string | null | undefined;
@@ -46,6 +46,29 @@ export function entityDescriptionToText(value: EntityDescription): string {
       if (isDocObject(parsed)) return docToText(parsed as JSONNode);
     } catch {
       // Not JSON — a plain string; return as-is.
+    }
+    return trimmed;
+  }
+  return '';
+}
+
+/**
+ * Convert an entity description (doc object / JSON-string-of-doc / plain string /
+ * null) to a MARKDOWN STRING for `MarkdownViewer`, reusing the editor's single
+ * source of truth (`docToMarkdown`). A plain (non-doc) string is returned as-is so
+ * legacy/markdown data still renders; empty / whitespace-only → ''.
+ */
+export function entityDescriptionToMarkdown(value: EntityDescription): string {
+  if (value == null) return '';
+  if (isDocObject(value)) return docToMarkdown(value);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (isDocObject(parsed)) return docToMarkdown(parsed as JSONNode);
+    } catch {
+      // Not JSON — already plain markdown/text.
     }
     return trimmed;
   }

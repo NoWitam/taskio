@@ -61,6 +61,12 @@ const props = defineProps<{
   commentsUrl: string;
 }>();
 
+const emit = defineEmits<{
+  /** The count of comments LOADED so far — lets a host badge the thread without
+   *  refetching. Approximate under cursor pagination (grows as pages load). */
+  (e: 'count', count: number): void;
+}>();
+
 const { t, currentLocale } = useI18n();
 const auth = useAuthStore();
 const toast = useToast();
@@ -85,6 +91,9 @@ const initialLoading = computed(() => loading.value && comments.value.length ===
 const isEmpty = computed(
   () => !loading.value && !loadingMore.value && !loadError.value && comments.value.length === 0,
 );
+
+// Report the loaded count to a host (e.g. the review drawer's Comments tab badge).
+watch(() => comments.value.length, (n) => emit('count', n), { immediate: true });
 
 async function fetchComments(reset = true): Promise<void> {
   if (!reset && (loadingMore.value || loading.value || !hasMore.value)) return;

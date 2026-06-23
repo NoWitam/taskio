@@ -19,13 +19,16 @@ class GetEntityDetails implements Tool
 
     public function description(): Stringable|string
     {
-        return "Pobiera szczegóły encji oczekującej na zatwierdzenie: typ, nazwę, opis, dodatkowe pola, "
-            . "dane formularza i jego wypełnienie. Wywołaj to narzędzie jako pierwsze aby zapoznać się z elementem.";
+        return 'Pobiera szczegóły encji oczekującej na zatwierdzenie: typ, nazwę, opis, dodatkowe pola '
+            . 'oraz ODPOWIEDZI przesłane przez użytkownika w formularzu (pole answers — to oceniaj). '
+            . 'Wywołaj to narzędzie jako pierwsze aby zapoznać się z elementem.';
     }
 
     public function handle(Request $request): Stringable|string
     {
         $queueItem = $this->entity->toApprovalQueueItem();
+
+        $form = $queueItem->form;
 
         $data = [
             'entity' => [
@@ -34,7 +37,11 @@ class GetEntityDetails implements Tool
                 'description' => $queueItem->description,
                 'extra_fields' => $queueItem->extra_fields,
             ],
-            'form' => $queueItem->form,
+            'form' => $form === null ? null : [
+                'name' => $form['name'] ?? null,
+                'questions' => $form['content'] ?? null, // szablon formularza — WYŁĄCZNIE KONTEKST
+                'answers' => $form['submission'] ?? null, // odpowiedzi użytkownika — OCEŃ TO
+            ],
             'stage' => [
                 'name' => $this->stage->name,
                 'criteria' => $this->stage->description,

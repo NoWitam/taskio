@@ -51,7 +51,7 @@ class TasksController extends Controller
         return TaskResource::make(
             $this->service->create(
                 TaskDTO::fromRequest($request)
-            )
+            )->loadMissing(Task::DETAIL_RELATIONS)
         );
     }
 

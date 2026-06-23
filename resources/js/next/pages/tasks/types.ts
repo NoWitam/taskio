@@ -197,6 +197,24 @@ export interface TaskDetail {
    * Approvals Queue type (do not redefine).
    */
   pending_approval_process?: ApprovalProcess | null;
+  /**
+   * Server-authoritative: the statuses the CURRENT user may transition to RIGHT
+   * NOW (subset of the enum, never `trash`; empty while in approval or when the
+   * user isn't permitted). Computed via `TaskStatus::canSetOn` — the UI renders a
+   * button per entry and nothing else.
+   */
+  available_status_transitions: TaskStatus[];
+  /** Server-authoritative capability flags (TaskPolicy). The UI hides/disables to match. */
+  can_update: boolean;
+  can_delete: boolean;
+  can_restore: boolean;
+  can_force_delete: boolean;
+  /**
+   * The latest approval run id (pending OR completed), or null when no pipeline was
+   * ever attached. Lets the Approval tab fetch the run history even after a run has
+   * finished (so decided stages don't all read as "upcoming").
+   */
+  approval_run_id: string | null;
 }
 
 /** Detail envelope from `GET /api/tasks/{id}`. */
@@ -343,34 +361,10 @@ export function statusMeta(status: TaskStatus): StatusMeta {
   return STATUS_META[status];
 }
 
-/**
- * Plausible next statuses to OFFER for a task, mirroring the spirit of the
- * backend `TaskStatus::canSetOn` so the UI doesn't surface obviously-invalid
- * actions. This is advisory ONLY — the server is authoritative and a 403/422 is
- * handled gracefully. `trash` is excluded (it has its own delete endpoint).
- *
- * Rules reflected from the enum:
- *  - a trashed task offers nothing (it can only be restored / force-deleted),
- *  - while `is_in_approval` no manual status change is allowed,
- *  - `archive` is only reachable from `done`,
- *  - other primary statuses are offered (the server still validates assignee /
- *    completion / approval-pipeline constraints we can't see from the list).
- */
-export function offerableStatuses(task: {
-  status: TaskStatus;
-  is_in_approval?: boolean;
-}): TaskStatus[] {
-  if (task.status === 'trash') return [];
-  if (task.is_in_approval) return [];
-
-  const primary: TaskStatus[] = ['to_do', 'in_progress', 'in_test', 'done'];
-  const offered = primary.filter((s) => s !== task.status);
-
-  // `archive` only from `done` (matches canSetOn).
-  if (task.status === 'done') offered.push('archive');
-
-  return offered;
-}
+// NOTE: the set of statuses to offer is NOT computed client-side — the server
+// returns the authoritative `available_status_transitions` on TaskResource
+// (computed via `TaskStatus::canSetOn`), and the detail drawer renders exactly
+// those. Don't reintroduce a client-side mirror of the transition rules here.
 
 export function priorityMeta(priority: TaskPriority): PriorityMeta {
   return PRIORITY_META[priority];

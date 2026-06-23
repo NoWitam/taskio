@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Builder;
 
 enum TaskStatus: string
 {
-    CASE TO_DO = 'to_do';
+    case TO_DO = 'to_do';
     case IN_PROGRESS = 'in_progress';
     case IN_TEST = 'in_test';
     case DONE = 'done';
@@ -18,8 +18,7 @@ enum TaskStatus: string
 
     public function resolveSelectQuery(Builder $query): void
     {
-        match($this)
-        {
+        match ($this) {
             self::ARCHIVE => $query->onlyArchived(),
             self::TRASH => $query->onlyTrashed(),
             default => $query->where('status', $this)
@@ -28,8 +27,7 @@ enum TaskStatus: string
 
     public function label(): string
     {
-        return match($this)
-        {
+        return match ($this) {
             self::TO_DO => 'Do zrobienia',
             self::IN_PROGRESS => 'W trakcie',
             self::IN_TEST => 'W testach',
@@ -41,8 +39,7 @@ enum TaskStatus: string
 
     public function tone(): string
     {
-        return match($this)
-        {
+        return match ($this) {
             self::TO_DO => 'neutral',
             self::IN_PROGRESS => 'primary',
             self::IN_TEST => 'warning',
@@ -54,8 +51,7 @@ enum TaskStatus: string
 
     public function icon(): string
     {
-        return match($this)
-        {
+        return match ($this) {
             self::TO_DO => 'circle-help',
             self::IN_PROGRESS => 'loader',
             self::IN_TEST => 'info-circle',
@@ -71,44 +67,39 @@ enum TaskStatus: string
             return false;
         }
 
-        if ($newStatus == self::TRASH) {
-            return $task->creator_id == $user?->id;
+        // Trash (delete path): creator-only. Evaluated before the archived guard.
+        if ($newStatus === self::TRASH) {
+            return $task->creator_id === $user?->id;
         }
 
         if ($task->archived_at != null) {
             return false;
         }
 
-        // Block all manual status changes when task is in approval process
+        // Block all manual status changes while a pending approval process exists.
+        // The approval outcome moves the task automatically (see Task::onApproval*).
         if ($task->isInApproval()) {
             return false;
         }
 
-        if ($newStatus == self::ARCHIVE) {
-            return $task->status == self::DONE && $task->creator_id == $user?->id;
+        // Archive is a separate lifecycle (not part of the manual transition tree):
+        // only a DONE task can be archived, and only by its creator.
+        if ($newStatus === self::ARCHIVE) {
+            return $task->status === self::DONE && $task->creator_id === $user?->id;
         }
 
-        if ($newStatus == self::TO_DO) {
-            return $task->assigned_id == $user?->id;
-        }
+        $isAssignee = $task->assigned_id === $user?->id;
+        $isCreator = $task->creator_id === $user?->id;
 
-        if ($newStatus == self::IN_PROGRESS) {
-            return $task->assigned_id == $user?->id && $task->status != self::IN_PROGRESS;
-        }
-
-        if ($newStatus == self::IN_TEST) {
-            return $task->assigned_id == $user?->id && $task->status == self::IN_PROGRESS && $task->isCompleted();
-        }
-
-        if ($newStatus == self::DONE) {
-            // If task has approval pipeline and is IN_TEST, it can only go to DONE through approval
-            if ($task->status == self::IN_TEST && $task->hasApprovalPipeline()) {
-                return false;
-            }
-
-            return true;
-        }
-
-        return false;
+        return match ([$task->status, $newStatus]) {
+            [self::TO_DO, self::IN_PROGRESS] => $isAssignee,
+            [self::IN_PROGRESS, self::TO_DO] => $isAssignee,
+            [self::IN_PROGRESS, self::IN_TEST] => $isAssignee,
+            [self::IN_TEST, self::TO_DO] => $isCreator && !$task->hasApprovalPipeline(),
+            [self::IN_TEST, self::DONE] => $isCreator && !$task->hasApprovalPipeline(),
+            [self::DONE, self::TO_DO] => $isAssignee || $isCreator,
+            [self::DONE, self::IN_PROGRESS] => $isAssignee,
+            default => false,
+        };
     }
 }

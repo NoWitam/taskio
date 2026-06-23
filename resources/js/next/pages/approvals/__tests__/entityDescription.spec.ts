@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { entityDescriptionToText } from '../entityDescription';
+import { entityDescriptionToText, entityDescriptionToMarkdown } from '../entityDescription';
 
 describe('entityDescriptionToText', () => {
   it('returns "" for null/undefined/blank', () => {
@@ -38,5 +38,33 @@ describe('entityDescriptionToText', () => {
 
   it('treats a non-doc JSON-looking string as plain text', () => {
     expect(entityDescriptionToText('{not really json')).toBe('{not really json');
+  });
+});
+
+describe('entityDescriptionToMarkdown', () => {
+  it('returns "" for null/undefined/blank', () => {
+    expect(entityDescriptionToMarkdown(null)).toBe('');
+    expect(entityDescriptionToMarkdown(undefined)).toBe('');
+    expect(entityDescriptionToMarkdown('   ')).toBe('');
+  });
+
+  it('passes a plain markdown string through (trimmed)', () => {
+    expect(entityDescriptionToMarkdown('  **bold**  ')).toBe('**bold**');
+  });
+
+  it('serializes a ProseMirror doc to markdown (heading keeps its #)', () => {
+    const doc = {
+      type: 'doc',
+      content: [{ type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Title' }] }],
+    };
+    expect(entityDescriptionToMarkdown(doc as never)).toContain('# Title');
+  });
+
+  it('serializes a JSON STRING of a doc', () => {
+    const json = JSON.stringify({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'From JSON' }] }],
+    });
+    expect(entityDescriptionToMarkdown(json)).toContain('From JSON');
   });
 });

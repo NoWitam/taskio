@@ -90,7 +90,10 @@ function grow(): void {
   const node = el.value;
   if (!node || !props.autoGrow) return;
   node.style.height = 'auto';
-  node.style.height = `${node.scrollHeight}px`;
+  // Never shrink below the height implied by `rows` — auto-grow should grow FROM
+  // that baseline, not collapse an empty field to a single line.
+  const minHeight = node.clientHeight;
+  node.style.height = `${Math.max(node.scrollHeight, minHeight)}px`;
 }
 watch(model, () => nextTick(grow));
 watch(el, () => nextTick(grow));

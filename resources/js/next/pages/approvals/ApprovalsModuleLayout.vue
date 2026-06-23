@@ -164,7 +164,7 @@ function onReviewClosed(): void {
     <Drawer
       v-model:open="reviewOpen"
       side="right"
-      size="2xl"
+      size="cover"
       :scroll-body="false"
       :show-close="false"
       :aria-label="t('approvals.review.title')"

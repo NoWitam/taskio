@@ -48,6 +48,12 @@ function detail(overrides: Partial<TaskDetail> = {}): TaskDetail {
     form_id: null,
     approval_pipeline_id: null,
     is_in_approval: false,
+    available_status_transitions: [],
+    can_update: true,
+    can_delete: true,
+    can_restore: true,
+    can_force_delete: true,
+    approval_run_id: null,
     ...overrides,
   };
 }

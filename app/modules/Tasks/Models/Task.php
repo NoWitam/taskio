@@ -24,13 +24,16 @@ use App\Modules\Labels\Models\Label;
 use App\Modules\Labels\Traits\HasLabels;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Enums\TaskStatus;
+use App\Modules\Tasks\Observers\TaskObserver;
 use App\Traits\Archiving;
 use App\Traits\HasCreator;
 use App\Traits\TenantAware;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
+#[ObservedBy(TaskObserver::class)]
 class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
 {
     use Archiving, HasApprovalPipeline, HasChangelog, HasComments, HasCreator, HasFactory, HasFiles, HasLabels, HasUuids, SoftDeletes, TenantAware;
@@ -204,9 +207,17 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
         ]);
     }
 
+    /**
+     * @return array<int, string>
+     */
+    public function approvalQueueRelations(): array
+    {
+        return ['form', 'formSubmission', 'labels'];
+    }
+
     public function toApprovalQueueItem(): ApprovalQueueItem
     {
-        $this->loadMissing(['form', 'formSubmission', 'labels']);
+        $this->loadMissing($this->approvalQueueRelations());
 
         $extraFields = [
             [

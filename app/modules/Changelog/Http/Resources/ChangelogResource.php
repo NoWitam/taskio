@@ -34,21 +34,29 @@ class ChangelogResource extends JsonResource
         foreach ($details as $field => $data) {
             // Pobierz translation_key z managera modelu
             $translationKey = $this->getTranslationKeyFromManager($field);
-            
+
             // Pobierz tłumaczenie dla wyświetlania
             $fieldLabel = __($translationKey);
-            
+
             // Jeśli nie znaleziono tłumaczenia, użyj czytelnej wersji klucza
             if ($fieldLabel === $translationKey) {
                 $fieldLabel = ucfirst(str_replace('_', ' ', $field));
             }
 
             // Dodaj informacje o polu do danych
-            $translated[$field] = array_merge([
+            $fieldMeta = [
                 'field' => $field,
                 'field_label' => $fieldLabel,
                 'field_translation_key' => $translationKey,
-            ], $data);
+            ];
+
+            // Eventy customowe (np. Approvals) zapisują w details skalarne wartości
+            // (np. nazwę pipeline'u / etapu) zamiast tablicy zmian zwracanej przez
+            // trackery. Owiń je w klucz `value`, by koperta była spójna, a
+            // array_merge nigdy nie dostał stringa.
+            $translated[$field] = is_array($data)
+                ? array_merge($fieldMeta, $data)
+                : array_merge($fieldMeta, ['value' => $data]);
         }
 
         return $translated;
@@ -70,10 +78,10 @@ class ChangelogResource extends JsonResource
         try {
             // Pobierz manager z modelu
             $manager = $this->subject->getChangelogManager();
-            
+
             // Pobierz tracker dla danego pola
             $tracker = $manager->getTracker($field);
-            
+
             // Jeśli tracker istnieje, zwróć jego translation key
             if ($tracker) {
                 return $tracker->getTranslationKey();
