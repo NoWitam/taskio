@@ -77,6 +77,34 @@ const routes: RouteRecordRaw[] = [
           },
         ],
       },
+      {
+        // Approvals module shell: inner sub-nav + the Queue (Batch 2, the primary
+        // daily surface + the default child) and the Pipelines list (Batch 1). The
+        // shell hosts the `?pipeline` builder drawer and the `?review` decision
+        // drawer.
+        path: 'approvals',
+        component: () => import('../../pages/approvals/ApprovalsModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.approvals' },
+        children: [
+          {
+            path: '',
+            name: 'next.approvals',
+            redirect: { name: 'next.approvals.queue' },
+          },
+          {
+            path: 'queue',
+            name: 'next.approvals.queue',
+            component: () => import('../../pages/approvals/QueueView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.approvals' },
+          },
+          {
+            path: 'pipelines',
+            name: 'next.approvals.pipelines',
+            component: () => import('../../pages/approvals/PipelinesView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.approvals' },
+          },
+        ],
+      },
     ],
   },
   {

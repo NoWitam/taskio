@@ -17,6 +17,7 @@ class ApprovalPipelineResource extends JsonResource
             'description' => $this->description,
             'stages' => ApprovalStageResource::collection($this->whenLoaded('stages')),
             'creator' => UserResource::make($this->whenLoaded('creator')),
+            'is_owner' => $this->creator_id === $request->user()?->id,
             'can_be_edited' => $this->canBeEdited(),
             'can_be_deleted' => $this->canBeDeleted(),
             'created_at' => $this->created_at?->toISOString(),

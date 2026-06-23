@@ -42,7 +42,7 @@ class TasksController extends Controller
         $task = Task::withTrashed()->findOrFail($id);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+            $task->loadMissing(Task::DETAIL_RELATIONS)
         );
     }
 
@@ -63,7 +63,7 @@ class TasksController extends Controller
         );
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+            $task->loadMissing(Task::DETAIL_RELATIONS)
         );
     }
 
@@ -81,7 +81,7 @@ class TasksController extends Controller
         $this->service->removeAttachment($task, $file);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+            $task->loadMissing(Task::DETAIL_RELATIONS)
         );
     }
 
@@ -99,9 +99,7 @@ class TasksController extends Controller
         $task = Task::withTrashed()->findOrFail($id);
 
         return TaskResource::make(
-            $this->service->restore($task)->loadMissing([
-                'assigned', 'creator', 'labels', 'files', 'form', 'formSubmission',
-            ])
+            $this->service->restore($task)->loadMissing(Task::DETAIL_RELATIONS)
         );
     }
 
@@ -116,7 +114,7 @@ class TasksController extends Controller
         $task = $this->service->changeStatus($task, $status);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission', 'pendingApprovalProcess'])
+            $task->load(Task::DETAIL_RELATIONS)
         );
     }
 

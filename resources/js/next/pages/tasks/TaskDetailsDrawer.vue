@@ -30,6 +30,7 @@
 // All design-system components; no legacy imports; namespaced tokens; light+dark;
 // i18n + a11y throughout (labelled controls, status announced live).
 import { computed, reactive, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import Tabs from '../../ui/navigation/Tabs.vue';
 import StatusBadge from '../../ui/data/StatusBadge.vue';
@@ -51,6 +52,13 @@ import EmptyState from '../../ui/data/EmptyState.vue';
 import Timeline, { type TimelineEntry } from '../../ui/patterns/Timeline.vue';
 import TaskComments from './TaskComments.vue';
 import TaskAttachmentsField from './TaskAttachmentsField.vue';
+import FormViewer from '../forms/FormViewer.vue';
+import { api } from '../../app/lib/api';
+import { groupRunHistory } from '../../app/stores/approvalQueue';
+import { approvalStatusMap, approverTypeIcon } from '../approvals/approvalStatus';
+import { resolvePipelineIcon } from '../../ui/forms/pipelineIcon';
+import { buildApprovalTabModel, type StageStep } from './approvalTabModel';
+import type { ApprovalProcess, RunHistoryResponse } from '../approvals/queue-types';
 import { useTasksStore } from '../../app/stores/tasks';
 import { useToast } from '../../app/composables/useToast';
 import { useConfirm } from '../../app/composables/useConfirm';
@@ -73,6 +81,7 @@ import {
   markdownToTaskDescriptionPayload,
   taskDescriptionToMarkdown,
 } from './description';
+import { buildTaskPayload } from './taskPayload';
 
 const props = defineProps<{
   /** The task id to show (from `?task=<id>`); null when closed. */
@@ -92,6 +101,7 @@ const emit = defineEmits<{
 }>();
 
 const { t, currentLocale } = useI18n();
+const router = useRouter();
 const store = useTasksStore();
 const toast = useToast();
 const confirm = useConfirm();
@@ -330,26 +340,22 @@ const priorityOptions = computed<SegmentOption<TaskPriority>[]>(() =>
 
 // --- Persist a single field via the FULL update payload -------------------
 function buildPayload(): TaskWritePayload {
-  const payload: TaskWritePayload = {
-    title: editState.title.trim(),
+  // The shared builder ALWAYS emits form_id AND approval_pipeline_id (string|null).
+  // The drawer has NO form/pipeline picker, so it ECHOES the task's current values
+  // — the TaskDTO coerces an ABSENT id to null on update, so an inline metadata
+  // edit would otherwise silently DETACH the attached form/pipeline. Only NEW
+  // uploads are sent.
+  return buildTaskPayload({
+    title: editState.title,
     description: markdownToTaskDescriptionPayload(editState.description),
     priority: editState.priority,
-    deadline: editState.deadline ?? null,
-    assigned_id: editState.assigned_id ?? '',
+    deadline: editState.deadline,
+    assigned_id: editState.assigned_id,
     labels: editState.labels,
-    // Only NEW uploads are sent; the backend attaches them additively, so
-    // existing attachments are preserved and removed only via the dedicated
-    // delete endpoint.
     attachments: editState.attachments,
-  };
-  // Preserve form/pipeline links (no pickers here) so an inline edit never
-  // wipes them.
-  if (task.value) {
-    if (task.value.form_id) payload.form_id = task.value.form_id;
-    if (task.value.approval_pipeline_id)
-      payload.approval_pipeline_id = task.value.approval_pipeline_id;
-  }
-  return payload;
+    form_id: task.value?.form_id ?? null,
+    approval_pipeline_id: task.value?.approval_pipeline_id ?? null,
+  });
 }
 
 async function persist(field: keyof EditState): Promise<void> {
@@ -414,6 +420,57 @@ async function removeExistingAttachment(fileId: string): Promise<void> {
   } catch {
     toast.danger(t('attachments.removeError', 'Could not remove the attachment.'));
   }
+}
+
+// --- Form tab: AUTO-SAVE (no submit button) -------------------------------
+// The form renders the attached form's `content` via FormViewer. While editable
+// (not in approval) it AUTO-SAVES with throttling as the user types — there is no
+// submit button. During approval it is STRICTLY read-only (preview mode → disabled
+// controls). Saving POSTs the answers (create-or-update) WITHOUT changing status.
+type FormSaveState = 'idle' | 'saving' | 'saved' | 'error';
+const formSaveState = ref<FormSaveState>('idle');
+
+const formGate = computed(() => {
+  const tk = task.value;
+  if (!tk?.form) return 'none' as const;
+  if (tk.form.can_be_filled === false) return 'not-fillable' as const;
+  return 'fillable' as const;
+});
+
+// Snapshot the submission ONCE per task: an auto-save replaces `detail` (which
+// would otherwise re-hydrate FormViewer and could clobber the user's in-flight
+// input), so we feed FormViewer a value that only changes when the TASK changes.
+const formInitialData = ref<Record<string, unknown> | null>(null);
+watch(
+  () => task.value?.id,
+  () => {
+    formInitialData.value = task.value?.form_submission?.data ?? null;
+    formSaveState.value = 'idle';
+  },
+  { immediate: true },
+);
+
+async function saveForm(data: Record<string, unknown>): Promise<void> {
+  if (!task.value || isLocked.value) return;
+  formSaveState.value = 'saving';
+  try {
+    await store.submitTaskForm(task.value.id, data);
+    formSaveState.value = 'saved';
+  } catch (err: unknown) {
+    formSaveState.value = 'error';
+    toast.danger(extractMessage(err, t('tasks.detail.form.saveError')));
+  }
+}
+
+// Throttle the auto-save so it fires once the user pauses, not on every keystroke.
+const debouncedSaveForm = useDebounce((data: Record<string, unknown>) => {
+  void saveForm(data);
+}, 1000);
+
+function onFormChange(data: Record<string, unknown>): void {
+  if (isLocked.value) return;
+  formSaveState.value = 'saving';
+  debouncedSaveForm(data);
 }
 
 // --- Status change --------------------------------------------------------
@@ -550,6 +607,97 @@ const { sentinelRef: changelogSentinelRef } = useInfiniteScroll({
     !store.changelogLoadingMore &&
     !store.changelogError,
 });
+
+// --- Approval tab (READ-ONLY) ---------------------------------------------
+// The Approval tab DISPLAYS the attached pipeline as a vertical stage stepper
+// (current pending stage highlighted) + the run-history decisions per stage. It is
+// read-only: approvals are decided in the Approvals queue/review, NOT here.
+//
+// Run-history fetch choice: a DIRECT `GET /approvals/runs/{runId}` via the api
+// singleton (lazily, on tab activation), NOT the approval-queue store action. The
+// store's `fetchRunHistory` writes into a cross-domain cache tied to the queue's
+// list/decision lifecycle; a local ref keeps the task tab self-contained (its own
+// loading/error/empty state) and avoids coupling the drawer to the queue store. We
+// still REUSE the pure `groupRunHistory` helper + the `buildApprovalTabModel`
+// adapter for the view-model.
+const activeTab = ref<'activity' | 'form' | 'checklist' | 'approval'>('activity');
+
+const runHistory = ref<ApprovalProcess[]>([]);
+const runHistoryLoading = ref(false);
+const runHistoryError = ref(false);
+// The run id we have history for, so a tab re-activation / task change refetches.
+const loadedRunId = ref<string | null>(null);
+
+const pendingProcess = computed(() => task.value?.pending_approval_process ?? null);
+const approvalPipeline = computed(() => task.value?.approval_pipeline ?? null);
+
+// No pipeline attached at all (neither the eager-loaded resource nor the scalar id).
+const hasPipeline = computed(
+  () => !!approvalPipeline.value || !!task.value?.approval_pipeline_id,
+);
+// Pipeline attached but the task is NOT currently in an approval process.
+const notInApproval = computed(() => hasPipeline.value && !pendingProcess.value);
+
+const runId = computed(() => pendingProcess.value?.run_id ?? null);
+
+async function loadRunHistory(): Promise<void> {
+  const id = runId.value;
+  if (!id) return;
+  runHistoryLoading.value = true;
+  runHistoryError.value = false;
+  try {
+    const res = await api.get<RunHistoryResponse>(`/approvals/runs/${id}`);
+    runHistory.value = res.data ?? [];
+    loadedRunId.value = id;
+  } catch {
+    runHistoryError.value = true;
+  } finally {
+    runHistoryLoading.value = false;
+  }
+}
+
+// Lazily fetch the run history the FIRST time the Approval tab is opened for a run
+// (and again if the run id changes). Only fetch when there IS a run id (a pipeline
+// attached but not in approval has none → nothing to fetch).
+watch(
+  () => [activeTab.value, runId.value] as const,
+  ([tab, id]) => {
+    if (tab !== 'approval' || !id) return;
+    if (id !== loadedRunId.value && !runHistoryLoading.value) void loadRunHistory();
+  },
+);
+
+// Reset the cached history whenever the task changes so a stale run never leaks.
+watch(
+  () => task.value?.id,
+  () => {
+    runHistory.value = [];
+    loadedRunId.value = null;
+    runHistoryError.value = false;
+  },
+);
+
+const approvalStatuses = computed(() => approvalStatusMap(t));
+
+// The stepper view-model: pipeline stages + per-stage status (current pending /
+// decided-from-history / upcoming), tolerant of stage=null history.
+const approvalModel = computed(() =>
+  buildApprovalTabModel(
+    approvalPipeline.value?.stages ?? [],
+    pendingProcess.value,
+    groupRunHistory(runHistory.value),
+  ),
+);
+
+/** Resolve a stage's backend icon enum to a renderable next IconName. */
+function stageIcon(step: StageStep): IconName {
+  return resolvePipelineIcon(step.icon);
+}
+
+/** Read-only jump to the Approvals queue (decisions are made there, not here). */
+function goToApprovals(): void {
+  void router.push({ name: 'next.approvals.queue' });
+}
 </script>
 
 <template>
@@ -672,11 +820,6 @@ const { sentinelRef: changelogSentinelRef } = useInfiniteScroll({
       <!-- A page-level save error (e.g. 422 message) surfaced once. -->
       <Alert v-if="fieldErrors.form" variant="danger" size="sm" class="shrink-0" :title="t('tasks.form.errorTitle')">
         {{ fieldErrors.form }}
-      </Alert>
-
-      <!-- Approval lock hint -->
-      <Alert v-if="task.is_in_approval" variant="info" size="sm" class="shrink-0">
-        {{ t('tasks.detail.inApprovalHint') }}
       </Alert>
 
       <!-- Narrow-screen pane switcher (hidden once the 3 panes fit side by side). -->
@@ -849,6 +992,7 @@ const { sentinelRef: changelogSentinelRef } = useInfiniteScroll({
           <!-- Work tabs (shorter bottom part): Activity (live) + Form / Checklist / Approval. -->
           <div class="flex min-h-0 flex-3 flex-col">
           <Tabs
+            v-model="activeTab"
             variant="pills"
             fill
             :items="[
@@ -889,12 +1033,61 @@ const { sentinelRef: changelogSentinelRef } = useInfiniteScroll({
               </div>
             </template>
             <template #panel-form>
-              <EmptyState
-                class="pt-next-3"
-                icon="file-text"
-                :title="t('tasks.detail.tabForm')"
-                :description="t('tasks.detail.comingSoon')"
-              />
+              <div class="min-h-0 flex-1 overflow-y-auto pt-next-3">
+                <!-- No form attached. -->
+                <EmptyState
+                  v-if="formGate === 'none'"
+                  icon="file-text"
+                  :title="t('tasks.detail.form.noForm')"
+                  :description="t('tasks.detail.form.noFormHint')"
+                />
+                <!-- Attached but not ready to fill (disabled / draft). -->
+                <EmptyState
+                  v-else-if="formGate === 'not-fillable'"
+                  icon="file-text"
+                  :title="t('tasks.detail.form.notFillable')"
+                  :description="t('tasks.detail.form.notFillableHint')"
+                />
+                <!-- Fillable: auto-saving form (editable) or read-only preview
+                     while the task is in approval. -->
+                <div v-else class="flex flex-col gap-next-3">
+                  <!-- In approval → strictly read-only. -->
+                  <Alert v-if="isLocked" variant="info" size="sm" icon="lock">
+                    {{ t('tasks.detail.form.locked') }}
+                  </Alert>
+                  <!-- Editable → auto-save status (no submit button). -->
+                  <div
+                    v-else
+                    class="flex items-center gap-next-1_5 text-next-xs text-next-muted-foreground"
+                    aria-live="polite"
+                  >
+                    <template v-if="formSaveState === 'saving'">
+                      <Icon name="loader" class="shrink-0 animate-spin" />
+                      {{ t('tasks.detail.form.saving') }}
+                    </template>
+                    <template v-else-if="formSaveState === 'saved'">
+                      <Icon name="check" class="shrink-0 text-next-success" />
+                      {{ t('tasks.detail.form.saved') }}
+                    </template>
+                    <template v-else-if="formSaveState === 'error'">
+                      <Icon name="alert-triangle" class="shrink-0 text-next-danger" />
+                      {{ t('tasks.detail.form.saveError') }}
+                    </template>
+                    <template v-else>
+                      <Icon name="info" class="shrink-0" />
+                      {{ t('tasks.detail.form.autosaveHint') }}
+                    </template>
+                  </div>
+                  <FormViewer
+                    :content="task.form!.content"
+                    :mode="isLocked ? 'preview' : 'fill'"
+                    :initial-data="formInitialData"
+                    hide-submit
+                    :track-changes="!isLocked"
+                    @change="onFormChange"
+                  />
+                </div>
+              </div>
             </template>
             <template #panel-checklist>
               <EmptyState
@@ -905,12 +1098,223 @@ const { sentinelRef: changelogSentinelRef } = useInfiniteScroll({
               />
             </template>
             <template #panel-approval>
-              <EmptyState
-                class="pt-next-3"
-                icon="check-circle"
-                :title="t('tasks.detail.tabApproval')"
-                :description="t('tasks.detail.comingSoon')"
-              />
+              <div class="min-h-0 flex-1 overflow-y-auto pt-next-3">
+                <!-- No pipeline attached at all. -->
+                <EmptyState
+                  v-if="!hasPipeline"
+                  icon="git-branch"
+                  :title="t('tasks.detail.approval.noPipeline')"
+                  :description="t('tasks.detail.approval.noPipelineHint')"
+                />
+
+                <!-- Pipeline attached → stage stepper (+ history when in approval). -->
+                <div v-else class="flex flex-col gap-next-4">
+                  <!-- Pipeline header. -->
+                  <div class="flex items-center gap-next-2">
+                    <Icon
+                      :name="resolvePipelineIcon(approvalPipeline?.icon)"
+                      class="shrink-0 text-next-muted-foreground"
+                    />
+                    <span class="min-w-0 truncate text-next-sm font-next-semibold text-next-fg">
+                      {{ approvalPipeline?.name ?? t('tasks.detail.approval.pipeline') }}
+                    </span>
+                  </div>
+
+                  <!-- Read-only "not currently in approval" hint. -->
+                  <Alert v-if="notInApproval" variant="info" size="sm" icon="info">
+                    {{ t('tasks.detail.approval.notInApproval') }}
+                  </Alert>
+
+                  <!-- Vertical stage stepper (ordered list for a11y). -->
+                  <ol
+                    v-if="approvalModel.steps.length"
+                    class="flex flex-col"
+                    :aria-label="t('tasks.detail.approval.stagesLabel')"
+                  >
+                    <li
+                      v-for="(step, i) in approvalModel.steps"
+                      :key="step.id"
+                      class="relative flex gap-next-3 pb-next-4 last:pb-0"
+                    >
+                      <!-- Connector rail + node. -->
+                      <div class="flex flex-col items-center">
+                        <span
+                          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-next-full border"
+                          :class="step.isCurrent
+                            ? 'border-next-primary bg-next-primary-subtle text-next-primary'
+                            : step.status === 'upcoming'
+                              ? 'border-next-border bg-next-muted text-next-muted-foreground'
+                              : 'border-next-border bg-next-card text-next-fg'"
+                          aria-hidden="true"
+                        >
+                          <Icon :name="stageIcon(step)" />
+                        </span>
+                        <span
+                          v-if="i < approvalModel.steps.length - 1"
+                          class="mt-next-1 w-px flex-1 bg-next-border"
+                          aria-hidden="true"
+                        />
+                      </div>
+
+                      <!-- Stage body. -->
+                      <div
+                        class="min-w-0 flex-1 rounded-next-md border p-next-3"
+                        :class="step.isCurrent
+                          ? 'border-next-primary/40 bg-next-primary-subtle/40'
+                          : 'border-next-border'"
+                      >
+                        <div class="flex flex-wrap items-center justify-between gap-next-2">
+                          <span class="min-w-0 truncate text-next-sm font-next-medium text-next-fg">
+                            {{ step.name }}
+                          </span>
+                          <StatusBadge
+                            v-if="step.status !== 'upcoming'"
+                            :status="step.status"
+                            :status-map="approvalStatuses"
+                            size="sm"
+                          />
+                          <Badge v-else variant="neutral" tone="subtle" icon="clock" size="sm">
+                            {{ t('tasks.detail.approval.stageUpcoming') }}
+                          </Badge>
+                        </div>
+
+                        <!-- Approver: avatar for a user, AI glyph otherwise. -->
+                        <div class="mt-next-2 flex items-center gap-next-2">
+                          <template v-if="step.approver_type === 'user' && step.approver">
+                            <Avatar
+                              :name="step.approver.name"
+                              :src="step.approver.avatar ?? undefined"
+                              size="xs"
+                              class="shrink-0"
+                            />
+                            <span class="min-w-0 truncate text-next-xs text-next-muted-foreground">
+                              {{ step.approver.name }}
+                            </span>
+                          </template>
+                          <template v-else>
+                            <Icon
+                              :name="approverTypeIcon(step.approver_type)"
+                              class="shrink-0 text-next-muted-foreground"
+                            />
+                            <span class="text-next-xs text-next-muted-foreground">
+                              {{ t('tasks.detail.approval.aiApprover') }}
+                            </span>
+                          </template>
+                        </div>
+
+                        <!-- Per-stage decision history (approver / status / note / time). -->
+                        <ul
+                          v-if="step.history.length"
+                          class="mt-next-3 flex flex-col gap-next-2 border-t border-next-border pt-next-2"
+                        >
+                          <li
+                            v-for="entry in step.history"
+                            :key="entry.id"
+                            class="flex flex-col gap-next-1"
+                          >
+                            <div class="flex flex-wrap items-center gap-next-2">
+                              <StatusBadge
+                                :status="entry.status"
+                                :status-map="approvalStatuses"
+                                size="sm"
+                              />
+                              <span class="min-w-0 truncate text-next-xs text-next-fg">
+                                {{ entry.approver?.name ?? t('tasks.detail.approval.aiApprover') }}
+                              </span>
+                              <span
+                                v-if="entry.decided_at"
+                                class="text-next-2xs text-next-muted-foreground"
+                              >
+                                {{ formatDateTime(entry.decided_at) }}
+                              </span>
+                            </div>
+                            <p
+                              v-if="entry.note"
+                              class="text-next-xs text-next-muted-foreground"
+                            >
+                              {{ entry.note }}
+                            </p>
+                          </li>
+                        </ul>
+                      </div>
+                    </li>
+                  </ol>
+
+                  <!-- Decision history states (only meaningful when in approval). -->
+                  <template v-if="pendingProcess?.run_id">
+                    <!-- Loading: skeleton rows mimicking the history entries. -->
+                    <div
+                      v-if="runHistoryLoading"
+                      class="flex flex-col gap-next-2"
+                      aria-hidden="true"
+                    >
+                      <Skeleton v-for="n in 2" :key="n" variant="rect" width="100%" height="2.5rem" radius="md" />
+                    </div>
+                    <!-- Error + retry. -->
+                    <Alert
+                      v-else-if="runHistoryError"
+                      variant="danger"
+                      size="sm"
+                    >
+                      <div class="flex items-center justify-between gap-next-2">
+                        <span>{{ t('tasks.detail.approval.historyError') }}</span>
+                        <Button size="sm" variant="outline" leading-icon="redo" @click="loadRunHistory">
+                          {{ t('tasks.detail.retry') }}
+                        </Button>
+                      </div>
+                    </Alert>
+                    <!-- Empty (loaded, no decisions yet). -->
+                    <p
+                      v-else-if="!runHistory.length"
+                      class="text-next-xs italic text-next-muted-foreground"
+                    >
+                      {{ t('tasks.detail.approval.historyEmpty') }}
+                    </p>
+
+                    <!-- Decisions orphaned by a pipeline re-save (stage FK nulled). -->
+                    <div
+                      v-if="approvalModel.orphanHistory.length"
+                      class="flex flex-col gap-next-2 rounded-next-md border border-next-border p-next-3"
+                    >
+                      <span class="text-next-xs font-next-medium text-next-fg">
+                        {{ t('tasks.detail.approval.historyOther') }}
+                      </span>
+                      <div
+                        v-for="entry in approvalModel.orphanHistory"
+                        :key="entry.id"
+                        class="flex flex-wrap items-center gap-next-2"
+                      >
+                        <StatusBadge
+                          :status="entry.status"
+                          :status-map="approvalStatuses"
+                          size="sm"
+                        />
+                        <span class="min-w-0 truncate text-next-xs text-next-fg">
+                          {{ entry.approver?.name ?? t('tasks.detail.approval.aiApprover') }}
+                        </span>
+                        <span
+                          v-if="entry.decided_at"
+                          class="text-next-2xs text-next-muted-foreground"
+                        >
+                          {{ formatDateTime(entry.decided_at) }}
+                        </span>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- Optional read-only link out to the Approvals queue. -->
+                  <div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leading-icon="external-link"
+                      @click="goToApprovals"
+                    >
+                      {{ t('tasks.detail.approval.viewInApprovals') }}
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </template>
           </Tabs>
           </div>

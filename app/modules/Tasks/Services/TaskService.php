@@ -192,7 +192,7 @@ class TaskService
             );
         });
 
-        return Task::with(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+        return Task::with(Task::DETAIL_RELATIONS)
             ->findOrFail($task->id);
     }
 

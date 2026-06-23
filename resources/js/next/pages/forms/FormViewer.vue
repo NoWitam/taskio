@@ -10,7 +10,7 @@
 // `initialData` (a nested submission) hydrates the form to view/edit an existing
 // submission. Field values live in a flat map keyed by element id; the boundary
 // mapping is handled by ./submissionData. Self-contained; NO legacy import.
-import { reactive, ref, watch } from 'vue';
+import { nextTick, reactive, ref, watch } from 'vue';
 import InputRenderer from './InputRenderer.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Button from '../../ui/primitives/Button.vue';
@@ -28,11 +28,21 @@ const props = withDefaults(
     submitting?: boolean;
     /** Hide the built-in submit button (the parent provides its own). */
     hideSubmit?: boolean;
+    /**
+     * Opt-in: emit a `change` (the structured submission) whenever the user edits
+     * a value in `fill` mode — for parents that AUTO-SAVE instead of using the
+     * submit button. Off by default so existing consumers pay no cost and never
+     * emit during hydration.
+     */
+    trackChanges?: boolean;
   }>(),
-  { mode: 'preview', initialData: null, submitting: false, hideSubmit: false },
+  { mode: 'preview', initialData: null, submitting: false, hideSubmit: false, trackChanges: false },
 );
 
-const emit = defineEmits<{ (e: 'submit', data: Record<string, unknown>): void }>();
+const emit = defineEmits<{
+  (e: 'submit', data: Record<string, unknown>): void;
+  (e: 'change', data: Record<string, unknown>): void;
+}>();
 
 const { t } = useI18n();
 
@@ -55,10 +65,15 @@ function seedRepeaters(els: FormElement[]): void {
   }
 }
 
+// While (re)seeding from props, suppress the `change` emit so hydration never
+// looks like a user edit (which would trigger a spurious auto-save).
+let hydrating = false;
+
 // (Re)hydrate when the form or the data to edit changes.
 watch(
   () => [props.content, props.initialData] as const,
   ([content, initial]) => {
+    hydrating = true;
     errors.value = {};
     for (const key of Object.keys(formData)) delete formData[key];
     repeaterInstances.value = {};
@@ -68,8 +83,24 @@ watch(
       Object.assign(formData, flat);
       repeaterInstances.value = { ...repeaterInstances.value, ...instances };
     }
+    // Release the guard after the seed mutations have settled (the change
+    // watcher runs pre-flush, before this nextTick).
+    void nextTick(() => {
+      hydrating = false;
+    });
   },
   { immediate: true, deep: true },
+);
+
+// Auto-save bridge: emit the structured submission on every user edit (fill mode,
+// opt-in). Guarded against hydration so it only fires for real interactions.
+watch(
+  [() => formData, repeaterInstances],
+  () => {
+    if (props.mode !== 'fill' || !props.trackChanges || hydrating) return;
+    emit('change', structureFormData(formData, props.content ?? [], repeaterInstances.value));
+  },
+  { deep: true },
 );
 
 function addRepeater(id: string): void {

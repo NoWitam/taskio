@@ -81,11 +81,16 @@ function onClick(event: MouseEvent): void {
     />
     <Icon v-if="icon" :name="icon" class="shrink-0 text-next-lg" />
     <span class="min-w-0 flex-1 truncate">{{ label }}</span>
+    <!-- A `#badge` slot is rendered RAW (the consumer owns its chrome, e.g. a
+         Badge primitive); the `badge` PROP keeps the built-in muted count pill. -->
+    <span v-if="slots.badge" class="ml-auto shrink-0">
+      <slot name="badge" />
+    </span>
     <span
-      v-if="slots.badge || badge !== undefined"
+      v-else-if="badge !== undefined"
       class="ml-auto inline-flex min-w-5 shrink-0 items-center justify-center rounded-next-full bg-next-muted px-next-1_5 text-next-2xs font-next-semibold text-next-muted-foreground group-hover:bg-next-card"
     >
-      <slot name="badge">{{ badge }}</slot>
+      {{ badge }}
     </span>
   </component>
 </template>

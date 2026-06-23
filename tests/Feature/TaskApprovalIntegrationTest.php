@@ -135,4 +135,74 @@ class TaskApprovalIntegrationTest extends TestCase
         $response->assertOk();
         $this->assertEquals(TaskStatus::DONE, $task->fresh()->status);
     }
+
+    public function test_show_returns_wrapped_approval_pipeline_and_pending_process(): void
+    {
+        $user = User::factory()->create();
+        $approver = User::factory()->create();
+
+        $this->actingAs($user);
+
+        $pipeline = ApprovalPipeline::factory()->create(['creator_id' => $user->id]);
+        $stage = $pipeline->stages()->create([
+            'name' => 'Review',
+            'approver_type' => ApproverType::User,
+            'approver_id' => $approver->id,
+            'order' => 1,
+        ]);
+
+        $task = Task::factory()->create([
+            'creator_id' => $user->id,
+            'assigned_id' => $user->id,
+            'approval_pipeline_id' => $pipeline->id,
+            'status' => TaskStatus::IN_TEST,
+        ]);
+
+        app(ApprovalService::class)->startProcess($task, $user);
+
+        $response = $this->getJson("/api/tasks/{$task->id}");
+
+        $response->assertOk()
+            // pipeline wrapped in ApprovalPipelineResource with its stages
+            ->assertJsonPath('data.approval_pipeline.id', $pipeline->id)
+            ->assertJsonPath('data.approval_pipeline.stages.0.id', $stage->id)
+            ->assertJsonPath('data.approval_pipeline.stages.0.approver.id', $approver->id)
+            // scalar contract fields untouched
+            ->assertJsonPath('data.approval_pipeline_id', $pipeline->id)
+            ->assertJsonPath('data.is_in_approval', true)
+            // pending process wrapped in ApprovalProcessResource
+            ->assertJsonPath('data.pending_approval_process.status', 'pending')
+            ->assertJsonPath('data.pending_approval_process.stage.id', $stage->id);
+
+        $process = $response->json('data.pending_approval_process');
+        $this->assertArrayHasKey('run_id', $process);
+        $this->assertArrayHasKey('approver', $process);
+        $this->assertArrayHasKey('pipeline', $process);
+        // No raw DB columns leak through the resource wrapper.
+        $this->assertArrayNotHasKey('approval_pipeline_id', $process);
+        $this->assertArrayNotHasKey('approvable_type', $process);
+    }
+
+    public function test_show_omits_approval_relations_for_task_without_pipeline(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user);
+
+        $task = Task::factory()->create([
+            'creator_id' => $user->id,
+            'assigned_id' => $user->id,
+            'approval_pipeline_id' => null,
+            'status' => TaskStatus::TO_DO,
+        ]);
+
+        $response = $this->getJson("/api/tasks/{$task->id}");
+
+        $response->assertOk()
+            ->assertJsonPath('data.approval_pipeline_id', null)
+            ->assertJsonPath('data.is_in_approval', false)
+            // Relations loaded but empty: no MissingValue leakage, just null.
+            ->assertJsonPath('data.approval_pipeline', null)
+            ->assertJsonPath('data.pending_approval_process', null);
+    }
 }

@@ -11,6 +11,12 @@
 import type { IconName } from '../../ui/primitives/icons';
 import type { StatusDescriptor } from '../../ui/data/StatusBadge.vue';
 import type { JSONNode } from '../../ui/editor/markdown';
+import type { FormElement } from '../forms/types';
+// Reuse the verified Approvals domain types (Batch 1 Pipelines + Batch 2 Queue) —
+// the task detail now eager-loads the SAME ApprovalPipelineResource /
+// ApprovalProcessResource shapes, so we import rather than redefine them.
+import type { ApprovalPipeline } from '../approvals/types';
+import type { ApprovalProcess } from '../approvals/queue-types';
 
 /**
  * A task `description` as the backend returns it: a ProseMirror/Tiptap doc OBJECT
@@ -102,6 +108,35 @@ export interface TaskListResponse {
 
 // --- Detail (full TaskResource) ------------------------------------------
 
+/**
+ * The subset of a Form (FormResource) the Task detail needs when a form is
+ * attached: it eager-loads `form` so `form.content` (the element tree) is present
+ * and we can render it through FormViewer. `can_be_filled` is the server-
+ * authoritative capability flag the Form tab gates on. Mirrors the relevant
+ * FormResource fields 1:1 — no invented fields.
+ */
+export interface TaskForm {
+  id: string | number;
+  name: string;
+  /** Legacy IconEnum value (NOT a `next` icon name) or null. */
+  icon?: string | null;
+  /** The element tree to render (FormViewer `content`). */
+  content: FormElement[];
+  /** Server-authoritative: false → the form isn't ready to fill. */
+  can_be_filled?: boolean;
+}
+
+/**
+ * The task's FormSubmission as eager-loaded into TaskResource (`form_submission`).
+ * It arrives NESTED inside the TaskResource — so even though a SINGLE
+ * FormSubmissionResource is unwrapped on its own endpoint, here it is read as
+ * `task.form_submission`. `data` is the NESTED answers map FormViewer hydrates from.
+ */
+export interface TaskFormSubmission {
+  id: string | number;
+  data: Record<string, unknown> | null;
+}
+
 /** An attachment as returned by FileResource (the `attachments` relation). */
 export interface TaskAttachment {
   id: string | number;
@@ -141,11 +176,27 @@ export interface TaskDetail {
   form_id: string | null;
   approval_pipeline_id: string | null;
   is_in_approval: boolean;
-  /** Present only via whenLoaded — not relied upon by the UI. */
-  form?: unknown;
-  form_submission?: unknown;
-  approval_pipeline?: unknown;
-  pending_approval_process?: unknown;
+  /**
+   * The attached form (eager-loaded by TaskResource → present whenever `form_id`
+   * is set). Carries `content` (the element tree) + `can_be_filled` so the Form
+   * tab can render + gate it.
+   */
+  form?: TaskForm | null;
+  /** The task's current form answers (eager-loaded `form_submission`), or null. */
+  form_submission?: TaskFormSubmission | null;
+  /**
+   * The attached approval pipeline (ApprovalPipelineResource) — full stages +
+   * ownership/capability flags. Present whenever a pipeline is attached; null
+   * otherwise. REUSES the Approvals module type (do not redefine).
+   */
+  approval_pipeline?: ApprovalPipeline | null;
+  /**
+   * The task's CURRENT pending approval process (ApprovalProcessResource), or null
+   * when the task is not in approval. Carries `run_id` (for the run history),
+   * `stage` (the current pending stage), `approver`, `status`, `note`. REUSES the
+   * Approvals Queue type (do not redefine).
+   */
+  pending_approval_process?: ApprovalProcess | null;
 }
 
 /** Detail envelope from `GET /api/tasks/{id}`. */

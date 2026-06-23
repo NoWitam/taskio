@@ -6,14 +6,16 @@
 //
 // Backend contract (verified — do NOT invent fields):
 //   GET /api/tasks?status=<status>&cursor=<cursor>&search=&priority=
-//       &user_id[]=&labels[]=&labelOperator=AND|OR
+//       &user_id[]=&labels[]=&label_operator=AND|OR
 //       &date_from=&date_to=&date_preset=&hide_without_deadline=1
 //     → { data: TaskListItem[], meta: { next_cursor: string|null, total?: number|null } }
 //   `total` is present ONLY on the first page (no cursor).
 //
-// Filter serialization MIRRORS the legacy store exactly: scalars are appended
-// as-is; arrays are appended one entry per `key[]` (e.g. `user_id[]`, `labels[]`);
-// empty / null / '' values are skipped; `hide_without_deadline` is sent as `1`.
+// Filter serialization: scalars are appended as-is; arrays are appended one entry
+// per `key[]` (e.g. `user_id[]`, `labels[]`); empty / null / '' values are skipped;
+// `hide_without_deadline` is sent as `1`. Page-side filter keys are already the
+// backend param names EXCEPT `labelOperator`, which the backend reads as
+// `label_operator` (see `FILTER_PARAM_KEYS` + `HasLabels::scopeFilterByLabels`).
 //
 // Self-contained: NO import from the legacy `resources/js/` (the legacy
 // `store/tasks.ts` is reference only).
@@ -63,9 +65,22 @@ function toListItem(task: TaskDetail): TaskListItem {
 }
 
 /**
- * Serialize the page's filter object into URLSearchParams using the legacy
- * `key[]` convention for arrays. Returns the params (status + cursor are added by
- * the caller). Skips undefined / null / '' and empty arrays.
+ * Page-side filter keys that do NOT match their backend query-param name 1:1.
+ * Every other key is already the backend param (`user_id`, `labels`, `date_*`,
+ * `hide_without_deadline`, …); the camelCase `labelOperator` is the exception —
+ * the backend reads it as `label_operator` (`TaskService::listQuery` →
+ * `HasLabels::scopeFilterByLabels`). Without this map the operator is dropped and
+ * multi-label filtering silently falls back to the backend default (`OR`).
+ */
+const FILTER_PARAM_KEYS: Partial<Record<keyof TaskFilters, string>> = {
+  labelOperator: 'label_operator',
+};
+
+/**
+ * Serialize the page's filter object into URLSearchParams using the `key[]`
+ * convention for arrays. Returns the params (status + cursor are added by the
+ * caller). Skips undefined / null / '' and empty arrays. Keys are mapped to their
+ * backend param name via `FILTER_PARAM_KEYS` (see above).
  */
 function serializeFilters(filters: TaskFilters): URLSearchParams {
   const params = new URLSearchParams();
@@ -74,19 +89,21 @@ function serializeFilters(filters: TaskFilters): URLSearchParams {
     ([key, value]) => {
       if (value === undefined || value === null || value === '') return;
 
+      const paramKey = FILTER_PARAM_KEYS[key] ?? key;
+
       if (Array.isArray(value)) {
         if (value.length === 0) return;
-        value.forEach((element) => params.append(`${key}[]`, String(element)));
+        value.forEach((element) => params.append(`${paramKey}[]`, String(element)));
         return;
       }
 
       if (typeof value === 'boolean') {
         // hide_without_deadline → send `1` when on, omit when off.
-        if (value) params.append(key, '1');
+        if (value) params.append(paramKey, '1');
         return;
       }
 
-      params.append(key, String(value));
+      params.append(paramKey, String(value));
     },
   );
 
@@ -370,6 +387,28 @@ export const useTasksStore = defineStore('next-tasks', () => {
     return res.data;
   }
 
+  /**
+   * Submit (create-or-update) the task's form answers
+   * (`POST /api/tasks/{id}/form-submission` with `{ data }`). The backend returns a
+   * full TaskResource (with the refreshed `form_submission`) and does NOT change
+   * the task status — so we reconcile exactly like `updateTask`: replace the open
+   * `detail` and replace the row in place in its (unchanged) status bucket. Returns
+   * the updated TaskDetail.
+   */
+  async function submitTaskForm(
+    id: string | number,
+    data: Record<string, unknown>,
+  ): Promise<TaskDetail> {
+    const res = await api.post<TaskDetailResponse>(`/tasks/${id}/form-submission`, {
+      data,
+    });
+    upsertIntoLists(res.data);
+    if (detail.value && String(detail.value.id) === String(id)) {
+      detail.value = res.data;
+    }
+    return res.data;
+  }
+
   // --- Comments ------------------------------------------------------------
   /**
    * Fetch a page of comments for a task (`GET /api/tasks/{id}/comments`).
@@ -569,6 +608,7 @@ export const useTasksStore = defineStore('next-tasks', () => {
     forceDeleteTask,
     restoreTask,
     changeStatus,
+    submitTaskForm,
     clearDetail,
     // comments
     fetchComments,

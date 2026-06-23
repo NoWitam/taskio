@@ -10,9 +10,10 @@
 // All labels are translated; the active nav item is driven by the router and marked
 // with aria-current via SidebarItem. The mobile drawer / focus trap / scrim are
 // owned by AppShell.
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../app/stores/auth';
+import { useApprovalQueueStore } from '../app/stores/approvalQueue';
 import { useI18n } from '../app/i18n';
 import { useTheme } from '../app/lib/theme';
 import AppShell from '../ui/layout/AppShell.vue';
@@ -23,6 +24,7 @@ import Navbar from '../ui/layout/Navbar.vue';
 import Icon from '../ui/primitives/Icon.vue';
 import Button from '../ui/primitives/Button.vue';
 import Avatar from '../ui/primitives/Avatar.vue';
+import Badge from '../ui/primitives/Badge.vue';
 import LocaleSwitcher from '../ui/LocaleSwitcher.vue';
 import DropdownMenu from '../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../ui/overlay/DropdownMenuItem.vue';
@@ -33,8 +35,24 @@ import type { IconName } from '../ui/primitives/icons';
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
+const approvalQueue = useApprovalQueueStore();
 const { t } = useI18n();
 const { isDark, toggle: toggleTheme } = useTheme();
+
+// Warm the pending-approvals count on app-shell mount so the nav badge is
+// accurate even before the user opens the Approvals module. The module layout
+// also warms it on its own mount; this app-shell fetch is complementary (the
+// store keeps `count` decremented after a decision, so the badge self-updates).
+// Best-effort — a failure is silent (the badge simply stays hidden).
+onMounted(() => {
+  void approvalQueue.fetchCount().catch(() => undefined);
+});
+
+/** The pending-approvals badge count (hidden when null / 0). */
+const approvalsCount = computed(() => approvalQueue.count);
+function showApprovalsBadge(item: NavLink): boolean {
+  return item.key === 'approvals' && approvalsCount.value != null && approvalsCount.value > 0;
+}
 
 interface NavLink {
   key: string;
@@ -49,11 +67,11 @@ const primaryNav: NavLink[] = [
   { key: 'dashboard', labelKey: 'nav.dashboard', icon: 'layout-dashboard', to: '/dashboard' },
   { key: 'tasks', labelKey: 'nav.tasks', icon: 'list-checks', to: '/tasks' },
   { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', to: '/forms' },
+  { key: 'approvals', labelKey: 'nav.approvals', icon: 'git-branch', to: '/approvals' },
 ];
 
 // IA preview — modules not built yet are shown disabled so the structure is visible.
 const upcomingNav: NavLink[] = [
-  { key: 'approvals', labelKey: 'nav.approvals', icon: 'check-circle', comingSoon: true },
   { key: 'labels', labelKey: 'nav.labels', icon: 'hash', comingSoon: true },
 ];
 
@@ -97,7 +115,19 @@ async function onLogout(): Promise<void> {
             :icon="item.icon"
             :to="item.to"
             :active="route.path === item.to"
-          />
+          >
+            <!-- Pending-approvals count badge (icon-less, primary): hidden when
+                 the count is null or 0. The accessible label carries the count so
+                 the number isn't conveyed as a bare digit to assistive tech. -->
+            <template v-if="showApprovalsBadge(item)" #badge>
+              <Badge variant="primary" tone="solid" size="sm">
+                <span aria-hidden="true">{{ approvalsCount }}</span>
+                <span class="sr-only">
+                  {{ t('nav.approvalsBadge', '', { count: approvalsCount ?? 0 }) }}
+                </span>
+              </Badge>
+            </template>
+          </SidebarItem>
         </SidebarSection>
 
         <SidebarSection :label="t('nav.sectionComingSoon', 'Coming soon')">

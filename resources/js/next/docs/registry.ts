@@ -18,7 +18,8 @@ export type StyleguideSection =
   | 'Navigation'
   | 'Data'
   | 'Patterns'
-  | 'Editor';
+  | 'Editor'
+  | 'Modules';
 
 export interface StyleguideStory {
   /** Nav grouping. */
@@ -43,6 +44,7 @@ export const SECTION_ORDER: StyleguideSection[] = [
   'Data',
   'Patterns',
   'Editor',
+  'Modules',
 ];
 
 export const stories: StyleguideStory[] = [
@@ -385,6 +387,11 @@ export const stories: StyleguideStory[] = [
     section: 'Editor',
     name: 'MarkdownEditor',
     component: () => import('./pages/MarkdownEditorPage.vue'),
+  },
+  {
+    section: 'Modules',
+    name: 'Approvals',
+    component: () => import('./pages/ApprovalsPage.vue'),
   },
 ];
 

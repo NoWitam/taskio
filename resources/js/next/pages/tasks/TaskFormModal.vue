@@ -16,16 +16,21 @@
 // Modal). All design-system components; no legacy imports; namespaced tokens.
 import { computed, reactive, ref, watch } from 'vue';
 import Modal from '../../ui/overlay/Modal.vue';
+import Drawer from '../../ui/overlay/Drawer.vue';
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import UserSelect from '../../ui/forms/UserSelect.vue';
 import LabelSelect from '../../ui/forms/LabelSelect.vue';
+import FormSelect from '../../ui/forms/FormSelect.vue';
+import PipelineSelect from '../../ui/forms/PipelineSelect.vue';
 import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedControl.vue';
 import DatePicker from '../../ui/forms/DatePicker.vue';
 import MarkdownEditor from '../../ui/editor/MarkdownEditor.vue';
 import TaskAttachmentsField from './TaskAttachmentsField.vue';
+import FormBuilderView from '../forms/builder/FormBuilderView.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Button from '../../ui/primitives/Button.vue';
+import type { FormDetail } from '../forms/types';
 import { useTasksStore } from '../../app/stores/tasks';
 import { useToast } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
@@ -41,6 +46,7 @@ import {
   markdownToTaskDescriptionPayload,
   taskDescriptionToMarkdown,
 } from './description';
+import { buildTaskPayload } from './taskPayload';
 
 const props = defineProps<{
   /** When set, the task to edit (prefill); omit for create mode. */
@@ -68,6 +74,10 @@ interface FormState {
   deadline: string | null;
   assigned_id: string | null;
   labels: string[];
+  /** Attached form id (nullable). ALWAYS sent in the payload (see buildPayload). */
+  form_id: string | null;
+  /** Attached approval-pipeline id (nullable). ALWAYS sent (see buildPayload). */
+  approval_pipeline_id: string | null;
   /** Temp file ids of NEW uploads (existing attachments are managed via seed). */
   attachments: string[];
 }
@@ -80,6 +90,8 @@ function blankForm(): FormState {
     deadline: null,
     assigned_id: null,
     labels: [],
+    form_id: null,
+    approval_pipeline_id: null,
     attachments: [],
   };
 }
@@ -95,6 +107,12 @@ const formError = ref<string | null>(null);
 const assigneeSeed = ref<Array<{ id: string; name: string; email?: string | null; avatar?: string | null }>>([]);
 const labelSeed = ref<Array<{ id: string; name: string; color?: string | null; icon?: string | null }>>([]);
 const attachmentSeed = ref<TaskAttachment[]>([]);
+// Seed the FormSelect option from the task's currently-attached form so its name
+// renders immediately on edit (before any async forms page loads).
+const formSeed = ref<Array<{ id: string; name: string; icon?: string | null }>>([]);
+// Seed the PipelineSelect option from the task's currently-attached pipeline so
+// its name renders immediately on edit (before any async pipelines page loads).
+const pipelineSeed = ref<Array<{ id: string; name: string; icon?: string | null }>>([]);
 
 // Reset/prefill whenever the modal opens (or the task changes while open).
 watch(
@@ -129,11 +147,28 @@ watch(
       }));
       form.attachments = [];
       attachmentSeed.value = task.attachments ?? [];
+      // Seed the form picker from `form_id` + the eager-loaded `form` (name/icon).
+      form.form_id = task.form_id ?? null;
+      formSeed.value = task.form
+        ? [{ id: String(task.form.id), name: task.form.name, icon: task.form.icon ?? null }]
+        : [];
+      // Seed the pipeline picker from `approval_pipeline_id` + the eager-loaded
+      // `approval_pipeline` (name/icon) so it shows immediately on edit.
+      form.approval_pipeline_id = task.approval_pipeline_id ?? null;
+      pipelineSeed.value = task.approval_pipeline
+        ? [{
+            id: String(task.approval_pipeline.id),
+            name: task.approval_pipeline.name,
+            icon: task.approval_pipeline.icon ?? null,
+          }]
+        : [];
     } else {
       Object.assign(form, blankForm());
       assigneeSeed.value = [];
       labelSeed.value = [];
       attachmentSeed.value = [];
+      formSeed.value = [];
+      pipelineSeed.value = [];
     }
   },
   { immediate: true },
@@ -146,28 +181,23 @@ const priorityOptions = computed<SegmentOption<TaskPriority>[]>(() =>
 
 // --- Submit ---------------------------------------------------------------
 function buildPayload(): TaskWritePayload {
-  const payload: TaskWritePayload = {
-    title: form.title.trim(),
-    // The backend stores the description as a ProseMirror doc parsed from a JSON
-    // STRING (rule: nullable|string). Convert editor markdown → JSON doc string
-    // (or null when empty) so the cast can rebuild the tree.
+  // The backend stores the description as a ProseMirror doc parsed from a JSON
+  // STRING (rule: nullable|string). Convert editor markdown → JSON doc string (or
+  // null when empty) so the cast can rebuild the tree. The shared builder ALWAYS
+  // emits form_id AND approval_pipeline_id (string|null) so each picker's value —
+  // incl. a cleared detach — is honored. Both come straight from the modal's
+  // pickers. Only NEW uploads are sent (additive on the backend).
+  return buildTaskPayload({
+    title: form.title,
     description: markdownToTaskDescriptionPayload(form.description),
     priority: form.priority,
-    deadline: form.deadline ?? null,
-    assigned_id: form.assigned_id ?? '',
+    deadline: form.deadline,
+    assigned_id: form.assigned_id,
     labels: form.labels,
-    // Only NEW uploads are sent; the backend attaches them additively, so
-    // existing attachments are preserved without re-sending their ids.
     attachments: form.attachments,
-  };
-  // Preserve form/pipeline links on edit (no picker in this batch) so they are
-  // not wiped by the update.
-  if (props.task) {
-    if (props.task.form_id) payload.form_id = props.task.form_id;
-    if (props.task.approval_pipeline_id)
-      payload.approval_pipeline_id = props.task.approval_pipeline_id;
-  }
-  return payload;
+    form_id: form.form_id,
+    approval_pipeline_id: form.approval_pipeline_id,
+  });
 }
 
 /** Client-side guard for the required fields (server is authoritative). */
@@ -232,6 +262,30 @@ async function removeExistingAttachment(fileId: string): Promise<void> {
   } catch {
     toast.danger(t('attachments.removeError', 'Could not remove the attachment.'));
   }
+}
+
+// --- Form + pipeline pickers: attach existing (pipeline) / + create (form) ----
+// The server returns 403 for edits (incl. swapping the form or pipeline) while a
+// task is in an approval process, so the pickers + create action are disabled in
+// that state (one shared lock for both).
+const formLocked = computed(() => !!props.task?.is_in_approval);
+
+// Inline-create hosts the full FormBuilderView in a Drawer that STACKS over this
+// Modal (Drawer + Modal share the useOverlayStack, so Esc dismisses the builder
+// first and the scrim/focus-trap target the topmost overlay). On save we adopt the
+// new form: set form_id + seed the select so its name shows immediately, then close.
+const builderOpen = ref(false);
+function openFormBuilder(): void {
+  if (formLocked.value) return;
+  builderOpen.value = true;
+}
+function onFormCreated(created: FormDetail): void {
+  form.form_id = String(created.id);
+  formSeed.value = [
+    ...formSeed.value.filter((f) => f.id !== String(created.id)),
+    { id: String(created.id), name: created.name, icon: created.icon ?? null },
+  ];
+  builderOpen.value = false;
 }
 </script>
 
@@ -305,6 +359,51 @@ async function removeExistingAttachment(fileId: string): Promise<void> {
         />
       </FormField>
 
+      <!-- Form (attach existing, or create a new one inline). Clearable → detach.
+           Disabled while the task is in approval (server returns 403 for edits). -->
+      <FormField
+        :label="t('tasks.form.formLabel')"
+        :error="fieldErrors.form_id"
+        :description="formLocked ? t('tasks.form.formLockedHint') : undefined"
+      >
+        <div class="flex items-start gap-next-2">
+          <FormSelect
+            v-model="form.form_id"
+            :seed="formSeed"
+            :disabled="formLocked"
+            class="min-w-0 flex-1"
+            :placeholder="t('tasks.form.formPlaceholder')"
+            :aria-label="t('tasks.form.formLabel')"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            leading-icon="plus"
+            :disabled="formLocked"
+            @click="openFormBuilder"
+          >
+            {{ t('tasks.form.createForm') }}
+          </Button>
+        </div>
+      </FormField>
+
+      <!-- Approval pipeline (attach EXISTING only — pipelines are created in the
+           Approvals module). Clearable → detach. Disabled while the task is in
+           approval (server returns 403 for edits). -->
+      <FormField
+        :label="t('tasks.form.pipelineLabel')"
+        :error="fieldErrors.approval_pipeline_id"
+        :description="formLocked ? t('tasks.form.pipelineLockedHint') : undefined"
+      >
+        <PipelineSelect
+          v-model="form.approval_pipeline_id"
+          :seed="pipelineSeed"
+          :disabled="formLocked"
+          :placeholder="t('tasks.form.pipelinePlaceholder')"
+          :aria-label="t('tasks.form.pipelineLabel')"
+        />
+      </FormField>
+
       <!-- Description (markdown string) -->
       <FormField :label="t('tasks.form.description')" :error="fieldErrors.description">
         <MarkdownEditor
@@ -334,4 +433,20 @@ async function removeExistingAttachment(fileId: string): Promise<void> {
       </Button>
     </template>
   </Modal>
+
+  <!-- Inline form builder. Stacks OVER the create/edit Modal via the shared
+       overlay stack (Esc closes the builder first; the topmost scrim/focus-trap
+       wins). The body owns its own scroll regions, so scroll-body is off. On save
+       we adopt the new form (set form_id + seed) and close; cancel just closes. -->
+  <Drawer
+    v-model:open="builderOpen"
+    side="right"
+    size="cover"
+    floating
+    :scroll-body="false"
+    :show-close="false"
+    :aria-label="t('forms.builder.createTitle')"
+  >
+    <FormBuilderView @saved="onFormCreated" @close="builderOpen = false" />
+  </Drawer>
 </template>

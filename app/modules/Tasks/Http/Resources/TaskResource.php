@@ -2,6 +2,8 @@
 
 namespace App\Modules\Tasks\Http\Resources;
 
+use App\Modules\Approvals\Http\Resources\ApprovalPipelineResource;
+use App\Modules\Approvals\Http\Resources\ApprovalProcessResource;
 use App\Modules\Disk\Http\Resources\FileResource;
 use App\Modules\Forms\Http\Resources\FormResource;
 use App\Modules\Forms\Http\Resources\FormSubmissionResource;
@@ -32,9 +34,9 @@ class TaskResource extends JsonResource
             'form' => FormResource::make($this->whenLoaded('form')),
             'form_submission' => FormSubmissionResource::make($this->whenLoaded('formSubmission')),
             'approval_pipeline_id' => $this->approval_pipeline_id,
-            'approval_pipeline' => $this->whenLoaded('approvalPipeline'),
+            'approval_pipeline' => $this->whenLoaded('approvalPipeline', fn () => ApprovalPipelineResource::make($this->approvalPipeline)),
             'is_in_approval' => $this->isInApproval(),
-            'pending_approval_process' => $this->whenLoaded('pendingApprovalProcess'),
+            'pending_approval_process' => $this->whenLoaded('pendingApprovalProcess', fn () => ApprovalProcessResource::make($this->pendingApprovalProcess)),
         ];
     }
 }

@@ -37,6 +37,23 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
 
     protected $table = 'tasks';
 
+    /**
+     * Relations eager-loaded whenever a single Task is returned as a TaskResource,
+     * so every detail endpoint produces a shape-stable response.
+     */
+    public const DETAIL_RELATIONS = [
+        'assigned',
+        'creator',
+        'labels',
+        'files',
+        'form',
+        'formSubmission',
+        'approvalPipeline.stages.approver',
+        'pendingApprovalProcess.stage',
+        'pendingApprovalProcess.approver',
+        'pendingApprovalProcess.pipeline',
+    ];
+
     protected $fillable = [
         'title',
         'description',

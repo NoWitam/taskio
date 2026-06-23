@@ -20,6 +20,7 @@ class ApprovalPipelineListResource extends JsonResource
                 'icon' => $stage->icon?->value,
                 'order' => $stage->order,
             ]),
+            'is_owner' => $this->creator_id === $request->user()?->id,
             'can_be_edited' => $this->canBeEdited(),
             'can_be_deleted' => $this->canBeDeleted(),
             'created_at' => $this->created_at?->toISOString(),
