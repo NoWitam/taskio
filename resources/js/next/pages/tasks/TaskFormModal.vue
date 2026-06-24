@@ -290,7 +290,7 @@ function onFormCreated(created: FormDetail): void {
 </script>
 
 <template>
-  <Modal v-model:open="open" size="lg" :aria-label="modalTitle">
+  <Modal v-model:open="open" size="xl" :aria-label="modalTitle">
     <template #title>{{ modalTitle }}</template>
 
     <form class="flex flex-col gap-next-4" @submit.prevent="submit">
@@ -349,18 +349,39 @@ function onFormCreated(created: FormDetail): void {
         </FormField>
       </div>
 
-      <!-- Labels (async, multiple, max 5 server-side) -->
-      <FormField :label="t('tasks.form.labels')" :error="fieldErrors.labels">
-        <LabelSelect
-          v-model="form.labels"
-          :seed="labelSeed"
-          :placeholder="t('tasks.form.labelsPlaceholder')"
-          :aria-label="t('tasks.form.labels')"
-        />
-      </FormField>
+      <!-- Labels + approval pipeline share a row on wider viewports to keep the
+           form compact (stacks to one column on mobile). Labels: async, multiple,
+           max 5 server-side. Pipeline: attach EXISTING only (pipelines are created
+           in the Approvals module); clearable → detach; disabled while the task is
+           in approval (server returns 403 for edits). -->
+      <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2">
+        <FormField :label="t('tasks.form.labels')" :error="fieldErrors.labels">
+          <LabelSelect
+            v-model="form.labels"
+            :seed="labelSeed"
+            :placeholder="t('tasks.form.labelsPlaceholder')"
+            :aria-label="t('tasks.form.labels')"
+          />
+        </FormField>
 
-      <!-- Form (attach existing, or create a new one inline). Clearable → detach.
-           Disabled while the task is in approval (server returns 403 for edits). -->
+        <FormField
+          :label="t('tasks.form.pipelineLabel')"
+          :error="fieldErrors.approval_pipeline_id"
+          :description="formLocked ? t('tasks.form.pipelineLockedHint') : undefined"
+        >
+          <PipelineSelect
+            v-model="form.approval_pipeline_id"
+            :seed="pipelineSeed"
+            :disabled="formLocked"
+            :placeholder="t('tasks.form.pipelinePlaceholder')"
+            :aria-label="t('tasks.form.pipelineLabel')"
+          />
+        </FormField>
+      </div>
+
+      <!-- Form (attach existing, or create a new one inline). Full width so the
+           select + "new form" action have room. Clearable → detach. Disabled while
+           the task is in approval (server returns 403 for edits). -->
       <FormField
         :label="t('tasks.form.formLabel')"
         :error="fieldErrors.form_id"
@@ -385,23 +406,6 @@ function onFormCreated(created: FormDetail): void {
             {{ t('tasks.form.createForm') }}
           </Button>
         </div>
-      </FormField>
-
-      <!-- Approval pipeline (attach EXISTING only — pipelines are created in the
-           Approvals module). Clearable → detach. Disabled while the task is in
-           approval (server returns 403 for edits). -->
-      <FormField
-        :label="t('tasks.form.pipelineLabel')"
-        :error="fieldErrors.approval_pipeline_id"
-        :description="formLocked ? t('tasks.form.pipelineLockedHint') : undefined"
-      >
-        <PipelineSelect
-          v-model="form.approval_pipeline_id"
-          :seed="pipelineSeed"
-          :disabled="formLocked"
-          :placeholder="t('tasks.form.pipelinePlaceholder')"
-          :aria-label="t('tasks.form.pipelineLabel')"
-        />
       </FormField>
 
       <!-- Description (markdown string) -->

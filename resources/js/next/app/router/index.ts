@@ -17,6 +17,16 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, titleKey: 'auth.title' },
   },
   {
+    // PUBLIC invite-accept page (no app shell, no auth). Mirrors the login route's
+    // `public` meta so the guard renders it pre-auth. The accept endpoints never
+    // 401 (a 404 = unknown token, handled inline), so the api interceptor's
+    // login-redirect is never triggered from here.
+    path: '/invitations/:token',
+    name: 'next.invitations.accept',
+    component: () => import('../../pages/invitations/AcceptInvite.vue'),
+    meta: { public: true, titleKey: 'acceptInvite.title' },
+  },
+  {
     // Authenticated app shell. Children render through AppLayout's <router-view>.
     path: '/',
     component: () => import('../../pages/AppLayout.vue'),
@@ -38,6 +48,14 @@ const routes: RouteRecordRaw[] = [
         name: 'next.tasks',
         component: () => import('../../pages/tasks/TasksView.vue'),
         meta: { requiresAuth: true, titleKey: 'nav.tasks' },
+      },
+      {
+        // Workspace member + invitation management (owner-gated in the UI; the
+        // backend enforces it too). Reached from the user-menu "Manage members".
+        path: 'settings/members',
+        name: 'next.settings.members',
+        component: () => import('../../pages/settings/MembersView.vue'),
+        meta: { requiresAuth: true, titleKey: 'members.title' },
       },
       {
         // Forms module shell: inner sub-nav + the list / per-form sub-views.

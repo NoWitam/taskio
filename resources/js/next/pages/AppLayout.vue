@@ -10,10 +10,11 @@
 // All labels are translated; the active nav item is driven by the router and marked
 // with aria-current via SidebarItem. The mobile drawer / focus trap / scrim are
 // owned by AppShell.
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useAuthStore } from '../app/stores/auth';
+import { useAuthStore, type Workspace } from '../app/stores/auth';
 import { useApprovalQueueStore } from '../app/stores/approvalQueue';
+import CreateWorkspaceModal from './workspaces/CreateWorkspaceModal.vue';
 import { useI18n } from '../app/i18n';
 import { useTheme } from '../app/lib/theme';
 import AppShell from '../ui/layout/AppShell.vue';
@@ -82,9 +83,45 @@ const pageTitle = computed(() => {
 
 const hasMultipleWorkspaces = computed(() => auth.workspaces.length > 1);
 
-async function selectWorkspace(id: string | number): Promise<void> {
-  if (String(id) === String(auth.currentWorkspaceId)) return;
-  await auth.setCurrentWorkspace(id);
+// Owner-gate the "Manage members" entry. `can_manage_members` is only on the
+// per-workspace resource (not the auth-context list), but that list DOES carry
+// `is_owner`, and only the owner can manage members — so the owner flag is a
+// reliable, fetch-free gate here (the page re-checks `can_manage_members` and the
+// backend enforces it regardless).
+const canManageMembers = computed(() => {
+  const ws = auth.currentWorkspace;
+  if (!ws) return false;
+  return ws.can_manage_members === true || ws.is_owner === true;
+});
+
+function goToMembers(): void {
+  void router.push({ name: 'next.settings.members' });
+}
+
+/** A workspace whose own-DB is still being provisioned can't be switched into. */
+function isProvisioning(workspace: Workspace): boolean {
+  return workspace.status === 'provisioning';
+}
+/** A workspace whose provisioning failed has no usable DB to switch into. */
+function isFailed(workspace: Workspace): boolean {
+  return workspace.status === 'failed';
+}
+/** Disable the switcher row for any workspace that has no usable context. */
+function isSwitchDisabled(workspace: Workspace): boolean {
+  return !auth.canSwitchInto(workspace);
+}
+
+async function selectWorkspace(workspace: Workspace): Promise<void> {
+  if (String(workspace.id) === String(auth.currentWorkspaceId)) return;
+  // The store also guards this, but skip the no-op (and the disabled UI prevents it).
+  if (!auth.canSwitchInto(workspace)) return;
+  await auth.setCurrentWorkspace(workspace.id);
+}
+
+// --- Create-workspace modal ----------------------------------------------
+const createWorkspaceOpen = ref(false);
+function openCreateWorkspace(): void {
+  createWorkspaceOpen.value = true;
 }
 
 async function onLogout(): Promise<void> {
@@ -200,19 +237,63 @@ async function onLogout(): Promise<void> {
               </span>
             </DropdownMenuLabel>
 
+            <DropdownMenuSeparator />
             <template v-if="hasMultipleWorkspaces">
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel>{{ t('userMenu.switchWorkspace', 'Switch workspace') }}</DropdownMenuLabel>
+              <DropdownMenuLabel>
+                {{ t('userMenu.switchWorkspace', 'Switch workspace') }}
+              </DropdownMenuLabel>
               <DropdownMenuItem
                 v-for="ws in auth.workspaces"
                 :key="ws.id"
                 :icon="String(ws.id) === String(auth.currentWorkspaceId) ? 'check' : 'folder'"
                 :label="ws.name"
-                @select="selectWorkspace(ws.id)"
+                :disabled="isSwitchDisabled(ws)"
+                @select="selectWorkspace(ws)"
               >
-                {{ ws.name }}
+                <span class="flex min-w-0 flex-1 items-center gap-next-2">
+                  <span class="min-w-0 flex-1 truncate">{{ ws.name }}</span>
+                  <!-- A half-provisioned own-DB workspace (or a failed one) can't be
+                       entered: show a status badge so the disabled row is understandable
+                       (state is never conveyed by the disabled style alone). -->
+                  <Badge
+                    v-if="isProvisioning(ws)"
+                    variant="warning"
+                    tone="subtle"
+                    size="sm"
+                    class="shrink-0"
+                  >
+                    {{ t('workspaces.status.provisioning', 'Provisioning') }}
+                  </Badge>
+                  <Badge
+                    v-else-if="isFailed(ws)"
+                    variant="danger"
+                    tone="subtle"
+                    size="sm"
+                    class="shrink-0"
+                  >
+                    {{ t('workspaces.status.failed', 'Failed') }}
+                  </Badge>
+                </span>
               </DropdownMenuItem>
             </template>
+
+            <!-- Manage members: owner-only (the page + backend re-check). -->
+            <DropdownMenuItem
+              v-if="canManageMembers"
+              icon="users"
+              :label="t('userMenu.manageMembers', 'Manage members')"
+              @select="goToMembers"
+            >
+              {{ t('userMenu.manageMembers', 'Manage members') }}
+            </DropdownMenuItem>
+
+            <DropdownMenuItem
+              icon="plus"
+              :label="t('userMenu.createWorkspace', 'Create workspace')"
+              @select="openCreateWorkspace"
+            >
+              {{ t('userMenu.createWorkspace', 'Create workspace') }}
+            </DropdownMenuItem>
 
             <DropdownMenuSeparator />
             <DropdownMenuItem icon="log-out" :label="t('userMenu.logout', 'Sign out')" @select="onLogout">
@@ -236,4 +317,9 @@ async function onLogout(): Promise<void> {
       <router-view />
     </div>
   </AppShell>
+
+  <!-- Create-workspace flow (opened from the user-menu workspace switcher). Owns
+       its own create + provisioning-poll state; on success it switches the active
+       workspace and routes to the dashboard. -->
+  <CreateWorkspaceModal v-model:open="createWorkspaceOpen" />
 </template>

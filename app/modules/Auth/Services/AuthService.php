@@ -19,7 +19,13 @@ class AuthService
 
     public function login(string $email, string $password, bool $remember): array
     {
-        $user = User::query()->where('email', $email)->first();
+        // Defensive bypass: login runs before any workspace is resolved, so the
+        // member scope is inert here — but never let an active workspace context
+        // hide a valid account and break authentication.
+        $user = User::query()
+            ->withoutWorkspaceMemberScope()
+            ->where('email', $email)
+            ->first();
 
         if ($user === null || !Hash::check($password, $user->password)) {
             throw ValidationException::withMessages([
@@ -27,12 +33,22 @@ class AuthService
             ]);
         }
 
+        return $this->issueToken($user, $remember);
+    }
+
+    /**
+     * Issue a Sanctum token for a user and return the login-shaped payload
+     * (token + context). Shared by login and the invitation accept flow so the
+     * SPA persists the token and switches workspace identically in both cases.
+     */
+    public function issueToken(User $user, bool $remember = false, ?string $workspaceId = null): array
+    {
         $expiresAt = $remember ? now()->addDays(30) : now()->addDay();
         $token = $user->createToken('api', ['*'], $expiresAt)->plainTextToken;
 
         return [
             'token' => $token,
-            ...$this->context($user),
+            ...$this->context($user, $workspaceId),
         ];
     }
 
@@ -47,6 +63,7 @@ class AuthService
                 'id' => $workspace->id,
                 'name' => $workspace->name,
                 'db_mode' => $workspace->db_mode->value,
+                'status' => $workspace->status->value,
                 'is_owner' => $workspace->isOwnedBy($user),
                 'created_at' => $workspace->created_at,
             ])->all(),

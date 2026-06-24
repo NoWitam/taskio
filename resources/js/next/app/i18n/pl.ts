@@ -101,8 +101,60 @@ export const pl: MessageSchema = {
     workspace: 'Obszar roboczy',
     switchWorkspace: 'Zmień obszar roboczy',
     currentWorkspace: 'Bieżący obszar roboczy',
+    createWorkspace: 'Utwórz obszar roboczy',
+    manageMembers: 'Zarządzaj członkami',
     logout: 'Wyloguj się',
     signedInAs: 'Zalogowano jako',
+  },
+
+  // Tworzenie obszaru roboczego (modal z przełącznika obszarów).
+  workspaces: {
+    create: {
+      title: 'Utwórz obszar roboczy',
+      description: 'Obszar roboczy grupuje Twoje zadania, formularze i akceptacje. Możesz przełączać się między obszarami z menu konta.',
+      nameLabel: 'Nazwa obszaru roboczego',
+      namePlaceholder: 'np. Marketing, Acme Sp. z o.o.',
+      modeLabel: 'Gdzie mają być przechowywane dane?',
+      submit: 'Utwórz obszar roboczy',
+      cancel: 'Anuluj',
+    },
+    mode: {
+      shared: 'Współdzielony',
+      sharedHelper: 'Natychmiast — dane przechowywane we współdzielonej bazie danych.',
+      own: 'Własny',
+      ownHelper: 'Odizolowana, dedykowana baza danych — przygotowanie może chwilę potrwać.',
+    },
+    provisioning: {
+      title: 'Przygotowujemy Twój obszar roboczy',
+      body: 'Przygotowujemy bazę danych Twojego obszaru roboczego… zwykle zajmuje to chwilę. Możesz to okno zostawić otwarte.',
+      status: 'Przygotowujemy Twoją dedykowaną bazę danych…',
+    },
+    success: {
+      toastShared: 'Utworzono obszar roboczy',
+      toastOwn: 'Obszar roboczy gotowy',
+      description: 'Twój nowy obszar roboczy jest gotowy do użycia.',
+    },
+    failed: {
+      title: 'Nie udało się utworzyć bazy danych',
+      body: 'Nie udało się dokończyć przygotowania dedykowanej bazy danych dla obszaru roboczego. Nie utworzono gotowego do użycia obszaru. Spróbuj utworzyć go ponownie lub skontaktuj się z pomocą techniczną, jeśli problem będzie się powtarzać.',
+      close: 'Zamknij',
+    },
+    timeout: {
+      title: 'Wciąż trwa przygotowanie',
+      body: 'Twój obszar roboczy jest wciąż przygotowywany. Możesz zamknąć to okno i wrócić później — pojawi się w przełączniku obszarów, gdy będzie gotowy.',
+      close: 'Zamknij',
+    },
+    errors: {
+      title: 'Nie udało się utworzyć obszaru roboczego',
+      generic: 'Coś poszło nie tak podczas tworzenia obszaru roboczego. Spróbuj ponownie.',
+    },
+    validation: {
+      nameRequired: 'Nazwa obszaru roboczego jest wymagana.',
+    },
+    status: {
+      provisioning: 'Przygotowywanie',
+      failed: 'Niepowodzenie',
+    },
   },
 
   dashboard: {
@@ -1419,6 +1471,155 @@ export const pl: MessageSchema = {
       title: 'Nie udało się wczytać ścieżek',
       description: 'Coś poszło nie tak podczas wczytywania. Spróbuj ponownie.',
       retry: 'Ponów',
+    },
+  },
+
+  // Zarządzanie członkami obszaru roboczego (strona ustawień — lista + usuwanie).
+  members: {
+    title: 'Członkowie',
+    subtitle: 'Zarządzaj dostępem do tego obszaru roboczego.',
+    subtitleNamed: 'Zarządzaj dostępem do obszaru {workspace}.',
+    sectionTitle: 'Członkowie obszaru roboczego',
+    sectionDescription: 'Wszyscy, którzy mają dostęp do tego obszaru roboczego.',
+    tableCaption: 'Członkowie obszaru roboczego',
+    ownerBadge: 'Właściciel',
+    columns: {
+      name: 'Imię i nazwisko',
+      email: 'E-mail',
+    },
+    readOnly: {
+      title: 'Tylko podgląd',
+      body: 'Tylko właściciel obszaru roboczego może zapraszać i usuwać członków. Poniżej widzisz, kto ma dostęp.',
+    },
+    empty: {
+      title: 'Brak członków',
+      body: 'Członkowie pojawią się tutaj, gdy dołączą do tego obszaru roboczego.',
+    },
+    remove: {
+      ariaLabel: 'Usuń {name}',
+      ownerDisabled: 'Nie można usunąć właściciela',
+      confirmTitle: 'Usunąć członka?',
+      confirmBody: 'Usunąć {name} z tego obszaru roboczego? Natychmiast straci dostęp.',
+      confirm: 'Usuń członka',
+      success: '{name} został(a) usunięty(a) z obszaru roboczego.',
+    },
+    errors: {
+      load: 'Nie udało się wczytać członków.',
+      loadTitle: 'Nie udało się wczytać członków',
+      loadBody: 'Coś poszło nie tak podczas wczytywania członków. Spróbuj ponownie.',
+      cannot_remove_owner: 'Nie można usunąć właściciela obszaru roboczego.',
+      removeGeneric: 'Nie udało się usunąć członka. Spróbuj ponownie.',
+    },
+  },
+
+  // Zaproszenia do obszaru roboczego (zapraszanie e-mailem + zarządzanie).
+  invitations: {
+    tableCaption: 'Oczekujące zaproszenia',
+    columns: {
+      status: 'Status',
+      invitedBy: 'Zaproszony(a) przez',
+      expires: 'Wygasa',
+    },
+    status: {
+      pending: 'Oczekujące',
+      accepted: 'Zaakceptowane',
+      revoked: 'Cofnięte',
+      expired: 'Wygasłe',
+    },
+    invite: {
+      title: 'Zaproś osoby',
+      description: 'Wyślij zaproszenie e-mailem. Otrzyma link, aby dołączyć do tego obszaru roboczego.',
+      emailLabel: 'Adres e-mail',
+      emailPlaceholder: 'imie@przyklad.pl',
+      submit: 'Wyślij zaproszenie',
+      success: 'Zaproszenie wysłane do {email}.',
+    },
+    pending: {
+      title: 'Oczekujące zaproszenia',
+      description: 'Zaproszenia, które nie zostały jeszcze zaakceptowane.',
+    },
+    empty: {
+      title: 'Brak oczekujących zaproszeń',
+      body: 'Zaproś osoby e-mailem, a pojawią się tutaj do czasu akceptacji.',
+    },
+    revoke: {
+      ariaLabel: 'Cofnij zaproszenie dla {email}',
+      confirmTitle: 'Cofnąć zaproszenie?',
+      confirmBody: 'Cofnąć zaproszenie dla {email}? Istniejący link przestanie działać.',
+      confirm: 'Cofnij zaproszenie',
+      success: 'Zaproszenie dla {email} zostało cofnięte.',
+    },
+    resend: {
+      ariaLabel: 'Wyślij ponownie zaproszenie do {email}',
+      success: 'Zaproszenie wysłane ponownie do {email}.',
+    },
+    errors: {
+      load: 'Nie udało się wczytać zaproszeń.',
+      loadTitle: 'Nie udało się wczytać zaproszeń',
+      loadBody: 'Coś poszło nie tak podczas wczytywania zaproszeń. Spróbuj ponownie.',
+      emailRequired: 'Podaj adres e-mail.',
+      already_member: 'Ta osoba jest już członkiem tego obszaru roboczego.',
+      already_invited: 'Dla tego adresu e-mail istnieje już oczekujące zaproszenie.',
+      inviteGeneric: 'Nie udało się wysłać zaproszenia. Spróbuj ponownie.',
+      revokeGeneric: 'Nie udało się cofnąć zaproszenia. Spróbuj ponownie.',
+      resendGeneric: 'Nie udało się ponownie wysłać zaproszenia. Spróbuj ponownie.',
+    },
+  },
+
+  // Publiczna strona akceptacji zaproszenia (rejestracja lub logowanie inline).
+  acceptInvite: {
+    title: 'Zaakceptuj zaproszenie',
+    loading: 'Wczytywanie zaproszenia…',
+    errorTitle: 'Nie udało się zaakceptować zaproszenia',
+    submitting: 'Dołączanie…',
+    goToLogin: 'Przejdź do logowania',
+    intro: {
+      invitedBy: '{inviter} zaprasza Cię do dołączenia do',
+      workspace: '{workspace}',
+    },
+    fields: {
+      email: 'E-mail',
+      name: 'Twoje imię i nazwisko',
+      namePlaceholder: 'Jan Kowalski',
+      password: 'Hasło',
+      newPassword: 'Utwórz hasło',
+      passwordPlaceholder: 'Twoje hasło',
+    },
+    acceptOnly: {
+      submit: 'Zaakceptuj i kontynuuj',
+    },
+    login: {
+      submit: 'Zaloguj się i dołącz',
+      hint: 'Masz już konto dla tego adresu e-mail. Podaj hasło, aby dołączyć.',
+    },
+    register: {
+      submit: 'Utwórz konto i dołącz',
+    },
+    invalid: {
+      title: 'Tego zaproszenia nie można użyć',
+      generic: 'To zaproszenie nie jest już ważne.',
+      expired: 'To zaproszenie wygasło. Poproś właściciela obszaru roboczego o nowe.',
+      revoked: 'To zaproszenie zostało cofnięte. Poproś właściciela obszaru roboczego o nowe.',
+      accepted: 'To zaproszenie zostało już zaakceptowane. Spróbuj się zalogować.',
+    },
+    notFound: {
+      title: 'Nie znaleziono zaproszenia',
+      body: 'Ten link do zaproszenia jest nieprawidłowy lub już nie istnieje. Poproś właściciela obszaru roboczego o nowe.',
+    },
+    loadError: {
+      title: 'Nie udało się wczytać zaproszenia',
+      body: 'Coś poszło nie tak podczas wczytywania zaproszenia. Spróbuj ponownie.',
+    },
+    errors: {
+      nameRequired: 'Podaj swoje imię i nazwisko.',
+      email_mismatch: 'To zaproszenie wysłano na inny adres e-mail niż Twoje konto. Zaloguj się przy użyciu zaproszonego adresu.',
+      login_required: 'Podaj hasło, aby kontynuować.',
+      invalid_credentials: 'Nieprawidłowe hasło.',
+      registration_required: 'Podaj imię i nazwisko oraz hasło, aby utworzyć konto.',
+      expired: 'To zaproszenie wygasło. Poproś właściciela obszaru roboczego o nowe.',
+      invalid_invitation: 'To zaproszenie nie jest już ważne.',
+      already_used: 'To zaproszenie zostało już wykorzystane.',
+      generic: 'Coś poszło nie tak. Spróbuj ponownie.',
     },
   },
 };

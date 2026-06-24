@@ -12,11 +12,11 @@ class CommentResource extends JsonResource
         return [
             'id' => $this->id,
             'content' => $this->content,
-            'author' => [
+            'author' => $this->author ? [
                 'id' => $this->author->id,
                 'name' => $this->author->name,
                 'email' => $this->author->email,
-            ],
+            ] : null,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
             'is_edited' => $this->created_at->ne($this->updated_at),

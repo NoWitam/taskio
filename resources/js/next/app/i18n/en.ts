@@ -108,8 +108,60 @@ export const en = {
     workspace: 'Workspace',
     switchWorkspace: 'Switch workspace',
     currentWorkspace: 'Current workspace',
+    createWorkspace: 'Create workspace',
+    manageMembers: 'Manage members',
     logout: 'Sign out',
     signedInAs: 'Signed in as',
+  },
+
+  // Create-workspace flow (modal opened from the workspace switcher).
+  workspaces: {
+    create: {
+      title: 'Create workspace',
+      description: 'A workspace groups your tasks, forms and approvals. You can switch between workspaces from the account menu.',
+      nameLabel: 'Workspace name',
+      namePlaceholder: 'e.g. Marketing, Acme Inc.',
+      modeLabel: 'Where should its data live?',
+      submit: 'Create workspace',
+      cancel: 'Cancel',
+    },
+    mode: {
+      shared: 'Shared',
+      sharedHelper: 'Instant — data is stored in the shared database.',
+      own: 'Own',
+      ownHelper: 'Isolated, dedicated database — may take a moment to provision.',
+    },
+    provisioning: {
+      title: 'Setting up your workspace',
+      body: 'Setting up your workspace’s database… this usually takes a moment. You can keep this open.',
+      status: 'Provisioning your dedicated database…',
+    },
+    success: {
+      toastShared: 'Workspace created',
+      toastOwn: 'Workspace ready',
+      description: 'Your new workspace is ready to use.',
+    },
+    failed: {
+      title: 'Couldn’t create the database',
+      body: 'We couldn’t finish setting up your workspace’s dedicated database. No usable workspace was created. Please try creating it again, or contact support if the problem persists.',
+      close: 'Close',
+    },
+    timeout: {
+      title: 'Still working on it',
+      body: 'Your workspace is still being set up. You can close this and check back later — it will appear in the workspace switcher once it’s ready.',
+      close: 'Close',
+    },
+    errors: {
+      title: 'Couldn’t create workspace',
+      generic: 'Something went wrong while creating the workspace. Please try again.',
+    },
+    validation: {
+      nameRequired: 'A workspace name is required.',
+    },
+    status: {
+      provisioning: 'Provisioning',
+      failed: 'Failed',
+    },
   },
 
   // Dashboard page.
@@ -1452,6 +1504,155 @@ export const en = {
       title: 'Couldn’t load pipelines',
       description: 'Something went wrong while loading. Please try again.',
       retry: 'Retry',
+    },
+  },
+
+  // Workspace members management (Members settings page — roster + removal).
+  members: {
+    title: 'Members',
+    subtitle: 'Manage who has access to this workspace.',
+    subtitleNamed: 'Manage who has access to {workspace}.',
+    sectionTitle: 'Workspace members',
+    sectionDescription: 'Everyone who can access this workspace.',
+    tableCaption: 'Workspace members',
+    ownerBadge: 'Owner',
+    columns: {
+      name: 'Name',
+      email: 'Email',
+    },
+    readOnly: {
+      title: 'View only',
+      body: 'Only the workspace owner can invite or remove members. You can see who has access below.',
+    },
+    empty: {
+      title: 'No members yet',
+      body: 'Members will appear here once they join this workspace.',
+    },
+    remove: {
+      ariaLabel: 'Remove {name}',
+      ownerDisabled: 'The owner cannot be removed',
+      confirmTitle: 'Remove member?',
+      confirmBody: 'Remove {name} from this workspace? They will lose access immediately.',
+      confirm: 'Remove member',
+      success: '{name} was removed from the workspace.',
+    },
+    errors: {
+      load: 'Couldn’t load members.',
+      loadTitle: 'Couldn’t load members',
+      loadBody: 'Something went wrong while loading members. Please try again.',
+      cannot_remove_owner: 'The workspace owner cannot be removed.',
+      removeGeneric: 'Couldn’t remove the member. Please try again.',
+    },
+  },
+
+  // Workspace invitations (invite by email + pending invitations management).
+  invitations: {
+    tableCaption: 'Pending invitations',
+    columns: {
+      status: 'Status',
+      invitedBy: 'Invited by',
+      expires: 'Expires',
+    },
+    status: {
+      pending: 'Pending',
+      accepted: 'Accepted',
+      revoked: 'Revoked',
+      expired: 'Expired',
+    },
+    invite: {
+      title: 'Invite people',
+      description: 'Send an invitation by email. They’ll get a link to join this workspace.',
+      emailLabel: 'Email address',
+      emailPlaceholder: 'name@example.com',
+      submit: 'Send invite',
+      success: 'Invitation sent to {email}.',
+    },
+    pending: {
+      title: 'Pending invitations',
+      description: 'Invitations that haven’t been accepted yet.',
+    },
+    empty: {
+      title: 'No pending invitations',
+      body: 'Invite people by email and they’ll show up here until they accept.',
+    },
+    revoke: {
+      ariaLabel: 'Revoke invitation for {email}',
+      confirmTitle: 'Revoke invitation?',
+      confirmBody: 'Revoke the invitation for {email}? Their existing link will stop working.',
+      confirm: 'Revoke invitation',
+      success: 'Invitation for {email} was revoked.',
+    },
+    resend: {
+      ariaLabel: 'Resend invitation to {email}',
+      success: 'Invite re-sent to {email}.',
+    },
+    errors: {
+      load: 'Couldn’t load invitations.',
+      loadTitle: 'Couldn’t load invitations',
+      loadBody: 'Something went wrong while loading invitations. Please try again.',
+      emailRequired: 'Enter an email address.',
+      already_member: 'That person is already a member of this workspace.',
+      already_invited: 'There’s already a pending invitation for that email.',
+      inviteGeneric: 'Couldn’t send the invitation. Please try again.',
+      revokeGeneric: 'Couldn’t revoke the invitation. Please try again.',
+      resendGeneric: 'Couldn’t resend the invitation. Please try again.',
+    },
+  },
+
+  // Public invitation-accept page (registering or logging in inline to join).
+  acceptInvite: {
+    title: 'Accept invitation',
+    loading: 'Loading invitation…',
+    errorTitle: 'Couldn’t accept the invitation',
+    submitting: 'Joining…',
+    goToLogin: 'Go to sign in',
+    intro: {
+      invitedBy: '{inviter} invited you to join',
+      workspace: '{workspace}',
+    },
+    fields: {
+      email: 'Email',
+      name: 'Your name',
+      namePlaceholder: 'Jane Doe',
+      password: 'Password',
+      newPassword: 'Create a password',
+      passwordPlaceholder: 'Your password',
+    },
+    acceptOnly: {
+      submit: 'Accept & continue',
+    },
+    login: {
+      submit: 'Sign in & join',
+      hint: 'You already have an account for this email. Enter your password to join.',
+    },
+    register: {
+      submit: 'Create account & join',
+    },
+    invalid: {
+      title: 'This invitation can’t be used',
+      generic: 'This invitation is no longer valid.',
+      expired: 'This invitation has expired. Ask the workspace owner to send a new one.',
+      revoked: 'This invitation was revoked. Ask the workspace owner to send a new one.',
+      accepted: 'This invitation has already been accepted. Try signing in instead.',
+    },
+    notFound: {
+      title: 'Invitation not found',
+      body: 'This invitation link is invalid or no longer exists. Ask the workspace owner to send a new one.',
+    },
+    loadError: {
+      title: 'Couldn’t load the invitation',
+      body: 'Something went wrong while loading this invitation. Please try again.',
+    },
+    errors: {
+      nameRequired: 'Enter your name.',
+      email_mismatch: 'This invitation was sent to a different email than your account. Sign in with the invited email.',
+      login_required: 'Enter your password to continue.',
+      invalid_credentials: 'That password is incorrect.',
+      registration_required: 'Enter your name and a password to create your account.',
+      expired: 'This invitation has expired. Ask the workspace owner to send a new one.',
+      invalid_invitation: 'This invitation is no longer valid.',
+      already_used: 'This invitation has already been used.',
+      generic: 'Something went wrong. Please try again.',
     },
   },
 } as const;

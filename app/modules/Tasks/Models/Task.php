@@ -105,7 +105,10 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
                 if (!$userId) {
                     return null;
                 }
-                $user = User::find($userId);
+                // Bypass the member scope: changelog must render historical
+                // assignees even if they are no longer (or never were) a member of
+                // the active workspace — audit history must not silently lose names.
+                $user = User::withoutWorkspaceMemberScope()->find($userId);
 
                 return $user ? [
                     'id' => $user->id,

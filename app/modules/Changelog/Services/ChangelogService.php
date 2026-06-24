@@ -12,7 +12,7 @@ class ChangelogService
     protected array $excludedAttributes = [
         'updated_at',
         'created_at',
-        'deleted_at'
+        'deleted_at',
     ];
 
     public function log(
@@ -34,7 +34,7 @@ class ChangelogService
             'event' => $event,
             'old_values' => $oldValues,
             'new_values' => $newValues,
-            'description' => $description ?? $event->getDescription()
+            'description' => $description ?? $event->getDescription(),
         ]);
     }
 
@@ -42,7 +42,9 @@ class ChangelogService
     {
         return Changelog::where('subject_type', get_class($subject))
             ->where('subject_id', $subject->getKey())
-            ->with('causer')
+            // The causer is a frozen audit fact — keep it resolvable even for a
+            // user who has since left the workspace (bypass WorkspaceMemberScope).
+            ->with(['causer' => fn ($query) => $query->withoutWorkspaceMemberScope()])
             ->orderBy('created_at', 'desc')
             ->get();
     }
@@ -51,7 +53,7 @@ class ChangelogService
     {
         return array_filter(
             $attributes,
-            fn($key) => !in_array($key, $this->excludedAttributes),
+            fn ($key) => !in_array($key, $this->excludedAttributes),
             ARRAY_FILTER_USE_KEY
         );
     }

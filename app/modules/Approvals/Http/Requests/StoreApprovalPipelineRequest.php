@@ -2,8 +2,10 @@
 
 namespace App\Modules\Approvals\Http\Requests;
 
+use App\Models\User;
 use App\Modules\Approvals\Enums\ApproverType;
 use App\Modules\Approvals\Models\ApprovalPipeline;
+use App\Rules\ScopedExists;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -31,7 +33,7 @@ class StoreApprovalPipelineRequest extends FormRequest
             'stages.*.icon' => ['nullable', 'string', 'max:50'],
             'stages.*.description' => ['nullable', 'string', 'max:2500'],
             'stages.*.approver_type' => ['required', Rule::enum(ApproverType::class)],
-            'stages.*.approver_id' => ['nullable', 'required_if:stages.*.approver_type,user', 'uuid', 'exists:users,id'],
+            'stages.*.approver_id' => ['nullable', 'required_if:stages.*.approver_type,user', 'uuid', new ScopedExists(User::class)],
         ];
     }
 }

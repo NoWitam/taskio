@@ -81,11 +81,16 @@ const depth = computed(() => overlay.value?.depth.value ?? 0);
 const trapActive = computed(() => open.value);
 useFocusTrap(panelRef, trapActive);
 
+// Non-full sizes cap their height at 85dvh so a tall body (e.g. a long form)
+// never fills the screen edge-to-edge: the panel stays centered with breathing
+// room, the header + footer pin, and the body scrolls internally (see the Body
+// block — `flex-1 overflow-y-auto min-h-0`). `dvh` keeps the cap inside the
+// visible viewport on mobile (browser chrome). `full` opts out by design.
 const SIZE_CLASS: Record<ModalSize, string> = {
-  sm: 'max-w-sm',
-  md: 'max-w-md',
-  lg: 'max-w-lg',
-  xl: 'max-w-2xl',
+  sm: 'max-w-sm max-h-[85dvh]',
+  md: 'max-w-md max-h-[85dvh]',
+  lg: 'max-w-lg max-h-[85dvh]',
+  xl: 'max-w-2xl max-h-[85dvh]',
   full: 'max-w-[calc(100vw-2rem)] h-[calc(100vh-2rem)]',
 };
 
@@ -215,8 +220,9 @@ onBeforeUnmount(() => {
               </Button>
             </header>
 
-            <!-- Body -->
-            <div class="min-w-0 flex-1 overflow-y-auto p-next-4">
+            <!-- Body (scrolls internally when the panel hits its height cap;
+                 `min-h-0` lets this flex child shrink below its content height) -->
+            <div class="min-h-0 min-w-0 flex-1 overflow-y-auto p-next-4">
               <div v-if="$slots.description" :id="descId" data-modal-desc class="mb-next-3 text-next-sm text-next-muted-foreground">
                 <slot name="description" />
               </div>

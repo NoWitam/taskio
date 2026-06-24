@@ -16,9 +16,9 @@ return new class extends Migration
         Schema::create('labels', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->string('name');
-            $table->string('color')->nullable();
-            $table->text('description')->nullable();
+            $table->string('color', 7)->nullable();
             $table->string('icon')->nullable();
+            $table->text('description')->nullable();
             $table->softDeletes();
             $table->timestamps();
         });

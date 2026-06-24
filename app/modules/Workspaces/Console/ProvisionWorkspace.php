@@ -3,17 +3,19 @@
 namespace App\Modules\Workspaces\Console;
 
 use App\Modules\Workspaces\Enums\WorkspaceDbMode;
+use App\Modules\Workspaces\Enums\WorkspaceStatus;
 use App\Modules\Workspaces\Models\Workspace;
-use App\Modules\Workspaces\Services\TenantManager;
+use App\Modules\Workspaces\Services\WorkspaceProvisioner;
 use Illuminate\Console\Command;
+use Throwable;
 
 class ProvisionWorkspace extends Command
 {
     protected $signature = 'workspace:provision {workspace : The workspace id}';
 
-    protected $description = 'Run the tenant migrations for an own-database workspace.';
+    protected $description = 'Create and migrate the tenant database for an own-database workspace.';
 
-    public function handle(TenantManager $tenants): int
+    public function handle(WorkspaceProvisioner $provisioner): int
     {
         $workspace = Workspace::find($this->argument('workspace'));
 
@@ -29,16 +31,21 @@ class ProvisionWorkspace extends Command
             return self::FAILURE;
         }
 
-        $tenants->configure($workspace);
+        $this->info("Provisioning tenant database for workspace {$workspace->id}...");
 
-        $this->info("Migrating tenant database for workspace {$workspace->id}...");
+        try {
+            $provisioner->provision($workspace);
 
-        // The tenant database must already exist; this runs the own-mode schema.
-        $this->call('migrate', [
-            '--database' => TenantManager::CONNECTION,
-            '--path' => 'database/migrations/tenant',
-            '--force' => true,
-        ]);
+            $workspace->forceFill(['status' => WorkspaceStatus::Ready])->save();
+        } catch (Throwable $e) {
+            $workspace->forceFill(['status' => WorkspaceStatus::Failed])->save();
+
+            $this->error("Provisioning failed: {$e->getMessage()}");
+
+            return self::FAILURE;
+        }
+
+        $this->info('Done.');
 
         return self::SUCCESS;
     }

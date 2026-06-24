@@ -25,6 +25,13 @@ class ResolveWorkspace
     public function handle(Request $request, Closure $next): Response
     {
         $workspaceId = $request->header('X-Workspace-Id');
+
+        // LOAD-BEARING ORDERING (do not move below TenantContext::set): resolving the
+        // user here forces Sanctum's token-morph (PersonalAccessToken -> User) to run
+        // while the workspace is NOT yet active, so the User WorkspaceMemberScope is
+        // still inert. If the token user were resolved AFTER set(), the scope would
+        // hide the just-authenticated user from their own token morph and silently
+        // break auth on every request.
         $user = $request->user();
 
         if ($workspaceId && $user) {

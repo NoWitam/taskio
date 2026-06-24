@@ -20,7 +20,11 @@ class ChangelogController
         $subject = $this->resolveSubject($module, $id);
 
         return ChangelogResource::collection(
-            $subject->changelogs()->with(['causer', 'subject'])->cursorPaginate(8)
+            $subject->changelogs()
+                // The causer is a frozen audit fact — keep it resolvable even if they
+                // have since left the workspace (bypass WorkspaceMemberScope on User).
+                ->with(['causer' => fn ($query) => $query->withoutWorkspaceMemberScope(), 'subject'])
+                ->cursorPaginate(8)
         );
     }
 
@@ -28,13 +32,13 @@ class ChangelogController
     {
         $class = Relation::getMorphedModel($module);
 
-        if(is_null($class)) {
+        if (is_null($class)) {
             abort(404);
         }
 
-        $model = new $class();
+        $model = new $class;
 
-        if(!$model instanceof HasChangelog) {
+        if (!$model instanceof HasChangelog) {
             abort(404);
         }
 

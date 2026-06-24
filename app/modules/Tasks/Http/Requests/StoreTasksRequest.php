@@ -2,8 +2,12 @@
 
 namespace App\Modules\Tasks\Http\Requests;
 
+use App\Models\User;
+use App\Modules\Approvals\Models\ApprovalPipeline;
+use App\Modules\Forms\Models\Form;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Models\Task;
+use App\Rules\ScopedExists;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -13,11 +17,11 @@ class StoreTasksRequest extends FormRequest
     {
         // Check if creating new task or updating existing
         $task = $this->route('task');
-        
+
         if ($task) {
             return $this->user()->can('update', $task);
         }
-        
+
         return $this->user()->can('create', Task::class);
     }
 
@@ -28,13 +32,13 @@ class StoreTasksRequest extends FormRequest
             'description' => ['nullable', 'string', 'max:2500'],
             'priority' => ['required', Rule::enum(TaskPriority::class)],
             'deadline' => ['nullable', 'date'],
-            'assigned_id' => ['required', 'uuid', 'exists:users,id'],
+            'assigned_id' => ['required', 'uuid', new ScopedExists(User::class)],
             'labels' => ['array', 'min:0', 'max:5'],
             'labels.*' => ['required', 'uuid'],
             'attachments' => ['array', 'min:0', 'max:5'],
             'attachments.*' => ['required', 'uuid'],
-            'form_id' => ['nullable', 'uuid', 'exists:forms,id'],
-            'approval_pipeline_id' => ['nullable', 'uuid', 'exists:approval_pipelines,id'],
+            'form_id' => ['nullable', 'uuid', new ScopedExists(Form::class)],
+            'approval_pipeline_id' => ['nullable', 'uuid', new ScopedExists(ApprovalPipeline::class)],
         ];
     }
 
@@ -43,7 +47,7 @@ class StoreTasksRequest extends FormRequest
         return [
             'title.required' => 'Task title is required.',
             'title.max' => 'Task title cannot exceed 255 characters.',
-            'description.max' => 'Task description cannot exceed 2.500 characters.'
+            'description.max' => 'Task description cannot exceed 2.500 characters.',
         ];
     }
 }

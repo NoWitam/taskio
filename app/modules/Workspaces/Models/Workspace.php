@@ -5,6 +5,7 @@ namespace App\Modules\Workspaces\Models;
 use App\Models\AbstractModel;
 use App\Models\User;
 use App\Modules\Workspaces\Enums\WorkspaceDbMode;
+use App\Modules\Workspaces\Enums\WorkspaceStatus;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -19,6 +20,7 @@ class Workspace extends AbstractModel
         'name',
         'owner_id',
         'db_mode',
+        'status',
         'db_driver',
         'db_host',
         'db_port',
@@ -31,6 +33,7 @@ class Workspace extends AbstractModel
     {
         return [
             'db_mode' => WorkspaceDbMode::class,
+            'status' => WorkspaceStatus::class,
             'db_password' => 'encrypted',
         ];
     }
@@ -76,8 +79,13 @@ class Workspace extends AbstractModel
 
     public function hasMember(User $user): bool
     {
+        // The membership existence check must run UNSCOPED. With an active workspace,
+        // the User global scope (WorkspaceMemberScope) would constrain the relation
+        // existence query to members of the ACTIVE workspace, not of $this — which is
+        // wrong when checking a DIFFERENT workspace (e.g. ResolveWorkspace gating, or
+        // hasMember against a workspace the user is about to switch into).
         return $this->isOwnedBy($user)
-            || $this->users()->whereKey($user->id)->exists();
+            || $this->users()->withoutWorkspaceMemberScope()->whereKey($user->id)->exists();
     }
 
     protected static function newFactory()

@@ -20,10 +20,21 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import { api, TOKEN_KEY, WORKSPACE_KEY } from '../lib/api';
 
+/** Provisioning lifecycle of a workspace (own-DB workspaces provision async). */
+export type WorkspaceStatus = 'provisioning' | 'ready' | 'failed';
+
 /** A workspace entry from the auth context (only the fields the UI reads). */
 export interface Workspace {
   id: string | number;
   name: string;
+  /**
+   * Provisioning status. Shared workspaces are created `ready`; own-DB workspaces
+   * start `provisioning` and transition to `ready`/`failed`. Optional because older
+   * payloads (pre-async-provisioning) may omit it — treat an absent status as ready.
+   */
+  status?: WorkspaceStatus;
+  /** Storage mode. Optional — older payloads may omit it. */
+  db_mode?: 'shared' | 'own';
   [key: string]: unknown;
 }
 
@@ -140,10 +151,31 @@ export const useAuthStore = defineStore('next-auth', () => {
     }
   }
 
-  /** Switch the active workspace and refresh the context for the new scope. */
-  async function setCurrentWorkspace(id: string | number): Promise<void> {
+  /**
+   * Whether a workspace can be switched into. A workspace that is still
+   * `provisioning` (own-DB not ready) or `failed` (provisioning errored) has no
+   * usable database/context, so switching into it must be blocked. An absent
+   * status is treated as ready (older payloads).
+   */
+  function canSwitchInto(workspace: Workspace | null | undefined): boolean {
+    if (!workspace) return false;
+    const status = workspace.status;
+    return status === undefined || status === 'ready';
+  }
+
+  /**
+   * Switch the active workspace and refresh the context for the new scope.
+   * Refuses to switch into a `provisioning`/`failed` workspace (no usable DB);
+   * the caller already created/owns the workspace so the entry is guaranteed
+   * present in `workspaces` once the context carries it. Returns `false` when the
+   * switch was blocked, `true` once the new context is loaded.
+   */
+  async function setCurrentWorkspace(id: string | number): Promise<boolean> {
+    const target = workspaces.value.find((w) => String(w.id) === String(id));
+    if (target && !canSwitchInto(target)) return false;
     persistWorkspace(id);
     await fetchMe();
+    return true;
   }
 
   /**
@@ -184,8 +216,10 @@ export const useAuthStore = defineStore('next-auth', () => {
     userName,
     currentWorkspace,
     can,
+    canSwitchInto,
     // actions
     applyContext,
+    persistToken,
     login,
     fetchMe,
     logout,

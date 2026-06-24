@@ -7,6 +7,8 @@ namespace App\Models;
 use App\Models\Concerns\Searchable;
 use App\Modules\Disk\Traits\HasFiles;
 use App\Modules\Workspaces\Models\Workspace;
+use App\Traits\ScopedToWorkspaceMembers;
+use App\Traits\UsesCentralConnection;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -18,7 +20,7 @@ use Laravel\Sanctum\HasApiTokens;
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasApiTokens, HasFactory, HasFiles, HasUuids, Notifiable, Searchable;
+    use HasApiTokens, HasFactory, HasFiles, HasUuids, Notifiable, ScopedToWorkspaceMembers, Searchable, UsesCentralConnection;
 
     /**
      * The attributes that are mass assignable.
