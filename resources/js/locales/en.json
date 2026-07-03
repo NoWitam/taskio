@@ -486,6 +486,7 @@
     "selectStatus": "Select status",
     "allDates": "All deadlines",
     "noDeadline": "No deadline",
+    "unassigned": "Unassigned",
     "archiveInfo": "Completed tasks are automatically moved to archive after 1 month",
     "trashInfo": "Deleted tasks are moved to trash. After 1 month they are automatically deleted from the system",
     "archiveWarningTitle": "Automatic Archiving",

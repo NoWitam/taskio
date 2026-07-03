@@ -201,4 +201,35 @@ describe('next forms store', () => {
     expect(store.items).toHaveLength(0);
     expect(store.total).toBe(0);
   });
+
+  it('createForm prepends a normal form and bumps the total', async () => {
+    const store = useFormsStore();
+    apiMock.get.mockResolvedValueOnce({
+      data: [summary({ id: 'a' })],
+      meta: { next_cursor: null, total: 1 },
+    });
+    await store.fetchForms();
+
+    apiMock.post.mockResolvedValueOnce({ data: detail({ id: 'new', is_anonymous: false }) });
+    await store.createForm({ name: 'X', content: [], is_anonymous: false });
+
+    expect(store.items.map((f) => f.id)).toEqual(['new', 'a']);
+    expect(store.total).toBe(2);
+  });
+
+  it('createForm does NOT inject an anonymous form into the browse list', async () => {
+    const store = useFormsStore();
+    apiMock.get.mockResolvedValueOnce({
+      data: [summary({ id: 'a' })],
+      meta: { next_cursor: null, total: 1 },
+    });
+    await store.fetchForms();
+
+    apiMock.post.mockResolvedValueOnce({ data: detail({ id: 'anon', is_anonymous: true }) });
+    const created = await store.createForm({ name: '', content: [], is_anonymous: true });
+
+    expect(created.id).toBe('anon');
+    expect(store.items.map((f) => f.id)).toEqual(['a']); // list unchanged
+    expect(store.total).toBe(1); // total unchanged
+  });
 });

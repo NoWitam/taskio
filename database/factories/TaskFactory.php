@@ -21,7 +21,20 @@ class TaskFactory extends Factory
             'priority' => $this->faker->randomElement(TaskPriority::cases()),
             'deadline' => $this->faker->optional()->dateTimeBetween('now', '+30 days'),
             'creator_id' => User::factory(),
-            'assigned_id' => User::factory(),
+            // Default to a User assignee (polymorphic morph alias 'user').
+            'assignee_type' => 'user',
+            'assignee_id' => User::factory(),
         ];
+    }
+
+    /**
+     * Assign the task to a bot (polymorphic morph alias 'bot').
+     */
+    public function assignedToBot(\App\Modules\Bot\Models\Bot $bot): static
+    {
+        return $this->state(fn () => [
+            'assignee_type' => 'bot',
+            'assignee_id' => $bot->id,
+        ]);
     }
 }

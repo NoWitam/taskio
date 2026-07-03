@@ -226,10 +226,11 @@ watch(activeTab, async (tab) => {
           <Icon name="user" size="sm" class="mt-0.5 text-muted-foreground" />
           <div>
             <div class="text-xs font-medium text-muted-foreground">{{ t('taskDetails.assignedUser') }}</div>
-            <div class="flex items-center gap-2 text-sm">
-              <Avatar :name="task.assigned.name" :src="task.assigned.avatar" size="xs" />
-              {{ task.assigned.name }}
+            <div v-if="task.assigned || task.assignee" class="flex items-center gap-2 text-sm">
+              <Avatar :name="(task.assigned || task.assignee).name" :src="task.assigned?.avatar" size="xs" />
+              {{ (task.assigned || task.assignee).name }}
             </div>
+            <div v-else class="text-sm text-muted-foreground">{{ t('tasks.unassigned') }}</div>
           </div>
         </div>
 

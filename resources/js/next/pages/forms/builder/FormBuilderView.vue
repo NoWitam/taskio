@@ -46,7 +46,12 @@ import {
 } from './elements';
 import type { FormDetail, FormElement, FormElementType } from '../types';
 
-const props = defineProps<{ formId?: string | null }>();
+const props = defineProps<{
+  formId?: string | null;
+  /** Build a task-only ANONYMOUS form: no name/icon/description, hidden from the
+   *  Forms list, auto-enabled server-side. */
+  anonymous?: boolean;
+}>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved', form: FormDetail): void }>();
 
 const store = useFormsStore();
@@ -159,17 +164,18 @@ function onDelete(id: string): void {
 // --- Save -----------------------------------------------------------------
 async function save(): Promise<void> {
   nameError.value = null;
-  if (!name.value.trim()) {
+  // Anonymous (task-only) forms need no name — the server auto-generates one.
+  if (!props.anonymous && !name.value.trim()) {
     nameError.value = t('forms.builder.nameRequired');
     return;
   }
   saving.value = true;
   const payload = {
-    name: name.value.trim(),
-    icon: toIconEnumValue(icon.value),
-    description: description.value.trim() || null,
+    name: props.anonymous ? '' : name.value.trim(),
+    icon: props.anonymous ? null : toIconEnumValue(icon.value),
+    description: props.anonymous ? null : description.value.trim() || null,
     content: elements.value,
-    is_anonymous: false,
+    is_anonymous: !!props.anonymous,
   };
   try {
     const detail = isEdit.value && formId.value
@@ -204,7 +210,7 @@ function cancel(): void {
       <div class="flex items-center gap-next-3">
         <Button variant="ghost" size="icon-sm" leading-icon="arrow-left" :aria-label="t('common.back')" @click="cancel" />
         <h1 class="text-next-xl font-next-semibold text-next-fg">
-          {{ isEdit ? t('forms.builder.editTitle') : t('forms.builder.createTitle') }}
+          {{ isEdit ? t('forms.builder.editTitle') : anonymous ? t('forms.builder.createAnonymousTitle') : t('forms.builder.createTitle') }}
         </h1>
       </div>
       <div class="flex items-center gap-next-2">
@@ -223,19 +229,23 @@ function cancel(): void {
     />
 
     <template v-else>
-      <!-- Compact metadata: name + icon on one row, description on its own row. -->
-      <Card class="flex flex-col gap-next-4 p-next-5">
-        <div class="grid grid-cols-1 gap-next-3 next-md:grid-cols-[1fr_13rem]">
-          <FormField :label="t('common.name')" required :error="nameError ?? undefined">
-            <TextInput v-model="name" :placeholder="t('forms.builder.namePlaceholder')" />
+      <!-- Compact metadata: name + icon on one row, description on its own row.
+           Hidden for an anonymous (task-only) form, which needs no name/icon/
+           description; only the "needs an input field" hint stays. -->
+      <Card v-if="!anonymous || needsInputHint" class="flex flex-col gap-next-4 p-next-5">
+        <template v-if="!anonymous">
+          <div class="grid grid-cols-1 gap-next-3 next-md:grid-cols-[1fr_13rem]">
+            <FormField :label="t('common.name')" required :error="nameError ?? undefined">
+              <TextInput v-model="name" :placeholder="t('forms.builder.namePlaceholder')" />
+            </FormField>
+            <FormField :label="t('common.icon')">
+              <IconInput v-model="icon" :icons="iconPool" clearable />
+            </FormField>
+          </div>
+          <FormField :label="t('common.description')">
+            <TextInput v-model="description" :placeholder="t('forms.builder.descriptionPlaceholder')" />
           </FormField>
-          <FormField :label="t('common.icon')">
-            <IconInput v-model="icon" :icons="iconPool" clearable />
-          </FormField>
-        </div>
-        <FormField :label="t('common.description')">
-          <TextInput v-model="description" :placeholder="t('forms.builder.descriptionPlaceholder')" />
-        </FormField>
+        </template>
         <Alert v-if="needsInputHint" variant="warning" size="sm" :title="t('forms.builder.needInputTitle')">
           {{ t('forms.builder.needInputBody') }}
         </Alert>

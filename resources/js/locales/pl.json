@@ -490,6 +490,7 @@
     "selectStatus": "Wybierz status",
     "allDates": "Wszystkie terminy",
     "noDeadline": "Brak terminu",
+    "unassigned": "Nieprzypisane",
     "archiveInfo": "Ukończone zadania automatycznie trafiają do archiwum po 1 miesiącu",
     "trashInfo": "Usunięte zadania trafiają do kosza. Po 1 miesiącu zostają automatycznie usuwane z systemu",
     "archiveWarningTitle": "Automatyczne archiwizowanie",

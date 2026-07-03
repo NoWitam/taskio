@@ -32,7 +32,10 @@ class TaskResource extends JsonResource
             'is_at_risk' => $this->isDeadlineAtRisk(),
             'attachments' => FileResource::collection($this->files),
             'creator' => UserResource::make($this->creator),
+            // Back-compat: user-only assignee (null when assigned to a bot).
             'assigned' => UserResource::make($this->assigned),
+            // New polymorphic assignee (User|Bot) — see TaskAssigneeResource.
+            'assignee' => TaskAssigneeResource::present($this->assignee),
             'labels' => LabelResource::collection($this->labels),
             'form_id' => $this->form_id,
             'form' => FormResource::make($this->whenLoaded('form')),
@@ -40,6 +43,10 @@ class TaskResource extends JsonResource
             'approval_pipeline_id' => $this->approval_pipeline_id,
             'approval_pipeline' => $this->whenLoaded('approvalPipeline', fn () => ApprovalPipelineResource::make($this->approvalPipeline)),
             'is_in_approval' => $this->isInApproval(),
+            // B4: interactive bot run state (additive).
+            'bot_waiting' => $this->isBotWaiting(),
+            'bot_runs_used' => (int) $this->bot_runs_used,
+            'bot_runs_cap' => (int) config('ai.max_runs_per_task', 5),
             'pending_approval_process' => $this->whenLoaded('pendingApprovalProcess', fn () => ApprovalProcessResource::make($this->pendingApprovalProcess)),
             'approval_run_id' => $this->approval_pipeline_id ? $this->latestApprovalRunId() : null,
             'available_status_transitions' => $this->availableStatusTransitions($user),

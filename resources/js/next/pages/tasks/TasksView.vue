@@ -35,6 +35,7 @@ import Tabs, { type TabItem } from '../../ui/navigation/Tabs.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Select, { type SelectOption } from '../../ui/forms/Select.vue';
 import UserSelect from '../../ui/forms/UserSelect.vue';
+import BotSelect from '../../ui/forms/BotSelect.vue';
 import LabelSelect from '../../ui/forms/LabelSelect.vue';
 import DateRangeFilter, {
   type DateRangeFilterPreset,
@@ -93,6 +94,8 @@ const ALL_TABS: BoardTab[] = ['active', 'archive', 'trash'];
 const search = ref('');
 const priority = ref<TaskPriority | null>(null);
 const assignees = ref<string[]>([]);
+// NEW (Batch 2): bot-assignee filter → serialized as `bot_id[]`.
+const botAssignees = ref<string[]>([]);
 const labels = ref<string[]>([]);
 const labelOperator = ref<'AND' | 'OR'>('OR');
 // Deadline filter is now a SINGLE control: preset + explicit range + the
@@ -108,6 +111,7 @@ const deadline = ref<DateRangeFilterValue>({
 // Resolved option objects (id → {value,label}) surfaced by the multi-selects, so
 // the FilterBar can render a chip PER selected person/label with the real name.
 const selectedAssignees = ref<{ value: string; label: string }[]>([]);
+const selectedBots = ref<{ value: string; label: string }[]>([]);
 const selectedLabels = ref<{ value: string; label: string }[]>([]);
 
 // Sticky id→name caches. They ACCUMULATE every name we ever resolve (from the
@@ -115,6 +119,7 @@ const selectedLabels = ref<{ value: string; label: string }[]>([]);
 // the active saved view (now a `tab-disabled` "ghost" chip) still shows its real
 // name, not its id, even though it's no longer in `selected*`.
 const assigneeNameCache = ref<Record<string, string>>({});
+const botNameCache = ref<Record<string, string>>({});
 const labelNameCache = ref<Record<string, string>>({});
 
 function rememberAssigneeNames(pairs: Array<{ id: string; name: string }>): void {
@@ -122,6 +127,12 @@ function rememberAssigneeNames(pairs: Array<{ id: string; name: string }>): void
   const next = { ...assigneeNameCache.value };
   for (const p of pairs) next[p.id] = p.name;
   assigneeNameCache.value = next;
+}
+function rememberBotNames(pairs: Array<{ id: string; name: string }>): void {
+  if (!pairs.length) return;
+  const next = { ...botNameCache.value };
+  for (const p of pairs) next[p.id] = p.name;
+  botNameCache.value = next;
 }
 function rememberLabelNames(pairs: Array<{ id: string; name: string }>): void {
   if (!pairs.length) return;
@@ -136,6 +147,11 @@ watch(
   { deep: true },
 );
 watch(
+  selectedBots,
+  (list) => rememberBotNames(list.map((o) => ({ id: o.value, name: o.label }))),
+  { deep: true },
+);
+watch(
   selectedLabels,
   (list) => rememberLabelNames(list.map((o) => ({ id: o.value, name: o.label }))),
   { deep: true },
@@ -143,6 +159,9 @@ watch(
 
 function assigneeName(id: string): string {
   return assigneeNameCache.value[id] ?? `#${id}`;
+}
+function botName(id: string): string {
+  return botNameCache.value[id] ?? `#${id}`;
 }
 function labelName(id: string): string {
   return labelNameCache.value[id] ?? `#${id}`;
@@ -153,6 +172,7 @@ function labelName(id: string): string {
 // the legacy app used). Without this the chips would show `#id` until the dropdown
 // is opened.
 const assigneeSeed = ref<Array<{ id: string; name: string; email?: string | null; avatar?: string | null }>>([]);
+const botSeed = ref<Array<{ id: string; name: string }>>([]);
 const labelSeed = ref<Array<{ id: string; name: string; color?: string | null; icon?: string | null }>>([]);
 
 async function resolveSeedNames(): Promise<void> {
@@ -170,6 +190,26 @@ async function resolveSeedNames(): Promise<void> {
       rememberAssigneeNames(assigneeSeed.value.map((u) => ({ id: u.id, name: u.name })));
     } catch {
       /* best-effort: chips fall back to the id until a dropdown loads */
+    }
+  }
+  if (botAssignees.value.length) {
+    // Bots have no verified `ids[]` resolver, so fetch each selected bot by its
+    // own (verified) detail endpoint — N is small for a filter. Best-effort: any
+    // failure leaves the chip as `#id` until the BotSelect dropdown resolves it.
+    try {
+      const results = await Promise.all(
+        botAssignees.value.map((id) =>
+          api
+            .get<{ data: { id: string | number; name: string } }>(`/bots/${id}`)
+            .then((res) => ({ id: String(res.data.id), name: String(res.data.name ?? id) }))
+            .catch(() => null),
+        ),
+      );
+      const resolved = results.filter((b): b is { id: string; name: string } => b !== null);
+      botSeed.value = resolved;
+      rememberBotNames(resolved);
+    } catch {
+      /* best-effort */
     }
   }
   if (labels.value.length) {
@@ -217,6 +257,7 @@ const filters = computed<TaskFilters>(() => ({
   search: search.value || undefined,
   priority: priority.value ?? undefined,
   user_id: assignees.value.length ? assignees.value : undefined,
+  bot_id: botAssignees.value.length ? botAssignees.value : undefined,
   labels: labels.value.length ? labels.value : undefined,
   // labelOperator only matters when labels are selected.
   labelOperator: labels.value.length ? labelOperator.value : undefined,
@@ -231,6 +272,7 @@ const hasActiveFilters = computed(
     !!search.value ||
     !!priority.value ||
     assignees.value.length > 0 ||
+    botAssignees.value.length > 0 ||
     labels.value.length > 0 ||
     !!deadline.value.from ||
     !!deadline.value.to ||
@@ -273,6 +315,16 @@ const activeFilters = computed<ActiveFilter[]>(() => {
       values: assignees.value.map((id) => ({
         key: `user_id:${id}`,
         label: `${t('tasks.filters.assignee')}: ${assigneeName(id)}`,
+      })),
+    });
+  }
+  // Bot assignees: one chip PER bot, prefixed with the bot filter label.
+  if (botAssignees.value.length) {
+    chips.push({
+      key: 'bot_id',
+      values: botAssignees.value.map((id) => ({
+        key: `bot_id:${id}`,
+        label: `${t('tasks.filters.botAssignee')}: ${botName(id)}`,
       })),
     });
   }
@@ -330,6 +382,9 @@ function disabledChipLabel(key: string): string | null {
   if (key.startsWith('user_id:')) {
     return `${t('tasks.filters.assignee')}: ${assigneeName(key.slice('user_id:'.length))}`;
   }
+  if (key.startsWith('bot_id:')) {
+    return `${t('tasks.filters.botAssignee')}: ${botName(key.slice('bot_id:'.length))}`;
+  }
   if (key.startsWith('labels:')) {
     return `${t('tasks.filters.labels')}: ${labelName(key.slice('labels:'.length))}`;
   }
@@ -371,6 +426,11 @@ function removeFilter(key: string): void {
     assignees.value = assignees.value.filter((x) => x !== id);
     return;
   }
+  if (key.startsWith('bot_id:')) {
+    const id = key.slice('bot_id:'.length);
+    botAssignees.value = botAssignees.value.filter((x) => x !== id);
+    return;
+  }
   if (key.startsWith('labels:')) {
     const id = key.slice('labels:'.length);
     labels.value = labels.value.filter((x) => x !== id);
@@ -387,6 +447,9 @@ function removeFilter(key: string): void {
       break;
     case 'user_id':
       assignees.value = [];
+      break;
+    case 'bot_id':
+      botAssignees.value = [];
       break;
     case 'labels':
       labels.value = [];
@@ -411,6 +474,7 @@ function clearAll(): void {
   search.value = '';
   priority.value = null;
   assignees.value = [];
+  botAssignees.value = [];
   labels.value = [];
   labelOperator.value = 'OR';
   deadline.value = { preset: '', from: null, to: null, hide_without_deadline: false };
@@ -456,6 +520,7 @@ function serializeFiltersSnapshot(): FilterSnapshot {
   if (search.value) snap.search = search.value;
   if (priority.value) snap.priority = priority.value;
   if (assignees.value.length) snap.user_id = [...assignees.value];
+  if (botAssignees.value.length) snap.bot_id = [...botAssignees.value];
   if (labels.value.length) {
     snap.labels = [...labels.value];
     snap.labelOperator = labelOperator.value;
@@ -476,6 +541,7 @@ function applyFiltersSnapshot(snap: FilterSnapshot): void {
       ? (snap.priority as TaskPriority)
       : null;
   assignees.value = Array.isArray(snap.user_id) ? snap.user_id.map(String) : [];
+  botAssignees.value = Array.isArray(snap.bot_id) ? snap.bot_id.map(String) : [];
   labels.value = Array.isArray(snap.labels) ? snap.labels.map(String) : [];
   labelOperator.value = snap.labelOperator === 'AND' ? 'AND' : 'OR';
   const preset =
@@ -502,6 +568,7 @@ function normalizeSnapshot(snap: FilterSnapshot): string[] {
   if (snap.search) keys.push(`search=${String(snap.search)}`);
   if (snap.priority) keys.push(`priority=${String(snap.priority)}`);
   if (Array.isArray(snap.user_id)) snap.user_id.map(String).sort().forEach((id) => keys.push(`user_id:${id}`));
+  if (Array.isArray(snap.bot_id)) snap.bot_id.map(String).sort().forEach((id) => keys.push(`bot_id:${id}`));
   if (Array.isArray(snap.labels)) snap.labels.map(String).sort().forEach((id) => keys.push(`labels:${id}`));
   if (snap.date_preset) keys.push(`datePreset=${String(snap.date_preset)}`);
   const from = decodeDate(snap.date_from);
@@ -517,6 +584,12 @@ function restoreSnapshotValue(key: string, snap: FilterSnapshot): void {
   if (key.startsWith('user_id:')) {
     const id = key.slice('user_id:'.length);
     if (!assignees.value.includes(id)) assignees.value = [...assignees.value, id];
+    void resolveSeedNames();
+    return;
+  }
+  if (key.startsWith('bot_id:')) {
+    const id = key.slice('bot_id:'.length);
+    if (!botAssignees.value.includes(id)) botAssignees.value = [...botAssignees.value, id];
     void resolveSeedNames();
     return;
   }
@@ -739,6 +812,7 @@ function hydrateFromQuery(): void {
   const p = str(q.priority);
   priority.value = (ALL_PRIORITIES as string[]).includes(p) ? (p as TaskPriority) : null;
   assignees.value = arr(q.user_id);
+  botAssignees.value = arr(q.bot_id);
   labels.value = arr(q.labels);
   labelOperator.value = str(q.labelOperator) === 'AND' ? 'AND' : 'OR';
   const preset = str(q.date_preset);
@@ -769,6 +843,7 @@ function syncQuery(): void {
   if (search.value) query.search = search.value;
   if (priority.value) query.priority = priority.value;
   if (assignees.value.length) query.user_id = assignees.value;
+  if (botAssignees.value.length) query.bot_id = botAssignees.value;
   if (labels.value.length) {
     query.labels = labels.value;
     query.labelOperator = labelOperator.value;
@@ -937,6 +1012,18 @@ onMounted(() => {
           :placeholder="t('tasks.filters.assignee')"
           :aria-label="t('tasks.filters.assignee')"
           @update:selected="selectedAssignees = $event"
+        />
+      </div>
+
+      <!-- Bot assignee (global BotSelect, multiple → bot executors as chips) -->
+      <div class="min-w-0 flex-1 basis-70">
+        <BotSelect
+          v-model:values="botAssignees"
+          multiple
+          :seed="botSeed"
+          :placeholder="t('tasks.filters.botAssignee')"
+          :aria-label="t('tasks.filters.botAssignee')"
+          @update:selected="selectedBots = $event"
         />
       </div>
 

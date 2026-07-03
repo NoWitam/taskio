@@ -23,7 +23,22 @@ export interface BuildTaskPayloadInput {
   description?: string | null;
   priority: TaskPriority;
   deadline?: string | null;
-  assigned_id: string | null;
+  /**
+   * The polymorphic assignee (Batch 2). `next` ALWAYS drives the assignee through
+   * these two fields (they WIN over the legacy `assigned_id` server-side):
+   *   • a member  → { assignee_type:'user', assignee_id:<uuid> }
+   *   • a bot     → { assignee_type:'bot',  assignee_id:<uuid> }
+   *   • cleared   → { assignee_type:null,   assignee_id:null }  (both null)
+   * Pass `assignee_type: null` (the default) to omit them entirely (e.g. a legacy
+   * call that still sends `assigned_id`).
+   */
+  assignee_type?: 'user' | 'bot' | null;
+  assignee_id?: string | null;
+  /**
+   * Legacy user-assignee uuid. Only used when `assignee_type` is omitted (back-
+   * compat). New callers pass `assignee_type`/`assignee_id` and leave this unset.
+   */
+  assigned_id?: string | null;
   labels?: string[];
   /** Temp file ids of NEW uploads only (additive on the backend). */
   attachments?: string[];
@@ -44,15 +59,28 @@ export interface BuildTaskPayloadInput {
  * the modal passes its picker values, the drawer echoes the loaded task's values.
  */
 export function buildTaskPayload(input: BuildTaskPayloadInput): TaskWritePayload {
-  return {
+  const payload: TaskWritePayload = {
     title: input.title.trim(),
     description: input.description ?? null,
     priority: input.priority,
     deadline: input.deadline ?? null,
-    assigned_id: input.assigned_id ?? '',
     labels: input.labels ?? [],
     attachments: input.attachments ?? [],
     form_id: input.form_id ?? null,
     approval_pipeline_id: input.approval_pipeline_id ?? null,
   };
+
+  // Assignee: when the caller drives the new polymorphic fields (the `next` UX),
+  // ALWAYS emit `assignee_type` + `assignee_id` so a selection — a member, a bot,
+  // or a CLEAR (both null) — is honored and WINS over the legacy `assigned_id`.
+  // The `assignee_type` key being present (even as null) is what signals "clear".
+  if (input.assignee_type !== undefined) {
+    payload.assignee_type = input.assignee_type;
+    payload.assignee_id = input.assignee_type ? input.assignee_id ?? null : null;
+  } else if (input.assigned_id != null) {
+    // Legacy fallback: a caller that still drives a single user-assignee.
+    payload.assigned_id = input.assigned_id;
+  }
+
+  return payload;
 }

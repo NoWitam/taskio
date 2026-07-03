@@ -17,9 +17,12 @@
 import { computed, reactive, ref, watch } from 'vue';
 import Modal from '../../ui/overlay/Modal.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
+import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
+import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import UserSelect from '../../ui/forms/UserSelect.vue';
+import BotSelect from '../../ui/forms/BotSelect.vue';
 import LabelSelect from '../../ui/forms/LabelSelect.vue';
 import FormSelect from '../../ui/forms/FormSelect.vue';
 import PipelineSelect from '../../ui/forms/PipelineSelect.vue';
@@ -30,6 +33,7 @@ import TaskAttachmentsField from './TaskAttachmentsField.vue';
 import FormBuilderView from '../forms/builder/FormBuilderView.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Button from '../../ui/primitives/Button.vue';
+import Icon from '../../ui/primitives/Icon.vue';
 import type { FormDetail } from '../forms/types';
 import { useTasksStore } from '../../app/stores/tasks';
 import { useToast } from '../../app/composables/useToast';
@@ -47,6 +51,7 @@ import {
   taskDescriptionToMarkdown,
 } from './description';
 import { buildTaskPayload } from './taskPayload';
+import { resolveAssignee } from './assignee';
 
 const props = defineProps<{
   /** When set, the task to edit (prefill); omit for create mode. */
@@ -72,7 +77,10 @@ interface FormState {
   description: string;
   priority: TaskPriority;
   deadline: string | null;
-  assigned_id: string | null;
+  /** The assignee group toggle: a workspace member or a bot executor. */
+  assignee_kind: 'user' | 'bot';
+  /** The selected user OR bot id (null = unassigned). Drives assignee_type/id. */
+  assignee_id: string | null;
   labels: string[];
   /** Attached form id (nullable). ALWAYS sent in the payload (see buildPayload). */
   form_id: string | null;
@@ -88,7 +96,8 @@ function blankForm(): FormState {
     description: '',
     priority: 'medium',
     deadline: null,
-    assigned_id: null,
+    assignee_kind: 'user',
+    assignee_id: null,
     labels: [],
     form_id: null,
     approval_pipeline_id: null,
@@ -105,6 +114,9 @@ const formError = ref<string | null>(null);
 // Seed options so already-selected assignee/labels render before async loads.
 // Shapes match UserSelect / LabelSelect `seed` props (entity-ish, not SelectOption).
 const assigneeSeed = ref<Array<{ id: string; name: string; email?: string | null; avatar?: string | null }>>([]);
+// Seed the BotSelect with the task's current bot assignee so its name renders
+// immediately on edit (before any async bots page loads).
+const botSeed = ref<Array<{ id: string; name: string }>>([]);
 const labelSeed = ref<Array<{ id: string; name: string; color?: string | null; icon?: string | null }>>([]);
 const attachmentSeed = ref<TaskAttachment[]>([]);
 // Seed the FormSelect option from the task's currently-attached form so its name
@@ -129,16 +141,25 @@ watch(
       form.description = taskDescriptionToMarkdown(task.description);
       form.priority = task.priority ?? 'medium';
       form.deadline = task.deadline ?? null;
-      form.assigned_id = task.assigned ? String(task.assigned.id) : null;
+      // Polymorphic assignee: resolve user vs bot, set the toggle + id, and seed
+      // the matching select so the current assignee renders without an async load.
+      const resolved = resolveAssignee(task);
+      form.assignee_kind = resolved?.isBot ? 'bot' : 'user';
+      form.assignee_id = resolved ? resolved.id : null;
+      assigneeSeed.value =
+        resolved && !resolved.isBot
+          ? [{
+              id: resolved.id,
+              name: resolved.name ?? '',
+              email: task.assigned?.email ?? null,
+              avatar: resolved.avatar ?? null,
+            }]
+          : [];
+      botSeed.value =
+        resolved && resolved.isBot
+          ? [{ id: resolved.id, name: resolved.name ?? '' }]
+          : [];
       form.labels = (task.labels ?? []).map((l) => String(l.id));
-      assigneeSeed.value = task.assigned
-        ? [{
-            id: String(task.assigned.id),
-            name: task.assigned.name,
-            email: task.assigned.email ?? null,
-            avatar: task.assigned.avatar ?? null,
-          }]
-        : [];
       labelSeed.value = (task.labels ?? []).map((l) => ({
         id: String(l.id),
         name: l.name,
@@ -165,6 +186,7 @@ watch(
     } else {
       Object.assign(form, blankForm());
       assigneeSeed.value = [];
+      botSeed.value = [];
       labelSeed.value = [];
       attachmentSeed.value = [];
       formSeed.value = [];
@@ -179,6 +201,19 @@ const priorityOptions = computed<SegmentOption<TaskPriority>[]>(() =>
   ALL_PRIORITIES.map((p) => ({ value: p, label: t(`tasks.priorities.${p}`), icon: priorityMeta(p).icon })),
 );
 
+// Assignee group toggle: a workspace member (user avatar) or a bot executor
+// (sparkles). The backend validates the chosen kind, so both are always offered.
+const assigneeKindOptions = computed<SegmentOption<'user' | 'bot'>[]>(() => [
+  { value: 'user', label: t('tasks.form.assigneeMember'), icon: 'user' },
+  { value: 'bot', label: t('tasks.form.assigneeBot'), icon: 'sparkles' },
+]);
+
+// Switching the group clears the previously-picked id so a user id can never be
+// sent as a bot (or vice versa).
+function onAssigneeKindChange(): void {
+  form.assignee_id = null;
+}
+
 // --- Submit ---------------------------------------------------------------
 function buildPayload(): TaskWritePayload {
   // The backend stores the description as a ProseMirror doc parsed from a JSON
@@ -192,7 +227,10 @@ function buildPayload(): TaskWritePayload {
     description: markdownToTaskDescriptionPayload(form.description),
     priority: form.priority,
     deadline: form.deadline,
-    assigned_id: form.assigned_id,
+    // Drive the polymorphic assignee: send assignee_type/assignee_id (both null
+    // clears). The chosen group toggle + the matching select's id.
+    assignee_type: form.assignee_id ? form.assignee_kind : null,
+    assignee_id: form.assignee_id,
     labels: form.labels,
     attachments: form.attachments,
     form_id: form.form_id,
@@ -204,7 +242,7 @@ function buildPayload(): TaskWritePayload {
 function validate(): boolean {
   const errs: Record<string, string> = {};
   if (!form.title.trim()) errs.title = t('tasks.form.required');
-  if (!form.assigned_id) errs.assigned_id = t('tasks.form.required');
+  if (!form.assignee_id) errs.assignee_id = t('tasks.form.required');
   fieldErrors.value = errs;
   return Object.keys(errs).length === 0;
 }
@@ -275,8 +313,12 @@ const formLocked = computed(() => !!props.task?.is_in_approval);
 // first and the scrim/focus-trap target the topmost overlay). On save we adopt the
 // new form: set form_id + seed the select so its name shows immediately, then close.
 const builderOpen = ref(false);
-function openFormBuilder(): void {
+// Which kind of form the inline builder creates: a reusable library form (false)
+// or a task-only ANONYMOUS form (true — hidden from the Forms list, no metadata).
+const builderAnonymous = ref(false);
+function openFormBuilder(anonymous: boolean): void {
   if (formLocked.value) return;
+  builderAnonymous.value = anonymous;
   builderOpen.value = true;
 }
 function onFormCreated(created: FormDetail): void {
@@ -328,19 +370,47 @@ function onFormCreated(created: FormDetail): void {
       </FormField>
 
       <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2">
-        <!-- Assignee (async, single, required) -->
+        <!-- Assignee: a Member | Bot toggle + the matching async picker. Switching
+             groups clears the previously-picked id. A bot that can execute tasks
+             surfaces a subtle "will run this task" hint (it auto-runs server-side). -->
         <FormField
           :label="t('tasks.form.assignee')"
           required
-          :error="fieldErrors.assigned_id"
+          :error="fieldErrors.assignee_id || fieldErrors.assignee_type"
         >
-          <UserSelect
-            v-model="form.assigned_id"
-            :seed="assigneeSeed"
-            :aria-invalid="!!fieldErrors.assigned_id"
-            :placeholder="t('tasks.form.assigneePlaceholder')"
-            :aria-label="t('tasks.form.assignee')"
-          />
+          <div class="flex flex-col gap-next-2">
+            <SegmentedControl
+              v-model="form.assignee_kind"
+              :options="assigneeKindOptions"
+              equal-width
+              size="sm"
+              :aria-label="t('tasks.form.assigneeKind')"
+              @update:model-value="onAssigneeKindChange"
+            />
+            <UserSelect
+              v-if="form.assignee_kind === 'user'"
+              v-model="form.assignee_id"
+              :seed="assigneeSeed"
+              :aria-invalid="!!fieldErrors.assignee_id"
+              :placeholder="t('tasks.form.assigneePlaceholder')"
+              :aria-label="t('tasks.form.assignee')"
+            />
+            <BotSelect
+              v-else
+              v-model="form.assignee_id"
+              :seed="botSeed"
+              :aria-invalid="!!fieldErrors.assignee_id"
+              :placeholder="t('tasks.form.botAssigneePlaceholder')"
+              :aria-label="t('tasks.form.botAssignee')"
+            />
+            <p
+              v-if="form.assignee_kind === 'bot' && form.assignee_id"
+              class="flex items-start gap-next-1_5 text-next-xs text-next-muted-foreground"
+            >
+              <Icon name="sparkles" class="mt-px shrink-0" aria-hidden="true" />
+              <span>{{ t('tasks.form.botWillExecuteHint') }}</span>
+            </p>
+          </div>
         </FormField>
 
         <!-- Deadline (optional, ISO yyyy-mm-dd) -->
@@ -396,15 +466,26 @@ function onFormCreated(created: FormDetail): void {
             :placeholder="t('tasks.form.formPlaceholder')"
             :aria-label="t('tasks.form.formLabel')"
           />
-          <Button
-            type="button"
-            variant="outline"
-            leading-icon="plus"
-            :disabled="formLocked"
-            @click="openFormBuilder"
-          >
-            {{ t('tasks.form.createForm') }}
-          </Button>
+          <DropdownMenu placement="bottom-end" :aria-label="t('tasks.form.createFormMenuAria')">
+            <template #trigger="{ props: triggerProps }">
+              <Button
+                type="button"
+                variant="outline"
+                leading-icon="plus"
+                trailing-icon="chevron-down"
+                v-bind="triggerProps"
+                :disabled="formLocked"
+              >
+                {{ t('tasks.form.createForm') }}
+              </Button>
+            </template>
+            <DropdownMenuItem icon="file-text" @select="openFormBuilder(false)">
+              {{ t('tasks.form.createFormLibrary') }}
+            </DropdownMenuItem>
+            <DropdownMenuItem icon="list-checks" @select="openFormBuilder(true)">
+              {{ t('tasks.form.createFormAnonymous') }}
+            </DropdownMenuItem>
+          </DropdownMenu>
         </div>
       </FormField>
 
@@ -449,8 +530,8 @@ function onFormCreated(created: FormDetail): void {
     floating
     :scroll-body="false"
     :show-close="false"
-    :aria-label="t('forms.builder.createTitle')"
+    :aria-label="builderAnonymous ? t('forms.builder.createAnonymousTitle') : t('forms.builder.createTitle')"
   >
-    <FormBuilderView @saved="onFormCreated" @close="builderOpen = false" />
+    <FormBuilderView :anonymous="builderAnonymous" @saved="onFormCreated" @close="builderOpen = false" />
   </Drawer>
 </template>

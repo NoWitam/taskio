@@ -67,7 +67,7 @@ class ApprovalService
                 ]
             );
 
-            if ($firstStage->isAiApprover()) {
+            if ($firstStage->isAutomatedApprover()) {
                 ProcessAiApprovalJob::dispatch($process);
             }
 
@@ -155,7 +155,7 @@ class ApprovalService
             ]
         );
 
-        if ($nextStage->isAiApprover()) {
+        if ($nextStage->isAutomatedApprover()) {
             ProcessAiApprovalJob::dispatch($newProcess);
         }
 
@@ -196,7 +196,7 @@ class ApprovalService
     public function getQueueForUser(string $userId)
     {
         $paginator = ApprovalProcess::query()
-            ->with(['pipeline', 'stage', 'approvable'])
+            ->with(['pipeline', 'stage', 'approvable', 'approver', 'approverBot'])
             ->where('approver_type', ApproverType::User)
             ->where('approver_id', $userId)
             ->where('status', ApprovalProcessStatus::Pending)

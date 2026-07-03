@@ -12,6 +12,9 @@
 // items don't need the prop passed manually.
 import { computed, inject, ref } from 'vue';
 import Icon, { type IconName } from '../primitives/Icon.vue';
+import { useI18n } from '../../app/i18n';
+
+const { t } = useI18n();
 import { TIMELINE_KEY } from './timeline';
 
 type NodeTone = 'neutral' | 'primary' | 'success' | 'warning' | 'danger' | 'info';
@@ -148,7 +151,7 @@ const clampStyle = computed(() =>
           :aria-expanded="expanded"
           @click="expanded = !expanded"
         >
-          {{ expanded ? 'Show less' : 'Show more' }}
+          {{ expanded ? t('common.showLess', 'Show less') : t('common.showMore', 'Show more') }}
         </button>
       </div>
     </div>

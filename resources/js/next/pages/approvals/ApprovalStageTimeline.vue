@@ -5,9 +5,11 @@
 // highlighted, FUTURE stages collapse to a locked hint. A trailing "earlier
 // decisions" block surfaces history whose stage no longer exists (nulled FK).
 import Icon, { type IconName } from '../../ui/primitives/Icon.vue';
+import Badge from '../../ui/primitives/Badge.vue';
 import StatusBadge, { type StatusMap } from '../../ui/data/StatusBadge.vue';
+import BotIdentity from '../bots/BotIdentity.vue';
 import { useI18n } from '../../app/i18n';
-import { approverTypeIcon } from './approvalStatus';
+import { resolveApprover, approverTypeIcon } from './approver';
 import type { StageView } from './stageView';
 import type { ApprovalProcess } from './queue-types';
 import type { RunHistoryGroup } from '../../app/stores/approvalQueue';
@@ -37,8 +39,16 @@ function nodeIcon(view: StageView): IconName {
   return 'lock';
 }
 
+// Resolve a process's approver to a named identity (user|bot) or null (generic AI).
+function approver(proc: ApprovalProcess) {
+  return resolveApprover(proc);
+}
+// The display name for a NON-bot approver (user) or the generic-AI fallback. Bots
+// are rendered via BotIdentity in the template, not through this string.
 function approverName(proc: ApprovalProcess): string {
-  return proc.approver?.name ?? (proc.approver_type === 'ai' ? t('approvals.review.aiApprover') : '');
+  const r = resolveApprover(proc);
+  if (r && !r.isBot) return r.name ?? '';
+  return proc.approver_type === 'ai' || !r ? t('approvals.review.aiApprover') : '';
 }
 
 // ISO timestamp → readable `dd.mm.yyyy HH:MM` (locale-agnostic numerals; matches
@@ -105,11 +115,30 @@ function formatDateTime(iso: string | null): string {
             :key="proc.id"
             class="flex items-start gap-next-2 rounded-next-md bg-next-muted/40 p-next-2"
           >
-            <Icon :name="approverTypeIcon(proc.approver_type)" class="mt-next-0_5 shrink-0 text-next-muted-foreground" />
+            <!-- Bot approver → sparkles glyph (BotIdentity); user/AI → a leading icon. -->
+            <BotIdentity
+              v-if="approver(proc)?.isBot"
+              :name="approver(proc)?.name"
+              size="xs"
+              glyph-only
+              class="mt-next-0_5 shrink-0"
+            />
+            <Icon v-else :name="approverTypeIcon(proc.approver_type)" class="mt-next-0_5 shrink-0 text-next-muted-foreground" />
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-next-2">
                 <StatusBadge :status="proc.status" :status-map="statusMap" size="sm" />
-                <span class="truncate text-next-xs text-next-muted-foreground">{{ approverName(proc) }}</span>
+                <span class="truncate text-next-xs text-next-muted-foreground">
+                  {{ approver(proc)?.isBot ? approver(proc)?.name : approverName(proc) }}
+                </span>
+                <Badge
+                  v-if="approver(proc)?.isBot"
+                  variant="primary"
+                  tone="subtle"
+                  size="sm"
+                  icon="sparkles"
+                >
+                  {{ t('bots.identity.badge') }}
+                </Badge>
                 <span v-if="proc.decided_at" class="ml-auto shrink-0 text-next-xs text-next-muted-foreground">
                   {{ formatDateTime(proc.decided_at) }}
                 </span>
@@ -151,11 +180,29 @@ function formatDateTime(iso: string | null): string {
           :key="proc.id"
           class="flex items-start gap-next-2 rounded-next-md bg-next-muted/40 p-next-2"
         >
-          <Icon :name="approverTypeIcon(proc.approver_type)" class="mt-next-0_5 shrink-0 text-next-muted-foreground" />
+          <BotIdentity
+            v-if="approver(proc)?.isBot"
+            :name="approver(proc)?.name"
+            size="xs"
+            glyph-only
+            class="mt-next-0_5 shrink-0"
+          />
+          <Icon v-else :name="approverTypeIcon(proc.approver_type)" class="mt-next-0_5 shrink-0 text-next-muted-foreground" />
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-next-2">
               <StatusBadge :status="proc.status" :status-map="statusMap" size="sm" />
-              <span class="truncate text-next-xs text-next-muted-foreground">{{ approverName(proc) }}</span>
+              <span class="truncate text-next-xs text-next-muted-foreground">
+                {{ approver(proc)?.isBot ? approver(proc)?.name : approverName(proc) }}
+              </span>
+              <Badge
+                v-if="approver(proc)?.isBot"
+                variant="primary"
+                tone="subtle"
+                size="sm"
+                icon="sparkles"
+              >
+                {{ t('bots.identity.badge') }}
+              </Badge>
               <span v-if="proc.decided_at" class="ml-auto shrink-0 text-next-xs text-next-muted-foreground">
                 {{ formatDateTime(proc.decided_at) }}
               </span>

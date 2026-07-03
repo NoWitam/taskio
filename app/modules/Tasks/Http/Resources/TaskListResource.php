@@ -20,9 +20,14 @@ class TaskListResource extends JsonResource
             'is_overdue' => $this->isDeadlineOverdue(),
             'is_at_risk' => $this->isDeadlineAtRisk(),
             'comments' => $this->whenCounted('comments'),
+            // Back-compat: user-only assignee (null when assigned to a bot).
             'assigned' => UserResource::make($this->assigned),
+            // New polymorphic assignee (User|Bot) — see TaskAssigneeResource.
+            'assignee' => TaskAssigneeResource::present($this->assignee),
             'labels' => LabelResource::collection($this->labels),
             'is_in_approval' => $this->isInApproval(),
+            // B4: true while the assigned bot awaits a human reply (additive).
+            'bot_waiting' => $this->isBotWaiting(),
         ];
     }
 }

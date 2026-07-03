@@ -38,7 +38,7 @@ class CommentsController extends Controller
         );
 
         return CommentResource::make(
-            $comment->load(['author' => fn ($query) => $query->withoutWorkspaceMemberScope()])
+            $comment->load('author')
         );
     }
 
@@ -50,7 +50,7 @@ class CommentsController extends Controller
         );
 
         return CommentResource::make(
-            $comment->load(['author' => fn ($query) => $query->withoutWorkspaceMemberScope()])
+            $comment->load('author')
         );
     }
 

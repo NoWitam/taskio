@@ -13,7 +13,14 @@ export default defineConfig({
     plugins: [
         tailwindcss(),
         laravel({
-            input: ['resources/css/app.css', 'resources/js/app.js'],
+            input: [
+                'resources/css/app.css',
+                'resources/js/app.js',
+                // The isolated "next" SPA (served at /next via next.blade.php).
+                // Without this entry the built manifest lacks it and /next 500s
+                // whenever the Vite dev server isn't running.
+                'resources/js/next/main.ts',
+            ],
             refresh: true,
         }),
         vue(),

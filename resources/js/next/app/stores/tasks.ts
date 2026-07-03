@@ -59,8 +59,14 @@ function toListItem(task: TaskDetail): TaskListItem {
     is_overdue: task.is_overdue,
     is_at_risk: task.is_at_risk,
     assigned: task.assigned,
+    // Carry the NEW polymorphic assignee so a reconciled row keeps the (possibly
+    // bot) identity without a list refetch. Absent on older payloads → undefined.
+    assignee: task.assignee,
     labels: task.labels,
     is_in_approval: task.is_in_approval,
+    // Carry the "bot is waiting for a human reply" flag so a reconciled row keeps
+    // its waiting badge on the board without a list refetch (Batch 4).
+    bot_waiting: task.bot_waiting,
   };
 }
 

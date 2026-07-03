@@ -100,8 +100,8 @@ const stagePayloadRows: ApiRow[] = [
   { name: 'name',          type: 'string',            description: 'Required, max 255.' },
   { name: 'icon',          type: 'string | null',      description: 'Optional, max 50.' },
   { name: 'description',   type: 'string | null',      description: 'Optional, max 2500.' },
-  { name: 'approver_type', type: "'user' | 'ai'",      description: 'Required.' },
-  { name: 'approver_id',   type: 'string | null',      description: 'Required when approver_type=user (UUID). Send null for AI stages.' },
+  { name: 'approver_type', type: "'user' | 'ai' | 'bot'", description: 'Required. Bot stages evaluate via AI with persona coloring (see Modules → Bots).' },
+  { name: 'approver_id',   type: 'string | null',         description: 'Required when approver_type=user or bot (UUID). Send null for ai stages.' },
 ];
 </script>
 
@@ -355,7 +355,9 @@ const stagePayloadRows: ApiRow[] = [
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-1 font-next-semibold text-next-fg">CommentResource</p>
           <p class="text-next-xs text-next-muted-foreground">
-            <code class="font-next-mono">{ id, content, author: { id, name, email }, created_at, updated_at, is_edited }</code>.
+            <code class="font-next-mono">{ id, content, author: { id, name, email, type, is_bot }, created_at, updated_at, is_edited }</code>.
+            <code class="font-next-mono">author.type</code> (<code class="font-next-mono">'user' | 'bot'</code>) and
+            <code class="font-next-mono">author.is_bot</code> were added additively in the Bot module (Batch 2).
             No <code class="font-next-mono">can_edit</code> / <code class="font-next-mono">can_delete</code> flags — ownership is resolved client-side
             (<code class="font-next-mono">String(auth.user.id) === String(comment.author.id)</code>); authorization is
             server-authoritative via CommentPolicy. Content may be plain text or a

@@ -7,6 +7,7 @@ use App\Modules\Approvals\Models\ApprovalProcess;
 use App\Modules\Approvals\Models\ApprovalStage;
 use App\Modules\Approvals\Tools\GetEntityComments;
 use App\Modules\Approvals\Tools\GetEntityDetails;
+use App\Modules\Bot\Models\Bot;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\Database\Eloquent\Model;
 use Laravel\Ai\Attributes\MaxSteps;
@@ -27,6 +28,7 @@ class ApprovalEvaluationAgent implements Agent, HasStructuredOutput, HasTools
         private Model&Approvable $entity,
         private ApprovalStage $stage,
         private ApprovalProcess $process,
+        private ?Bot $bot = null,
     ) {
         $queueItem = $this->entity->toApprovalQueueItem();
         $this->hasComments = $queueItem->comments_url !== null;
@@ -52,9 +54,11 @@ class ApprovalEvaluationAgent implements Agent, HasStructuredOutput, HasTools
             ? "2. Użyj narzędzia GetEntityComments aby zapoznać się z komentarzami i dyskusją (przeglądaj kolejne strony kursorem jeśli has_more=true).\n        3. Oceń WYKONANĄ PRACĘ pod kątem kryteriów etapu."
             : '2. Oceń WYKONANĄ PRACĘ pod kątem kryteriów etapu.';
 
+        $personaSection = $this->personaSection();
+
         return <<<INSTRUCTIONS
         Jesteś recenzentem AI w procesie zatwierdzania "{$pipelineName}".
-        Aktualny etap: "{$stageName}".
+        Aktualny etap: "{$stageName}".{$personaSection}
 
         CO OCENIASZ:
         Oceniasz, czy PRZESŁANA PRACA — czyli odpowiedzi wypełnione przez użytkownika oraz jego komentarze —
@@ -80,6 +84,42 @@ class ApprovalEvaluationAgent implements Agent, HasStructuredOutput, HasTools
         - Jeśli element nie ma formularza lub odpowiedzi — oceniaj na podstawie dostępnych informacji o wykonaniu zadania.{$noCriteriaRule}
         - Bądź obiektywny i konstruktywny.
         INSTRUCTIONS;
+    }
+
+    /**
+     * Persona block for a NAMED BOT approver. Empty for a generic AI stage, so the
+     * generic evaluation behavior is byte-for-byte unchanged. The persona colors the
+     * verdict and the reasons (the lifecycle, tools and schema stay identical).
+     */
+    private function personaSection(): string
+    {
+        if ($this->bot === null) {
+            return '';
+        }
+
+        $persona = $this->bot->persona ?: 'Brak zdefiniowanej persony.';
+        $style = $this->bot->style ?: 'Brak zdefiniowanego stylu.';
+        $dictionary = $this->joinList($this->bot->dictionary);
+        $phrases = $this->joinList($this->bot->phrases);
+        $prohibitions = $this->joinList($this->bot->prohibitions);
+
+        return <<<BOTPERSONA
+
+
+        OCENIASZ JAKO BOT "{$this->bot->name}". Zachowaj jego charakter w werdykcie i uzasadnieniu.
+        PERSONA:
+        {$persona}
+        STYL:
+        {$style}
+        SŁOWNIK (preferowane terminy): {$dictionary}
+        FRAZY: {$phrases}
+        ZAKAZY: {$prohibitions}
+        BOTPERSONA;
+    }
+
+    private function joinList(?array $values): string
+    {
+        return empty($values) ? 'brak' : implode(', ', $values);
     }
 
     /** @return iterable<\Laravel\Ai\Contracts\Tool> */

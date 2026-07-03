@@ -9,6 +9,7 @@ use App\Modules\Approvals\DTOs\ApprovalQueueItem;
 use App\Modules\Approvals\Interfaces\Approvable;
 use App\Modules\Approvals\Models\ApprovalProcess;
 use App\Modules\Approvals\Traits\HasApprovalPipeline;
+use App\Modules\Bot\Models\Bot;
 use App\Modules\Changelog\Interfaces\HasChangelog as InterfacesHasChangelog;
 use App\Modules\Changelog\Managers\BagTracker;
 use App\Modules\Changelog\Managers\FieldTracker;
@@ -46,14 +47,17 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
      */
     public const DETAIL_RELATIONS = [
         'assigned',
+        'assignee',
         'creator',
         'labels',
         'files',
         'form',
         'formSubmission',
         'approvalPipeline.stages.approver',
+        'approvalPipeline.stages.approverBot',
         'pendingApprovalProcess.stage',
         'pendingApprovalProcess.approver',
+        'pendingApprovalProcess.approverBot',
         'pendingApprovalProcess.pipeline',
     ];
 
@@ -64,6 +68,11 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
         'priority',
         'deadline',
         'creator_id',
+        'assignee_type',
+        'assignee_id',
+        // Virtual back-compat attribute: writing `assigned_id` maps to a User
+        // assignee (assignee_type='user'). Kept fillable so legacy callers, the
+        // factory and existing tests that set `assigned_id` keep working.
         'assigned_id',
         'form_id',
         'approval_pipeline_id',
@@ -74,11 +83,18 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
         'priority' => TaskPriority::class,
         'status' => TaskStatus::class,
         'deadline' => 'date',
+        'bot_runs_used' => 'integer',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
         'archived_at' => 'datetime',
     ];
+
+    /** Whether the assigned bot is currently awaiting a human reply to continue. */
+    public function isBotWaiting(): bool
+    {
+        return $this->assignee_type === 'bot' && $this->bot_run_state === 'waiting';
+    }
 
     public function getChangelogManager(): ModelChangelogManager
     {
@@ -101,20 +117,37 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
             FieldTracker::make('deadline')->withMap(function ($date, Task $task) {
                 return $date ? $date->format('Y-m-d') : null;
             }),
-            FieldTracker::make('assigned_id')->withMap(function ($userId, Task $task) {
-                if (!$userId) {
+            // Tracks the real `assignee_id` column (the legacy `assigned_id` is now a
+            // virtual accessor, so getOriginal() can't see it). The actor may be a User
+            // or a Bot; resolve whichever owns the id for the audit display.
+            FieldTracker::make('assignee_id')->withTranslationKey('changelog.fields.assigned_id')->withMap(function ($assigneeId, Task $task) {
+                if (!$assigneeId) {
                     return null;
                 }
-                // Bypass the member scope: changelog must render historical
-                // assignees even if they are no longer (or never were) a member of
-                // the active workspace — audit history must not silently lose names.
-                $user = User::withoutWorkspaceMemberScope()->find($userId);
 
-                return $user ? [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
-                    'avatar' => null, // TODO: implement avatar URL when ready
+                // Bypass the member scope: changelog must render historical assignees
+                // even if they are no longer (or never were) a member of the active
+                // workspace — audit history must not silently lose names.
+                $user = User::withoutWorkspaceMemberScope()->find($assigneeId);
+
+                if ($user) {
+                    return [
+                        'id' => $user->id,
+                        'name' => $user->name,
+                        'email' => $user->email,
+                        'avatar' => null, // TODO: implement avatar URL when ready
+                        'is_bot' => false,
+                    ];
+                }
+
+                $bot = Bot::find($assigneeId);
+
+                return $bot ? [
+                    'id' => $bot->id,
+                    'name' => $bot->name,
+                    'email' => null,
+                    'avatar' => null,
+                    'is_bot' => true,
                 ] : null;
             }),
             BagTracker::make('labels')->asClass(Label::class)->manualOnly()->withMap(function (Label $label, Task $task) {
@@ -148,9 +181,60 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
         ]);
     }
 
+    /**
+     * Polymorphic assignee (User|Bot). A task may be executed by a human or a bot.
+     *
+     * The User branch bypasses WorkspaceMemberScope on load so a former-member
+     * assignee still renders (consistent with how comment/changelog authors are
+     * loaded for actor-display fields) instead of nulling out and breaking the
+     * resource. The Bot branch loads normally (bots are workspace-scoped, not
+     * member-scoped).
+     */
+    public function assignee(): \Illuminate\Database\Eloquent\Relations\MorphTo
+    {
+        return $this->morphTo('assignee')->constrain([
+            User::class => fn ($query) => $query->withoutWorkspaceMemberScope(),
+        ]);
+    }
+
+    /**
+     * Back-compat User-only assignee relation. Keyed on `assignee_id`; for a bot
+     * assignee the id never matches a users row, so this resolves to null — exactly
+     * the "null when a bot" semantics legacy callers / resources / the frontend
+     * (which expect a User) rely on. For a User assignee it resolves unchanged.
+     */
     public function assigned()
     {
-        return $this->belongsTo(User::class, 'assigned_id');
+        return $this->belongsTo(User::class, 'assignee_id');
+    }
+
+    /**
+     * Back-compat accessor: the legacy `assigned_id` column was replaced by the
+     * polymorphic (assignee_type, assignee_id) pair. This returns the assignee id ONLY
+     * when the assignee is a User (null for a bot), preserving the historic semantics
+     * for the changelog tracker, resources and the approval reject-restore snapshot.
+     */
+    public function getAssignedIdAttribute(): ?string
+    {
+        return $this->assignee_type === 'user' ? $this->assignee_id : null;
+    }
+
+    /**
+     * Back-compat virtual setter: writing `assigned_id` assigns the task to a User.
+     * A null/empty value clears the assignee. This is NOT a real column — it maps onto
+     * the polymorphic (assignee_type, assignee_id) pair so legacy write paths keep working.
+     */
+    public function setAssignedIdAttribute(?string $value): void
+    {
+        if ($value === null || $value === '') {
+            $this->attributes['assignee_type'] = null;
+            $this->attributes['assignee_id'] = null;
+
+            return;
+        }
+
+        $this->attributes['assignee_type'] = 'user';
+        $this->attributes['assignee_id'] = $value;
     }
 
     public function form()
@@ -194,9 +278,17 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
 
     public function onApprovalCompleted(ApprovalProcess $process): void
     {
+        // If this task was executed by a bot (the bot is the ORIGINAL assignee
+        // snapshotted when approval started), record that the bot's work was accepted
+        // and the task reached done. Users are unaffected.
+        app(\App\Modules\Bot\Services\BotTaskExecutionService::class)
+            ->recordMarkedDoneFromContext($this, $process->context ?? []);
+
+        // A completed task returns to its (human) creator.
         $this->update([
             'status' => TaskStatus::DONE,
-            'assigned_id' => $this->creator_id,
+            'assignee_type' => 'user',
+            'assignee_id' => $this->creator_id,
         ]);
     }
 
@@ -204,10 +296,29 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
     {
         $context = $process->context ?? [];
 
+        // Restore the polymorphic original assignee (User OR Bot) snapshotted when the
+        // approval started. Falls back to the legacy user-only key, then the creator.
+        $originalType = $context['original_assignee_type']
+            ?? (($context['original_assigned_id'] ?? null) ? 'user' : null);
+        $originalId = $context['original_assignee_id']
+            ?? $context['original_assigned_id']
+            ?? null;
+
         $this->update([
             'status' => TaskStatus::TO_DO,
-            'assigned_id' => $context['original_assigned_id'] ?? $this->creator_id,
+            'assignee_type' => $originalType ?? 'user',
+            'assignee_id' => $originalId ?? $this->creator_id,
         ]);
+
+        // If the restored assignee is a bot, kick off a REVISION run so it addresses the
+        // rejection reasons (surfaced from the approval history in the run context).
+        // Deferred to afterCommit so a sync job sees the committed reject state.
+        if (($originalType ?? 'user') === 'bot') {
+            $task = $this->fresh() ?? $this;
+            \Illuminate\Support\Facades\DB::afterCommit(function () use ($task) {
+                app(\App\Modules\Bot\Services\BotTaskExecutionService::class)->reviseAfterReject($task);
+            });
+        }
     }
 
     /**
@@ -264,6 +375,10 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
     public function getApprovalContext(): array
     {
         return [
+            // Polymorphic snapshot so a bot assignee is restored correctly on reject.
+            'original_assignee_type' => $this->assignee_type,
+            'original_assignee_id' => $this->assignee_id,
+            // Back-compat key (user-only): null when the original assignee was a bot.
             'original_assigned_id' => $this->assigned_id,
         ];
     }

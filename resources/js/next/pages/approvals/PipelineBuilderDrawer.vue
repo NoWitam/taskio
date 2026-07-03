@@ -23,6 +23,7 @@ import Textarea from '../../ui/forms/Textarea.vue';
 import IconInput from '../../ui/forms/IconInput.vue';
 import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedControl.vue';
 import UserSelect from '../../ui/forms/UserSelect.vue';
+import BotSelect from '../../ui/forms/BotSelect.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
@@ -36,6 +37,8 @@ import type {
   PipelineStagePayload,
   PipelineWritePayload,
 } from './types';
+import { resolveApprover } from './approver';
+import { buildStagePayload } from './pipelinePayload';
 
 const props = defineProps<{
   /** Pipeline id to edit, or null to create a new one. */
@@ -69,8 +72,10 @@ interface StageDraft {
   description: string;
   approver_type: ApproverType;
   approver_id: string | null;
-  /** Seed for UserSelect so an existing approver renders by name immediately. */
+  /** Seed for UserSelect so an existing user approver renders by name immediately. */
   approverSeed: Array<{ id: string; name: string; email?: string | null; avatar?: string | null }>;
+  /** Seed for BotSelect so an existing bot approver renders by name immediately. */
+  botSeed: Array<{ id: string; name: string }>;
 }
 
 let uidSeq = 0;
@@ -87,6 +92,7 @@ function emptyStage(): StageDraft {
     approver_type: 'user',
     approver_id: null,
     approverSeed: [],
+    botSeed: [],
   };
 }
 
@@ -116,17 +122,28 @@ if (isEdit.value) {
     form.stages = cloned.stages
       .slice()
       .sort((a, b) => a.order - b.order)
-      .map((s) => ({
-        uid: nextUid(),
-        name: s.name,
-        icon: s.icon,
-        description: s.description ?? '',
-        approver_type: s.approver_type,
-        approver_id: s.approver_type === 'user' ? (s.approver?.id != null ? String(s.approver.id) : null) : null,
-        approverSeed: s.approver
-          ? [{ id: String(s.approver.id), name: s.approver.name, email: s.approver.email ?? null, avatar: s.approver.avatar ?? null }]
-          : [],
-      }));
+      .map((s) => {
+        // Resolve the existing approver (prefers approver_identity → user|bot|null).
+        const resolved = resolveApprover(s);
+        return {
+          uid: nextUid(),
+          name: s.name,
+          icon: s.icon,
+          description: s.description ?? '',
+          approver_type: s.approver_type,
+          // approver_id is meaningful for user/bot stages only (ai → null).
+          approver_id:
+            s.approver_type === 'ai' ? null : resolved ? resolved.id : null,
+          approverSeed:
+            resolved && !resolved.isBot
+              ? [{ id: resolved.id, name: resolved.name ?? '', avatar: resolved.avatar ?? null }]
+              : [],
+          botSeed:
+            resolved && resolved.isBot
+              ? [{ id: resolved.id, name: resolved.name ?? '' }]
+              : [],
+        };
+      });
     if (form.stages.length === 0) form.stages = [emptyStage()];
   } else {
     // Deep link without a prefetch (store has no detail) — show a clear error.
@@ -134,10 +151,11 @@ if (isEdit.value) {
   }
 }
 
-// --- Approver type picker options -----------------------------------------
+// --- Approver type picker options (3-way: Person | AI | Bot) ---------------
 const approverOptions = computed<SegmentOption<ApproverType>[]>(() => [
   { value: 'user', label: t('approvals.builder.approverUser'), icon: 'user' },
   { value: 'ai', label: t('approvals.builder.approverAi'), icon: 'sparkles' },
+  { value: 'bot', label: t('approvals.builder.approverBot'), icon: 'sparkles' },
 ]);
 
 // IconInput speaks IconName | null; we store legacy icon strings, so bridge them
@@ -176,8 +194,9 @@ function moveStage(index: number, dir: -1 | 1): void {
 
 function onApproverTypeChange(stage: StageDraft, type: ApproverType | null): void {
   stage.approver_type = type ?? 'user';
-  // An AI stage has no person → clear the approver (the payload sends null).
-  if (stage.approver_type === 'ai') stage.approver_id = null;
+  // Switching the type ALWAYS clears the stale approver_id so a user id can never
+  // be sent as a bot (or vice versa); an `ai` stage carries no id at all.
+  stage.approver_id = null;
 }
 
 // --- Validation (client-side, mirrors the FormRequest) --------------------
@@ -201,8 +220,12 @@ function validate(): boolean {
       stageErr.name = t('approvals.builder.validation.stageNameRequired');
       ok = false;
     }
-    if (stage.approver_type === 'user' && !stage.approver_id) {
-      stageErr.approver = t('approvals.builder.validation.approverRequired');
+    // A user OR bot stage needs a selected approver id; an ai stage needs none.
+    if (stage.approver_type !== 'ai' && !stage.approver_id) {
+      stageErr.approver =
+        stage.approver_type === 'bot'
+          ? t('approvals.builder.validation.botApproverRequired')
+          : t('approvals.builder.validation.approverRequired');
       ok = false;
     }
     if (stageErr.name || stageErr.approver) errors.stages[stage.uid] = stageErr;
@@ -215,14 +238,7 @@ function validate(): boolean {
 const saving = ref(false);
 
 function buildPayload(): PipelineWritePayload {
-  const stages: PipelineStagePayload[] = form.stages.map((stage) => ({
-    name: stage.name.trim(),
-    icon: stage.icon || null,
-    description: stage.description.trim() || null,
-    approver_type: stage.approver_type,
-    // AI stages send approver_id: null; user stages send the selected uuid.
-    approver_id: stage.approver_type === 'user' ? stage.approver_id : null,
-  }));
+  const stages: PipelineStagePayload[] = form.stages.map((stage) => buildStagePayload(stage));
   return {
     name: form.name.trim(),
     icon: form.icon || null,
@@ -236,15 +252,15 @@ function applyServerErrors(err: unknown): void {
   const bag = (err as { response?: { data?: { errors?: Record<string, string[]> } } })?.response?.data?.errors;
   if (!bag) return;
   if (bag.name?.length) errors.name = bag.name[0];
-  // stages.<i>.name / stages.<i>.approver_id → map back to the row by index.
+  // stages.<i>.name / .approver_id / .approver_type → map back to the row by index.
   Object.entries(bag).forEach(([key, msgs]) => {
-    const m = key.match(/^stages\.(\d+)\.(name|approver_id)$/);
+    const m = key.match(/^stages\.(\d+)\.(name|approver_id|approver_type)$/);
     if (!m || !msgs.length) return;
     const stage = form.stages[Number(m[1])];
     if (!stage) return;
     const existing = errors.stages[stage.uid] ?? {};
     if (m[2] === 'name') existing.name = msgs[0];
-    else existing.approver = msgs[0];
+    else existing.approver = msgs[0]; // approver_id OR approver_type → the picker
     errors.stages[stage.uid] = existing;
   });
 }
@@ -426,6 +442,7 @@ function onCancel(): void {
                   />
                 </FormField>
 
+                <!-- user → person picker, bot → bot picker, ai → a static note. -->
                 <FormField
                   v-if="stage.approver_type === 'user'"
                   :label="t('approvals.builder.approverUserLabel')"
@@ -435,14 +452,29 @@ function onCancel(): void {
                   <UserSelect
                     v-model="stage.approver_id"
                     :seed="stage.approverSeed"
+                    :aria-invalid="!!errors.stages[stage.uid]?.approver"
                     :placeholder="t('approvals.builder.approverUserPlaceholder')"
                     :aria-label="t('approvals.builder.approverUserLabel')"
+                  />
+                </FormField>
+                <FormField
+                  v-else-if="stage.approver_type === 'bot'"
+                  :label="t('approvals.builder.approverBotLabel')"
+                  required
+                  :error="errors.stages[stage.uid]?.approver"
+                >
+                  <BotSelect
+                    v-model="stage.approver_id"
+                    :seed="stage.botSeed"
+                    :aria-invalid="!!errors.stages[stage.uid]?.approver"
+                    :placeholder="t('approvals.builder.approverBotPlaceholder')"
+                    :aria-label="t('approvals.builder.approverBotLabel')"
                   />
                 </FormField>
                 <div v-else class="flex items-end">
                   <p class="flex items-center gap-next-2 rounded-next-md bg-next-muted px-next-3 py-next-2 text-next-xs text-next-muted-foreground">
                     <Icon name="sparkles" class="shrink-0" aria-hidden="true" />
-                    {{ t('approvals.builder.approverAi') }}
+                    {{ t('approvals.builder.approverAiHint') }}
                   </p>
                 </div>
               </div>

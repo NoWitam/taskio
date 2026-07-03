@@ -14,11 +14,11 @@ class StoreFormRequest extends FormRequest
     {
         // Check if creating new form or updating existing
         $form = $this->route('form');
-        
+
         if ($form) {
             return $this->user()->can('update', $form);
         }
-        
+
         return $this->user()->can('create', Form::class);
     }
 
@@ -28,11 +28,13 @@ class StoreFormRequest extends FormRequest
         $requireMinimumFields = $form instanceof Form && $form->isEnabled() && $this->has('content');
 
         $rules = [
-            'name' => ['required', 'string', 'max:255'],
+            // Anonymous forms need no user-supplied name (auto-generated server-side);
+            // every other create/update still requires one.
+            'name' => [Rule::requiredIf(fn () => !$this->boolean('is_anonymous')), 'nullable', 'string', 'max:255'],
             'icon' => ['nullable', Rule::enum(IconEnum::class)],
             'description' => ['nullable', 'string', 'max:1000'],
             'is_anonymous' => ['boolean'],
-            'content' => ['nullable', 'array', new ValidFormContent(requireMinimumFields: $requireMinimumFields)]
+            'content' => ['nullable', 'array', new ValidFormContent(requireMinimumFields: $requireMinimumFields)],
         ];
 
         return $rules;

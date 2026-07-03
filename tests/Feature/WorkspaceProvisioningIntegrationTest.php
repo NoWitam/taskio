@@ -89,7 +89,10 @@ class WorkspaceProvisioningIntegrationTest extends TestCase
         $this->assertTrue($schema->hasColumn('tasks', 'form_id'));
         $this->assertTrue($schema->hasColumn('tasks', 'approval_pipeline_id'));
         $this->assertTrue($schema->hasColumn('tasks', 'creator_id'));
-        $this->assertTrue($schema->hasColumn('tasks', 'assigned_id'));
+        // The single-target assigned_id was replaced by the polymorphic assignee pair.
+        $this->assertFalse($schema->hasColumn('tasks', 'assigned_id'));
+        $this->assertTrue($schema->hasColumn('tasks', 'assignee_type'));
+        $this->assertTrue($schema->hasColumn('tasks', 'assignee_id'));
 
         // Spot-check the form versioning links that own-mode forms depend on.
         $this->assertTrue($schema->hasColumn('form_submissions', 'form_content_version_id'));

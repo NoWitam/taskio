@@ -77,6 +77,19 @@ describe('next tasks store — list reconciliation', () => {
     expect(store.totalByStatus.to_do).toBe(1);
   });
 
+  it('carries bot_waiting into the reconciled list item (Batch 4)', async () => {
+    const store = useTasksStore();
+    store.itemsByStatus.to_do = [];
+    store.totalByStatus.to_do = 0;
+
+    apiMock.post.mockResolvedValueOnce({
+      data: detail({ id: 'w1', status: 'to_do', bot_waiting: true }),
+    });
+    await store.createTask({ title: 'Task', priority: 'medium', assignee_type: 'bot', assignee_id: 'b1' });
+
+    expect(store.itemsByStatus.to_do[0].bot_waiting).toBe(true);
+  });
+
   it('createTask leaves an un-initialized bucket untouched (first fetch is authoritative)', async () => {
     const store = useTasksStore();
     apiMock.post.mockResolvedValueOnce({ data: detail({ id: 'new', status: 'in_progress' }) });
@@ -212,5 +225,24 @@ describe('next tasks store — filter serialization', () => {
     const params = lastGetParams();
     expect(params.has('label_operator')).toBe(false);
     expect(params.has('labelOperator')).toBe(false);
+  });
+
+  it('serializes bot_id as the backend `bot_id[]` array param (Batch 2)', async () => {
+    const store = useTasksStore();
+    await store.fetchByStatus('to_do', { bot_id: ['b1', 'b2'] });
+
+    const params = lastGetParams();
+    expect(params.getAll('bot_id[]')).toEqual(['b1', 'b2']);
+    // The user filter is independent and untouched.
+    expect(params.has('user_id[]')).toBe(false);
+  });
+
+  it('serializes user_id and bot_id together when both are set', async () => {
+    const store = useTasksStore();
+    await store.fetchByStatus('to_do', { user_id: ['u1'], bot_id: ['b1'] });
+
+    const params = lastGetParams();
+    expect(params.getAll('user_id[]')).toEqual(['u1']);
+    expect(params.getAll('bot_id[]')).toEqual(['b1']);
   });
 });

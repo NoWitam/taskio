@@ -15,7 +15,7 @@ class ApprovalPipelineService
     public function index(Request $request)
     {
         return ApprovalPipeline::query()
-            ->with('stages.approver')
+            ->with('stages.approver', 'stages.approverBot')
             // Existence flag consumed by ApprovalPipeline::hasActiveProcesses()
             // (can_be_edited / can_be_deleted) — avoids two exists() per row.
             ->withExists('pendingProcesses')
@@ -35,7 +35,7 @@ class ApprovalPipelineService
 
             $this->syncStages($pipeline, $dto->stages);
 
-            return $pipeline->load('stages.approver');
+            return $pipeline->load('stages.approver', 'stages.approverBot');
         });
     }
 
@@ -56,7 +56,7 @@ class ApprovalPipelineService
 
             $this->syncStages($pipeline, $dto->stages);
 
-            return $pipeline->load('stages.approver');
+            return $pipeline->load('stages.approver', 'stages.approverBot');
         });
     }
 

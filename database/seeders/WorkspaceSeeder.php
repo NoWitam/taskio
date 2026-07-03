@@ -32,9 +32,7 @@ class WorkspaceSeeder extends Seeder
             $owner,
         );
 
-        $remaining = $users->skip(1);
-
-        foreach ($remaining as $user) {
+        foreach ($users as $user) {
             $this->workspaceService->addMember($workspace, $user);
         }
     }

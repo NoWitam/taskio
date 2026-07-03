@@ -26,7 +26,12 @@ export function approvalStatusMap(t: Translate): StatusMap {
   };
 }
 
-/** The icon for an approver type (`user` → user, `ai` → sparkles). */
+/**
+ * The icon for an approver type (`user` → user; `ai` AND `bot` → sparkles). The
+ * local icon registry has no dedicated `bot` glyph — a named bot is distinguished
+ * by rendering `BotIdentity`, not by this fallback icon. (Re-exported from
+ * `./approver` for new call sites; kept here for existing imports.)
+ */
 export function approverTypeIcon(type: ApproverType): IconName {
-  return type === 'ai' ? 'sparkles' : 'user';
+  return type === 'user' ? 'user' : 'sparkles';
 }

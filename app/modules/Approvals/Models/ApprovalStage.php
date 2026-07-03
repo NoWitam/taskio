@@ -6,6 +6,7 @@ use App\Enums\IconEnum;
 use App\Models\AbstractModel;
 use App\Models\User;
 use App\Modules\Approvals\Enums\ApproverType;
+use App\Modules\Bot\Models\Bot;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -43,8 +44,29 @@ class ApprovalStage extends AbstractModel
         return $this->belongsTo(User::class, 'approver_id');
     }
 
+    /**
+     * The Bot approver for a `bot` stage (null otherwise). approver_id is a plain uuid
+     * resolved by approver_type, so this relation is constrained to the bot branch.
+     */
+    public function approverBot(): BelongsTo
+    {
+        return $this->belongsTo(Bot::class, 'approver_id');
+    }
+
     public function isAiApprover(): bool
     {
         return $this->approver_type === ApproverType::Ai;
+    }
+
+    /** A named bot approver (its persona colors the AI verdict). */
+    public function isBotApprover(): bool
+    {
+        return $this->approver_type === ApproverType::Bot;
+    }
+
+    /** Evaluated automatically by the AI pipeline (generic AI or a named bot). */
+    public function isAutomatedApprover(): bool
+    {
+        return $this->approver_type->isAutomated();
     }
 }

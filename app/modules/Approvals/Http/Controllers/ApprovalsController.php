@@ -40,14 +40,14 @@ class ApprovalsController extends Controller
     public function show(ApprovalProcess $process): ApprovalProcessResource
     {
         return ApprovalProcessResource::make(
-            $process->loadMissing(['pipeline.stages.approver', 'stage', 'approver', 'approvable'])
+            $process->loadMissing(['pipeline.stages.approver', 'pipeline.stages.approverBot', 'stage', 'approver', 'approverBot', 'approvable'])
         );
     }
 
     public function runHistory(string $runId): AnonymousResourceCollection
     {
         $processes = ApprovalProcess::query()
-            ->with(['stage', 'approver'])
+            ->with(['stage', 'stage.approver', 'stage.approverBot', 'approver', 'approverBot'])
             ->where('run_id', $runId)
             ->orderBy('created_at')
             ->get();
@@ -66,7 +66,7 @@ class ApprovalsController extends Controller
         );
 
         return ApprovalProcessResource::make(
-            $updatedProcess->loadMissing(['pipeline', 'stage', 'approver'])
+            $updatedProcess->loadMissing(['pipeline', 'stage', 'approver', 'approverBot'])
         )->response()->setStatusCode(200);
     }
 }

@@ -42,6 +42,7 @@ import Skeleton from '../../ui/data/Skeleton.vue';
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import UserSelect from '../../ui/forms/UserSelect.vue';
+import BotSelect from '../../ui/forms/BotSelect.vue';
 import LabelSelect from '../../ui/forms/LabelSelect.vue';
 import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedControl.vue';
 import DatePicker from '../../ui/forms/DatePicker.vue';
@@ -52,15 +53,19 @@ import EmptyState from '../../ui/data/EmptyState.vue';
 import Timeline, { type TimelineEntry } from '../../ui/patterns/Timeline.vue';
 import TaskComments from './TaskComments.vue';
 import TaskAttachmentsField from './TaskAttachmentsField.vue';
+import TaskBotActions from './TaskBotActions.vue';
+import BotIdentity from '../bots/BotIdentity.vue';
 import FormViewer from '../forms/FormViewer.vue';
 import type { FormElement } from '../forms/types';
 import { api } from '../../app/lib/api';
 import { groupRunHistory } from '../../app/stores/approvalQueue';
-import { approvalStatusMap, approverTypeIcon } from '../approvals/approvalStatus';
+import { approvalStatusMap } from '../approvals/approvalStatus';
+import { resolveApprover, approverTypeIcon } from '../approvals/approver';
 import { resolvePipelineIcon } from '../../ui/forms/pipelineIcon';
 import { buildApprovalTabModel, type StageStep } from './approvalTabModel';
 import type { ApprovalProcess, RunHistoryResponse } from '../approvals/queue-types';
 import { useTasksStore } from '../../app/stores/tasks';
+import { useBotActionsStore } from '../../app/stores/botActions';
 import { useAuthStore } from '../../app/stores/auth';
 import { useToast } from '../../app/composables/useToast';
 import { useConfirm } from '../../app/composables/useConfirm';
@@ -84,6 +89,7 @@ import {
   taskDescriptionToMarkdown,
 } from './description';
 import { buildTaskPayload } from './taskPayload';
+import { resolveAssignee } from './assignee';
 
 const props = defineProps<{
   /** The task id to show (from `?task=<id>`); null when closed. */
@@ -105,6 +111,7 @@ const emit = defineEmits<{
 const { t, currentLocale } = useI18n();
 const router = useRouter();
 const store = useTasksStore();
+const botActionsStore = useBotActionsStore();
 const auth = useAuthStore();
 const toast = useToast();
 const confirm = useConfirm();
@@ -150,6 +157,7 @@ function retry(): void {
 
 function onClose(): void {
   store.clearDetail();
+  botActionsStore.resetTaskActions();
   emit('close');
 }
 
@@ -258,7 +266,10 @@ interface EditState {
   description: string;
   priority: TaskPriority;
   deadline: string | null;
-  assigned_id: string | null;
+  /** The assignee group toggle: a workspace member or a bot executor. */
+  assignee_kind: 'user' | 'bot';
+  /** The selected user OR bot id (null = unassigned). Drives assignee_type/id. */
+  assignee_id: string | null;
   labels: string[];
   /** Temp file ids of NEW uploads (existing attachments live in attachmentSeed). */
   attachments: string[];
@@ -268,7 +279,8 @@ const editState = reactive<EditState>({
   description: '',
   priority: 'medium',
   deadline: null,
-  assigned_id: null,
+  assignee_kind: 'user',
+  assignee_id: null,
   labels: [],
   attachments: [],
 });
@@ -277,6 +289,7 @@ const editState = reactive<EditState>({
 const assigneeSeed = ref<
   Array<{ id: string; name: string; email?: string | null; avatar?: string | null }>
 >([]);
+const botSeed = ref<Array<{ id: string; name: string }>>([]);
 const labelSeed = ref<
   Array<{ id: string; name: string; color?: string | null; icon?: string | null }>
 >([]);
@@ -293,18 +306,25 @@ function syncEditFromTask(t0: TaskDetail | null): void {
   editState.description = taskDescriptionToMarkdown(t0.description);
   editState.priority = t0.priority ?? 'medium';
   editState.deadline = t0.deadline ?? null;
-  editState.assigned_id = t0.assigned ? String(t0.assigned.id) : null;
+  // Polymorphic assignee: resolve user vs bot, set the toggle + id, seed the
+  // matching select so the current assignee renders without an async load.
+  const resolved = resolveAssignee(t0);
+  editState.assignee_kind = resolved?.isBot ? 'bot' : 'user';
+  editState.assignee_id = resolved ? resolved.id : null;
+  assigneeSeed.value =
+    resolved && !resolved.isBot
+      ? [
+          {
+            id: resolved.id,
+            name: resolved.name ?? '',
+            email: t0.assigned?.email ?? null,
+            avatar: resolved.avatar ?? null,
+          },
+        ]
+      : [];
+  botSeed.value =
+    resolved && resolved.isBot ? [{ id: resolved.id, name: resolved.name ?? '' }] : [];
   editState.labels = (t0.labels ?? []).map((l) => String(l.id));
-  assigneeSeed.value = t0.assigned
-    ? [
-        {
-          id: String(t0.assigned.id),
-          name: t0.assigned.name,
-          email: t0.assigned.email ?? null,
-          avatar: t0.assigned.avatar ?? null,
-        },
-      ]
-    : [];
   labelSeed.value = (t0.labels ?? []).map((l) => ({
     id: String(l.id),
     name: l.name,
@@ -398,7 +418,9 @@ function buildPayload(): TaskWritePayload {
     description: markdownToTaskDescriptionPayload(editState.description),
     priority: editState.priority,
     deadline: editState.deadline,
-    assigned_id: editState.assigned_id,
+    // Drive the polymorphic assignee: assignee_type/assignee_id (both null clears).
+    assignee_type: editState.assignee_id ? editState.assignee_kind : null,
+    assignee_id: editState.assignee_id,
     labels: editState.labels,
     attachments: editState.attachments,
     form_id: task.value?.form_id ?? null,
@@ -450,6 +472,48 @@ function selectPriority(value: TaskPriority): void {
   editState.priority = value;
   debouncedPersist('priority');
 }
+
+// Switching the assignee group clears the previously-picked id so a user id can
+// never be sent as a bot (or vice versa). No persist yet — the user must then
+// pick someone in the new group (or leave it cleared, which detaches).
+function onAssigneeKindChange(): void {
+  if (readonly.value) return;
+  editState.assignee_id = null;
+}
+
+// The assignee group toggle options (Member | Bot) — backend validates the kind.
+const assigneeKindOptions = computed<SegmentOption<'user' | 'bot'>[]>(() => [
+  { value: 'user', label: t('tasks.form.assigneeMember'), icon: 'user' },
+  { value: 'bot', label: t('tasks.form.assigneeBot'), icon: 'sparkles' },
+]);
+
+// When a bot that can execute tasks is assigned, surface the auto-run hint.
+const showBotExecuteHint = computed(
+  () => editState.assignee_kind === 'bot' && !!editState.assignee_id,
+);
+
+// The task's bot activity is shown only when it has/had a bot assignee OR the
+// feed already has actions (a bot ran it earlier then got reassigned). The
+// TaskBotActions component owns the actual fetch + its own four states.
+const hasBotActivity = computed(() => {
+  const resolved = resolveAssignee(task.value ?? {});
+  return resolved?.isBot === true || botActionsStore.taskActions.length > 0;
+});
+
+// --- Interactive bot execution (Batch 4) ---------------------------------
+// The bot asked a question and is WAITING for a human reply in the comments.
+const botWaiting = computed(() => task.value?.bot_waiting === true);
+
+// The run counter (used vs cap). Shown as muted meta near the bot assignee /
+// activity; when the cap is reached the bot has HANDED the task to a human.
+const botRunsUsed = computed(() => task.value?.bot_runs_used ?? 0);
+const botRunsCap = computed(() => task.value?.bot_runs_cap ?? 0);
+// Only render the counter when a cap is actually configured (>0), so tasks that
+// never involved a bot don't show a "0/0" meta line.
+const showBotRuns = computed(() => botRunsCap.value > 0);
+const botHandedOver = computed(
+  () => showBotRuns.value && botRunsUsed.value >= botRunsCap.value,
+);
 
 // New uploads land in editState.attachments as their temp ids resolve; persist
 // (debounced) so several quick uploads coalesce into one additive update.
@@ -748,6 +812,15 @@ function stageIcon(step: StageStep): IconName {
   return resolvePipelineIcon(step.icon);
 }
 
+// Resolve a stage's / decision's named approver (user|bot|null) — prefers the new
+// `approver_identity`, falls back to the legacy `approver`, null → generic AI.
+function stepApprover(step: StageStep) {
+  return resolveApprover(step);
+}
+function entryApprover(entry: ApprovalProcess) {
+  return resolveApprover(entry);
+}
+
 /** Read-only jump to the Approvals queue (decisions are made there, not here). */
 function goToApprovals(): void {
   void router.push({ name: 'next.approvals.queue' });
@@ -899,16 +972,72 @@ function goToApprovals(): void {
             class="flex flex-col gap-next-4"
             :aria-label="t('tasks.detail.metadata')"
           >
-        <FormField :label="t('tasks.detail.assignee')" :error="fieldErrors.assigned_id">
-          <UserSelect
-            v-model="editState.assigned_id"
-            :seed="assigneeSeed"
-            :readonly="readonly"
-            :aria-invalid="!!fieldErrors.assigned_id"
-            :placeholder="t('tasks.form.assigneePlaceholder')"
-            :aria-label="t('tasks.detail.assignee')"
-            @update:model-value="debouncedPersist('assigned_id')"
-          />
+        <FormField
+          :label="t('tasks.detail.assignee')"
+          :error="fieldErrors.assignee_id || (fieldErrors as any).assignee_type"
+        >
+          <div class="flex flex-col gap-next-2">
+            <SegmentedControl
+              v-model="editState.assignee_kind"
+              :options="assigneeKindOptions"
+              size="sm"
+              equal-width
+              :disabled="readonly"
+              :aria-label="t('tasks.form.assigneeKind')"
+              @update:model-value="onAssigneeKindChange"
+            />
+            <UserSelect
+              v-if="editState.assignee_kind === 'user'"
+              v-model="editState.assignee_id"
+              :seed="assigneeSeed"
+              :readonly="readonly"
+              :aria-invalid="!!fieldErrors.assignee_id"
+              :placeholder="t('tasks.form.assigneePlaceholder')"
+              :aria-label="t('tasks.detail.assignee')"
+              @update:model-value="debouncedPersist('assignee_id')"
+            />
+            <BotSelect
+              v-else
+              v-model="editState.assignee_id"
+              :seed="botSeed"
+              :readonly="readonly"
+              :aria-invalid="!!fieldErrors.assignee_id"
+              :placeholder="t('tasks.form.botAssigneePlaceholder')"
+              :aria-label="t('tasks.form.botAssignee')"
+              @update:model-value="debouncedPersist('assignee_id')"
+            />
+            <p
+              v-if="showBotExecuteHint"
+              class="flex items-start gap-next-1_5 text-next-xs text-next-muted-foreground"
+            >
+              <Icon name="sparkles" class="mt-px shrink-0" aria-hidden="true" />
+              <span>{{ t('tasks.form.botWillExecuteHint') }}</span>
+            </p>
+            <!-- Bot is waiting for a human reply (small hint next to the identity). -->
+            <p
+              v-if="botWaiting"
+              class="flex items-start gap-next-1_5 text-next-xs font-next-medium text-next-warning"
+            >
+              <Icon name="help-circle" class="mt-px shrink-0" aria-hidden="true" />
+              <span>{{ t('tasks.botWaiting.hint') }}</span>
+            </p>
+            <!-- Run counter (muted; warning + handed-over label when the cap is hit). -->
+            <p
+              v-if="showBotRuns"
+              class="flex items-center gap-next-1_5 text-next-xs"
+              :class="botHandedOver ? 'text-next-warning' : 'text-next-muted-foreground'"
+            >
+              <Icon
+                :name="botHandedOver ? 'log-out' : 'redo'"
+                class="shrink-0"
+                aria-hidden="true"
+              />
+              <span>
+                {{ t('tasks.botRuns.counter', '', { used: botRunsUsed, cap: botRunsCap }) }}
+                <template v-if="botHandedOver"> · {{ t('tasks.botRuns.handedOver') }}</template>
+              </span>
+            </p>
+          </div>
         </FormField>
 
         <FormField :label="t('tasks.detail.deadline')" :error="fieldErrors.deadline">
@@ -1084,6 +1213,20 @@ function goToApprovals(): void {
                     <Icon name="loader" class="animate-spin" />
                   </div>
                 </template>
+
+                <!-- Bot activity (only when a bot ran / is assigned). The shared
+                     TaskBotActions component owns its own 4 states + load-more. -->
+                <section
+                  v-if="task && hasBotActivity"
+                  class="mt-next-4 flex flex-col gap-next-2 border-t border-next-border pt-next-4"
+                  :aria-label="t('tasks.detail.botActivity.title')"
+                >
+                  <h4 class="flex items-center gap-next-1_5 text-next-xs font-next-semibold uppercase tracking-next-wide text-next-muted-foreground">
+                    <Icon name="sparkles" class="shrink-0" aria-hidden="true" />
+                    {{ t('tasks.detail.botActivity.title') }}
+                  </h4>
+                  <TaskBotActions :task-id="task.id" />
+                </section>
               </div>
             </template>
             <template #panel-form>
@@ -1238,17 +1381,21 @@ function goToApprovals(): void {
                           </Badge>
                         </div>
 
-                        <!-- Approver: avatar for a user, AI glyph otherwise. -->
+                        <!-- Approver: bot identity for a bot, avatar for a user,
+                             generic AI glyph + label otherwise. -->
                         <div class="mt-next-2 flex items-center gap-next-2">
-                          <template v-if="step.approver_type === 'user' && step.approver">
+                          <template v-if="stepApprover(step)?.isBot">
+                            <BotIdentity :name="stepApprover(step)?.name" size="xs" show-badge />
+                          </template>
+                          <template v-else-if="stepApprover(step)">
                             <Avatar
-                              :name="step.approver.name"
-                              :src="step.approver.avatar ?? undefined"
+                              :name="stepApprover(step)?.name ?? undefined"
+                              :src="stepApprover(step)?.avatar ?? undefined"
                               size="xs"
                               class="shrink-0"
                             />
                             <span class="min-w-0 truncate text-next-xs text-next-muted-foreground">
-                              {{ step.approver.name }}
+                              {{ stepApprover(step)?.name }}
                             </span>
                           </template>
                           <template v-else>
@@ -1278,8 +1425,14 @@ function goToApprovals(): void {
                                 :status-map="approvalStatuses"
                                 size="sm"
                               />
-                              <span class="min-w-0 truncate text-next-xs text-next-fg">
-                                {{ entry.approver?.name ?? t('tasks.detail.approval.aiApprover') }}
+                              <BotIdentity
+                                v-if="entryApprover(entry)?.isBot"
+                                :name="entryApprover(entry)?.name"
+                                size="xs"
+                                show-badge
+                              />
+                              <span v-else class="min-w-0 truncate text-next-xs text-next-fg">
+                                {{ entryApprover(entry)?.name ?? t('tasks.detail.approval.aiApprover') }}
                               </span>
                               <span
                                 v-if="entry.decided_at"
@@ -1349,8 +1502,14 @@ function goToApprovals(): void {
                           :status-map="approvalStatuses"
                           size="sm"
                         />
-                        <span class="min-w-0 truncate text-next-xs text-next-fg">
-                          {{ entry.approver?.name ?? t('tasks.detail.approval.aiApprover') }}
+                        <BotIdentity
+                          v-if="entryApprover(entry)?.isBot"
+                          :name="entryApprover(entry)?.name"
+                          size="xs"
+                          show-badge
+                        />
+                        <span v-else class="min-w-0 truncate text-next-xs text-next-fg">
+                          {{ entryApprover(entry)?.name ?? t('tasks.detail.approval.aiApprover') }}
                         </span>
                         <span
                           v-if="entry.decided_at"
@@ -1391,6 +1550,18 @@ function goToApprovals(): void {
           <h3 class="mb-next-3 shrink-0 text-next-sm font-next-semibold text-next-fg">
             {{ t('tasks.detail.tabComments') }}
           </h3>
+          <!-- Bot is waiting for a human reply → draw the eye to the composer:
+               answering below resumes the bot (Batch 4). -->
+          <Alert
+            v-if="botWaiting"
+            variant="info"
+            size="sm"
+            icon="help-circle"
+            :title="t('tasks.botWaiting.calloutTitle')"
+            class="mb-next-3 shrink-0"
+          >
+            {{ t('tasks.botWaiting.calloutBody') }}
+          </Alert>
           <TaskComments :task-id="task.id" class="min-h-0 flex-1" />
         </aside>
       </div>

@@ -123,6 +123,27 @@ const routes: RouteRecordRaw[] = [
           },
         ],
       },
+      {
+        // Bots (AI Character) module shell: inner sub-nav + the list (Batch 1) and
+        // the per-bot read-only detail. The shell hosts the `?bot` editor drawer.
+        path: 'bots',
+        component: () => import('../../pages/bots/BotsModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.bots' },
+        children: [
+          {
+            path: '',
+            name: 'next.bots',
+            component: () => import('../../pages/bots/BotsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.bots' },
+          },
+          {
+            path: ':id',
+            name: 'next.bots.detail',
+            component: () => import('../../pages/bots/BotDetailView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.bots' },
+          },
+        ],
+      },
     ],
   },
   {

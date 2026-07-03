@@ -16,6 +16,15 @@ export interface TaskAttachment {
     updated_at: string;
 }
 
+export interface TaskAssignee {
+    type: 'user' | 'bot';
+    id: string;
+    name: string;
+    email: string | null;
+    avatar: string | null;
+    is_bot: boolean;
+}
+
 export interface Task {
     id: string;
     title: string;
@@ -26,7 +35,10 @@ export interface Task {
     deadline_overdue?: number | null;
     is_overdue?: boolean;
     is_at_risk?: boolean;
-    assigned: User;
+    // Polymorphic assignee (User|Bot). Legacy `assigned` stays for the user case and is
+    // null when the task is assigned to a bot; `assignee` is the type-aware source.
+    assigned: User | null;
+    assignee?: TaskAssignee | null;
     creator?: User;
     comments?: number;
     labels: Label[];

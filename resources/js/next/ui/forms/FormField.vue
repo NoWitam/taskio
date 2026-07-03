@@ -23,11 +23,14 @@
 // State is never color-only — error/success render an icon + message too.
 import { computed, ref, toRef } from 'vue';
 import Icon from '../primitives/Icon.vue';
+import { useI18n } from '../../app/i18n';
 import {
   provideFormField,
   nextId,
   type FieldValidationState,
 } from './formField';
+
+const { t } = useI18n();
 
 const props = withDefaults(
   defineProps<{
@@ -148,7 +151,7 @@ const slotProps = computed(() => ({
     >
       {{ label }}
       <span v-if="required" class="text-next-danger" aria-hidden="true">*</span>
-      <span v-if="required" class="sr-only">(required)</span>
+      <span v-if="required" class="sr-only">{{ t('common.requiredMarker', '(required)') }}</span>
     </label>
 
     <p

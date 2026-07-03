@@ -4,9 +4,17 @@
   "configurations": [
     {
       "name": "taskio",
-      "runtimeExecutable": "php",
-      "runtimeArgs": ["artisan", "serve"],
-      "port": 8000
+      "runtimeExecutable": "cmd.exe",
+      "runtimeArgs": [
+        "/c",
+        "wsl.exe",
+        "-d",
+        "ubuntu",
+        "--",
+        "bash",
+        "/home/postgres/taskio/.claude/preview-server.sh",
+        "%PORT%"
+      ]
     }
   ]
 }

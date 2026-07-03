@@ -36,8 +36,13 @@ export interface StageStep {
   icon: string | null;
   description: string | null;
   approver_type: ApprovalStage['approver_type'];
-  /** The stage's human approver (when `approver_type === 'user'`), else null. */
+  /** The stage's human approver (when `approver_type === 'user'`), else null. Back-compat. */
   approver: ApprovalStage['approver'];
+  /**
+   * NEW (Batch 3) polymorphic approver identity — User | Bot | null. PREFERRED for
+   * rendering (resolve via `resolveApprover`, which falls back to `approver`).
+   */
+  approver_identity: ApprovalStage['approver_identity'];
   order: number;
   /** Resolved per-stage status: pending / approved / rejected / upcoming. */
   status: StageStatus;
@@ -128,6 +133,7 @@ export function buildApprovalTabModel(
       description: stage.description,
       approver_type: stage.approver_type,
       approver: stage.approver ?? null,
+      approver_identity: stage.approver_identity ?? null,
       order: stage.order,
       status,
       isCurrent,

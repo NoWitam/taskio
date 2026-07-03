@@ -46,6 +46,27 @@ export interface TaskUser {
   avatar?: string | null;
 }
 
+/**
+ * The NEW polymorphic assignee (Batch 2) emitted on both TaskListResource and the
+ * full TaskResource as `assignee`. It is `null` when the task is unassigned, or a
+ * tagged identity for a User OR a Bot executor. `next` PREFERS this field as the
+ * source of truth for rendering the assignee (the legacy `assigned` UserResource +
+ * `assigned_id` accessor are still emitted for back-compat — see `resolveAssignee`).
+ *   • type   — 'user' | 'bot' (the morph tag).
+ *   • email  — null for a bot (bots have no email).
+ *   • avatar — always null today (user avatars come via the legacy `assigned`
+ *              relation; a bot renders the sparkles glyph, never an avatar).
+ *   • is_bot — convenience boolean (true ⇔ type === 'bot').
+ */
+export interface TaskAssignee {
+  type: 'user' | 'bot';
+  id: string | number;
+  name: string | null;
+  email: string | null;
+  avatar: string | null;
+  is_bot: boolean;
+}
+
 /** A label as returned by LabelResource. */
 export interface TaskLabel {
   id: string | number;
@@ -70,9 +91,21 @@ export interface TaskListItem {
   is_overdue: boolean;
   is_at_risk: boolean;
   comments?: number;
+  /** Legacy user-assignee (UserResource; null when a bot is assigned). Back-compat. */
   assigned: TaskUser;
+  /**
+   * NEW (Batch 2) polymorphic assignee — User | Bot | null. PREFERRED for
+   * rendering (use `resolveAssignee` to fall back to `assigned`).
+   */
+  assignee?: TaskAssignee | null;
   labels: TaskLabel[];
   is_in_approval: boolean;
+  /**
+   * NEW (Batch 4) — true when a BOT assignee has asked a question and is WAITING
+   * for a human reply in the comments (the task stays in_progress). Lets the board
+   * flag waiting tasks so they're scannable. Absent on older payloads → falsy.
+   */
+  bot_waiting?: boolean;
 }
 
 /**
@@ -83,8 +116,10 @@ export interface TaskListItem {
 export interface TaskFilters {
   search?: string;
   priority?: TaskPriority | '';
-  /** Assignee user ids → serialized as `user_id[]`. */
+  /** Assignee user ids (creator OR user-assignee) → serialized as `user_id[]`. */
   user_id?: Array<string | number>;
+  /** Bot-assignee ids → serialized as `bot_id[]` (NEW, Batch 2). */
+  bot_id?: Array<string | number>;
   /** Label ids → serialized as `labels[]`. */
   labels?: Array<string | number>;
   labelOperator?: 'AND' | 'OR';
@@ -171,11 +206,28 @@ export interface TaskDetail {
   is_at_risk: boolean;
   attachments: TaskAttachment[];
   creator: TaskUser;
+  /** Legacy user-assignee (UserResource; null when a bot is assigned). Back-compat. */
   assigned: TaskUser;
+  /**
+   * NEW (Batch 2) polymorphic assignee — User | Bot | null. PREFERRED for
+   * rendering (use `resolveAssignee` to fall back to `assigned`).
+   */
+  assignee?: TaskAssignee | null;
   labels: TaskLabel[];
   form_id: string | null;
   approval_pipeline_id: string | null;
   is_in_approval: boolean;
+  /**
+   * NEW (Batch 4) interactive bot execution:
+   *   • bot_waiting  — a BOT assignee asked a question and is WAITING for a human
+   *     reply in the comments (task stays in_progress). Answering resumes the bot.
+   *   • bot_runs_used / bot_runs_cap — the run counter (used vs the cap). When
+   *     `used >= cap` the bot has handed the task over to a human.
+   * Absent on older payloads → `bot_waiting` falsy, counts default to 0.
+   */
+  bot_waiting?: boolean;
+  bot_runs_used?: number;
+  bot_runs_cap?: number;
   /**
    * The attached form (eager-loaded by TaskResource → present whenever `form_id`
    * is set). Carries `content` (the element tree) + `can_be_filled` so the Form
@@ -244,7 +296,21 @@ export interface TaskWritePayload {
   description?: string | null;
   priority: TaskPriority;
   deadline?: string | null;
-  assigned_id: string;
+  /**
+   * Legacy user-assignee uuid (StoreTasksRequest `assigned_id`). Still accepted
+   * for back-compat, but `next` drives the assignee via `assignee_type` /
+   * `assignee_id` below (which WIN when present). Kept optional so a bot-assigned
+   * write can omit it.
+   */
+  assigned_id?: string;
+  /**
+   * NEW (Batch 2) polymorphic assignee — `'user' | 'bot'` (or null to CLEAR the
+   * assignee, sent together with `assignee_id: null`). Explicit `assignee_*` wins
+   * over the legacy `assigned_id`.
+   */
+  assignee_type?: 'user' | 'bot' | null;
+  /** NEW (Batch 2) the user/bot uuid; null clears (with `assignee_type: null`). */
+  assignee_id?: string | null;
   labels?: string[];
   attachments?: string[];
   form_id?: string | null;
@@ -253,10 +319,19 @@ export interface TaskWritePayload {
 
 // --- Comments (CommentResource, cursor-paginated) -------------------------
 
+/**
+ * A comment author (CommentResource `author`). Since Batch 2 this is polymorphic:
+ * a User OR a Bot. `email` is null for a bot; `is_bot`/`type` drive the bot
+ * identity rendering (sparkles + name, no email). Posting comments stays user-only.
+ */
 export interface TaskCommentAuthor {
   id: string | number;
   name: string;
   email?: string | null;
+  /** 'user' | 'bot' (the morph tag). Absent on older payloads → treat as 'user'. */
+  type?: 'user' | 'bot';
+  /** Convenience boolean (true ⇔ the author is a bot). */
+  is_bot?: boolean;
 }
 
 /** A comment as returned by CommentResource. */

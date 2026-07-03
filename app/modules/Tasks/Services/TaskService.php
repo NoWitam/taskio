@@ -3,6 +3,7 @@
 namespace App\Modules\Tasks\Services;
 
 use App\Modules\Approvals\Services\ApprovalService;
+use App\Modules\Bot\Services\BotTaskExecutionService;
 use App\Modules\Changelog\Enums\ChangelogEvent;
 use App\Modules\Changelog\Managers\ChangelogManager;
 use App\Modules\Disk\Models\File;
@@ -32,14 +33,15 @@ class TaskService
 
     public function create(TaskDTO $dto)
     {
-        return DB::transaction(function () use ($dto) {
+        $task = DB::transaction(function () use ($dto) {
             $task = Task::create([
                 'title' => $dto->title,
                 'description' => $dto->description,
                 'status' => TaskStatus::TO_DO,
                 'priority' => $dto->priority,
                 'deadline' => $dto->deadline,
-                'assigned_id' => $dto->assigned,
+                'assignee_type' => $dto->assigneeType,
+                'assignee_id' => $dto->assigneeId,
                 'form_id' => $dto->form_id,
                 'approval_pipeline_id' => $dto->approval_pipeline_id,
             ]);
@@ -53,17 +55,23 @@ class TaskService
 
             return $task;
         });
+
+        // Kick off bot execution if the task was assigned to an executing bot.
+        app(BotTaskExecutionService::class)->maybeDispatch($task);
+
+        return $task;
     }
 
     public function update(Task $task, TaskDTO $dto)
     {
-        return DB::transaction(function () use ($task, $dto) {
+        $task = DB::transaction(function () use ($task, $dto) {
             $task->update([
                 'title' => $dto->title,
                 'description' => $dto->description,
                 'priority' => $dto->priority,
                 'deadline' => $dto->deadline,
-                'assigned_id' => $dto->assigned,
+                'assignee_type' => $dto->assigneeType,
+                'assignee_id' => $dto->assigneeId,
                 'form_id' => $dto->form_id,
                 'approval_pipeline_id' => $dto->approval_pipeline_id,
             ]);
@@ -93,6 +101,11 @@ class TaskService
 
             return $task;
         });
+
+        // A task re-assigned to an executing bot starts execution (idempotent).
+        app(BotTaskExecutionService::class)->maybeDispatch($task);
+
+        return $task;
     }
 
     public function removeAttachment(Task $task, File $file): void
@@ -133,7 +146,8 @@ class TaskService
             // `pendingApprovalProcess` feeds TaskListResource::is_in_approval via
             // Task::isInApproval()'s relationLoaded() short-circuit — eager-loading
             // it here turns a per-row exists() query into one batched query.
-            ->with('assigned', 'labels', 'pendingApprovalProcess')
+            // `assigned` (user-only, back-compat) + `assignee` (polymorphic User|Bot).
+            ->with('assigned', 'assignee', 'labels', 'pendingApprovalProcess')
             ->withCount('comments')
             ->when(
                 $status = $request->enum('status', TaskStatus::class),
@@ -151,9 +165,22 @@ class TaskService
             ->when(
                 $users = $request->array('user_id'),
                 function (Builder $query) use ($users) {
+                    // A task matches a user filter if the user created it OR is its
+                    // (User) assignee. assignee_type='user' guards against a bot id
+                    // colliding with a user id in the polymorphic column.
                     $query->where(function (Builder $usersQuery) use ($users) {
-                        $usersQuery->whereIn('creator_id', $users)->orWhereIn('assigned_id', $users);
+                        $usersQuery->whereIn('creator_id', $users)
+                            ->orWhere(function (Builder $assigneeQuery) use ($users) {
+                                $assigneeQuery->where('assignee_type', 'user')
+                                    ->whereIn('assignee_id', $users);
+                            });
                     });
+                }
+            )
+            ->when(
+                $bots = $request->array('bot_id'),
+                function (Builder $query) use ($bots) {
+                    $query->where('assignee_type', 'bot')->whereIn('assignee_id', $bots);
                 }
             )
             ->when(
@@ -220,18 +247,60 @@ class TaskService
 
             // If task moves to IN_TEST and has an approval pipeline, start approval process
             if ($status === TaskStatus::IN_TEST && $task->hasApprovalPipeline()) {
-                $task->loadMissing('approvalPipeline.stages');
-
-                $approvalService = app(ApprovalService::class);
-                $process = $approvalService->startProcess($task);
-
-                // Assign task to the first stage approver (if user)
-                if ($process->approver_id) {
-                    $task->update(['assigned_id' => $process->approver_id]);
-                }
+                $this->startApprovalForInTest($task);
             }
 
             return $task;
         });
+    }
+
+    /**
+     * Bot-driven transition to IN_PROGRESS. Bots are not interactive users, so they
+     * bypass the user-centric TaskStatus::canSetOn guard — this is the single internal
+     * seam through which a bot moves a task it is executing into progress.
+     */
+    public function botStart(Task $task): Task
+    {
+        $task->update(['status' => TaskStatus::IN_PROGRESS]);
+
+        return $task;
+    }
+
+    /**
+     * Bot-driven transition to IN_TEST. Bypasses canSetOn (bot, not user) and reuses
+     * the existing in_test -> approval trigger so an attached pipeline starts exactly
+     * as it would for a human submission.
+     */
+    public function botSubmitToTest(Task $task): Task
+    {
+        return DB::transaction(function () use ($task) {
+            $task->update(['status' => TaskStatus::IN_TEST]);
+
+            if ($task->hasApprovalPipeline()) {
+                $this->startApprovalForInTest($task);
+            }
+
+            return $task;
+        });
+    }
+
+    /**
+     * Start the approval process for a task entering IN_TEST and reassign it to the
+     * first (User) stage approver. Shared by the human (changeStatus) and bot
+     * (botSubmitToTest) paths so the behavior is identical.
+     */
+    private function startApprovalForInTest(Task $task): void
+    {
+        $task->loadMissing('approvalPipeline.stages');
+
+        $process = app(ApprovalService::class)->startProcess($task);
+
+        // Assign task to the first stage approver (always a User approver).
+        if ($process->approver_id) {
+            $task->update([
+                'assignee_type' => 'user',
+                'assignee_id' => $process->approver_id,
+            ]);
+        }
     }
 }

@@ -68,4 +68,57 @@ describe('buildTaskPayload', () => {
     expect(payload.labels).toEqual([]);
     expect(payload.attachments).toEqual([]);
   });
+
+  // --- Polymorphic assignee (Batch 2) -------------------------------------
+  const baseNoAssigned = { title: 'Task', priority: 'medium' as const };
+
+  it('emits assignee_type/assignee_id for a USER assignee (and not assigned_id)', () => {
+    const payload = buildTaskPayload({
+      ...baseNoAssigned,
+      assignee_type: 'user',
+      assignee_id: 'u1',
+    });
+    expect(payload.assignee_type).toBe('user');
+    expect(payload.assignee_id).toBe('u1');
+    expect('assigned_id' in payload).toBe(false);
+  });
+
+  it('emits assignee_type/assignee_id for a BOT assignee', () => {
+    const payload = buildTaskPayload({
+      ...baseNoAssigned,
+      assignee_type: 'bot',
+      assignee_id: 'b1',
+    });
+    expect(payload.assignee_type).toBe('bot');
+    expect(payload.assignee_id).toBe('b1');
+    expect('assigned_id' in payload).toBe(false);
+  });
+
+  it('CLEARS the assignee with BOTH null when assignee_type is null', () => {
+    const payload = buildTaskPayload({
+      ...baseNoAssigned,
+      assignee_type: null,
+      assignee_id: null,
+    });
+    expect('assignee_type' in payload).toBe(true);
+    expect(payload.assignee_type).toBeNull();
+    expect(payload.assignee_id).toBeNull();
+  });
+
+  it('forces assignee_id null when assignee_type is null even if an id was passed', () => {
+    const payload = buildTaskPayload({
+      ...baseNoAssigned,
+      assignee_type: null,
+      assignee_id: 'stale',
+    });
+    expect(payload.assignee_type).toBeNull();
+    expect(payload.assignee_id).toBeNull();
+  });
+
+  it('falls back to the legacy assigned_id when assignee_type is omitted', () => {
+    const payload = buildTaskPayload({ ...baseNoAssigned, assigned_id: 'u9' });
+    expect(payload.assigned_id).toBe('u9');
+    expect('assignee_type' in payload).toBe(false);
+    expect('assignee_id' in payload).toBe(false);
+  });
 });

@@ -20,6 +20,7 @@
 import type { ApproverType } from './types';
 import type { ApprovalPipeline } from './types';
 import type { ApprovalUser } from './types';
+import type { ApproverIdentity } from './types';
 import type { FormElement } from '../forms/types';
 import type { EntityDescription } from './entityDescription';
 
@@ -36,6 +37,8 @@ export interface QueueItemProcess {
   run_id: string;
   status: ApprovalProcessStatus;
   approver_type: ApproverType;
+  /** NEW (Batch 3) polymorphic approver identity — User | Bot | null (ai/unresolved). */
+  approver_identity?: ApproverIdentity | null;
   created_at: string | null;
 }
 
@@ -119,8 +122,13 @@ export interface ApprovalProcess {
   status: ApprovalProcessStatus;
   note: string | null;
   approver_type: ApproverType;
-  /** `whenLoaded('approver')` — present when approver_type === 'user'. */
+  /** `whenLoaded('approver')` — present when approver_type === 'user'. Back-compat. */
   approver?: ApprovalUser | null;
+  /**
+   * NEW (Batch 3) polymorphic approver identity — User | Bot | null. PREFERRED for
+   * rendering (use `resolveApprover`, falling back to the legacy `approver`).
+   */
+  approver_identity?: ApproverIdentity | null;
   /** `whenLoaded('pipeline')` — the full pipeline incl. stages. */
   pipeline?: ApprovalPipeline | null;
   /** `whenLoaded('stage')` — the stage this process targets (may be null FK). */
@@ -140,6 +148,8 @@ export interface ApprovalProcessStage {
   icon: string | null;
   description: string | null;
   approver_type: ApproverType;
+  /** NEW (Batch 3) polymorphic approver identity — User | Bot | null. */
+  approver_identity?: ApproverIdentity | null;
   order: number;
 }
 

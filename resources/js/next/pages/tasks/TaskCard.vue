@@ -20,6 +20,7 @@ import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Avatar from '../../ui/primitives/Avatar.vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
+import BotIdentity from '../bots/BotIdentity.vue';
 import { useChipOverflow } from '../../app/composables/useChipOverflow';
 import { useI18n } from '../../app/i18n';
 import {
@@ -28,6 +29,7 @@ import {
   type TaskListItem,
   type TaskStatus,
 } from './types';
+import { resolveAssignee } from './assignee';
 
 const props = withDefaults(
   defineProps<{
@@ -85,6 +87,10 @@ const deadlineStatusLabel = computed(() => {
 });
 
 const commentsCount = computed(() => props.task?.comments ?? 0);
+
+// Polymorphic assignee: prefer the new `assignee` field, fall back to `assigned`.
+// null = unassigned (tolerated). A bot renders the sparkles glyph, never an avatar.
+const assignee = computed(() => (props.task ? resolveAssignee(props.task) : null));
 
 // --- Labels overflow ("+N") ----------------------------------------------
 const labels = computed(() => props.task?.labels ?? []);
@@ -175,6 +181,18 @@ function onSelect(): void {
           >
             {{ t('tasks.inApproval', 'In approval') }}
           </Badge>
+          <!-- Bot is waiting for a human reply in the comments (Batch 4). Warning
+               tone + icon so waiting tasks are scannable on the board (not color-only). -->
+          <Badge
+            v-if="task.bot_waiting"
+            variant="warning"
+            tone="subtle"
+            size="sm"
+            icon="help-circle"
+            :title="t('tasks.botWaiting.badgeTitle')"
+          >
+            {{ t('tasks.botWaiting.badge') }}
+          </Badge>
         </div>
 
         <!-- Title (clamped to two lines). -->
@@ -186,13 +204,30 @@ function onSelect(): void {
 
     <template #footer>
       <div class="flex w-full items-center gap-next-3">
-        <!-- Assignee avatar (name available to AT via aria-label). -->
+        <!-- Assignee: bot identity glyph for a bot, user Avatar for a person,
+             a muted placeholder when unassigned. Name available to AT. -->
+        <BotIdentity
+          v-if="assignee?.isBot"
+          :name="assignee.name"
+          size="xs"
+          glyph-only
+          class="shrink-0"
+        />
         <Avatar
-          :name="task.assigned?.name"
-          :src="task.assigned?.avatar ?? undefined"
-          :alt="t('tasks.assignedTo', 'Assigned to {name}', { name: task.assigned?.name ?? '' })"
+          v-else-if="assignee"
+          :name="assignee.name ?? undefined"
+          :src="assignee.avatar ?? undefined"
+          :alt="t('tasks.assignedTo', 'Assigned to {name}', { name: assignee.name ?? '' })"
           size="xs"
         />
+        <span
+          v-else
+          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-next-full bg-next-muted text-next-muted-foreground"
+          :title="t('tasks.unassigned', 'Unassigned')"
+        >
+          <Icon name="user" aria-hidden="true" />
+          <span class="sr-only">{{ t('tasks.unassigned', 'Unassigned') }}</span>
+        </span>
 
         <!-- Labels: collapse overflow into a shared +N pill. The hidden
              measuring row holds every chip at natural width for the fit math. -->

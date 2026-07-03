@@ -6,6 +6,7 @@ use App\Modules\Approvals\Agents\ApprovalEvaluationAgent;
 use App\Modules\Approvals\Enums\ApprovalProcessStatus;
 use App\Modules\Approvals\Models\ApprovalProcess;
 use App\Modules\Approvals\Services\ApprovalService;
+use App\Modules\Bot\Models\Bot;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -18,6 +19,7 @@ class ProcessAiApprovalJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $tries = 3;
+
     public array $backoff = [30, 120, 300];
 
     public function __construct(
@@ -37,16 +39,23 @@ class ProcessAiApprovalJob implements ShouldQueue
 
         if (!$entity || !$stage) {
             Log::warning("AI Approval: missing entity or stage for process {$this->process->id}");
+
             return;
         }
 
         try {
-            $agent = new ApprovalEvaluationAgent($entity, $stage, $this->process);
+            // For a NAMED bot approver, resolve the bot so its persona colors the
+            // verdict. A generic AI stage passes null and behaves exactly as before.
+            $bot = $this->process->isBotApprover() && $this->process->approver_id
+                ? Bot::find($this->process->approver_id)
+                : null;
+
+            $agent = new ApprovalEvaluationAgent($entity, $stage, $this->process, $bot);
 
             $response = $agent->prompt(
                 prompt: 'Oceń element do zatwierdzenia.',
-                provider: 'openai',
-                model: 'gpt-4o',
+                provider: config('ai.provider'),
+                model: config('ai.model'),
             );
 
             $decision = ApprovalProcessStatus::from($response['decision']);

@@ -16,7 +16,14 @@ class ApprovalStageResource extends JsonResource
             'icon' => $this->icon?->value,
             'description' => $this->description,
             'approver_type' => $this->approver_type->value,
+            // Back-compat: user-only approver (null for ai/bot stages).
             'approver' => UserResource::make($this->whenLoaded('approver')),
+            // Polymorphic approver identity (User OR Bot, null for a generic AI stage).
+            'approver_identity' => ApproverResource::present(
+                $this->approver_type,
+                $this->whenLoaded('approver'),
+                $this->whenLoaded('approverBot'),
+            ),
             'order' => $this->order,
         ];
     }

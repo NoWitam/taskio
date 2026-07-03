@@ -10,8 +10,10 @@
 import { computed, ref } from 'vue';
 import Textarea from '../../ui/forms/Textarea.vue';
 import Button from '../../ui/primitives/Button.vue';
+import Badge from '../../ui/primitives/Badge.vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import Avatar from '../../ui/primitives/Avatar.vue';
+import BotIdentity from '../bots/BotIdentity.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Alert from '../../ui/feedback/Alert.vue';
@@ -48,6 +50,11 @@ const error = computed(() => store.commentsError);
 
 function isOwn(authorId: string | number): boolean {
   return auth.user != null && String(auth.user.id) === String(authorId);
+}
+
+/** A bot author renders the bot identity (sparkles + name, no email). */
+function isBotAuthor(author: { type?: string; is_bot?: boolean } | undefined): boolean {
+  return author?.is_bot === true || author?.type === 'bot';
 }
 
 function formatDateTime(iso: string): string {
@@ -203,12 +210,29 @@ async function remove(id: string | number): Promise<void> {
       <template v-else>
         <ul class="flex flex-col gap-next-4">
           <li v-for="comment in comments" :key="comment.id" class="flex gap-next-3">
-            <Avatar :name="comment.author?.name" size="sm" class="shrink-0" />
+            <!-- Bot author → sparkles glyph (no avatar); human → Avatar. -->
+            <BotIdentity
+              v-if="isBotAuthor(comment.author)"
+              :name="comment.author?.name"
+              size="sm"
+              glyph-only
+              class="shrink-0"
+            />
+            <Avatar v-else :name="comment.author?.name" size="sm" class="shrink-0" />
             <div class="flex min-w-0 flex-1 flex-col gap-next-1">
               <div class="flex flex-wrap items-baseline gap-next-2">
                 <span class="text-next-sm font-next-semibold text-next-fg">
                   {{ comment.author?.name }}
                 </span>
+                <Badge
+                  v-if="isBotAuthor(comment.author)"
+                  variant="primary"
+                  tone="subtle"
+                  size="sm"
+                  icon="sparkles"
+                >
+                  {{ t('bots.identity.badge') }}
+                </Badge>
                 <time :datetime="comment.created_at" class="text-next-xs text-next-muted-foreground">
                   {{ formatDateTime(comment.created_at) }}
                 </time>

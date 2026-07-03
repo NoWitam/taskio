@@ -271,8 +271,12 @@ export const useFormsStore = defineStore('next-forms', () => {
   /** Create a form (`POST /api/forms`). Prepends to the list when initialized. */
   async function createForm(payload: FormWritePayload): Promise<FormDetail> {
     const res = await api.post<FormDetailResponse>('/forms', payload);
-    if (items.value.length > 0) items.value = [res.data as FormSummary, ...items.value];
-    if (total.value != null) total.value += 1;
+    // Anonymous forms are hidden from the browse list — never inject them into it
+    // (e.g. when created inline from a task while the Forms page is mounted).
+    if (!payload.is_anonymous) {
+      if (items.value.length > 0) items.value = [res.data as FormSummary, ...items.value];
+      if (total.value != null) total.value += 1;
+    }
     return res.data;
   }
 

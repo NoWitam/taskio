@@ -181,11 +181,13 @@ watch(() => props.filters, () => {
                     <span class="font-semibold text-sm"> {{ task.deadline || t('tasks.noDeadline') }} </span>
                 </div>
 
-                <Avatar 
-                    :name="task.assigned.name"
-                    :src="task.assigned.avatar"
+                <Avatar
+                    v-if="task.assigned || task.assignee"
+                    :name="(task.assigned || task.assignee).name"
+                    :src="task.assigned?.avatar"
                     tooltip
                 />
+                <span v-else class="text-sm text-muted-foreground">{{ t('tasks.unassigned') }}</span>
             </div>
         </Card>
 

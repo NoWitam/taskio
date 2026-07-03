@@ -69,6 +69,7 @@ const primaryNav: NavLink[] = [
   { key: 'tasks', labelKey: 'nav.tasks', icon: 'list-checks', to: '/tasks' },
   { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', to: '/forms' },
   { key: 'approvals', labelKey: 'nav.approvals', icon: 'git-branch', to: '/approvals' },
+  { key: 'bots', labelKey: 'nav.bots', icon: 'sparkles', to: '/bots' },
 ];
 
 // IA preview — modules not built yet are shown disabled so the structure is visible.
