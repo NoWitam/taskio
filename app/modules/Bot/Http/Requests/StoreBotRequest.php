@@ -2,7 +2,6 @@
 
 namespace App\Modules\Bot\Http\Requests;
 
-use App\Modules\Bot\Enums\BotStatus;
 use App\Modules\Bot\Enums\BotTool;
 use App\Modules\Bot\Models\Bot;
 use Illuminate\Foundation\Http\FormRequest;
@@ -19,7 +18,8 @@ class StoreBotRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
-            'status' => ['nullable', Rule::enum(BotStatus::class)],
+            // status is NOT accepted here — a bot is created inactive and toggled via
+            // PATCH /bots/{bot}/status only. Any status sent in the body is ignored.
             'description' => ['nullable', 'string', 'max:2500'],
             // General-info icon (an icon identifier for the always-visible header).
             'icon' => ['nullable', 'string', 'max:100'],
@@ -27,10 +27,15 @@ class StoreBotRequest extends FormRequest
             // Text module (mandatory — persona drives the character).
             'persona' => ['required', 'string', 'max:10000'],
             'style' => ['nullable', 'string', 'max:5000'],
-            'dictionary' => ['nullable', 'array'],
-            'dictionary.*' => ['string', 'max:255'],
-            'phrases' => ['nullable', 'array'],
-            'phrases.*' => ['string', 'max:255'],
+            // dictionary: word/expression + what it means (the bot's slang / "gwara").
+            'dictionary' => ['nullable', 'array', 'max:100'],
+            'dictionary.*.term' => ['required', 'string', 'max:255'],
+            'dictionary.*.meaning' => ['required', 'string', 'max:500'],
+            // phrases: signature catchphrase/hook + optional context.
+            'phrases' => ['nullable', 'array', 'max:100'],
+            'phrases.*.phrase' => ['required', 'string', 'max:255'],
+            'phrases.*.context' => ['nullable', 'string', 'max:500'],
+            // prohibitions: plain list of topics/behaviours to avoid (unchanged).
             'prohibitions' => ['nullable', 'array'],
             'prohibitions.*' => ['string', 'max:255'],
 

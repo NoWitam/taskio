@@ -31,6 +31,8 @@ import type {
   BotFilters,
   BotListItem,
   BotListResponse,
+  BotStatus,
+  BotStatusPayload,
   BotWritePayload,
 } from '../../pages/bots/types';
 
@@ -247,6 +249,20 @@ export const useBotsStore = defineStore('next-bots', () => {
     return updated;
   }
 
+  /**
+   * Toggle a bot's live status (`PATCH /bots/{id}/status` — creator-only). Returns
+   * the refreshed BotResource and reconciles the detail cache + the list row in
+   * place. A 403 (non-creator) / 422 (invalid) bubbles up for the caller to toast.
+   */
+  async function setStatus(id: string, status: BotStatus): Promise<BotDetail> {
+    const body: BotStatusPayload = { status };
+    const res = await api.patch<BotDetailResponse>(`/bots/${id}/status`, body);
+    const updated = res.data;
+    replaceInList(updated);
+    if (detail.value && detail.value.id === id) detail.value = updated;
+    return updated;
+  }
+
   /** Soft-delete a bot (`DELETE /bots/{id}`). Drops it from the list. */
   async function deleteBot(id: string): Promise<void> {
     await api.delete<{ message: string }>(`/bots/${id}`);
@@ -294,9 +310,10 @@ export const useBotsStore = defineStore('next-bots', () => {
     removeFromList,
     // detail
     fetchBot,
-    // create / update / delete / restore
+    // create / update / status / delete / restore
     createBot,
     updateBot,
+    setStatus,
     deleteBot,
     restoreBot,
   };

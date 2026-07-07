@@ -13,30 +13,32 @@
 // An Edit action opens the `?bot=<id>` editor drawer (gated on can_be_edited).
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import PageHeader from '../../ui/patterns/PageHeader.vue';
 import Surface from '../../ui/layout/Surface.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
-import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Badge from '../../ui/primitives/Badge.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Icon from '../../ui/primitives/Icon.vue';
-import Tabs, { type TabItem } from '../../ui/navigation/Tabs.vue';
 import BotActionTimeline from './BotActionTimeline.vue';
 import BotInbox from './BotInbox.vue';
-import { botStatusMap } from './botStatus';
 import { toolIcon, toolLabel, isKnownTool } from './botToolMeta';
 import { useBotsStore } from '../../app/stores/bots';
+import { useToast } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
-import type { IconName } from '../../ui/primitives/icons';
 
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const store = useBotsStore();
+const toast = useToast();
 
 const botId = computed(() => String(route.params.id));
-const statusMap = computed(() => botStatusMap(t));
+
+// The active detail section, chosen from the module sidebar (`?section=`).
+const section = computed(() => {
+  const s = route.query.section;
+  return (Array.isArray(s) ? s[0] : s) || 'inbox';
+});
 
 // The cached detail (when it matches the route id), else null until fetched.
 // Inference flows from `store.detail` (Pinia widens the `null`-literal visual/
@@ -80,15 +82,29 @@ const knowledge = computed(() => bot.value?.knowledge?.entries ?? []);
 
 const canEdit = computed(() => bot.value?.can_be_edited === true);
 
-// "Tasks & activity": a tabbed surface — the bot's action history timeline + the
-// operational INBOX (its tasks bucketed by execution state, Batch 7). Each sub-view
-// owns its own fetch + four states.
-type ActivityTab = 'activity' | 'inbox';
-const activityTab = ref<ActivityTab>('activity');
-const activityTabItems = computed<TabItem<ActivityTab>[]>(() => [
-  { value: 'activity', label: t('bots.detail.tabActivity'), icon: 'clock' },
-  { value: 'inbox', label: t('bots.detail.tabInbox'), icon: 'inbox' },
-]);
+// --- Status action (Activate / Deactivate) --------------------------------
+// A bot's live status is toggled via the dedicated endpoint (never the form).
+// Gated on `can_be_edited` (creator-only server-side). Optimistic-free: the store
+// PATCHes + reconciles; we toast on success, and on 403/422 (danger toast).
+const isActive = computed(() => bot.value?.status === 'active');
+const togglingStatus = ref(false);
+async function onToggleStatus(): Promise<void> {
+  if (!bot.value || togglingStatus.value) return;
+  const next = isActive.value ? 'inactive' : 'active';
+  togglingStatus.value = true;
+  try {
+    await store.setStatus(bot.value.id, next);
+    toast.success(
+      next === 'active'
+        ? t('bots.statusAction.activated')
+        : t('bots.statusAction.deactivated'),
+    );
+  } catch {
+    toast.danger(t('bots.statusAction.error'));
+  } finally {
+    togglingStatus.value = false;
+  }
+}
 
 function onEdit(): void {
   if (bot.value) void router.push({ query: { ...route.query, bot: bot.value.id } });
@@ -133,25 +149,34 @@ function onBack(): void {
     </div>
 
     <template v-else-if="bot">
-      <!-- Header: back link, name, status, edit. -->
-      <PageHeader :title="bot.name" :icon="(bot.icon as IconName) || 'sparkles'">
-        <template #description>
-          <span class="flex items-center gap-next-2">
-            <StatusBadge :status="bot.status" :status-map="statusMap" size="sm" />
-            <span v-if="bot.description" class="truncate">{{ bot.description }}</span>
-          </span>
-        </template>
-        <template #actions>
-          <Button variant="ghost" leading-icon="arrow-left" @click="onBack">
-            {{ t('bots.detail.back') }}
-          </Button>
-          <Button v-if="canEdit" leading-icon="pencil" @click="onEdit">
-            {{ t('bots.actions.edit') }}
-          </Button>
-        </template>
-      </PageHeader>
+      <!-- Slim action bar — the bot's identity + section nav live in the module
+           sidebar (Forms-style); the content keeps only the bot's actions. -->
+      <div class="flex flex-wrap items-center justify-end gap-next-2">
+        <Button variant="ghost" leading-icon="arrow-left" @click="onBack">
+          {{ t('bots.detail.back') }}
+        </Button>
+        <Button
+          v-if="canEdit"
+          :variant="isActive ? 'outline' : 'primary'"
+          :leading-icon="isActive ? 'circle' : 'check-circle'"
+          :loading="togglingStatus"
+          :disabled="togglingStatus"
+          @click="onToggleStatus"
+        >
+          {{ isActive ? t('bots.statusAction.deactivate') : t('bots.statusAction.activate') }}
+        </Button>
+        <Button v-if="canEdit" leading-icon="pencil" @click="onEdit">
+          {{ t('bots.actions.edit') }}
+        </Button>
+      </div>
 
-      <!-- TEXT MODULE (the mandatory persona). -->
+      <!-- The active SECTION (chosen from the module sidebar via ?section=). -->
+      <BotInbox v-if="section === 'inbox'" :bot-id="bot.id" />
+      <BotActionTimeline v-else-if="section === 'activity'" :bot-id="bot.id" />
+      <template v-else>
+        <div class="flex flex-col gap-next-6">
+
+            <!-- TEXT MODULE (the mandatory persona). -->
       <Surface bg="card" border elevation="sm" radius="lg" class="flex flex-col gap-next-4 p-next-6">
         <header class="flex items-center gap-next-2">
           <span
@@ -177,42 +202,48 @@ function onBack(): void {
           <p class="whitespace-pre-wrap text-next-sm text-next-fg">{{ bot.style }}</p>
         </div>
 
-        <div class="grid grid-cols-1 gap-next-4 next-md:grid-cols-3">
-          <div class="flex flex-col gap-next-2">
-            <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
-              {{ t('bots.detail.dictionary') }}
-            </h3>
-            <div v-if="dictionary.length" class="flex flex-wrap gap-next-1">
-              <Badge v-for="word in dictionary" :key="word" variant="neutral" tone="subtle" size="sm">
-                {{ word }}
-              </Badge>
-            </div>
-            <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.emptyList') }}</p>
-          </div>
+        <!-- Dictionary — term → meaning pairs (not raw chips). -->
+        <div class="flex flex-col gap-next-2">
+          <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+            {{ t('bots.detail.dictionary') }}
+          </h3>
+          <ul v-if="dictionary.length" class="flex flex-col gap-next-1">
+            <li v-for="(entry, i) in dictionary" :key="i" class="flex flex-wrap items-baseline gap-next-2 text-next-sm">
+              <span class="font-next-semibold text-next-fg">{{ entry.term }}</span>
+              <span class="text-next-muted-foreground">—</span>
+              <span class="min-w-0 text-next-muted-foreground">{{ entry.meaning }}</span>
+            </li>
+          </ul>
+          <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.emptyList') }}</p>
+        </div>
 
-          <div class="flex flex-col gap-next-2">
-            <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
-              {{ t('bots.detail.phrases') }}
-            </h3>
-            <div v-if="phrases.length" class="flex flex-wrap gap-next-1">
-              <Badge v-for="phrase in phrases" :key="phrase" variant="primary" tone="subtle" size="sm">
-                {{ phrase }}
-              </Badge>
-            </div>
-            <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.emptyList') }}</p>
-          </div>
+        <!-- Phrases — phrase (+ optional context). -->
+        <div class="flex flex-col gap-next-2">
+          <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+            {{ t('bots.detail.phrases') }}
+          </h3>
+          <ul v-if="phrases.length" class="flex flex-col gap-next-1">
+            <li v-for="(entry, i) in phrases" :key="i" class="flex flex-wrap items-baseline gap-next-2 text-next-sm">
+              <span class="font-next-medium text-next-fg">“{{ entry.phrase }}”</span>
+              <span v-if="entry.context" class="min-w-0 text-next-muted-foreground">
+                {{ t('bots.detail.phraseContext', '', { context: entry.context }) }}
+              </span>
+            </li>
+          </ul>
+          <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.emptyList') }}</p>
+        </div>
 
-          <div class="flex flex-col gap-next-2">
-            <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
-              {{ t('bots.detail.prohibitions') }}
-            </h3>
-            <div v-if="prohibitions.length" class="flex flex-wrap gap-next-1">
-              <Badge v-for="word in prohibitions" :key="word" variant="danger" tone="subtle" size="sm">
-                {{ word }}
-              </Badge>
-            </div>
-            <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.emptyList') }}</p>
+        <!-- Prohibitions — a plain topic list (chips). -->
+        <div class="flex flex-col gap-next-2">
+          <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+            {{ t('bots.detail.prohibitions') }}
+          </h3>
+          <div v-if="prohibitions.length" class="flex flex-wrap gap-next-1">
+            <Badge v-for="word in prohibitions" :key="word" variant="danger" tone="subtle" size="sm">
+              {{ word }}
+            </Badge>
           </div>
+          <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.emptyList') }}</p>
         </div>
       </Surface>
 
@@ -335,37 +366,8 @@ function onBack(): void {
           <p class="text-next-sm text-next-muted-foreground">{{ t('bots.detail.audioPlaceholder') }}</p>
         </Surface>
       </div>
-
-      <!-- TASKS & ACTIVITY — the bot's action-history timeline + its tasks. -->
-      <Surface bg="card" border elevation="sm" radius="lg" class="flex flex-col gap-next-4 p-next-6">
-        <header class="flex items-center gap-next-2">
-          <span
-            class="flex h-8 w-8 items-center justify-center rounded-next-md bg-next-primary-subtle text-next-primary-subtle-foreground"
-            aria-hidden="true"
-          >
-            <Icon name="clock" />
-          </span>
-          <h2 class="text-next-base font-next-semibold text-next-fg">{{ t('bots.detail.activityTitle') }}</h2>
-        </header>
-
-        <Tabs
-          v-model="activityTab"
-          :items="activityTabItems"
-          variant="pills"
-          :aria-label="t('bots.detail.activityTitle')"
-        >
-          <template #panel-activity>
-            <div class="pt-next-3">
-              <BotActionTimeline :bot-id="bot.id" />
-            </div>
-          </template>
-          <template #panel-inbox>
-            <div class="pt-next-3">
-              <BotInbox :bot-id="bot.id" />
-            </div>
-          </template>
-        </Tabs>
-      </Surface>
+        </div>
+      </template>
     </template>
   </div>
 </template>

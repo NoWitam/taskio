@@ -33,6 +33,12 @@ class BotPolicy
         return $user !== null && $bot->creator_id === $user->id;
     }
 
+    /** Toggling a bot's status (active|inactive) is a creator-only action (mirrors update). */
+    public function changeStatus(?User $user, Bot $bot): bool
+    {
+        return $user !== null && $bot->creator_id === $user->id;
+    }
+
     public function delete(?User $user, Bot $bot): bool
     {
         return $user !== null && $bot->creator_id === $user->id;

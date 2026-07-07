@@ -296,19 +296,11 @@ function onCancel(): void {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <!-- Header: title + actions (the drawer adds no chrome). -->
-    <header class="flex items-center justify-between gap-next-3 border-b border-next-border p-next-4">
+    <!-- SLIM header: just the title (Cancel/Save moved to the sticky footer). -->
+    <header class="flex items-center gap-next-3 border-b border-next-border p-next-4">
       <h2 class="min-w-0 truncate text-next-lg font-next-semibold text-next-fg">
         {{ isEdit ? t('approvals.builder.editTitle') : t('approvals.builder.createTitle') }}
       </h2>
-      <div class="flex shrink-0 items-center gap-next-2">
-        <Button variant="ghost" :disabled="saving" @click="onCancel">
-          {{ t('approvals.builder.cancel') }}
-        </Button>
-        <Button leading-icon="check" :loading="saving" :disabled="detailError" @click="onSubmit">
-          {{ saving ? t('approvals.builder.saving') : t('approvals.builder.save') }}
-        </Button>
-      </div>
     </header>
 
     <!-- Deep-link without a prefetched detail → a clear error (no blank form). -->
@@ -483,5 +475,18 @@ function onCancel(): void {
         </ol>
       </section>
     </div>
+
+    <!-- STICKY FOOTER: Cancel / Save stay visible while the body scrolls. -->
+    <footer
+      v-if="!detailError"
+      class="flex shrink-0 items-center justify-end gap-next-2 border-t border-next-border bg-next-card p-next-4"
+    >
+      <Button variant="ghost" :disabled="saving" @click="onCancel">
+        {{ t('approvals.builder.cancel') }}
+      </Button>
+      <Button leading-icon="check" :loading="saving" @click="onSubmit">
+        {{ saving ? t('approvals.builder.saving') : t('approvals.builder.save') }}
+      </Button>
+    </footer>
   </div>
 </template>

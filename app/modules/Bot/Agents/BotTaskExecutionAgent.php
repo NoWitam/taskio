@@ -40,8 +40,8 @@ class BotTaskExecutionAgent implements Agent, HasTools
     {
         $persona = $this->bot->persona ?: 'Brak zdefiniowanej persony.';
         $style = $this->bot->style ?: 'Brak zdefiniowanego stylu.';
-        $dictionary = $this->joinList($this->bot->dictionary);
-        $phrases = $this->joinList($this->bot->phrases);
+        $dictionary = $this->renderDictionary($this->bot->dictionaryEntries());
+        $phrases = $this->renderPhrases($this->bot->phraseEntries());
         $prohibitions = $this->joinList($this->bot->prohibitions);
 
         $formRule = $this->task->form_id
@@ -110,5 +110,39 @@ class BotTaskExecutionAgent implements Agent, HasTools
     private function joinList(?array $values): string
     {
         return empty($values) ? 'brak' : implode(', ', $values);
+    }
+
+    /**
+     * Render dictionary entries as `term — meaning` lines.
+     *
+     * @param  array<int, array{term: string, meaning: string}>  $entries
+     */
+    private function renderDictionary(array $entries): string
+    {
+        if ($entries === []) {
+            return 'brak';
+        }
+
+        return implode('; ', array_map(
+            fn ($e) => filled($e['meaning']) ? "{$e['term']} — {$e['meaning']}" : $e['term'],
+            $entries
+        ));
+    }
+
+    /**
+     * Render phrase entries as `phrase (kontekst: …)` lines (context omitted when empty).
+     *
+     * @param  array<int, array{phrase: string, context: string|null}>  $entries
+     */
+    private function renderPhrases(array $entries): string
+    {
+        if ($entries === []) {
+            return 'brak';
+        }
+
+        return implode('; ', array_map(
+            fn ($e) => filled($e['context']) ? "{$e['phrase']} (kontekst: {$e['context']})" : $e['phrase'],
+            $entries
+        ));
     }
 }

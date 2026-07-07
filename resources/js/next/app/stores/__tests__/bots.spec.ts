@@ -33,7 +33,7 @@ function listItem(overrides: Partial<BotListItem> = {}): BotListItem {
   return {
     id: 'b1',
     name: 'Bot',
-    status: 'draft',
+    status: 'inactive',
     description: null,
     icon: null,
     has_text_module: true,
@@ -48,7 +48,7 @@ function detail(overrides: Partial<BotDetail> = {}): BotDetail {
   return {
     id: 'b1',
     name: 'Bot',
-    status: 'draft',
+    status: 'inactive',
     description: null,
     icon: null,
     persona: 'You are a helpful bot.',
@@ -228,7 +228,7 @@ describe('next bots store', () => {
     await store.fetchBot('b1');
 
     apiMock.put.mockResolvedValueOnce({ data: detail({ id: 'b1', name: 'Renamed', status: 'active' }) });
-    await store.updateBot('b1', { name: 'Renamed', persona: 'p', status: 'active' });
+    await store.updateBot('b1', { name: 'Renamed', persona: 'p' });
 
     expect(store.items).toHaveLength(1);
     expect(store.items[0].name).toBe('Renamed');

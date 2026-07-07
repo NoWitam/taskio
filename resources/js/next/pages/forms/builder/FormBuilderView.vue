@@ -206,19 +206,12 @@ function cancel(): void {
 <template>
   <!-- Full-height page: header + metadata fixed; columns scroll, not the page. -->
   <div class="flex min-h-0 flex-1 flex-col gap-next-4">
-    <div class="flex flex-wrap items-center justify-between gap-next-3">
-      <div class="flex items-center gap-next-3">
-        <Button variant="ghost" size="icon-sm" leading-icon="arrow-left" :aria-label="t('common.back')" @click="cancel" />
-        <h1 class="text-next-xl font-next-semibold text-next-fg">
-          {{ isEdit ? t('forms.builder.editTitle') : anonymous ? t('forms.builder.createAnonymousTitle') : t('forms.builder.createTitle') }}
-        </h1>
-      </div>
-      <div class="flex items-center gap-next-2">
-        <Button variant="outline" @click="cancel">{{ t('common.cancel') }}</Button>
-        <Button leading-icon="check" :loading="saving" @click="save">
-          {{ isEdit ? t('common.save') : t('common.create') }}
-        </Button>
-      </div>
+    <!-- Slim toolbar: back + title. Cancel/Save moved to the sticky footer below. -->
+    <div class="flex items-center gap-next-3">
+      <Button variant="ghost" size="icon-sm" leading-icon="arrow-left" :aria-label="t('common.back')" @click="cancel" />
+      <h1 class="text-next-xl font-next-semibold text-next-fg">
+        {{ isEdit ? t('forms.builder.editTitle') : anonymous ? t('forms.builder.createAnonymousTitle') : t('forms.builder.createTitle') }}
+      </h1>
     </div>
 
     <EmptyState
@@ -324,6 +317,14 @@ function cancel(): void {
             </p>
           </template>
         </Surface>
+      </div>
+
+      <!-- STICKY FOOTER: Cancel / Save stay visible below the builder columns. -->
+      <div class="flex shrink-0 items-center justify-end gap-next-2 border-t border-next-border pt-next-4">
+        <Button variant="outline" :disabled="saving" @click="cancel">{{ t('common.cancel') }}</Button>
+        <Button leading-icon="check" :loading="saving" @click="save">
+          {{ isEdit ? t('common.save') : t('common.create') }}
+        </Button>
       </div>
     </template>
   </div>

@@ -8,18 +8,23 @@
 // helpers PRESERVE the `?bot` overlay key so a filter change never closes the
 // editor. A single "Bots" sub-nav item is enough for now; the structure is ready
 // for future sub-views.
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Surface from '../../ui/layout/Surface.vue';
 import Icon, { type IconName } from '../../ui/primitives/Icon.vue';
+import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import BotEditorDrawer from './BotEditorDrawer.vue';
+import { botStatusMap } from './botStatus';
+import { useBotsStore } from '../../app/stores/bots';
 import { useI18n } from '../../app/i18n';
 import type { BotDetail } from './types';
 
 const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
+const store = useBotsStore();
+const statusMap = computed(() => botStatusMap(t));
 
 interface SubNavItem {
   key: string;
@@ -33,6 +38,42 @@ const subNav = computed<SubNavItem[]>(() => [
 
 function isActive(name?: string): boolean {
   return !!name && route.name === name;
+}
+
+// --- Detail sidebar (the Forms-style in-module nav for an open bot) --------
+// When a bot is open, the aside shows back-to-list + the bot's info + a section
+// sub-nav (Inbox / Activity / Configuration) driven by `?section=`.
+const botId = computed(() =>
+  route.name === 'next.bots.detail' && route.params.id ? String(route.params.id) : null,
+);
+const activeBot = computed(() => (botId.value && store.detail?.id === botId.value ? store.detail : null));
+const currentSection = computed(() => {
+  const s = route.query.section;
+  return (Array.isArray(s) ? s[0] : s) || 'inbox';
+});
+
+// Ensure the open bot is loaded so the aside can render its identity (Forms pattern).
+watch(
+  botId,
+  (id) => {
+    if (id && store.detail?.id !== id) void store.fetchBot(id);
+  },
+  { immediate: true },
+);
+
+interface DetailNavItem {
+  key: string;
+  label: string;
+  icon: IconName;
+  section: string;
+}
+const detailNav = computed<DetailNavItem[]>(() => [
+  { key: 'inbox', label: t('bots.detail.tabInbox'), icon: 'inbox', section: 'inbox' },
+  { key: 'activity', label: t('bots.detail.tabActivity'), icon: 'clock', section: 'activity' },
+  { key: 'config', label: t('bots.detail.tabConfig'), icon: 'settings', section: 'config' },
+]);
+function sectionLink(section: string) {
+  return { name: 'next.bots.detail', params: { id: botId.value ?? '' }, query: { ...route.query, section } };
 }
 
 // --- Editor DRAWER (query-driven overlay) ---------------------------------
@@ -73,37 +114,81 @@ function onEditorSaved(_bot: BotDetail): void {
       radius="lg"
       class="hidden w-64 shrink-0 min-h-0 flex-col overflow-y-auto next-lg:flex"
     >
-      <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
-        <span
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
-          aria-hidden="true"
-        >
-          <Icon name="sparkles" class="text-next-lg" />
-        </span>
-        <div class="min-w-0">
-          <h2 class="truncate text-next-sm font-next-semibold text-next-fg">
-            {{ t('bots.title') }}
-          </h2>
-          <p class="mt-next-0_5 text-next-xs text-next-muted-foreground">
-            {{ t('bots.module.selectHint') }}
-          </p>
-        </div>
-      </div>
-
-      <nav class="flex flex-col gap-next-0_5 p-next-2">
+      <!-- A bot is OPEN: back-to-list + its info + section sub-nav (Forms pattern). -->
+      <template v-if="botId">
         <RouterLink
-          v-for="item in subNav"
-          :key="item.key"
-          :to="item.to"
-          class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
-          :class="isActive(item.to.name)
-            ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
-            : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
+          :to="{ name: 'next.bots' }"
+          class="flex items-center gap-next-2 border-b border-next-border px-next-4 py-next-3 text-next-sm font-next-medium text-next-fg transition-colors hover:text-next-primary"
         >
-          <Icon :name="item.icon" class="shrink-0" />
-          {{ item.label }}
+          <Icon name="arrow-left" class="shrink-0" />
+          {{ t('bots.module.allBots') }}
         </RouterLink>
-      </nav>
+
+        <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
+          <span
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
+            aria-hidden="true"
+          >
+            <Icon :name="(activeBot?.icon as IconName) || 'sparkles'" class="text-next-lg" />
+          </span>
+          <div class="min-w-0">
+            <h3 class="truncate text-next-sm font-next-semibold text-next-fg">{{ activeBot?.name ?? '…' }}</h3>
+            <StatusBadge
+              v-if="activeBot"
+              :status="activeBot.status"
+              :status-map="statusMap"
+              size="sm"
+              class="mt-next-1"
+            />
+          </div>
+        </div>
+
+        <nav class="flex flex-col gap-next-0_5 p-next-2">
+          <RouterLink
+            v-for="item in detailNav"
+            :key="item.key"
+            :to="sectionLink(item.section)"
+            class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
+            :class="currentSection === item.section
+              ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
+              : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
+          >
+            <Icon :name="item.icon" class="shrink-0" />
+            {{ item.label }}
+          </RouterLink>
+        </nav>
+      </template>
+
+      <!-- On the LIST: module header + "All bots". -->
+      <template v-else>
+        <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
+          <span
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
+            aria-hidden="true"
+          >
+            <Icon name="sparkles" class="text-next-lg" />
+          </span>
+          <div class="min-w-0">
+            <h2 class="truncate text-next-sm font-next-semibold text-next-fg">{{ t('bots.title') }}</h2>
+            <p class="mt-next-0_5 text-next-xs text-next-muted-foreground">{{ t('bots.module.selectHint') }}</p>
+          </div>
+        </div>
+
+        <nav class="flex flex-col gap-next-0_5 p-next-2">
+          <RouterLink
+            v-for="item in subNav"
+            :key="item.key"
+            :to="item.to"
+            class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
+            :class="isActive(item.to.name)
+              ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
+              : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
+          >
+            <Icon :name="item.icon" class="shrink-0" />
+            {{ item.label }}
+          </RouterLink>
+        </nav>
+      </template>
     </Surface>
 
     <!-- Content: the list (or the per-bot detail). -->

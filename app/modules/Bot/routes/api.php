@@ -12,6 +12,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('bots/{id}/restore', [BotController::class, 'restore'])->name('bots.restore');
 
+    // Status toggle (active|inactive) — the only path that mutates a bot's status.
+    Route::patch('bots/{bot}/status', [BotController::class, 'changeStatus'])->name('bots.status');
+
     // Bot inbox: operational view + cap-exempt manual retry (B7).
     Route::get('bots/{bot}/inbox', [BotInboxController::class, 'index'])->name('bots.inbox');
     Route::post('bots/{bot}/tasks/{task}/retry', [BotInboxController::class, 'retry'])->name('bots.tasks.retry');

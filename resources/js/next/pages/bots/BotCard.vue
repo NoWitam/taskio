@@ -36,6 +36,8 @@ const emit = defineEmits<{
   (e: 'open', bot: BotListItem): void;
   (e: 'edit', bot: BotListItem): void;
   (e: 'delete', bot: BotListItem): void;
+  /** Toggle the bot's live status (Activate ⇄ Deactivate); parent calls the store. */
+  (e: 'toggle-status', bot: BotListItem): void;
 }>();
 
 const { t } = useI18n();
@@ -44,6 +46,10 @@ const statusMap = computed(() => botStatusMap(t));
 
 const canEdit = computed(() => props.bot.is_owner);
 const canDelete = computed(() => props.bot.is_owner);
+const isActive = computed(() => props.bot.status === 'active');
+const statusDisabledReason = computed<string | undefined>(() =>
+  props.bot.is_owner ? undefined : t('bots.actions.statusDisabledOwner'),
+);
 
 const editDisabledReason = computed<string | undefined>(() =>
   props.bot.is_owner ? undefined : t('bots.actions.editDisabledOwner'),
@@ -91,6 +97,15 @@ function onOpen(): void {
           />
         </template>
 
+        <!-- Activate / Deactivate — toggles live status (creator-only). -->
+        <DropdownMenuItem
+          :icon="isActive ? 'circle' : 'check-circle'"
+          :disabled="!canEdit"
+          :label="statusDisabledReason ?? (isActive ? t('bots.statusAction.deactivate') : t('bots.statusAction.activate'))"
+          @select="canEdit && emit('toggle-status', bot)"
+        >
+          {{ isActive ? t('bots.statusAction.deactivate') : t('bots.statusAction.activate') }}
+        </DropdownMenuItem>
         <DropdownMenuItem
           icon="pencil"
           :disabled="!canEdit"

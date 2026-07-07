@@ -94,6 +94,58 @@ class Bot extends AbstractModel
     }
 
     /**
+     * Dictionary entries as `{ term, meaning }`, tolerating the legacy bare-string shape
+     * (an old "foo" entry reads back as `{term: 'foo', meaning: ''}`). Malformed rows dropped.
+     *
+     * @return array<int, array{term: string, meaning: string}>
+     */
+    public function dictionaryEntries(): array
+    {
+        return collect($this->dictionary ?? [])
+            ->map(function ($entry) {
+                if (is_string($entry)) {
+                    return $entry === '' ? null : ['term' => $entry, 'meaning' => ''];
+                }
+
+                if (is_array($entry) && filled($entry['term'] ?? null)) {
+                    return ['term' => (string) $entry['term'], 'meaning' => (string) ($entry['meaning'] ?? '')];
+                }
+
+                return null;
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Phrase entries as `{ phrase, context }`, tolerating the legacy bare-string shape
+     * (an old "foo" phrase reads back as `{phrase: 'foo', context: null}`).
+     *
+     * @return array<int, array{phrase: string, context: string|null}>
+     */
+    public function phraseEntries(): array
+    {
+        return collect($this->phrases ?? [])
+            ->map(function ($entry) {
+                if (is_string($entry)) {
+                    return $entry === '' ? null : ['phrase' => $entry, 'context' => null];
+                }
+
+                if (is_array($entry) && filled($entry['phrase'] ?? null)) {
+                    $context = $entry['context'] ?? null;
+
+                    return ['phrase' => (string) $entry['phrase'], 'context' => filled($context) ? (string) $context : null];
+                }
+
+                return null;
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    /**
      * Whether the bot is wired up to execute assigned tasks. Task execution
      * itself ships in Batch 2 — this only reflects the persisted config flag.
      */

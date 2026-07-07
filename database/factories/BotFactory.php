@@ -15,7 +15,7 @@ class BotFactory extends Factory
     {
         return [
             'name' => $this->faker->name(),
-            'status' => BotStatus::DRAFT,
+            'status' => BotStatus::INACTIVE,
             'description' => $this->faker->optional()->sentence(),
             'persona' => $this->faker->paragraph(),
             'style' => $this->faker->optional()->sentence(),
@@ -35,9 +35,9 @@ class BotFactory extends Factory
         return $this->state(fn () => ['status' => BotStatus::ACTIVE]);
     }
 
-    public function disabled(): static
+    public function inactive(): static
     {
-        return $this->state(fn () => ['status' => BotStatus::DISABLED]);
+        return $this->state(fn () => ['status' => BotStatus::INACTIVE]);
     }
 
     public function executesTasks(): static

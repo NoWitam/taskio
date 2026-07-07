@@ -26,8 +26,8 @@ class BotCrudTest extends TestCase
             'name' => 'Copywriter Bot',
             'persona' => 'A friendly marketing copywriter who writes upbeat posts.',
             'style' => 'Casual and concise.',
-            'dictionary' => ['CTA', 'engagement'],
-            'phrases' => ['Stay tuned!'],
+            'dictionary' => [['term' => 'CTA', 'meaning' => 'call to action']],
+            'phrases' => [['phrase' => 'Stay tuned!', 'context' => null]],
             'prohibitions' => ['No politics'],
         ], $overrides);
     }
@@ -38,6 +38,7 @@ class BotCrudTest extends TestCase
 
         $response = $this->actingAs($user)
             ->postJson('/api/bots', $this->validPayload([
+                // status in the body is IGNORED — a bot is always created inactive.
                 'status' => 'active',
                 'task_execution' => [
                     'enabled' => true,
@@ -49,10 +50,12 @@ class BotCrudTest extends TestCase
 
         $response->assertCreated()
             ->assertJsonPath('data.name', 'Copywriter Bot')
-            ->assertJsonPath('data.status', 'active')
+            // Created inactive regardless of the request body.
+            ->assertJsonPath('data.status', 'inactive')
             ->assertJsonPath('data.persona', 'A friendly marketing copywriter who writes upbeat posts.')
             ->assertJsonPath('data.task_execution.enabled', true)
-            ->assertJsonPath('data.can_execute_tasks', true)
+            // Inactive => cannot execute tasks even with task_execution enabled.
+            ->assertJsonPath('data.can_execute_tasks', false)
             ->assertJsonPath('data.is_owner', true);
 
         // knowledge_source is neither persisted nor returned (silently dropped, no 422).

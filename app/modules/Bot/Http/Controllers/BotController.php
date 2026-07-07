@@ -4,6 +4,8 @@ namespace App\Modules\Bot\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Bot\DTOs\BotDTO;
+use App\Modules\Bot\Enums\BotStatus;
+use App\Modules\Bot\Http\Requests\ChangeBotStatusRequest;
 use App\Modules\Bot\Http\Requests\StoreBotRequest;
 use App\Modules\Bot\Http\Requests\UpdateBotRequest;
 use App\Modules\Bot\Http\Resources\BotListResource;
@@ -48,6 +50,14 @@ class BotController extends Controller
     {
         return BotResource::make(
             $this->service->update($bot, BotDTO::fromRequest($request))
+                ->loadMissing('creator')
+        );
+    }
+
+    public function changeStatus(ChangeBotStatusRequest $request, Bot $bot): BotResource
+    {
+        return BotResource::make(
+            $this->service->changeStatus($bot, $request->enum('status', BotStatus::class))
                 ->loadMissing('creator')
         );
     }

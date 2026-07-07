@@ -3,6 +3,7 @@
 namespace App\Modules\Bot\Services;
 
 use App\Modules\Bot\DTOs\BotDTO;
+use App\Modules\Bot\Enums\BotStatus;
 use App\Modules\Bot\Models\Bot;
 use Illuminate\Contracts\Pagination\CursorPaginator;
 use Illuminate\Http\Request;
@@ -20,13 +21,27 @@ class BotService
 
     public function create(BotDTO $dto): Bot
     {
-        return DB::transaction(fn () => Bot::create($this->attributes($dto)));
+        return DB::transaction(fn () => Bot::create(
+            // A bot is always created INACTIVE; status is toggled only via changeStatus().
+            $this->attributes($dto) + ['status' => BotStatus::INACTIVE]
+        ));
     }
 
     public function update(Bot $bot, BotDTO $dto): Bot
     {
         return DB::transaction(function () use ($bot, $dto) {
+            // update() never touches status — the status endpoint owns that transition.
             $bot->update($this->attributes($dto));
+
+            return $bot->refresh();
+        });
+    }
+
+    /** Toggle a bot's status (active|inactive). The only path that mutates status. */
+    public function changeStatus(Bot $bot, BotStatus $status): Bot
+    {
+        return DB::transaction(function () use ($bot, $status) {
+            $bot->update(['status' => $status]);
 
             return $bot->refresh();
         });
@@ -52,7 +67,6 @@ class BotService
     {
         $attributes = [
             'name' => $dto->name,
-            'status' => $dto->status,
             'description' => $dto->description,
             'icon' => $dto->icon,
             'persona' => $dto->persona,

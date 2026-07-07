@@ -38,6 +38,13 @@ return [
     // repeated retry → fail → retry loops: past this, retry is refused.
     'max_runs_hard_cap' => (int) env('AI_MAX_RUNS_HARD_CAP', 20),
 
+    // Stale-claim reaper: seconds a run may sit in `running` before it is considered
+    // stuck (a worker killed mid-run never fires failed(), so the atomic claim would
+    // never recover it). `bots:reap-stale-runs` releases such runs back to idle and
+    // records a failure so the inbox surfaces them as retryable. Must exceed the longest
+    // plausible real run so a slow-but-alive run is not reaped prematurely.
+    'bot_run_timeout' => (int) env('AI_BOT_RUN_TIMEOUT', 900),
+
     'context_comment_limit' => (int) env('AI_CONTEXT_COMMENT_LIMIT', 30),
 
     // Cap on the total characters of the bot's knowledge module injected into the

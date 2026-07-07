@@ -24,8 +24,32 @@ export interface BotUser {
   avatar?: string | null;
 }
 
-/** The bot status enum (`draft | active | disabled`). Tones: neutral / success / neutral. */
-export type BotStatus = 'draft' | 'active' | 'disabled';
+/**
+ * The bot status enum — collapsed to a two-state toggle. A bot is either live
+ * (`active`, tone success) or off (`inactive`, tone neutral). Status is NEVER sent
+ * on create/update; it is toggled through `PATCH /bots/{id}/status`.
+ */
+export type BotStatus = 'active' | 'inactive';
+
+/**
+ * A dictionary ("gwara"/slang) entry — a word/expression the bot uses + its
+ * meaning. Read + written as `{ term, meaning }` (both required, ≤255/≤500, ≤100
+ * entries). Legacy bare-string entries are normalized server-side.
+ */
+export interface BotDictionaryEntry {
+  term: string;
+  meaning: string;
+}
+
+/**
+ * A phrase entry — a signature catchphrase/hook + optional context (when to use
+ * it). Read + written as `{ phrase, context }` (phrase required ≤255, context
+ * nullable ≤500, ≤100 entries).
+ */
+export interface BotPhraseEntry {
+  phrase: string;
+  context: string | null;
+}
 
 /**
  * The task-execution module config, read + written as a single nested object.
@@ -91,8 +115,11 @@ export interface BotDetail {
   persona: string;
   /** Optional style notes (≤5000). */
   style: string | null;
-  dictionary: string[];
-  phrases: string[];
+  /** Slang entries `{ term, meaning }` (accessor-normalized from legacy strings). */
+  dictionary: BotDictionaryEntry[];
+  /** Catchphrases `{ phrase, context }` (accessor-normalized from legacy strings). */
+  phrases: BotPhraseEntry[];
+  /** Plain list of topics/behaviours to avoid (unchanged). */
   prohibitions: string[];
   // --- 2. Task-execution module (nullable until configured) ---
   task_execution: BotTaskExecution | null;
@@ -155,27 +182,31 @@ export interface BotTaskExecutionPayload {
 
 /**
  * The bot write body. Mirrors the FormRequest 1:1:
- *   name (req ≤255), status (enum draft|active|disabled, nullable→draft),
- *   description (nullable ≤2500), persona (REQUIRED ≤10000), style (nullable
- *   ≤5000), dictionary/phrases/prohibitions (string[] nullable), task_execution
- *   (nullable object `{ enabled, tools }`), knowledge (array of {title, content},
- *   ≤50 entries — empty array is valid). `visual`/`audio` are NOT writable
- *   (placeholders, omitted entirely).
+ *   name (req ≤255), description (nullable ≤2500), persona (REQUIRED ≤10000),
+ *   style (nullable ≤5000), dictionary ({term,meaning}[] ≤100), phrases
+ *   ({phrase,context?}[] ≤100), prohibitions (string[]), task_execution (nullable
+ *   `{ enabled, tools }`), knowledge (`{ enabled, entries }`). `status` is NEVER
+ *   sent here (toggled via `PATCH /bots/{id}/status`); `visual`/`audio` are NOT
+ *   writable (placeholders, omitted entirely).
  */
 export interface BotWritePayload {
   name: string;
-  status?: BotStatus | null;
   description?: string | null;
   /** General-info icon identifier (nullable). */
   icon?: string | null;
   persona: string;
   style?: string | null;
-  dictionary?: string[] | null;
-  phrases?: string[] | null;
+  dictionary?: BotDictionaryEntry[] | null;
+  phrases?: BotPhraseEntry[] | null;
   prohibitions?: string[] | null;
   task_execution?: BotTaskExecutionPayload | null;
   /** Knowledge module — `{ enabled, entries }`. */
   knowledge?: BotKnowledge;
+}
+
+/** Body for `PATCH /bots/{id}/status` — toggle a bot's live status (creator-only). */
+export interface BotStatusPayload {
+  status: BotStatus;
 }
 
 // --- Bot actions (BotActionResource, cursor-paginated) — Batch 2 -----------

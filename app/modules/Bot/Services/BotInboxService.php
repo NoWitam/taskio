@@ -85,24 +85,23 @@ class BotInboxService
     {
         $state = $request->enum('state', BotInboxState::class);
 
-        $paginator = $this->baseQuery($bot)
-            ->orderByDesc('updated_at')
-            ->cursorPaginate(15)
-            ->withQueryString();
+        $query = $this->bucketedQuery($bot)->orderByDesc('updated_at');
 
-        // Compute inbox_state per row from the inlined latest_action_type, then filter to
-        // the requested bucket (post-compute, since the state is derived not stored).
-        $paginator->setCollection(
-            $paginator->getCollection()
-                ->each(fn (Task $task) => $task->setAttribute(
-                    'inbox_state',
-                    $this->stateFor($task, $task->getAttribute('latest_action_type'))->value
-                ))
-                ->when(
-                    $state !== null,
-                    fn ($tasks) => $tasks->filter(fn (Task $task) => $task->getAttribute('inbox_state') === $state->value)->values()
-                )
-        );
+        // Push the bucket filter into SQL BEFORE paginating. Filtering the derived state
+        // after cursorPaginate() (the old approach) yielded short/empty pages, since a
+        // bucket's rows can sit beyond the first page. The SQL precedence mirrors
+        // stateFor() exactly — a parity test locks the two together.
+        if ($state !== null) {
+            $this->applyStateFilter($query, $state);
+        }
+
+        $paginator = $query->cursorPaginate(15)->withQueryString();
+
+        // Attach the derived state for the resource (cheap: only the page's rows).
+        $paginator->getCollection()->each(fn (Task $task) => $task->setAttribute(
+            'inbox_state',
+            $this->stateFor($task, $task->getAttribute('latest_action_type'))->value
+        ));
 
         return $paginator;
     }
@@ -148,6 +147,63 @@ class BotInboxService
     public function retry(Bot $bot, Task $task): void
     {
         $this->runManager->dispatch($task, BotRunTrigger::Retry);
+    }
+
+    /**
+     * The bot's tasks wrapped in a DERIVED TABLE so the correlated `latest_action_type`
+     * becomes a real column the bucket filter can reference in a WHERE (Postgres cannot
+     * filter on a SELECT alias). The inner query keeps the global scopes (soft-deletes,
+     * workspace); the outer drops them so they are not re-applied to the derived table.
+     */
+    private function bucketedQuery(Bot $bot): Builder
+    {
+        return Task::query()->withoutGlobalScopes()->fromSub($this->baseQuery($bot), 'tasks');
+    }
+
+    /**
+     * Constrain the query to one inbox bucket, in SQL. Each arm is a FULL predicate that
+     * encodes the stateFor() precedence (higher-precedence buckets are excluded), so the
+     * arms are mutually exclusive and their union is every task — mirroring the derived
+     * state exactly. Kept in lockstep with stateFor() by a parity test.
+     */
+    private function applyStateFilter(Builder $query, BotInboxState $state): void
+    {
+        $closed = [TaskStatus::DONE->value, TaskStatus::IN_TEST->value];
+        $failedActions = [BotActionType::ExecutionFailed->value, BotActionType::HandedOver->value];
+        $idle = BotTaskRunManager::STATE_IDLE;
+
+        // "latest action is not a failure" must also match rows with no action at all
+        // (NULL): `latest_action_type NOT IN (...)` is NULL — i.e. false — for those.
+        $notFailed = fn (Builder $q) => $q
+            ->whereNotIn('latest_action_type', $failedActions)
+            ->orWhereNull('latest_action_type');
+
+        match ($state) {
+            BotInboxState::Done => $query->where('status', TaskStatus::DONE->value),
+            BotInboxState::InApproval => $query->where('status', TaskStatus::IN_TEST->value),
+            BotInboxState::Waiting => $query
+                ->whereNotIn('status', $closed)
+                ->where('bot_run_state', BotTaskRunManager::STATE_WAITING),
+            BotInboxState::Running => $query
+                ->whereNotIn('status', $closed)
+                ->where('bot_run_state', BotTaskRunManager::STATE_RUNNING),
+            BotInboxState::Failed => $query
+                ->whereNotIn('status', $closed)
+                ->where('bot_run_state', $idle)
+                ->whereIn('latest_action_type', $failedActions),
+            BotInboxState::Revision => $query
+                ->where('status', TaskStatus::TO_DO->value)
+                ->where('bot_runs_used', '>', 0)
+                ->where('bot_run_state', $idle)
+                ->where($notFailed),
+            BotInboxState::Queued => $query
+                ->whereNotIn('status', $closed)
+                ->where('bot_run_state', $idle)
+                ->where($notFailed)
+                ->whereNot(fn (Builder $q) => $q
+                    ->where('status', TaskStatus::TO_DO->value)
+                    ->where('bot_runs_used', '>', 0)),
+        };
     }
 
     /** The bot's tasks, with the latest bot_action type selected inline (no N+1). */

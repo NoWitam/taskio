@@ -102,9 +102,55 @@ class BotTaskRunManager
             ? self::STATE_WAITING
             : self::STATE_IDLE;
 
+        // Clear the claim timestamp: the run has ended (idle) or handed off to a human
+        // (waiting), so neither is an active run the reaper should ever count.
         Task::withoutGlobalScopes()
             ->whereKey($task->id)
-            ->update(['bot_run_state' => $state]);
+            ->update(['bot_run_state' => $state, 'bot_run_started_at' => null]);
+    }
+
+    /**
+     * Stale-claim reaper: release runs stuck in `running` past the configured timeout. A
+     * worker killed mid-run (SIGKILL/OOM) never fires the job's failed() hook, so the task
+     * would sit in `running` forever — and claim() only matches idle/waiting, so no future
+     * run could ever recover it. This finds those tasks, releases the claim to idle, and
+     * records an execution_failed so the inbox surfaces them as retryable.
+     *
+     * Runs on the CURRENTLY ACTIVE connection; the `bots:reap-stale-runs` command sweeps
+     * the shared DB and every own-database tenant. Returns the number of runs reaped.
+     */
+    public function reapStaleRuns(): int
+    {
+        $timeout = max(60, (int) config('ai.bot_run_timeout', 900));
+        $cutoff = now()->subSeconds($timeout);
+
+        $stale = Task::withoutGlobalScopes()
+            ->where('bot_run_state', self::STATE_RUNNING)
+            ->where(function ($query) use ($cutoff) {
+                // NULL only for rows claimed before this column existed (pre-deploy
+                // orphans): post-deploy every claim stamps bot_run_started_at atomically.
+                $query->whereNull('bot_run_started_at')
+                    ->orWhere('bot_run_started_at', '<', $cutoff);
+            })
+            ->get();
+
+        foreach ($stale as $task) {
+            $this->release($task, null);
+
+            $bot = $task->assignee_type === 'bot' && $task->assignee_id !== null
+                ? Bot::find($task->assignee_id)
+                : null;
+
+            if ($bot !== null) {
+                $this->actions->record(
+                    $bot, $task, BotActionType::ExecutionFailed,
+                    status: 'failed',
+                    error: 'Run reaped: stuck in running past the timeout.',
+                );
+            }
+        }
+
+        return $stale->count();
     }
 
     /** Whether the task is currently awaiting a human reply. */
@@ -128,6 +174,9 @@ class BotTaskRunManager
             ->update([
                 'bot_run_state' => self::STATE_RUNNING,
                 'bot_runs_used' => DB::raw('bot_runs_used + 1'),
+                // Stamp the claim time atomically with the state flip so the reaper can
+                // tell a genuinely stuck run from a slow-but-alive one.
+                'bot_run_started_at' => now(),
             ]);
 
         return $affected === 1;

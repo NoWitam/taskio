@@ -84,6 +84,7 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
         'status' => TaskStatus::class,
         'deadline' => 'date',
         'bot_runs_used' => 'integer',
+        'bot_run_started_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',

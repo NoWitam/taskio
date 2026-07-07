@@ -11,6 +11,7 @@ use App\Modules\Bot\Services\BotInboxService;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Models\Task;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Request;
 use Tests\Concerns\FakesBotExecutionAgent;
 use Tests\TestCase;
 
@@ -159,6 +160,63 @@ class BotInboxTest extends TestCase
 
         $states = collect($response->json('data'))->pluck('inbox_state')->unique()->all();
         $this->assertSame(['failed'], $states);
+    }
+
+    public function test_state_filter_pushes_precedence_into_sql(): void
+    {
+        // Every bucket, filtered in SQL, must return EXACTLY the task stateFor() would
+        // classify into it — the parity lock between the SQL precedence and stateFor().
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $bot = $this->executingBot($owner);
+        $service = app(BotInboxService::class);
+
+        $expected = [
+            'done' => $this->botTask($bot, ['status' => TaskStatus::DONE, 'bot_runs_used' => 1])->id,
+            'in_approval' => $this->botTask($bot, ['status' => TaskStatus::IN_TEST, 'bot_runs_used' => 1])->id,
+            'waiting' => $this->botTask($bot, ['status' => TaskStatus::IN_PROGRESS, 'bot_run_state' => 'waiting', 'bot_runs_used' => 1])->id,
+            'running' => $this->botTask($bot, ['status' => TaskStatus::IN_PROGRESS, 'bot_run_state' => 'running', 'bot_runs_used' => 1])->id,
+        ];
+
+        $failed = $this->botTask($bot, ['status' => TaskStatus::IN_PROGRESS, 'bot_runs_used' => 1]);
+        $this->recordAction($bot, $failed, BotActionType::ExecutionFailed);
+        $expected['failed'] = $failed->id;
+
+        $revision = $this->botTask($bot, ['status' => TaskStatus::TO_DO, 'bot_runs_used' => 1]);
+        $this->recordAction($bot, $revision, BotActionType::RevisionStarted);
+        $expected['revision'] = $revision->id;
+
+        $expected['queued'] = $this->botTask($bot, ['status' => TaskStatus::TO_DO, 'bot_runs_used' => 0])->id;
+
+        foreach ($expected as $state => $id) {
+            $ids = collect($service->tasks($bot, Request::create('/', 'GET', ['state' => $state]))->items())
+                ->pluck('id')->all();
+
+            $this->assertSame([$id], $ids, "Bucket [{$state}] should return exactly its own task.");
+        }
+    }
+
+    public function test_state_filter_finds_rows_beyond_the_first_page(): void
+    {
+        // Regression: filtering used to happen AFTER cursorPaginate(15), so a bucket whose
+        // rows sat past page 1 came back empty. The one FAILED task is the OLDEST → last in
+        // the updated_at-desc order, behind 20 newer queued tasks (> one page).
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $bot = $this->executingBot($owner);
+
+        $failed = $this->botTask($bot, ['status' => TaskStatus::IN_PROGRESS, 'bot_runs_used' => 1]);
+        $this->recordAction($bot, $failed, BotActionType::ExecutionFailed);
+        Task::withoutGlobalScopes()->whereKey($failed->id)->update(['updated_at' => now()->subDay()]);
+
+        for ($i = 0; $i < 20; $i++) {
+            $this->botTask($bot);
+        }
+
+        $response = $this->getJson("/api/bots/{$bot->id}/inbox?state=failed")->assertOk();
+
+        $ids = collect($response->json('data'))->pluck('id')->all();
+        $this->assertSame([$failed->id], $ids);
     }
 
     public function test_inbox_invalid_state_is_rejected(): void

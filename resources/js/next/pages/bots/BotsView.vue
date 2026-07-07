@@ -332,6 +332,26 @@ async function onDelete(bot: BotListItem): Promise<void> {
   }
 }
 
+// --- Activate / Deactivate (status toggle via the endpoint) ---------------
+const togglingStatus = ref<string | null>(null);
+async function onToggleStatus(bot: BotListItem): Promise<void> {
+  if (togglingStatus.value) return;
+  const next = bot.status === 'active' ? 'inactive' : 'active';
+  togglingStatus.value = bot.id;
+  try {
+    await store.setStatus(bot.id, next);
+    toast.success(
+      next === 'active'
+        ? t('bots.statusAction.activated')
+        : t('bots.statusAction.deactivated'),
+    );
+  } catch {
+    toast.danger(t('bots.statusAction.error'));
+  } finally {
+    togglingStatus.value = null;
+  }
+}
+
 onMounted(() => {
   hydrateFromQuery();
   void savedViews.load();
@@ -434,6 +454,7 @@ onMounted(() => {
             @open="onOpen"
             @edit="onEdit"
             @delete="onDelete"
+            @toggle-status="onToggleStatus"
           />
 
           <template v-if="store.loadingMore">

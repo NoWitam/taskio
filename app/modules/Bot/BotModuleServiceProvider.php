@@ -23,6 +23,10 @@ class BotModuleServiceProvider extends ServiceProvider
                 default => new BraveSearchProvider,
             };
         });
+
+        $this->commands([
+            \App\Modules\Bot\Console\ReapStaleBotRunsCommand::class,
+        ]);
     }
 
     public function boot(): void

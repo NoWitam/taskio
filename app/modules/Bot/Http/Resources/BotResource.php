@@ -17,11 +17,12 @@ class BotResource extends JsonResource
             'description' => $this->description,
             'icon' => $this->icon,
 
-            // Text module (mandatory).
+            // Text module (mandatory). dictionary: [{term,meaning}]; phrases: [{phrase,context}];
+            // prohibitions: string[]. Accessors normalize the legacy bare-string shapes.
             'persona' => $this->persona,
             'style' => $this->style,
-            'dictionary' => $this->dictionary ?? [],
-            'phrases' => $this->phrases ?? [],
+            'dictionary' => $this->dictionaryEntries(),
+            'phrases' => $this->phraseEntries(),
             'prohibitions' => $this->prohibitions ?? [],
 
             // Task-execution module.
