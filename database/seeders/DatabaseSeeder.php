@@ -18,6 +18,7 @@ class DatabaseSeeder extends Seeder
             UserSeeder::class,
             WorkspaceSeeder::class,
             LabelSeeder::class,
+            FormSeeder::class,
         ]);
     }
 }

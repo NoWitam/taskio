@@ -4,15 +4,20 @@ namespace App\Modules\Tasks\Enums;
 
 enum TaskPriority: string
 {
-    CASE URGENT = 'urgent';
+    case URGENT = 'urgent';
     case HIGH = 'high';
     case MEDIUM = 'medium';
     case LOW = 'low';
 
+    /** @return array<int, string> */
+    public static function ids(): array
+    {
+        return array_column(self::cases(), 'value');
+    }
+
     public function label(): string
     {
-        return match($this)
-        {
+        return match ($this) {
             self::URGENT => 'Pilne',
             self::HIGH => 'Wysoki',
             self::MEDIUM => 'Średni',
@@ -22,8 +27,7 @@ enum TaskPriority: string
 
     public function tone(): string
     {
-        return match($this)
-        {
+        return match ($this) {
             self::URGENT => 'danger',
             self::HIGH => 'warning',
             self::MEDIUM => 'primary',
@@ -33,8 +37,7 @@ enum TaskPriority: string
 
     public function icon(): string
     {
-        return match($this)
-        {
+        return match ($this) {
             self::URGENT => 'alert-triangle',
             self::HIGH => 'chevron-up',
             self::MEDIUM => 'minus-circle',
