@@ -46,6 +46,7 @@ import type { FilterTab } from '../../app/stores/filterTabs';
 import { toIconEnumValue } from '../../ui/forms/filterTabIcon';
 import { useI18n } from '../../app/i18n';
 import { FORM_MODULE_CTX } from './formContext';
+import { hydrateTab, serializeTabQuery } from './tabQuery';
 import type { FormSubmission, SubmissionFilters } from './types';
 
 const route = useRoute();
@@ -357,6 +358,22 @@ const debouncedRefetch = useDebounce(refetch, 400);
 watch(search, () => debouncedRefetch());
 watch([sources, indexed, sort, dateRange, tab], () => refetch(), { deep: true });
 
+// --- URL sync (bucket tab only; every other query key is preserved) --------
+let hydrating = false;
+
+function hydrateFromQuery(): void {
+  hydrating = true;
+  tab.value = hydrateTab(route.query);
+  hydrating = false;
+}
+
+function syncQuery(): void {
+  if (hydrating) return;
+  void router.replace({ query: serializeTabQuery(route.query, tab.value) });
+}
+
+watch(tab, () => syncQuery());
+
 // --- List view-state ------------------------------------------------------
 const items = computed(() => store.submissionsFor(formId.value));
 const loading = computed(() => !!store.subLoading[formId.value]);
@@ -458,6 +475,7 @@ async function onForceDelete(submission: FormSubmission): Promise<void> {
 }
 
 onMounted(() => {
+  hydrateFromQuery();
   void savedViews.load();
   refetch();
 });

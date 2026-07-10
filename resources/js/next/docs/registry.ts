@@ -398,6 +398,11 @@ export const stories: StyleguideStory[] = [
     name: 'Bots',
     component: () => import('./pages/BotsPage.vue'),
   },
+  {
+    section: 'Modules',
+    name: 'Workflows',
+    component: () => import('./pages/WorkflowsPage.vue'),
+  },
 ];
 
 export interface StyleguideNavSection {

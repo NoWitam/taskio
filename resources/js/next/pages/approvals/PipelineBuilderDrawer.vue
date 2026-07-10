@@ -430,7 +430,7 @@ function onCancel(): void {
                     :options="approverOptions"
                     :aria-label="t('approvals.builder.approverTypeLabel')"
                     equal-width
-                    @update:model-value="(v) => onApproverTypeChange(stage, v)"
+                    @update:model-value="(v) => onApproverTypeChange(stage, v as ApproverType | null)"
                   />
                 </FormField>
 

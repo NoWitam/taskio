@@ -8,7 +8,7 @@
 // delete/restore/force). Reports are generated asynchronously, so pending ones
 // are POLLED until completed. All strings via i18n.
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import FilterBar, { type ActiveFilter } from '../../ui/patterns/FilterBar.vue';
 import FilterTabBar from '../../ui/patterns/FilterTabBar.vue';
 import SaveViewModal, { type SaveViewSubmit } from '../../ui/patterns/SaveViewModal.vue';
@@ -35,9 +35,11 @@ import type { FilterTab } from '../../app/stores/filterTabs';
 import { toIconEnumValue } from '../../ui/forms/filterTabIcon';
 import { useI18n } from '../../app/i18n';
 import { FORM_MODULE_CTX } from './formContext';
+import { hydrateTab, serializeTabQuery } from './tabQuery';
 import type { FormReport, ReportFilters } from './types';
 
 const route = useRoute();
+const router = useRouter();
 const store = useFormsStore();
 const toast = useToast();
 const confirm = useConfirm();
@@ -301,6 +303,22 @@ const debouncedRefetch = useDebounce(refetch, 400);
 watch(search, () => debouncedRefetch());
 watch([status, sort, dateRange, tab], () => refetch(), { deep: true });
 
+// --- URL sync (bucket tab only; every other query key is preserved) --------
+let hydrating = false;
+
+function hydrateFromQuery(): void {
+  hydrating = true;
+  tab.value = hydrateTab(route.query);
+  hydrating = false;
+}
+
+function syncQuery(): void {
+  if (hydrating) return;
+  void router.replace({ query: serializeTabQuery(route.query, tab.value) });
+}
+
+watch(tab, () => syncQuery());
+
 const items = computed(() => store.reportsFor(formId.value));
 const loading = computed(() => !!store.repLoading[formId.value]);
 const errored = computed(() => !!store.repError[formId.value]);
@@ -428,6 +446,7 @@ function retry(): void {
 }
 
 onMounted(() => {
+  hydrateFromQuery();
   void savedViews.load();
   refetch();
 });

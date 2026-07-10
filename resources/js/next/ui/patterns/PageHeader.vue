@@ -9,11 +9,17 @@
 //
 // Pass breadcrumbs via the `breadcrumbs` prop (→ our Breadcrumbs) OR the
 // `#breadcrumbs` slot; the title via the `title` prop OR `#title`; actions via
-// `#actions`; a Tabs row via `#tabs`.
+// `#actions`; a Tabs row via `#tabs`; a status/meta chip next to the title via
+// `#meta`.
+//
+// `size` scales the title row: `md` (default) is the full page header; `sm` is a
+// tighter variant (smaller icon bubble, no responsive title jump) for panels or
+// nested sections.
 //
 // A11y: renders a real `<header>` and a single `<h1>` (level configurable via
-// `level` so a sub-page can use h2). The leading icon bubble is decorative; an
-// Avatar carries its own label.
+// `level` so a sub-page can use h2). The `#meta` chip sits beside — never inside
+// — the heading so the heading stays plain text (truncation/screen readers). The
+// leading icon bubble is decorative; an Avatar carries its own label.
 import { computed } from 'vue';
 import Breadcrumbs, { type BreadcrumbItem } from '../navigation/Breadcrumbs.vue';
 import Icon, { type IconName } from '../primitives/Icon.vue';
@@ -30,13 +36,16 @@ const props = withDefaults(
     breadcrumbs?: BreadcrumbItem[];
     /** A leading icon rendered in a tinted bubble (decorative). */
     icon?: IconName;
+    /** Header scale: `md` (default) or a tighter `sm`. */
+    size?: 'md' | 'sm';
   }>(),
-  { level: 1 },
+  { level: 1, size: 'md' },
 );
 
 const emit = defineEmits<{ (e: 'breadcrumb-navigate', item: BreadcrumbItem): void }>();
 
 const headingTag = computed(() => `h${props.level}`);
+const isSm = computed(() => props.size === 'sm');
 </script>
 
 <template>
@@ -54,26 +63,35 @@ const headingTag = computed(() => `h${props.level}`);
     <!-- Title row: leading visual + title/description on the left, actions on the
          right. Wraps to a stacked layout on small screens. -->
     <div class="flex flex-col gap-next-3 next-md:flex-row next-md:items-start next-md:justify-between">
-      <div class="flex min-w-0 items-start gap-next-3">
+      <div class="flex min-w-0 items-start" :class="isSm ? 'gap-next-2' : 'gap-next-3'">
         <!-- Leading visual: an Avatar via slot, or a tinted icon bubble. -->
         <div v-if="$slots.leading" class="shrink-0">
           <slot name="leading" />
         </div>
         <span
           v-else-if="icon"
-          class="flex h-11 w-11 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
+          class="flex shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
+          :class="isSm ? 'h-9 w-9' : 'h-11 w-11'"
           aria-hidden="true"
         >
-          <Icon :name="icon" class="text-next-xl" />
+          <Icon :name="icon" :class="isSm ? 'text-next-lg' : 'text-next-xl'" />
         </span>
 
         <div class="flex min-w-0 flex-col gap-next-1">
-          <component
-            :is="headingTag"
-            class="min-w-0 text-next-2xl font-next-semibold text-next-fg next-md:text-next-3xl"
-          >
-            <slot name="title">{{ title }}</slot>
-          </component>
+          <!-- Heading + optional #meta on one line; meta sits beside (not inside)
+               the heading so the heading stays plain text. -->
+          <div class="flex min-w-0 items-center gap-next-2">
+            <component
+              :is="headingTag"
+              class="min-w-0 font-next-semibold text-next-fg"
+              :class="isSm ? 'text-next-xl' : 'text-next-2xl next-md:text-next-3xl'"
+            >
+              <slot name="title">{{ title }}</slot>
+            </component>
+            <span v-if="$slots.meta" class="shrink-0">
+              <slot name="meta" />
+            </span>
+          </div>
           <p
             v-if="$slots.description || description"
             class="max-w-2xl text-next-sm text-next-muted-foreground"

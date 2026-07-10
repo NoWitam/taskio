@@ -262,28 +262,37 @@ const triggerPadding = computed(() => FIELD_PADDING_X[props.size]);
           <span v-else class="truncate text-next-muted-foreground">
             {{ placeholder ?? t('iconInput.placeholder', 'Select an icon…') }}
           </span>
-          <Icon
-            name="chevron-down"
-            class="ml-auto shrink-0 text-next-muted-foreground transition-transform"
-            :class="open ? 'rotate-180' : ''"
-          />
         </button>
 
-        <!-- Reserve the clear box whenever clearable so the trigger content never
-             shifts as the value comes/goes; toggle the button's visibility only. -->
-        <template v-if="clearable && !disabled && !readonly" #trailing>
-          <span class="flex h-5 w-5 items-center justify-center">
-            <button
-              type="button"
-              class="flex items-center rounded-next-sm p-next-0_5 text-next-muted-foreground hover:text-next-fg"
-              :class="hasValue ? '' : 'invisible'"
-              :aria-hidden="hasValue ? undefined : 'true'"
-              :aria-label="t('iconInput.clear', 'Clear icon')"
-              tabindex="-1"
-              @click.stop="clear()"
+        <!-- Trailing controls, in the project-mandated order: the CONDITIONAL clear
+             "X" first, then the PERMANENT open/close chevron (which never moves).
+             The clear box is reserved whenever the field is editable so toggling
+             it as the value comes/goes never shifts the layout — only its
+             visibility flips. Mirrors Select.vue's trailing block. -->
+        <template #trailing>
+          <span class="flex items-center gap-next-1">
+            <span
+              v-if="clearable && !disabled && !readonly"
+              class="flex h-5 w-5 items-center justify-center"
             >
-              <Icon name="x" />
-            </button>
+              <button
+                type="button"
+                class="flex items-center rounded-next-sm p-next-0_5 text-next-muted-foreground hover:text-next-fg"
+                :class="hasValue ? '' : 'invisible'"
+                :aria-hidden="hasValue ? undefined : 'true'"
+                :aria-label="t('iconInput.clear', 'Clear icon')"
+                tabindex="-1"
+                @click.stop="clear()"
+              >
+                <Icon name="x" />
+              </button>
+            </span>
+            <Icon
+              name="chevron-down"
+              class="shrink-0 text-next-muted-foreground transition-transform"
+              :class="open ? 'rotate-180' : ''"
+              aria-hidden="true"
+            />
           </span>
         </template>
       </FieldShell>

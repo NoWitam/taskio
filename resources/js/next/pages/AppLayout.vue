@@ -32,6 +32,7 @@ import DropdownMenuItem from '../ui/overlay/DropdownMenuItem.vue';
 import DropdownMenuLabel from '../ui/overlay/DropdownMenuLabel.vue';
 import DropdownMenuSeparator from '../ui/overlay/DropdownMenuSeparator.vue';
 import type { IconName } from '../ui/primitives/icons';
+import { isPathActive } from '../app/router/isPathActive';
 
 const route = useRoute();
 const router = useRouter();
@@ -69,6 +70,7 @@ const primaryNav: NavLink[] = [
   { key: 'tasks', labelKey: 'nav.tasks', icon: 'list-checks', to: '/tasks' },
   { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', to: '/forms' },
   { key: 'approvals', labelKey: 'nav.approvals', icon: 'git-branch', to: '/approvals' },
+  { key: 'workflows', labelKey: 'nav.workflows', icon: 'workflow', to: '/workflows' },
   { key: 'bots', labelKey: 'nav.bots', icon: 'sparkles', to: '/bots' },
 ];
 
@@ -152,7 +154,7 @@ async function onLogout(): Promise<void> {
             :label="t(item.labelKey)"
             :icon="item.icon"
             :to="item.to"
-            :active="route.path === item.to"
+            :active="item.to != null && isPathActive(route.path, item.to)"
           >
             <!-- Pending-approvals count badge (icon-less, primary): hidden when
                  the count is null or 0. The accessible label carries the count so

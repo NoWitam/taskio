@@ -144,6 +144,28 @@ const routes: RouteRecordRaw[] = [
           },
         ],
       },
+      {
+        // Workflows (automation) module shell: inner sub-nav + the list and the
+        // per-workflow read-only detail (Overview | Runs). The shell hosts the
+        // `?workflow` editor drawer (6b) and the `?run` run-now modal (6c).
+        path: 'workflows',
+        component: () => import('../../pages/workflows/WorkflowsModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+        children: [
+          {
+            path: '',
+            name: 'next.workflows',
+            component: () => import('../../pages/workflows/WorkflowsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+          },
+          {
+            path: ':id',
+            name: 'next.workflows.detail',
+            component: () => import('../../pages/workflows/WorkflowDetailView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+          },
+        ],
+      },
     ],
   },
   {

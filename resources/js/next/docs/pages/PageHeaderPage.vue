@@ -6,6 +6,7 @@ import PageHeader from '../../ui/patterns/PageHeader.vue';
 import type { BreadcrumbItem } from '../../ui/navigation/Breadcrumbs.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Avatar from '../../ui/primitives/Avatar.vue';
+import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Tabs, { type TabItem } from '../../ui/navigation/Tabs.vue';
 import { useI18n } from '../../app/i18n';
 import StoryPage from '../StoryPage.vue';
@@ -33,11 +34,13 @@ const propRows: ApiRow[] = [
   { name: 'level', type: '1 | 2 | 3', default: '1', description: 'Semantic heading level for the title.' },
   { name: 'breadcrumbs', type: 'BreadcrumbItem[]', default: '—', description: 'Crumbs for the built-in Breadcrumbs (or #breadcrumbs).' },
   { name: 'icon', type: 'IconName', default: '—', description: 'Leading icon in a tinted bubble (or #leading for an Avatar).' },
+  { name: 'size', type: "'md' | 'sm'", default: 'md', description: 'Header scale — sm shrinks the icon bubble and title (no responsive jump).' },
 ];
 const slotRows: ApiRow[] = [
   { name: 'breadcrumbs', type: '—', description: 'Custom breadcrumb row.' },
   { name: 'leading', type: '—', description: 'Leading visual (e.g. an Avatar).' },
   { name: 'title / description', type: '—', description: 'Title / description content.' },
+  { name: 'meta', type: '—', description: 'A status/meta chip rendered beside (not inside) the title.' },
   { name: 'actions', type: '—', description: 'Trailing action buttons (wrap on small screens).' },
   { name: 'tabs', type: '—', description: 'A Tabs row under the header.' },
 ];
@@ -92,6 +95,31 @@ const eventRows: ApiRow[] = [
 
     <StorySection :title="t('story.ph.minimal', 'Minimal (title only)')">
       <PageHeader :title="t('story.ph.dashboard', 'Dashboard')" />
+    </StorySection>
+
+    <StorySection :title="t('story.ph.metaStory', 'With a status chip (#meta)')">
+      <PageHeader
+        icon="file-text"
+        :title="t('story.ph.onboarding', 'Onboarding survey')"
+        :description="t('story.ph.fullDesc', 'Collect details from new teammates during their first week.')"
+      >
+        <template #meta>
+          <StatusBadge status="active" />
+        </template>
+      </PageHeader>
+    </StorySection>
+
+    <StorySection :title="t('story.ph.smStory', 'Compact (size sm) + #meta')">
+      <PageHeader
+        size="sm"
+        icon="settings"
+        :title="t('story.ph.billing', 'Billing')"
+        :description="t('story.ph.billingDesc', 'Manage your plan and payment methods.')"
+      >
+        <template #meta>
+          <StatusBadge status="draft" size="sm" />
+        </template>
+      </PageHeader>
     </StorySection>
 
     <StorySection :title="t('story.ph.sub', 'Sub-page (level 2, no actions)')">

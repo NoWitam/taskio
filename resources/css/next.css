@@ -70,8 +70,8 @@
   --color-next-ring:            hsl(325 60% 45%);  /* focus ring = primary */
   --color-next-muted:           hsl(320 12% 94%);  /* muted fill (neutral-100) */
   --color-next-muted-foreground: hsl(315 5% 48%);  /* secondary text (neutral-500) */
-  --color-next-accent:          hsl(325 60% 96%);  /* hover tint = primary-subtle */
-  --color-next-accent-foreground: hsl(325 60% 32%);
+  --color-next-accent:          hsl(320 12% 94%);  /* neutral hover tint (= muted), distinct from active primary-subtle */
+  --color-next-accent-foreground: hsl(322 12% 12%); /* = fg */
   --color-next-overlay:         hsl(322 24% 8% / 0.55); /* modal scrim */
 
   /* ---------------------------------------------------------------------------
