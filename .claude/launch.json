@@ -12,7 +12,7 @@
         "ubuntu",
         "--",
         "bash",
-        "/home/postgres/taskio/.claude/preview-server.sh",
+        "/home/hubert/taskio/.claude/preview-server.sh",
         "%PORT%"
       ]
     }
