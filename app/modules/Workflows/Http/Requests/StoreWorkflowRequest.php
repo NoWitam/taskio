@@ -119,14 +119,13 @@ class StoreWorkflowRequest extends FormRequest
     }
 
     /**
-     * schedule: a required cadence object of shape { family, params: {…}, tz? }. The base family/
-     * tz/params rules and the descriptor-derived per-param required/type/widest-bounds rules are
-     * built by WorkflowScheduleRulesValidator (the ONE place this block is validated, shared with
-     * the AI schedule-assist re-validation) under this request's `trigger_config.schedule` prefix,
-     * so the accepted params can never drift from the family vocabulary the compiler and the
-     * /meta/schedule-families endpoint expose. Cross-param invariants (twice_daily first_hour <
-     * second_hour, twice_monthly first_day < second_day) and exact per-family bounds are enforced
-     * in withValidator() via the same shared validator, where the whole params array is visible.
+     * schedule: a required v2 compositional cadence of shape { time, day?, month?, tz?, exclusions? }.
+     * The base per-key rules are built by WorkflowScheduleRulesValidator (the ONE place this block is
+     * validated, shared with the AI schedule-assist re-validation) under this request's
+     * `trigger_config.schedule` prefix, so the accepted shape can never drift from what the compiler
+     * understands. Cross-field invariants (mode-dependent required/forbidden fields, from<to windows,
+     * the last_working_day time.mode=at restriction) are enforced in withValidator() via the same
+     * shared validator, where the whole descriptor is visible.
      */
     private function scheduleRules(): array
     {
@@ -694,12 +693,11 @@ class StoreWorkflowRequest extends FormRequest
     }
 
     /**
-     * Second-pass schedule checks that the per-param rules cannot express on their own — foreign
-     * params, exact per-family bounds and the descriptor `lt` ordering invariants — delegated to
+     * Second-pass schedule checks the per-key rules cannot express on their own — mode-dependent
+     * required/foreign fields, from<to windows and the last_working_day restriction — delegated to
      * the shared WorkflowScheduleRulesValidator under this request's `trigger_config.schedule`
      * prefix, so the human write path and the AI schedule-assist re-validation run identical logic
-     * with identical error keys/messages. Runs only once the family is a known enum value and
-     * params is an array (the shared validator no-ops otherwise).
+     * with identical error keys/messages.
      *
      * @param  array<string, mixed>  $config
      */
@@ -732,7 +730,7 @@ class StoreWorkflowRequest extends FormRequest
             ->reject(fn (string $key) => $this->keyIsAllowed($key, $allowed))
             // Report the shallowest foreign segment (the whole offending object/array),
             // not each leaf/index — so `source.in.0` surfaces once as `source.in` and
-            // `schedule.family` surfaces once as `schedule`.
+            // `schedule.time` surfaces once as `schedule`.
             ->map(fn (string $key) => $this->shallowestForeignKey($key, $allowed))
             ->unique()
             ->values()

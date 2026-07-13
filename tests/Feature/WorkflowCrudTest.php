@@ -4,9 +4,11 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Forms\Models\Form;
+use App\Modules\Workflows\Enums\ScheduleLimits;
 use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workspaces\Models\Workspace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 class WorkflowCrudTest extends TestCase
@@ -108,7 +110,9 @@ class WorkflowCrudTest extends TestCase
             ->assertJsonValidationErrors(['steps.0.type']);
     }
 
-    /** A schedule payload for the given family/params. */
+    // ---- schedule v2 write-validation ({ time, day?, month? }) ----------------
+
+    /** A schedule payload wrapping a v2 { time, day?, month? } descriptor. */
     private function schedulePayload(array $schedule): array
     {
         return $this->validPayload([
@@ -117,36 +121,46 @@ class WorkflowCrudTest extends TestCase
         ]);
     }
 
+    /** A time.mode=at block for one or more HH:mm fire times. */
+    private function at(string ...$times): array
+    {
+        return ['mode' => 'at', 'at' => array_values($times)];
+    }
+
     /**
-     * Happy paths across the frequency families. Each valid params object must be accepted so
-     * the family->rules derivation stays honest as the vocabulary grows.
+     * Happy paths across the compositional descriptor: every time mode, every day mode (including the
+     * special rules) and every month mode must be accepted so the v2 write-validation stays honest.
      */
-    public function test_schedule_families_accept_valid_params(): void
+    public function test_schedule_v2_accepts_valid_descriptors(): void
     {
         $user = User::factory()->create();
 
         $cases = [
-            ['family' => 'every_n_minutes', 'params' => ['n' => 15]],
-            ['family' => 'hourly', 'params' => []],
-            ['family' => 'hourly_at', 'params' => ['minute' => 30]],
-            ['family' => 'every_n_hours', 'params' => ['n' => 6, 'minute' => 15]],
-            ['family' => 'daily', 'params' => ['time' => '09:30']],
-            ['family' => 'twice_daily', 'params' => ['first_hour' => 9, 'second_hour' => 17]],
-            ['family' => 'weekly', 'params' => ['weekdays' => [1], 'time' => '09:30']],
-            ['family' => 'weekly', 'params' => ['weekdays' => [1, 3, 5], 'time' => '09:30']],
-            ['family' => 'monthly', 'params' => ['day' => 15, 'time' => '09:00']],
-            ['family' => 'twice_monthly', 'params' => ['first_day' => 1, 'second_day' => 15, 'time' => '09:00']],
-            ['family' => 'last_day_of_month', 'params' => ['time' => '18:00']],
-            ['family' => 'quarterly', 'params' => ['day' => 1, 'time' => '09:00']],
-            ['family' => 'yearly', 'params' => ['month' => 12, 'day' => 25, 'time' => '09:00']],
-            ['family' => 'every_n_months', 'params' => ['n' => 2, 'day' => 1, 'time' => '09:00']],
-            ['family' => 'every_n_months', 'params' => ['n' => 6, 'day' => 15, 'time' => '09:00']],
-            ['family' => 'nth_weekday_of_month', 'params' => ['ordinal' => 1, 'weekday' => 1, 'time' => '09:00']],
-            ['family' => 'nth_weekday_of_month', 'params' => ['ordinal' => 5, 'weekday' => 1, 'time' => '09:00']],
-            ['family' => 'last_weekday_of_month', 'params' => ['weekday' => 5, 'time' => '09:00']],
-            ['family' => 'last_working_day_of_month', 'params' => ['time' => '17:00']],
-            // tz is accepted when a valid timezone.
-            ['family' => 'daily', 'params' => ['time' => '09:00'], 'tz' => 'Europe/Warsaw'],
+            // time axis.
+            ['time' => $this->at('09:30')],
+            ['time' => $this->at('08:00', '17:00')],
+            ['time' => ['mode' => 'every_minutes', 'minutes' => 15]],
+            ['time' => ['mode' => 'every_minutes', 'minutes' => 15, 'from' => '09:30', 'to' => '17:45']],
+            ['time' => ['mode' => 'every_hours', 'hours' => 2]],
+            ['time' => ['mode' => 'every_hours', 'hours' => 2, 'minute' => 15, 'from' => 9, 'to' => 17]],
+            // day axis.
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'every_day']],
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'weekdays', 'weekdays' => [1, 3, 5]]],
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'month_days', 'days' => [1, 15]]],
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'every_n_days', 'n' => 2]],
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'every_n_days', 'n' => 2, 'from' => 5, 'to' => 20]],
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'special', 'special' => 'last_day']],
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'special', 'special' => 'nth_weekday', 'ordinal' => 2, 'weekday' => 1]],
+            ['time' => $this->at('09:00'), 'day' => ['mode' => 'special', 'special' => 'last_weekday', 'weekday' => 5]],
+            ['time' => $this->at('17:00'), 'day' => ['mode' => 'special', 'special' => 'last_working_day']],
+            // month axis.
+            ['time' => $this->at('09:00'), 'month' => ['mode' => 'every_month']],
+            ['time' => $this->at('09:00'), 'month' => ['mode' => 'months', 'months' => [1, 4, 7, 10]]],
+            ['time' => $this->at('09:00'), 'month' => ['mode' => 'every_n_months', 'n' => 3]],
+            ['time' => $this->at('09:00'), 'month' => ['mode' => 'every_n_months', 'n' => 3, 'from' => 1, 'to' => 12]],
+            // tz + exclusions.
+            ['time' => $this->at('09:00'), 'tz' => 'Europe/Warsaw'],
+            ['time' => $this->at('09:00'), 'exclusions' => ['weekdays' => [0, 6], 'months' => [8], 'dates' => ['2026-12-24']]],
         ];
 
         foreach ($cases as $schedule) {
@@ -156,235 +170,272 @@ class WorkflowCrudTest extends TestCase
         }
     }
 
-    public function test_schedule_every_n_minutes_requires_n_within_bounds(): void
+    public function test_schedule_requires_a_time_axis(): void
     {
         $user = User::factory()->create();
 
-        // Missing n => rejected.
+        // The time axis is the only required one; omitting it is a 422.
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'every_n_minutes', 'params' => []]))
+            ->postJson('/api/workflows', $this->schedulePayload(['day' => ['mode' => 'weekdays', 'weekdays' => [1]]]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.n']);
-
-        // n out of range (60 > max 59) => rejected.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'every_n_minutes', 'params' => ['n' => 60]]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.n']);
+            ->assertJsonValidationErrors(['trigger_config.schedule.time']);
     }
 
-    public function test_schedule_every_n_hours_enforces_its_tighter_n_bound(): void
+    public function test_schedule_rejects_an_unknown_time_mode(): void
     {
-        // n shares a name with every_n_minutes (widest 1..59) but every_n_hours is 2..12; the
-        // exact per-family bound must reject n=1 even though it is valid for every_n_minutes.
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'every_n_hours', 'params' => ['n' => 1]]))
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'fortnightly']]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.n']);
-
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'every_n_hours', 'params' => ['n' => 13]]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.n']);
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.mode']);
     }
 
-    public function test_schedule_rejects_params_foreign_to_the_family(): void
+    public function test_schedule_time_at_requires_a_non_empty_distinct_bounded_list(): void
     {
-        // A key outside the submitted family's OWN descriptor set is a 422 — descriptor-driven
-        // consumers (FE builder, AI assist) get explicit feedback, never a silent drop.
         $user = User::factory()->create();
 
+        // Missing at-list.
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00', 'weekday' => 1],
-            ]))
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'at']]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.weekday']);
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.at']);
+
+        // Duplicate fire times.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => $this->at('08:00', '08:00')]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.at.0']);
+
+        // More than six fire times.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => $this->at('00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00')]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.at']);
     }
 
-    public function test_schedule_weekly_requires_time_and_weekdays(): void
+    public function test_schedule_every_minutes_bounds_and_window(): void
+    {
+        $user = User::factory()->create();
+
+        // minutes is required and 1..59.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'every_minutes']]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.minutes']);
+
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'every_minutes', 'minutes' => 60]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.minutes']);
+
+        // A window needs both bounds.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'every_minutes', 'minutes' => 15, 'from' => '09:00']]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.to']);
+
+        // from must be before to (no midnight wrap).
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'every_minutes', 'minutes' => 15, 'from' => '17:00', 'to' => '09:00']]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.to']);
+    }
+
+    public function test_schedule_every_hours_bounds_and_window(): void
+    {
+        $user = User::factory()->create();
+
+        // hours is required and 1..23.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'every_hours', 'hours' => 0]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.hours']);
+
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'every_hours', 'hours' => 24]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.hours']);
+
+        // Hour window from must be before to.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'every_hours', 'hours' => 2, 'from' => 17, 'to' => 9]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.to']);
+    }
+
+    public function test_schedule_rejects_a_field_foreign_to_the_time_mode(): void
+    {
+        $user = User::factory()->create();
+
+        // `minutes` is not a field of the `at` mode — rejected as foreign.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => ['mode' => 'at', 'at' => ['09:00'], 'minutes' => 15]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.minutes']);
+    }
+
+    public function test_schedule_day_present_without_a_mode_is_rejected(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'weekly', 'params' => []]))
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => $this->at('09:00'), 'day' => ['weekdays' => [1]]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.mode']);
+    }
+
+    public function test_schedule_day_weekdays_list_rules(): void
+    {
+        $user = User::factory()->create();
+
+        $base = ['time' => $this->at('09:00')];
+
+        // Empty list.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'weekdays', 'weekdays' => []]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.weekdays']);
+
+        // Duplicate.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'weekdays', 'weekdays' => [1, 1]]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.weekdays.0']);
+
+        // Out of range (7 > 6).
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'weekdays', 'weekdays' => [1, 7]]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.weekdays.1']);
+    }
+
+    public function test_schedule_day_month_days_list_rules(): void
+    {
+        $user = User::factory()->create();
+
+        $base = ['time' => $this->at('09:00')];
+
+        // Day 0 is out of range (1..31).
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'month_days', 'days' => [0]]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.days.0']);
+
+        // Day 32 is out of range.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'month_days', 'days' => [32]]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.days.0']);
+    }
+
+    public function test_schedule_day_every_n_days_requires_n_and_a_valid_window(): void
+    {
+        $user = User::factory()->create();
+
+        $base = ['time' => $this->at('09:00')];
+
+        // n required.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'every_n_days']]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.n']);
+
+        // Window both-or-neither.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'every_n_days', 'n' => 2, 'from' => 5]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.to']);
+
+        // from < to.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'every_n_days', 'n' => 2, 'from' => 20, 'to' => 5]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.to']);
+    }
+
+    public function test_schedule_day_special_requires_and_bounds_its_params(): void
+    {
+        $user = User::factory()->create();
+
+        $base = ['time' => $this->at('09:00')];
+
+        // nth_weekday needs ordinal + weekday.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'special', 'special' => 'nth_weekday']]))
             ->assertUnprocessable()
             ->assertJsonValidationErrors([
-                'trigger_config.schedule.params.time',
-                'trigger_config.schedule.params.weekdays',
-            ]);
-    }
-
-    public function test_schedule_weekly_rejects_a_legacy_scalar_weekday_on_write(): void
-    {
-        $user = User::factory()->create();
-
-        // The compiler tolerates a legacy scalar `weekday` for READ, but a NEW write must use the
-        // `weekdays` list — a scalar `weekday` is a foreign param and `weekdays` is required-missing.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'weekly',
-                'params' => ['weekday' => 1, 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors([
-                'trigger_config.schedule.params.weekday',
-                'trigger_config.schedule.params.weekdays',
-            ]);
-    }
-
-    public function test_schedule_weekly_rejects_an_empty_weekdays_list(): void
-    {
-        $user = User::factory()->create();
-
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'weekly',
-                'params' => ['weekdays' => [], 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.weekdays']);
-    }
-
-    public function test_schedule_weekly_rejects_duplicate_weekdays(): void
-    {
-        $user = User::factory()->create();
-
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'weekly',
-                'params' => ['weekdays' => [1, 1], 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.weekdays.0']);
-    }
-
-    public function test_schedule_weekly_rejects_a_weekday_out_of_range(): void
-    {
-        $user = User::factory()->create();
-
-        // Element 7 is outside 0..6 — the `.*` element bound rejects it.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'weekly',
-                'params' => ['weekdays' => [1, 7], 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.weekdays.1']);
-    }
-
-    public function test_schedule_new_families_enforce_their_bounds(): void
-    {
-        $user = User::factory()->create();
-
-        // every_n_months n is 2..6 (widest n is now 1..59 across families; the exact per-family
-        // bound must still reject n=1 and n=7).
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'every_n_months', 'params' => ['n' => 1, 'day' => 1, 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.n']);
-
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'every_n_months', 'params' => ['n' => 7, 'day' => 1, 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.n']);
-
-        // nth_weekday_of_month ordinal is 1..5 — ordinal 6 is out of range.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'nth_weekday_of_month', 'params' => ['ordinal' => 6, 'weekday' => 1, 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.ordinal']);
-
-        // last_weekday_of_month weekday is 0..6 — weekday 7 is out of range.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'last_weekday_of_month', 'params' => ['weekday' => 7, 'time' => '09:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.weekday']);
-    }
-
-    public function test_schedule_new_families_require_their_params(): void
-    {
-        $user = User::factory()->create();
-
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'every_n_months', 'params' => []]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors([
-                'trigger_config.schedule.params.n',
-                'trigger_config.schedule.params.day',
-                'trigger_config.schedule.params.time',
+                'trigger_config.schedule.day.ordinal',
+                'trigger_config.schedule.day.weekday',
             ]);
 
+        // ordinal is 1..5.
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'nth_weekday_of_month', 'params' => []]))
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'special', 'special' => 'nth_weekday', 'ordinal' => 6, 'weekday' => 1]]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors([
-                'trigger_config.schedule.params.ordinal',
-                'trigger_config.schedule.params.weekday',
-                'trigger_config.schedule.params.time',
-            ]);
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.ordinal']);
 
+        // last_weekday weekday is 0..6.
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'last_working_day_of_month', 'params' => []]))
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['day' => ['mode' => 'special', 'special' => 'last_weekday', 'weekday' => 7]]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.time']);
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.weekday']);
     }
 
-    public function test_schedule_daily_requires_time(): void
+    public function test_schedule_day_special_rejects_a_foreign_param(): void
     {
         $user = User::factory()->create();
 
+        // last_day takes no ordinal — a foreign param is rejected.
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'daily', 'params' => []]))
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => $this->at('09:00'), 'day' => ['mode' => 'special', 'special' => 'last_day', 'ordinal' => 2]]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.time']);
+            ->assertJsonValidationErrors(['trigger_config.schedule.day.ordinal']);
     }
 
-    public function test_schedule_twice_daily_requires_first_before_second(): void
+    public function test_schedule_last_working_day_requires_time_mode_at(): void
     {
         $user = User::factory()->create();
 
-        // first_hour >= second_hour => rejected on the second_hour key.
+        // last_working_day is a bespoke HH:mm cadence — it must not be combined with a minute/hour grid.
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'twice_daily',
-                'params' => ['first_hour' => 17, 'second_hour' => 9],
+                'time' => ['mode' => 'every_hours', 'hours' => 2],
+                'day' => ['mode' => 'special', 'special' => 'last_working_day'],
             ]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.second_hour']);
-
-        // Equal hours are also invalid.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'twice_daily',
-                'params' => ['first_hour' => 9, 'second_hour' => 9],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.second_hour']);
+            ->assertJsonValidationErrors(['trigger_config.schedule.time.mode']);
     }
 
-    public function test_schedule_twice_monthly_requires_first_before_second(): void
+    public function test_schedule_month_bounds_and_window(): void
     {
         $user = User::factory()->create();
 
+        $base = ['time' => $this->at('09:00')];
+
+        // months element 13 is out of range (1..12).
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'twice_monthly',
-                'params' => ['first_day' => 20, 'second_day' => 5, 'time' => '09:00'],
-            ]))
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['month' => ['mode' => 'months', 'months' => [13]]]))
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.params.second_day']);
+            ->assertJsonValidationErrors(['trigger_config.schedule.month.months.0']);
+
+        // every_n_months n is 1..12.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['month' => ['mode' => 'every_n_months', 'n' => 13]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.month.n']);
+
+        // Window both-or-neither.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['month' => ['mode' => 'every_n_months', 'n' => 2, 'from' => 3]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.month.to']);
+
+        // from < to.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($base + ['month' => ['mode' => 'every_n_months', 'n' => 2, 'from' => 11, 'to' => 3]]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['trigger_config.schedule.month.to']);
     }
 
     public function test_schedule_rejects_an_invalid_timezone(): void
@@ -392,109 +443,12 @@ class WorkflowCrudTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
-                'tz' => 'Mars/Phobos',
-            ]))
+            ->postJson('/api/workflows', $this->schedulePayload(['time' => $this->at('09:00'), 'tz' => 'Mars/Phobos']))
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['trigger_config.schedule.tz']);
     }
 
-    // ---- times[] (multiple fire times) ---------------------------------------
-
-    public function test_schedule_accepts_a_times_list_on_a_wall_clock_family(): void
-    {
-        $user = User::factory()->create();
-
-        // daily with two distinct fire times replaces the single params.time.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => [],
-                'times' => ['08:00', '17:00'],
-            ]))
-            ->assertCreated();
-    }
-
-    public function test_schedule_rejects_duplicate_times(): void
-    {
-        $user = User::factory()->create();
-
-        // Duplicated fire times are a "duplicate executions" mistake — rejected by `distinct`.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => [],
-                'times' => ['08:00', '08:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.times.0']);
-    }
-
-    public function test_schedule_rejects_times_with_a_single_time_param(): void
-    {
-        $user = User::factory()->create();
-
-        // times[] and params.time both present is a mistake — provide one or the other.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
-                'times' => ['08:00', '17:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.times']);
-    }
-
-    public function test_schedule_rejects_times_on_a_family_without_a_time_param(): void
-    {
-        $user = User::factory()->create();
-
-        // hourly has no `time` param, so a times[] list is not allowed for it.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'hourly',
-                'params' => [],
-                'times' => ['08:00', '17:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.times']);
-    }
-
-    public function test_schedule_rejects_more_than_six_times(): void
-    {
-        $user = User::factory()->create();
-
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => [],
-                'times' => ['00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00'],
-            ]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.times']);
-    }
-
     // ---- exclusions ----------------------------------------------------------
-
-    public function test_schedule_accepts_valid_exclusions(): void
-    {
-        $user = User::factory()->create();
-
-        // A daily schedule that skips weekends, August, and a couple of concrete dates.
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
-                'exclusions' => [
-                    'weekdays' => [0, 6],
-                    'months' => [8],
-                    'dates' => ['2026-12-24', '2026-12-25'],
-                ],
-            ]))
-            ->assertCreated();
-    }
 
     public function test_schedule_rejects_eleven_plus_one_excluded_months(): void
     {
@@ -503,8 +457,7 @@ class WorkflowCrudTest extends TestCase
         // 12 excluded months would leave the schedule with no month to fire — structurally capped at 11.
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
+                'time' => $this->at('09:00'),
                 'exclusions' => ['months' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]],
             ]))
             ->assertUnprocessable()
@@ -518,8 +471,7 @@ class WorkflowCrudTest extends TestCase
         // 7 excluded weekdays would leave no day to fire — structurally capped at 6.
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
+                'time' => $this->at('09:00'),
                 'exclusions' => ['weekdays' => [0, 1, 2, 3, 4, 5, 6]],
             ]))
             ->assertUnprocessable()
@@ -532,8 +484,7 @@ class WorkflowCrudTest extends TestCase
 
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
+                'time' => $this->at('09:00'),
                 'exclusions' => ['dates' => ['24-12-2026']],
             ]))
             ->assertUnprocessable()
@@ -547,8 +498,7 @@ class WorkflowCrudTest extends TestCase
         // A key outside {months, weekdays, dates} is rejected as foreign.
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
+                'time' => $this->at('09:00'),
                 'exclusions' => ['years' => [2026]],
             ]))
             ->assertUnprocessable()
@@ -559,26 +509,16 @@ class WorkflowCrudTest extends TestCase
     {
         $user = User::factory()->create();
 
-        // weekly on Monday that also excludes Mondays can never fire — rejected up front on the
+        // weekly-on-Monday that also excludes Mondays can never fire — rejected up front on the
         // exclusions key rather than persisting a schedule with no occurrences.
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->schedulePayload([
-                'family' => 'weekly',
-                'params' => ['weekdays' => [1], 'time' => '09:00'],
+                'time' => $this->at('09:00'),
+                'day' => ['mode' => 'weekdays', 'weekdays' => [1]],
                 'exclusions' => ['weekdays' => [1]],
             ]))
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['trigger_config.schedule.exclusions']);
-    }
-
-    public function test_schedule_rejects_an_unknown_family(): void
-    {
-        $user = User::factory()->create();
-
-        $this->actingAs($user)
-            ->postJson('/api/workflows', $this->schedulePayload(['family' => 'fortnightly', 'params' => []]))
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['trigger_config.schedule.family']);
     }
 
     public function test_schedule_missing_schedule_block_is_rejected(): void
@@ -594,6 +534,72 @@ class WorkflowCrudTest extends TestCase
             ->assertJsonValidationErrors(['trigger_config.schedule']);
     }
 
+    // ---- 422 error-key GRANULARITY contract (the FE tab mapping, §4.5.11) -----
+    //
+    // The builder routes a server 422 onto the offending tab / the exceptions
+    // disclosure by matching the error-key PREFIX `trigger_config.schedule.{time|
+    // day|month|exclusions|tz}` (WorkflowScheduleBuilder.vue). These tests pin that
+    // the write path really emits errors under those GRANULAR keys — one
+    // representative violation per branch — so the mapping can never silently break
+    // if the validator's error keys drift. Rules/bounds come straight from
+    // WorkflowScheduleRulesValidator + ScheduleLimits (no invented fields).
+
+    /** The five branch keys the FE builder maps onto tabs / the exceptions disclosure. */
+    private const SCHEDULE_BRANCH_ERROR_KEYS = [
+        'trigger_config.schedule.time.minutes',   // → Time tab
+        'trigger_config.schedule.day.weekdays',   // → Day tab
+        'trigger_config.schedule.month.n',        // → Month tab
+        'trigger_config.schedule.exclusions.dates', // → exceptions disclosure
+        'trigger_config.schedule.tz',             // → tz field
+    ];
+
+    /**
+     * A descriptor that breaks EACH of the five FE-mapped branches at once, one
+     * representative out-of-bounds violation apiece, so a single 422 carries all
+     * five granular keys.
+     */
+    private function everyBranchInvalidSchedule(): array
+    {
+        return [
+            'time' => ['mode' => 'every_minutes', 'minutes' => ScheduleLimits::EVERY_MINUTES_MAX + 1],
+            'day' => ['mode' => 'weekdays', 'weekdays' => []],
+            'month' => ['mode' => 'every_n_months', 'n' => ScheduleLimits::EVERY_N_MONTHS_MAX + 1],
+            'exclusions' => ['dates' => $this->distinctDates(ScheduleLimits::EXCLUSIONS_DATES_MAX + 1)],
+            'tz' => 'Mars/Phobos',
+        ];
+    }
+
+    /** $count distinct valid Y-m-d dates (to overflow a structurally-bounded list). */
+    private function distinctDates(int $count): array
+    {
+        return array_map(
+            fn (int $i) => Carbon::create(2026, 1, 1)->addDays($i)->format('Y-m-d'),
+            range(0, $count - 1),
+        );
+    }
+
+    public function test_schedule_422_error_keys_are_granular_per_branch_on_store(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->schedulePayload($this->everyBranchInvalidSchedule()))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(self::SCHEDULE_BRANCH_ERROR_KEYS);
+    }
+
+    public function test_schedule_422_error_keys_are_granular_per_branch_on_update(): void
+    {
+        $user = User::factory()->create();
+        $workflow = Workflow::factory()->create(['creator_id' => $user->id]);
+
+        // Update shares Store's schedule rules — the FE tab-mapping contract must hold on PUT too.
+        $this->actingAs($user)
+            ->putJson("/api/workflows/{$workflow->id}", $this->schedulePayload($this->everyBranchInvalidSchedule()))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(self::SCHEDULE_BRANCH_ERROR_KEYS);
+    }
+
     public function test_cross_type_trigger_config_is_rejected(): void
     {
         $user = User::factory()->create();
@@ -602,7 +608,7 @@ class WorkflowCrudTest extends TestCase
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->validPayload([
                 'trigger_type' => 'form_submitted',
-                'trigger_config' => ['schedule' => ['family' => 'daily', 'params' => ['time' => '09:00']]],
+                'trigger_config' => ['schedule' => ['time' => $this->at('09:00')]],
             ]))
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['trigger_config.schedule']);
@@ -612,7 +618,7 @@ class WorkflowCrudTest extends TestCase
             ->postJson('/api/workflows', $this->validPayload([
                 'trigger_type' => 'schedule',
                 'trigger_config' => [
-                    'schedule' => ['family' => 'daily', 'params' => ['time' => '09:00']],
+                    'schedule' => ['time' => $this->at('09:00')],
                     'form_id' => '00000000-0000-0000-0000-000000000000',
                 ],
             ]))
@@ -764,7 +770,7 @@ class WorkflowCrudTest extends TestCase
         $this->actingAs($user)
             ->postJson('/api/workflows', $this->validPayload([
                 'trigger_type' => 'schedule',
-                'trigger_config' => ['schedule' => ['family' => 'daily', 'params' => ['time' => '09:00']]],
+                'trigger_config' => ['schedule' => ['time' => $this->at('09:00')]],
                 'conditions' => [
                     ['field' => 'fields.priority', 'field_type' => 'text', 'operator' => 'equals', 'value' => 'high'],
                 ],
@@ -1071,7 +1077,7 @@ class WorkflowCrudTest extends TestCase
         $this->actingAs($user)
             ->putJson("/api/workflows/{$workflow->id}", $this->validPayload([
                 'trigger_type' => 'form_submitted',
-                'trigger_config' => ['schedule' => ['family' => 'daily', 'params' => ['time' => '09:00']]],
+                'trigger_config' => ['schedule' => ['time' => $this->at('09:00')]],
             ]))
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['trigger_config.schedule']);
@@ -1090,171 +1096,27 @@ class WorkflowCrudTest extends TestCase
         $this->assertDatabaseHas('workflows', ['id' => $workflow->id, 'status' => 'active']);
     }
 
-    public function test_status_change_forbidden_for_non_creator(): void
-    {
-        $owner = User::factory()->create();
-        $other = User::factory()->create();
-        $workflow = Workflow::factory()->create(['creator_id' => $owner->id]);
-
-        $this->actingAs($other)
-            ->patchJson("/api/workflows/{$workflow->id}/status", ['status' => 'active'])
-            ->assertForbidden();
-    }
-
-    public function test_status_endpoint_rejects_invalid_status(): void
+    public function test_detail_resource_upgrades_a_legacy_schedule_to_v2_for_the_editor_seed(): void
     {
         $user = User::factory()->create();
-        $workflow = Workflow::factory()->create(['creator_id' => $user->id]);
 
-        $this->actingAs($user)
-            ->patchJson("/api/workflows/{$workflow->id}/status", ['status' => 'bogus'])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors(['status']);
-    }
+        // A row written before the schedule rebuild still stores the legacy { family, params } shape.
+        $workflow = Workflow::factory()->create([
+            'creator_id' => $user->id,
+            'trigger_type' => 'schedule',
+            'trigger_config' => ['schedule' => ['family' => 'daily', 'params' => ['time' => '09:00']]],
+        ]);
 
-    public function test_can_show_workflow(): void
-    {
-        $user = User::factory()->create();
-        $workflow = Workflow::factory()->create(['creator_id' => $user->id]);
-
-        $this->actingAs($user)
+        // The detail Resource upgrades it to the v2 compositional descriptor (read-shim), so the FE
+        // editor seeds from one shape — the legacy `family`/`params` keys are gone.
+        $schedule = $this->actingAs($user)
             ->getJson("/api/workflows/{$workflow->id}")
             ->assertOk()
-            ->assertJsonPath('data.id', $workflow->id);
-    }
+            ->assertJsonPath('data.trigger_config.schedule.time.mode', 'at')
+            ->assertJsonPath('data.trigger_config.schedule.time.at', ['09:00'])
+            ->json('data.trigger_config.schedule');
 
-    public function test_can_list_workflows(): void
-    {
-        $user = User::factory()->create();
-        Workflow::factory()->count(3)->create(['creator_id' => $user->id]);
-
-        $this->actingAs($user)
-            ->getJson('/api/workflows')
-            ->assertOk()
-            ->assertJsonCount(3, 'data')
-            ->assertJsonPath('data.0.is_owner', true);
-    }
-
-    public function test_index_is_cursor_paginated(): void
-    {
-        $user = User::factory()->create();
-        Workflow::factory()->count(10)->create(['creator_id' => $user->id]);
-
-        $this->actingAs($user)
-            ->getJson('/api/workflows')
-            ->assertOk()
-            ->assertJsonCount(8, 'data')
-            ->assertJsonStructure(['data', 'links', 'meta' => ['next_cursor']]);
-    }
-
-    public function test_can_search_workflows(): void
-    {
-        $user = User::factory()->create();
-        Workflow::factory()->create(['creator_id' => $user->id, 'name' => 'Alpha flow']);
-        Workflow::factory()->create(['creator_id' => $user->id, 'name' => 'Beta flow']);
-
-        $this->actingAs($user)
-            ->getJson('/api/workflows?search=Alpha')
-            ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.name', 'Alpha flow');
-    }
-
-    public function test_can_filter_by_status(): void
-    {
-        $user = User::factory()->create();
-        Workflow::factory()->active()->create(['creator_id' => $user->id, 'name' => 'Live']);
-        Workflow::factory()->inactive()->create(['creator_id' => $user->id, 'name' => 'Off']);
-
-        $this->actingAs($user)
-            ->getJson('/api/workflows?status=active')
-            ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.name', 'Live');
-    }
-
-    public function test_can_soft_delete_and_restore_workflow(): void
-    {
-        $user = User::factory()->create();
-        $workflow = Workflow::factory()->create(['creator_id' => $user->id]);
-
-        $this->actingAs($user)
-            ->deleteJson("/api/workflows/{$workflow->id}")
-            ->assertOk();
-
-        $this->assertSoftDeleted('workflows', ['id' => $workflow->id]);
-
-        $this->actingAs($user)
-            ->postJson("/api/workflows/{$workflow->id}/restore")
-            ->assertOk()
-            ->assertJsonPath('data.id', $workflow->id);
-
-        $this->assertDatabaseHas('workflows', ['id' => $workflow->id, 'deleted_at' => null]);
-    }
-
-    public function test_cannot_delete_another_users_workflow(): void
-    {
-        $owner = User::factory()->create();
-        $other = User::factory()->create();
-        $workflow = Workflow::factory()->create(['creator_id' => $owner->id]);
-
-        $this->actingAs($other)
-            ->deleteJson("/api/workflows/{$workflow->id}")
-            ->assertForbidden();
-    }
-
-    public function test_cannot_restore_another_users_workflow(): void
-    {
-        $owner = User::factory()->create();
-        $other = User::factory()->create();
-        $workflow = Workflow::factory()->create(['creator_id' => $owner->id]);
-        $workflow->delete();
-
-        $this->actingAs($other)
-            ->postJson("/api/workflows/{$workflow->id}/restore")
-            ->assertForbidden();
-
-        $this->assertSoftDeleted('workflows', ['id' => $workflow->id]);
-    }
-
-    public function test_workflows_are_isolated_by_active_workspace(): void
-    {
-        $user = User::factory()->create();
-        $workspaceA = $this->workspaceFor($user);
-        $workspaceB = $this->workspaceFor($user);
-
-        $this->actingAs($user)->withHeader('X-Workspace-Id', $workspaceA->id)
-            ->postJson('/api/workflows', $this->validPayload(['name' => 'Flow A']))
-            ->assertCreated();
-
-        $this->assertDatabaseHas('workflows', ['name' => 'Flow A', 'workspace_id' => $workspaceA->id]);
-
-        $this->actingAs($user)->withHeader('X-Workspace-Id', $workspaceA->id)
-            ->getJson('/api/workflows')
-            ->assertOk()
-            ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.name', 'Flow A');
-
-        $this->actingAs($user)->withHeader('X-Workspace-Id', $workspaceB->id)
-            ->getJson('/api/workflows')
-            ->assertOk()
-            ->assertJsonCount(0, 'data');
-    }
-
-    public function test_non_member_cannot_access_workspace_workflows(): void
-    {
-        $owner = User::factory()->create();
-        $foreignWorkspace = Workspace::factory()->create(['owner_id' => $owner->id]);
-
-        $outsider = User::factory()->create();
-
-        $this->actingAs($outsider)->withHeader('X-Workspace-Id', $foreignWorkspace->id)
-            ->getJson('/api/workflows')
-            ->assertForbidden();
-    }
-
-    public function test_guest_cannot_access_workflows(): void
-    {
-        $this->getJson('/api/workflows')->assertUnauthorized();
+        $this->assertArrayNotHasKey('family', $schedule);
+        $this->assertArrayNotHasKey('params', $schedule);
     }
 }

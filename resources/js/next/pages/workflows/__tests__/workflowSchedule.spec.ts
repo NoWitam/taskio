@@ -1,397 +1,364 @@
-// Unit tests for the PURE schedule helpers (B7a + B4, §4.5, §8.4 REQUIREMENT). These
-// guard the drift-critical logic that keeps the FE aligned with the descriptor
-// contract WITHOUT mounting the builder: descriptor lookup, the client-side
-// bound + `lt` + weekday_list + times + exclusions validators, the human
-// describeSchedule sentence (with the multi-time + exclusions clauses + the four new
-// families), and the configToDraft / draftToConfig assist-apply + save mapping
-// (time↔times[] unification + exclusions emit-or-omit + simple-mode representability).
-import { describe, it, expect } from 'vitest';
+// Unit tests for the PURE v2 schedule helpers (§4.5, REVISION 4). These guard the
+// drift-critical logic that keeps the FE aligned with the compositional descriptor
+// WITHOUT mounting the builder:
+//   • describeSchedule — the human cadence sentence, tested against the REAL i18n
+//     catalog in BOTH locales so it is living documentation for §4.5.10 (Polish cases
+//     + plurals are the point);
+//   • configToDraft / draftToConfig — the FLAT wire ⇄ nested draft mapping + the
+//     legacy read-shim + the omit-when-neutral emit discipline;
+//   • validateScheduleDraft — the axis bounds + the window `from < to` invariant;
+//   • isPreviousOccurrence + formatOccurrenceParts — the strip's helpers.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { setLocale, translate } from '../../../app/i18n';
 import {
   configToDraft,
   describeSchedule,
   draftToConfig,
   emptyScheduleDraft,
-  findFamilyDescriptor,
-  findParamDescriptor,
-  intentForFamily,
+  formatOccurrenceParts,
+  isPreviousOccurrence,
   isScheduleDraftValid,
-  isSimpleRepresentable,
-  paramDescriptorsFor,
+  occurrencePartsFormatter,
+  splitSentenceTemplate,
   validateScheduleDraft,
+  type DayAxis,
+  type MonthAxis,
   type ScheduleDraft,
+  type TimeAxis,
 } from '../workflowSchedule';
-import type { ScheduleFamilyDescriptor } from '../types';
+import type { WorkflowScheduleConfig } from '../types';
+import { en } from '../../../app/i18n/en';
+import { pl } from '../../../app/i18n/pl';
 
-// The descriptor catalog mirrors the B4 backend WorkflowScheduleFamily::paramDescriptors
-// for the families the tests exercise (bounds, the two `lt` invariants, weekday_list).
-const FAMILIES: ScheduleFamilyDescriptor[] = [
-  { family: 'every_n_minutes', params: [{ name: 'n', type: 'int', required: true, min: 1, max: 59 }] },
-  { family: 'hourly', params: [] },
-  { family: 'daily', params: [{ name: 'time', type: 'time', required: true }] },
-  {
-    family: 'twice_daily',
-    params: [
-      { name: 'first_hour', type: 'int', required: true, min: 0, max: 23, lt: 'second_hour' },
-      { name: 'second_hour', type: 'int', required: true, min: 0, max: 23 },
-      { name: 'minute', type: 'int', required: false, min: 0, max: 59 },
-    ],
-  },
-  {
-    family: 'weekly',
-    params: [
-      { name: 'weekdays', type: 'weekday_list', required: true },
-      { name: 'time', type: 'time', required: true },
-    ],
-  },
-  {
-    family: 'twice_monthly',
-    params: [
-      { name: 'first_day', type: 'int', required: true, min: 1, max: 31, lt: 'second_day' },
-      { name: 'second_day', type: 'int', required: true, min: 1, max: 31 },
-      { name: 'time', type: 'time', required: true },
-    ],
-  },
-  {
-    family: 'yearly',
-    params: [
-      { name: 'month', type: 'int', required: true, min: 1, max: 12 },
-      { name: 'day', type: 'int', required: true, min: 1, max: 31 },
-      { name: 'time', type: 'time', required: true },
-    ],
-  },
-  {
-    family: 'nth_weekday_of_month',
-    params: [
-      { name: 'ordinal', type: 'int', required: true, min: 1, max: 5 },
-      { name: 'weekday', type: 'weekday', required: true, min: 0, max: 6 },
-      { name: 'time', type: 'time', required: true },
-    ],
-  },
-  {
-    family: 'last_weekday_of_month',
-    params: [
-      { name: 'weekday', type: 'weekday', required: true, min: 0, max: 6 },
-      { name: 'time', type: 'time', required: true },
-    ],
-  },
-  { family: 'last_working_day_of_month', params: [{ name: 'time', type: 'time', required: true }] },
-  {
-    family: 'every_n_months',
-    params: [
-      { name: 'n', type: 'int', required: true, min: 2, max: 6 },
-      { name: 'day', type: 'int', required: true, min: 1, max: 31 },
-      { name: 'time', type: 'time', required: true },
-    ],
-  },
-];
-
-/** A translator that echoes `key|param1=v1,param2=v2` so assertions read the wiring. */
-function fakeT(key: string, _def?: string, params?: Record<string, string | number>): string {
-  if (!params) return key;
-  const parts = Object.entries(params)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(',');
-  return `${key}|${parts}`;
+// REV5: emptyScheduleDraft seeds tz to the resolved browser zone, and describeSchedule
+// defaults its `activeTz` to it too (§4.5.8/§4.5.10). Pin the browser zone to 'UTC' so
+// the seed + the conditional tz clause are DETERMINISTIC (a foreign zone surfaces the
+// "(…)" tail; the viewer's own zone is silent). The real Intl formatters are preserved
+// (only `resolvedOptions().timeZone` is overridden) so occurrence formatting still works.
+const RealDateTimeFormat = Intl.DateTimeFormat;
+function stubBrowserZone(zone: string): void {
+  vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(((...args: unknown[]) => {
+    const inst = new (RealDateTimeFormat as unknown as { new (...a: unknown[]): Intl.DateTimeFormat })(...args);
+    const realResolved = inst.resolvedOptions.bind(inst);
+    inst.resolvedOptions = () => ({ ...realResolved(), timeZone: zone });
+    return inst;
+  }) as unknown as typeof Intl.DateTimeFormat);
 }
 
-/** A translator that returns human-ish tokens so describe clauses read naturally. */
-function labelT(key: string, _def?: string, params?: Record<string, string | number>): string {
-  const table: Record<string, string> = {
-    'workflows.schedule.utc': 'UTC',
-    'workflows.schedule.and': 'and',
-    'workflows.schedule.describe.timeClause': 'at {times}',
-    'workflows.schedule.describe.exclusionClause': 'except: {list}',
-    'workflows.schedule.describe.exclusionSeparator': '·',
-    'workflows.schedule.weekday.0': 'Sunday',
-    'workflows.schedule.weekday.1': 'Monday',
-    'workflows.schedule.weekday.3': 'Wednesday',
-    'workflows.schedule.weekday.6': 'Saturday',
-    'workflows.schedule.month.8': 'August',
-    'workflows.schedule.ordinal.2': 'second',
-    'workflows.schedule.describe.weekly': 'Weekly on {weekdays} {time} ({tz})',
-    'workflows.schedule.describe.every_n_months': 'Every {n} months on day {day} {time} ({tz})',
-    'workflows.schedule.describe.nth_weekday_of_month': 'On the {ordinal} {weekday} of each month {time} ({tz})',
-    'workflows.schedule.describe.last_weekday_of_month': 'On the last {weekday} of each month {time} ({tz})',
-    'workflows.schedule.describe.last_working_day_of_month': 'On the last working day of each month {time} ({tz})',
-    'workflows.schedule.describe.daily': 'Daily {time} ({tz})',
-  };
-  let text = table[key] ?? key;
-  if (params) {
-    for (const [k, v] of Object.entries(params)) text = text.replace(`{${k}}`, String(v));
-  }
-  return text;
+/** A draft from the neutral seed with axis overrides. */
+function draft(over: Partial<ScheduleDraft> = {}): ScheduleDraft {
+  return { ...emptyScheduleDraft(), ...over };
+}
+const time = (t: TimeAxis): Partial<ScheduleDraft> => ({ time: t });
+const day = (d: DayAxis): Partial<ScheduleDraft> => ({ day: d });
+const month = (m: MonthAxis): Partial<ScheduleDraft> => ({ month: m });
+
+/** describeSchedule against the REAL catalog in the given locale. */
+function say(over: Partial<ScheduleDraft>, locale: 'pl' | 'en'): string {
+  setLocale(locale);
+  return describeSchedule(draft(over), translate);
 }
 
-describe('descriptor lookup', () => {
-  it('finds a family + its params, and a single param descriptor', () => {
-    expect(findFamilyDescriptor(FAMILIES, 'daily')?.family).toBe('daily');
-    expect(findFamilyDescriptor(FAMILIES, 'nope')).toBeNull();
-    expect(paramDescriptorsFor(FAMILIES, 'twice_daily').map((p) => p.name)).toEqual([
-      'first_hour',
-      'second_hour',
-      'minute',
-    ]);
-    expect(findParamDescriptor(FAMILIES, 'every_n_minutes', 'n')?.max).toBe(59);
-    expect(findParamDescriptor(FAMILIES, 'every_n_minutes', 'missing')).toBeNull();
-  });
-});
-
-describe('validateScheduleDraft — bounds + required + lt + times', () => {
-  function draft(overrides: Partial<ScheduleDraft>): ScheduleDraft {
-    return { family: 'daily', params: {}, tz: '', times: [], exclusions: { months: [], weekdays: [], dates: [] }, ...overrides };
-  }
-
-  it('flags a missing required time via the times editor', () => {
-    const errs = validateScheduleDraft(FAMILIES, draft({ family: 'daily', params: {}, times: [] }));
-    expect(errs).toContainEqual({ param: 'times', key: 'workflows.schedule.validation.timesRequired' });
-  });
-
-  it('accepts a valid daily draft (single time in times[])', () => {
-    const d = draft({ family: 'daily', params: {}, times: ['09:00'] });
-    expect(validateScheduleDraft(FAMILIES, d)).toEqual([]);
-    expect(isScheduleDraftValid(FAMILIES, d)).toBe(true);
-  });
-
-  it('enforces the descriptor min/max bounds', () => {
-    const tooLow = validateScheduleDraft(FAMILIES, draft({ family: 'every_n_minutes', params: { n: 0 } }));
-    expect(tooLow).toContainEqual({ param: 'n', key: 'workflows.schedule.validation.min', messageParams: { min: 1 } });
-    const tooHigh = validateScheduleDraft(FAMILIES, draft({ family: 'every_n_minutes', params: { n: 99 } }));
-    expect(tooHigh).toContainEqual({ param: 'n', key: 'workflows.schedule.validation.max', messageParams: { max: 59 } });
-  });
-
-  it('enforces the twice_daily lt invariant (first_hour < second_hour)', () => {
-    const bad = validateScheduleDraft(
-      FAMILIES,
-      draft({ family: 'twice_daily', params: { first_hour: 17, second_hour: 9 } }),
+describe('describeSchedule — PL grammar (§4.5.10, living documentation)', () => {
+  it('TIME head clauses', () => {
+    expect(say({}, 'pl')).toBe('Codziennie o 09:00');
+    expect(say(time({ mode: 'at', at: ['09:00', '17:00'] }), 'pl')).toBe('O 09:00 i 17:00');
+    expect(say(time({ mode: 'every_minutes', n: 15 }), 'pl')).toBe('Co 15 minut');
+    expect(say(time({ mode: 'every_minutes', n: 15, window: { from: '09:30', to: '17:45' } }), 'pl')).toBe(
+      'Co 15 minut między 09:30 a 17:45',
     );
-    expect(bad).toContainEqual({
-      param: 'first_hour',
-      key: 'workflows.schedule.validation.lt',
-      messageParams: { field: 'first_hour', other: 'second_hour' },
-    });
-    const equal = validateScheduleDraft(
-      FAMILIES,
-      draft({ family: 'twice_daily', params: { first_hour: 9, second_hour: 9 } }),
+    expect(say(time({ mode: 'every_hours', n: 2, minute: 15 }), 'pl')).toBe('Co 2 godziny (o :15)');
+    expect(say(time({ mode: 'every_hours', n: 2, minute: 15, window: { from: 8, to: 18 } }), 'pl')).toBe(
+      'Co 2 godziny (o :15) między 08:00 a 18:00',
     );
-    expect(equal.some((e) => e.key === 'workflows.schedule.validation.lt')).toBe(true);
+    // minute 0 → no "(o :mm)" suffix.
+    expect(say(time({ mode: 'every_hours', n: 3, minute: 0 }), 'pl')).toBe('Co 3 godziny');
   });
 
-  it('validates weekday_list: non-empty / unique / range', () => {
-    const empty = validateScheduleDraft(FAMILIES, draft({ family: 'weekly', params: { weekdays: [] }, times: ['08:00'] }));
-    expect(empty).toContainEqual({ param: 'weekdays', key: 'workflows.schedule.validation.weekdayListRequired' });
-
-    const dup = validateScheduleDraft(FAMILIES, draft({ family: 'weekly', params: { weekdays: [1, 1] }, times: ['08:00'] }));
-    expect(dup).toContainEqual({ param: 'weekdays', key: 'workflows.schedule.validation.weekdayListDuplicate' });
-
-    const ok = validateScheduleDraft(FAMILIES, draft({ family: 'weekly', params: { weekdays: [1, 3] }, times: ['08:00'] }));
-    expect(ok).toEqual([]);
-  });
-
-  it('validates times: duplicate, over limit, and bad format', () => {
-    const dup = validateScheduleDraft(FAMILIES, draft({ family: 'daily', times: ['08:00', '08:00'] }));
-    expect(dup).toContainEqual({ param: 'times', key: 'workflows.schedule.validation.timesDuplicate' });
-
-    const tooMany = validateScheduleDraft(
-      FAMILIES,
-      draft({ family: 'daily', times: ['01:00', '02:00', '03:00', '04:00', '05:00', '06:00', '07:00'] }),
+  it('DAY clauses (appended, lowercase)', () => {
+    const at9: TimeAxis = { mode: 'at', at: ['09:00'] };
+    expect(say({ ...time(at9), ...day({ mode: 'every_n_days', n: 2 }) }, 'pl')).toBe('O 09:00, co 2 dni');
+    expect(say({ ...time(at9), ...day({ mode: 'every_n_days', n: 2, window: { from: 5, to: 20 } }) }, 'pl')).toBe(
+      'O 09:00, co 2 dni od 5. do 20. dnia miesiąca',
     );
-    expect(tooMany).toContainEqual({ param: 'times', key: 'workflows.schedule.validation.timesMax', messageParams: { max: 6 } });
-
-    const bad = validateScheduleDraft(FAMILIES, draft({ family: 'daily', times: ['99:99'] }));
-    expect(bad).toContainEqual({ param: 'times', key: 'workflows.schedule.validation.timesFormat' });
-  });
-
-  it('validates exclusions bounds + limits', () => {
-    const months = validateScheduleDraft(FAMILIES, draft({ family: 'daily', times: ['08:00'], exclusions: { months: [0, 13], weekdays: [], dates: [] } }));
-    expect(months).toContainEqual({ param: 'exclusions.months', key: 'workflows.schedule.validation.exclusionsMonths' });
-
-    const tooManyDates = validateScheduleDraft(
-      FAMILIES,
-      draft({ family: 'daily', times: ['08:00'], exclusions: { months: [], weekdays: [], dates: Array.from({ length: 51 }, (_, i) => `2026-01-${String((i % 28) + 1).padStart(2, '0')}-${i}`) } }),
+    expect(say({ ...time(at9), ...day({ mode: 'weekdays', weekdays: [1, 5] }) }, 'pl')).toBe('O 09:00, w poniedziałki i piątki');
+    expect(say({ ...time(at9), ...day({ mode: 'weekdays', weekdays: [1, 2, 3, 4, 5] }) }, 'pl')).toBe('O 09:00, w dni robocze');
+    expect(say({ ...time(at9), ...day({ mode: 'weekdays', weekdays: [0, 6] }) }, 'pl')).toBe('O 09:00, w weekendy');
+    expect(say({ ...time(at9), ...day({ mode: 'month_days', days: [1, 15] }) }, 'pl')).toBe('O 09:00, 1. i 15. dnia miesiąca');
+    expect(say({ ...time(at9), ...day({ mode: 'special', special: { kind: 'last_day' } }) }, 'pl')).toBe('O 09:00, ostatniego dnia miesiąca');
+    expect(say({ ...time(at9), ...day({ mode: 'special', special: { kind: 'last_working_day' } }) }, 'pl')).toBe(
+      'O 09:00, ostatniego dnia roboczego miesiąca',
     );
-    expect(tooManyDates.some((e) => e.param === 'exclusions.dates')).toBe(true);
-  });
-});
-
-describe('describeSchedule — i18n-driven cadence sentence (§4.5.6, B4)', () => {
-  function base(overrides: Record<string, unknown> = {}) {
-    return { family: 'daily' as const, params: {}, tz: 'UTC', ...overrides };
-  }
-
-  it('interpolates n + tz for every_n_minutes', () => {
-    expect(describeSchedule({ family: 'every_n_minutes', params: { n: 15 }, tz: 'Europe/Warsaw' }, fakeT)).toBe(
-      'workflows.schedule.describe.every_n_minutes|n=15,tz=Europe/Warsaw',
+    expect(say({ ...time(at9), ...day({ mode: 'special', special: { kind: 'nth_weekday', ordinal: 2, weekday: 2 } }) }, 'pl')).toBe(
+      'O 09:00, w 2. wtorek miesiąca',
+    );
+    expect(say({ ...time(at9), ...day({ mode: 'special', special: { kind: 'last_weekday', weekday: 5 } }) }, 'pl')).toBe(
+      'O 09:00, w ostatni piątek miesiąca',
     );
   });
 
-  it('falls back to the UTC label when tz is blank', () => {
-    expect(describeSchedule({ family: 'hourly', params: {}, tz: '' }, fakeT)).toBe(
-      'workflows.schedule.describe.hourly|tz=workflows.schedule.utc',
+  it('MONTH clauses (appended, lowercase)', () => {
+    expect(say(month({ mode: 'every_n_months', n: 2 }), 'pl')).toBe('Codziennie o 09:00, co 2 miesiące');
+    expect(say(month({ mode: 'every_n_months', n: 2, window: { from: 3, to: 9 } }), 'pl')).toBe(
+      'Codziennie o 09:00, co 2 miesiące od marca do września',
     );
+    expect(say(month({ mode: 'months', months: [1, 6] }), 'pl')).toBe('Codziennie o 09:00, w styczniu i czerwcu');
   });
 
-  it('weekly renders a LIST of days + a time clause', () => {
-    const text = describeSchedule({ family: 'weekly', params: { weekdays: [1, 3] }, times: ['08:00'], tz: 'UTC' }, labelT);
-    expect(text).toBe('Weekly on Monday and Wednesday at 08:00 (UTC)');
-  });
-
-  it('multiple times render a joined time clause', () => {
-    const text = describeSchedule({ family: 'daily', params: {}, times: ['08:00', '12:30', '17:00'], tz: 'UTC' }, labelT);
-    expect(text).toBe('Daily at 08:00, 12:30 and 17:00 (UTC)');
-  });
-
-  it('appends an exclusions clause (only present arrays)', () => {
-    const text = describeSchedule(
-      { family: 'daily', params: {}, times: ['08:00'], tz: 'UTC', exclusions: { weekdays: [0, 6], months: [8], dates: ['2026-12-24'] } },
-      labelT,
+  it('EXCLUSIONS + tz + combined AND', () => {
+    expect(say({ exclusions: { months: [7, 8], weekdays: [], dates: [] } }, 'pl')).toBe(
+      'Codziennie o 09:00 — z wyjątkami: lipiec i sierpień',
     );
-    expect(text).toBe('Daily at 08:00 (UTC) except: Sunday and Saturday · August · 24.12.2026');
-  });
-
-  it('describes the four new families', () => {
-    expect(describeSchedule({ family: 'every_n_months', params: { n: 3, day: 1 }, times: ['08:00'], tz: 'UTC' }, labelT)).toBe(
-      'Every 3 months on day 1 at 08:00 (UTC)',
+    expect(say({ exclusions: { months: [], weekdays: [0, 6], dates: [] } }, 'pl')).toBe(
+      'Codziennie o 09:00 — z wyjątkami: weekendy',
     );
-    expect(describeSchedule({ family: 'nth_weekday_of_month', params: { ordinal: 2, weekday: 3 }, times: ['08:00'], tz: 'UTC' }, labelT)).toBe(
-      'On the second Wednesday of each month at 08:00 (UTC)',
+    expect(say({ exclusions: { months: [], weekdays: [], dates: ['2026-12-24'] } }, 'pl')).toBe(
+      'Codziennie o 09:00 — z wyjątkami: 24.12.2026',
     );
-    expect(describeSchedule({ family: 'last_weekday_of_month', params: { weekday: 6 }, times: ['08:00'], tz: 'UTC' }, labelT)).toBe(
-      'On the last Saturday of each month at 08:00 (UTC)',
+    // date COUNT (Polish plural: few 2–4 / many 5+).
+    expect(say({ exclusions: { months: [], weekdays: [], dates: ['2026-01-01', '2026-02-02', '2026-03-03'] } }, 'pl')).toBe(
+      'Codziennie o 09:00 — z wyjątkami: 3 wybrane dni',
     );
-    expect(describeSchedule({ family: 'last_working_day_of_month', params: {}, times: ['08:00'], tz: 'UTC' }, labelT)).toBe(
-      'On the last working day of each month at 08:00 (UTC)',
-    );
-  });
-
-  it('twice_daily composes full HH:mm times including the shared minute (U3 regression)', () => {
-    // The template used to hardcode ':00', so a 09:30/17:30 schedule read as 9:00/17:00.
     expect(
-      describeSchedule({ family: 'twice_daily', params: { first_hour: 9, second_hour: 17, minute: 30 }, tz: 'UTC' }, fakeT),
-    ).toBe('workflows.schedule.describe.twice_daily|first=09:30,second=17:30,tz=UTC');
+      say({ exclusions: { months: [], weekdays: [], dates: ['a', 'b', 'c', 'd', 'e'] } }, 'pl'),
+    ).toContain('5 wybranych dni');
+    expect(say({ tz: 'Europe/Warsaw' }, 'pl')).toBe('Codziennie o 09:00 (Europe/Warsaw)');
+    // Full AND across axes.
+    expect(
+      say({ ...time({ mode: 'at', at: ['08:00', '17:00'] }), ...day({ mode: 'weekdays', weekdays: [1, 3, 5] }), tz: 'Europe/Warsaw' }, 'pl'),
+    ).toBe('O 08:00 i 17:00, w poniedziałki, środy i piątki (Europe/Warsaw)');
   });
 });
 
-describe('configToDraft / draftToConfig — time↔times[] + exclusions mapping', () => {
-  it('configToDraft lifts params.time into times[] and defaults empty exclusions', () => {
-    expect(configToDraft({ family: 'daily', params: { time: '09:00' }, tz: null })).toEqual({
-      family: 'daily',
-      params: {},
-      tz: '',
-      times: ['09:00'],
-      exclusions: { months: [], weekdays: [], dates: [] },
-    });
-  });
-
-  it('configToDraft keeps a multi-time times[] and hydrates exclusions', () => {
-    const draft = configToDraft({
-      family: 'daily',
-      params: {},
-      times: ['08:00', '17:00'],
-      tz: 'UTC',
-      exclusions: { weekdays: [0, 6] },
-    });
-    expect(draft.times).toEqual(['08:00', '17:00']);
-    expect(draft.exclusions).toEqual({ months: [], weekdays: [0, 6], dates: [] });
-  });
-
-  it('draftToConfig: single time → params.time (no times key)', () => {
-    const config = draftToConfig(
-      { family: 'daily', params: {}, tz: '', times: ['09:00'], exclusions: { months: [], weekdays: [], dates: [] } },
-      FAMILIES,
+describe('describeSchedule — EN grammar (§4.5.10)', () => {
+  const at9: TimeAxis = { mode: 'at', at: ['09:00'] };
+  it('TIME / DAY / MONTH / exclusions', () => {
+    expect(say({}, 'en')).toBe('Daily at 09:00');
+    expect(say(time({ mode: 'at', at: ['09:00', '17:00'] }), 'en')).toBe('At 09:00 and 17:00');
+    expect(say(time({ mode: 'every_minutes', n: 15 }), 'en')).toBe('Every 15 minutes');
+    expect(say(time({ mode: 'every_minutes', n: 15, window: { from: '09:30', to: '17:45' } }), 'en')).toBe(
+      'Every 15 minutes between 09:30 and 17:45',
     );
-    expect(config).toEqual({ family: 'daily', params: { time: '09:00' } });
-    expect('times' in config).toBe(false);
-  });
-
-  it('draftToConfig: multiple times → times[] (no params.time)', () => {
-    const config = draftToConfig(
-      { family: 'daily', params: {}, tz: '', times: ['08:00', '17:00'], exclusions: { months: [], weekdays: [], dates: [] } },
-      FAMILIES,
+    expect(say(time({ mode: 'every_hours', n: 2, minute: 15 }), 'en')).toBe('Every 2 hours (at :15)');
+    expect(say(time({ mode: 'every_hours', n: 2, minute: 15, window: { from: 8, to: 18 } }), 'en')).toBe(
+      'Every 2 hours (at :15) between 08:00 and 18:00',
     );
-    expect(config.times).toEqual(['08:00', '17:00']);
-    expect('time' in config.params).toBe(false);
-  });
-
-  it('draftToConfig emits exclusions only when non-empty, with only present keys', () => {
-    const none = draftToConfig(
-      { family: 'daily', params: {}, tz: '', times: ['08:00'], exclusions: { months: [], weekdays: [], dates: [] } },
-      FAMILIES,
+    expect(say({ ...time(at9), ...day({ mode: 'every_n_days', n: 2, window: { from: 5, to: 20 } }) }, 'en')).toBe(
+      'At 09:00, every 2 days from the 5th to the 20th of the month',
     );
-    expect('exclusions' in none).toBe(false);
-
-    const some = draftToConfig(
-      { family: 'daily', params: {}, tz: '', times: ['08:00'], exclusions: { months: [8], weekdays: [], dates: [] } },
-      FAMILIES,
+    expect(say({ ...time(at9), ...day({ mode: 'weekdays', weekdays: [1, 5] }) }, 'en')).toBe('At 09:00, on Mondays and Fridays');
+    expect(say({ ...time(at9), ...day({ mode: 'weekdays', weekdays: [1, 2, 3, 4, 5] }) }, 'en')).toBe('At 09:00, on workdays');
+    expect(say({ ...time(at9), ...day({ mode: 'month_days', days: [1, 15] }) }, 'en')).toBe('At 09:00, on the 1st and 15th of the month');
+    expect(say({ ...time(at9), ...day({ mode: 'special', special: { kind: 'nth_weekday', ordinal: 2, weekday: 2 } }) }, 'en')).toBe(
+      'At 09:00, on the 2nd Tuesday of the month',
     );
-    expect(some.exclusions).toEqual({ months: [8] });
-  });
-
-  it('draftToConfig drops FOREIGN params and a blank tz', () => {
-    const config = draftToConfig(
-      { family: 'daily', params: { weekday: 3 }, tz: '  ', times: ['09:00'], exclusions: { months: [], weekdays: [], dates: [] } },
-      FAMILIES,
+    expect(say({ ...time(at9), ...day({ mode: 'special', special: { kind: 'last_weekday', weekday: 5 } }) }, 'en')).toBe(
+      'At 09:00, on the last Friday of the month',
     );
-    expect(config).toEqual({ family: 'daily', params: { time: '09:00' } });
-    expect('tz' in config).toBe(false);
-  });
-
-  it('weekly round-trips a weekdays list + time', () => {
-    const original = { family: 'weekly' as const, params: { weekdays: [1, 3] }, times: ['07:30'], tz: 'UTC' };
-    const roundTripped = draftToConfig(configToDraft(original), FAMILIES);
-    expect(roundTripped).toEqual({ family: 'weekly', params: { weekdays: [1, 3], time: '07:30' }, tz: 'UTC' });
+    expect(say(month({ mode: 'every_n_months', n: 2, window: { from: 3, to: 9 } }), 'en')).toBe(
+      'Daily at 09:00, every 2 months from March to September',
+    );
+    expect(say(month({ mode: 'months', months: [1, 6] }), 'en')).toBe('Daily at 09:00, in January and June');
+    expect(say({ exclusions: { months: [7, 8], weekdays: [], dates: [] } }, 'en')).toBe('Daily at 09:00 — except: July and August');
+    expect(
+      say({ ...time({ mode: 'at', at: ['08:00', '17:00'] }), ...day({ mode: 'weekdays', weekdays: [1, 3, 5] }), tz: 'Europe/Warsaw' }, 'en'),
+    ).toBe('At 08:00 and 17:00, on Mondays, Wednesdays and Fridays (Europe/Warsaw)');
   });
 });
 
-describe('emptyScheduleDraft', () => {
-  it('seeds int/weekday params, a weekday_list as [], and a single blank time', () => {
-    // twice_daily has no `time` descriptor in this fixture → times stays [].
-    expect(emptyScheduleDraft(FAMILIES, 'twice_daily')).toEqual({
-      family: 'twice_daily',
-      params: { first_hour: 0, second_hour: 0, minute: 0 },
-      tz: '',
-      times: [],
-      exclusions: { months: [], weekdays: [], dates: [] },
-    });
-    expect(emptyScheduleDraft(FAMILIES, 'weekly')).toEqual({
-      family: 'weekly',
-      params: { weekdays: [] },
-      tz: '',
-      times: [''],
-      exclusions: { months: [], weekdays: [], dates: [] },
-    });
-    expect(emptyScheduleDraft(FAMILIES, 'every_n_minutes')).toEqual({
-      family: 'every_n_minutes',
-      params: { n: 1 },
-      tz: '',
-      times: [],
-      exclusions: { months: [], weekdays: [], dates: [] },
-    });
+describe('describeSchedule — REV5 conditional tz clause (§4.5.10, decision C)', () => {
+  it('suppresses "({tz})" when the schedule tz equals the viewer zone', () => {
+    setLocale('en');
+    // The default activeTz is the stubbed browser zone 'UTC'.
+    expect(describeSchedule(draft({ tz: 'UTC' }), translate)).toBe('Daily at 09:00');
+    // The browser-seeded neutral draft (tz 'UTC') is likewise silent.
+    expect(describeSchedule(emptyScheduleDraft(), translate)).toBe('Daily at 09:00');
+  });
+
+  it('shows "({tz})" only for a FOREIGN zone (differs from the viewer)', () => {
+    setLocale('en');
+    expect(describeSchedule(draft({ tz: 'Europe/Warsaw' }), translate)).toBe('Daily at 09:00 (Europe/Warsaw)');
+    // An explicit activeTz overrides the browser default: a matching zone → suppressed.
+    expect(describeSchedule(draft({ tz: 'Europe/Warsaw' }), translate, 'Europe/Warsaw')).toBe('Daily at 09:00');
+    // A blank activeTz never suppresses.
+    expect(describeSchedule(draft({ tz: 'Europe/Warsaw' }), translate, '')).toBe('Daily at 09:00 (Europe/Warsaw)');
   });
 });
 
-describe('simple-mode representability', () => {
-  function draft(overrides: Partial<ScheduleDraft>): ScheduleDraft {
-    return { family: 'daily', params: {}, tz: '', times: ['09:00'], exclusions: { months: [], weekdays: [], dates: [] }, ...overrides };
-  }
-
-  it('maps families to intents', () => {
-    expect(intentForFamily('every_n_minutes')).toBe('minutes');
-    expect(intentForFamily('every_n_hours')).toBe('hours');
-    expect(intentForFamily('daily')).toBe('daily');
-    expect(intentForFamily('weekly')).toBe('weekly');
-    expect(intentForFamily('monthly')).toBe('monthly');
-    expect(intentForFamily('last_day_of_month')).toBe('monthly');
-    expect(intentForFamily('twice_daily')).toBeNull();
-    expect(intentForFamily('yearly')).toBeNull();
+describe('splitSentenceTemplate — {slot} split, order lives in the string (§4.5.12)', () => {
+  it('splits literals + {slot}s in order', () => {
+    expect(splitSentenceTemplate('co {n} minut')).toEqual([
+      { type: 'text', value: 'co ' },
+      { type: 'slot', name: 'n' },
+      { type: 'text', value: ' minut' },
+    ]);
   });
 
-  it('is representable for a simple family + single time + no exclusions', () => {
-    expect(isSimpleRepresentable(draft({ family: 'daily' }))).toBe(true);
+  it('reads slot ORDER from the string (PL vs EN reorder freely)', () => {
+    // A synthetic pair proving the renderer never hardcodes order: same slots, reversed.
+    expect(splitSentenceTemplate('{a} X {b}')).toEqual([
+      { type: 'slot', name: 'a' },
+      { type: 'text', value: ' X ' },
+      { type: 'slot', name: 'b' },
+    ]);
+    expect(splitSentenceTemplate('{b} Y {a}')).toEqual([
+      { type: 'slot', name: 'b' },
+      { type: 'text', value: ' Y ' },
+      { type: 'slot', name: 'a' },
+    ]);
   });
 
-  it('is NOT representable for advanced-only families / multi-time / exclusions', () => {
-    expect(isSimpleRepresentable(draft({ family: 'twice_daily' }))).toBe(false);
-    expect(isSimpleRepresentable(draft({ family: 'daily', times: ['08:00', '17:00'] }))).toBe(false);
-    expect(isSimpleRepresentable(draft({ family: 'daily', exclusions: { months: [8], weekdays: [], dates: [] } }))).toBe(false);
+  it('drops empty runs (adjacent / leading / trailing tokens)', () => {
+    expect(splitSentenceTemplate('{from}{to}')).toEqual([
+      { type: 'slot', name: 'from' },
+      { type: 'slot', name: 'to' },
+    ]);
+  });
+
+  it('matches the REAL card templates in BOTH locales (living documentation)', () => {
+    const slotNames = (segs: ReturnType<typeof splitSentenceTemplate>) =>
+      segs.filter((s) => s.type === 'slot').map((s) => (s as { name: string }).name);
+
+    // The day-window template differs in LITERAL placement between PL and EN, yet both
+    // carry the {from}/{to} slots in the same read order — order is the string's job.
+    const plDay = splitSentenceTemplate(pl.workflows.schedule.day.card.everyNDays.window);
+    const enDay = splitSentenceTemplate(en.workflows.schedule.day.card.everyNDays.window);
+    expect(slotNames(plDay)).toEqual(['from', 'to']);
+    expect(slotNames(enDay)).toEqual(['from', 'to']);
+    // PL ends with a trailing literal ("dnia miesiąca"); EN leads with "from day".
+    expect(plDay[plDay.length - 1]).toEqual({ type: 'text', value: ' dnia miesiąca' });
+    expect(enDay[0]).toEqual({ type: 'text', value: 'from day ' });
+
+    // The weekday-in-month head carries the ordinal + weekday slots in order.
+    expect(slotNames(splitSentenceTemplate(en.workflows.schedule.day.card.weekdayInMonth.head))).toEqual([
+      'ordinal',
+      'weekday',
+    ]);
   });
 });
+
+describe('configToDraft / draftToConfig — flat wire ⇄ nested draft', () => {
+  it('draftToConfig omits neutral axes / empty exclusions; REV5 seeds the browser tz', () => {
+    // REV5: the neutral draft SEEDS the browser zone (stubbed 'UTC'), so it wires an explicit tz.
+    expect(draftToConfig(emptyScheduleDraft())).toEqual({ time: { mode: 'at', at: ['09:00'] }, tz: 'UTC' });
+    // A BLANK tz is still omitted (the omit-when-blank discipline is unchanged).
+    expect(draftToConfig({ ...emptyScheduleDraft(), tz: '' })).toEqual({ time: { mode: 'at', at: ['09:00'] } });
+  });
+
+  it('draftToConfig flattens the interval + window', () => {
+    // tz '' keeps these axis-focused assertions free of the REV5 browser-tz seed.
+    expect(
+      draftToConfig(draft({ ...time({ mode: 'every_minutes', n: 15, window: { from: '09:30', to: '17:45' } }), tz: '' })),
+    ).toEqual({ time: { mode: 'every_minutes', minutes: 15, from: '09:30', to: '17:45' } });
+    expect(
+      draftToConfig(draft({ ...time({ mode: 'every_hours', n: 2, minute: 15, window: { from: 8, to: 18 } }), tz: '' })),
+    ).toEqual({ time: { mode: 'every_hours', hours: 2, minute: 15, from: 8, to: 18 } });
+  });
+
+  it('draftToConfig maps a day special to the FLAT string enum + params', () => {
+    expect(draftToConfig(draft(day({ mode: 'special', special: { kind: 'nth_weekday', ordinal: 3, weekday: 4 } }))).day).toEqual({
+      mode: 'special',
+      special: 'nth_weekday',
+      ordinal: 3,
+      weekday: 4,
+    });
+    expect(draftToConfig(draft(day({ mode: 'special', special: { kind: 'last_day' } }))).day).toEqual({ mode: 'special', special: 'last_day' });
+  });
+
+  it('draftToConfig emits only non-empty exclusion keys + a set tz', () => {
+    const config = draftToConfig(draft({ exclusions: { months: [8], weekdays: [], dates: ['2026-01-01'] }, tz: 'UTC' }));
+    expect(config.exclusions).toEqual({ months: [8], dates: ['2026-01-01'] });
+    expect(config.tz).toBe('UTC');
+  });
+
+  it('round-trips a rich v2 config', () => {
+    const config: WorkflowScheduleConfig = {
+      time: { mode: 'at', at: ['08:00', '17:00'] },
+      day: { mode: 'weekdays', weekdays: [1, 3] },
+      month: { mode: 'months', months: [1, 6] },
+      exclusions: { weekdays: [0] },
+      tz: 'Europe/Warsaw',
+    };
+    expect(draftToConfig(configToDraft(config))).toEqual(config);
+  });
+
+  it('configToDraft reads the neutral wire back to the neutral draft (tz-less wire → tz "")', () => {
+    // The wire carries no tz → the draft reads tz '' (distinct from the browser-seeded neutral draft).
+    expect(configToDraft({ time: { mode: 'at', at: ['09:00'] } })).toEqual({ ...emptyScheduleDraft(), tz: '' });
+  });
+
+  it('configToDraft tolerantly upgrades a LEGACY {family, params} block (seed only)', () => {
+    expect(configToDraft({ family: 'daily', params: { time: '09:00' }, tz: null } as never)).toEqual({ ...emptyScheduleDraft(), tz: '' });
+    const weekly = configToDraft({ family: 'weekly', params: { weekdays: [1, 3], time: '07:30' } } as never);
+    expect(weekly.time).toEqual({ mode: 'at', at: ['07:30'] });
+    expect(weekly.day).toEqual({ mode: 'weekdays', weekdays: [1, 3] });
+  });
+});
+
+describe('validateScheduleDraft — client rules (§4.5.11)', () => {
+  const keys = (d: ScheduleDraft): string[] => validateScheduleDraft(d).map((e) => e.key);
+
+  it('the neutral draft is valid', () => {
+    expect(isScheduleDraftValid(emptyScheduleDraft())).toBe(true);
+  });
+
+  it('time.at: required / format / duplicate / max', () => {
+    expect(keys(draft(time({ mode: 'at', at: [''] })))).toContain('workflows.schedule.validation.timeRequired');
+    expect(keys(draft(time({ mode: 'at', at: ['9am'] })))).toContain('workflows.schedule.validation.timeFormat');
+    expect(keys(draft(time({ mode: 'at', at: ['09:00', '09:00'] })))).toContain('workflows.schedule.validation.timeDuplicate');
+    expect(keys(draft(time({ mode: 'at', at: ['1:00', '2:00', '3:00', '4:00', '5:00', '6:00', '7:00'] })))).toContain(
+      'workflows.schedule.validation.timesMax',
+    );
+  });
+
+  it('interval bounds + window order', () => {
+    expect(keys(draft(time({ mode: 'every_minutes', n: 0 })))).toContain('workflows.schedule.validation.min');
+    expect(keys(draft(time({ mode: 'every_minutes', n: 99 })))).toContain('workflows.schedule.validation.max');
+    expect(keys(draft(time({ mode: 'every_minutes', n: 15, window: { from: '17:00', to: '09:00' } })))).toContain(
+      'workflows.schedule.validation.windowOrder',
+    );
+    expect(keys(draft(day({ mode: 'every_n_days', n: 2, window: { from: 20, to: 5 } })))).toContain(
+      'workflows.schedule.validation.windowOrder',
+    );
+  });
+
+  it('non-empty sets + ordinal bounds', () => {
+    expect(keys(draft(day({ mode: 'weekdays', weekdays: [] })))).toContain('workflows.schedule.validation.pickAtLeastOne');
+    expect(keys(draft(day({ mode: 'month_days', days: [] })))).toContain('workflows.schedule.validation.pickAtLeastOne');
+    expect(keys(draft(month({ mode: 'months', months: [] })))).toContain('workflows.schedule.validation.pickAtLeastOne');
+    expect(keys(draft(day({ mode: 'special', special: { kind: 'nth_weekday', ordinal: 6, weekday: 1 } })))).toContain(
+      'workflows.schedule.validation.max',
+    );
+  });
+
+  it('exclusions.dates: over-limit + duplicate', () => {
+    const many = Array.from({ length: 51 }, (_, i) => `2026-01-${String((i % 28) + 1).padStart(2, '0')}#${i}`);
+    expect(keys(draft({ exclusions: { months: [], weekdays: [], dates: many } }))).toContain('workflows.schedule.validation.max');
+    expect(keys(draft({ exclusions: { months: [], weekdays: [], dates: ['2026-01-01', '2026-01-01'] } }))).toContain(
+      'workflows.schedule.validation.timeDuplicate',
+    );
+  });
+});
+
+describe('strip helpers', () => {
+  it('isPreviousOccurrence: at-or-before the anchor, else false', () => {
+    expect(isPreviousOccurrence('2026-07-10T08:00:00Z', '2026-07-10T12:00:00Z')).toBe(true);
+    expect(isPreviousOccurrence('2026-07-10T12:00:00Z', '2026-07-10T12:00:00Z')).toBe(true);
+    expect(isPreviousOccurrence('2026-07-11T08:00:00Z', '2026-07-10T12:00:00Z')).toBe(false);
+    expect(isPreviousOccurrence('2026-07-10T08:00:00Z', null)).toBe(false);
+  });
+
+  it('formatOccurrenceParts renders weekday / date / time in the tz', () => {
+    setLocale('en');
+    const parts = formatOccurrenceParts('2026-07-13T09:00:00Z', occurrencePartsFormatter('en', 'UTC'));
+    expect(parts.time).toBe('09:00');
+    expect(parts.weekday.length).toBeGreaterThan(0);
+    expect(parts.date.length).toBeGreaterThan(0);
+  });
+});
+
+beforeEach(() => {
+  setLocale('en');
+  stubBrowserZone('UTC');
+});
+afterEach(() => vi.restoreAllMocks());

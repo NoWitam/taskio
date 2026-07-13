@@ -37,13 +37,6 @@ vi.mock('../../../app/stores/workflows', () => ({
     get detail() {
       return detailRef.value;
     },
-    scheduleFamilies: [
-      { family: 'daily', params: [{ name: 'time', type: 'time', required: true }] },
-      { family: 'weekly', params: [
-        { name: 'weekdays', type: 'weekday_list', required: true },
-        { name: 'time', type: 'time', required: true },
-      ] },
-    ],
     createWorkflow,
     updateWorkflow,
     fetchWorkflowCatalog,
@@ -79,13 +72,13 @@ const TriggerFieldsStub = {
     const setSource = (src: Array<'manual' | 'task'>) => emit('update:formConfig', { ...(props.formConfig as FormTriggerDraft), source: src });
     const setAnon = (a: boolean | null) => emit('update:formConfig', { ...(props.formConfig as FormTriggerDraft), anonymous: a });
     const seedSchedule = () => {
-      // B4: the time lives in times[]; draftToConfig maps a single time back to params.time.
+      // v2 neutral draft: once daily at 09:00 (§4.5.1). draftToConfig emits the flat wire.
       emit('update:scheduleDraft', {
-        family: 'daily',
-        params: {},
-        tz: '',
-        times: ['09:00'],
+        time: { mode: 'at', at: ['09:00'] },
+        day: { mode: 'every_day' },
+        month: { mode: 'every_month' },
         exclusions: { months: [], weekdays: [], dates: [] },
+        tz: '',
       });
     };
     return () =>
@@ -365,24 +358,24 @@ describe('WorkflowEditorDrawer', () => {
     expect(createWorkflow).toHaveBeenCalledTimes(1);
     const payload = createWorkflow.mock.calls[0][0];
     expect(payload.trigger_type).toBe('schedule');
-    expect(payload.trigger_config).toEqual({ schedule: { family: 'daily', params: { time: '09:00' } } });
+    expect(payload.trigger_config).toEqual({ schedule: { time: { mode: 'at', at: ['09:00'] } } });
     expect('conditions' in payload).toBe(false);
   });
 
-  it('SAVE payload — schedule B4 wire (weekly.weekdays list + times[] + exclusions)', async () => {
+  it('SAVE payload — schedule v2 wire (multi-time × weekdays + exclusions + tz)', async () => {
     const { wrapper } = mountDrawer();
     await makeValid(wrapper);
 
-    // Switch type via the drawer's SegmentedControl, then drive a richer B4 draft directly.
+    // Switch type via the drawer's SegmentedControl, then drive a richer v2 draft directly.
     const scheduleRadio = wrapper.findAll('[role="radio"]').find((r) => r.text().includes('Schedule'));
     await scheduleRadio!.trigger('click');
     await nextTick();
     const trigger = wrapper.findComponent(TriggerFieldsStub);
     trigger.vm.$emit('update:scheduleDraft', {
-      family: 'weekly',
-      params: { weekdays: [1, 3] },
+      time: { mode: 'at', at: ['08:00', '17:00'] },
+      day: { mode: 'weekdays', weekdays: [1, 3] },
+      month: { mode: 'every_month' },
       tz: 'Europe/Warsaw',
-      times: ['08:00', '17:00'],
       exclusions: { months: [8], weekdays: [0, 6], dates: ['2026-12-24'] },
     });
     await nextTick();
@@ -390,13 +383,12 @@ describe('WorkflowEditorDrawer', () => {
     await save(wrapper);
 
     const payload = createWorkflow.mock.calls[0][0];
-    // draftToConfig (with the weekly descriptor) keeps weekdays, unifies the two times
-    // into times[], and emits exclusions with only the present keys.
+    // draftToConfig emits the FLAT wire: time.at + day.weekdays, omits every_month, and
+    // emits exclusions with only the present keys + the set tz.
     expect(payload.trigger_config.schedule).toEqual({
-      family: 'weekly',
-      params: { weekdays: [1, 3] },
+      time: { mode: 'at', at: ['08:00', '17:00'] },
+      day: { mode: 'weekdays', weekdays: [1, 3] },
       tz: 'Europe/Warsaw',
-      times: ['08:00', '17:00'],
       exclusions: { months: [8], weekdays: [0, 6], dates: ['2026-12-24'] },
     });
   });
@@ -551,7 +543,7 @@ describe('WorkflowEditorDrawer', () => {
       description: '',
       icon: null,
       trigger_type: 'schedule',
-      trigger_config: { schedule: { family: 'daily', params: { time: '09:00' } } },
+      trigger_config: { schedule: { time: { mode: 'at', at: ['09:00'] } } },
       conditions: [],
       steps: [{ type: 'create_task', key: 'task', config: { title: 'Existing' } }],
       last_scheduled_run_at: null,

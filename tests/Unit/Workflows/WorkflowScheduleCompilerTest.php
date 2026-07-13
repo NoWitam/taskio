@@ -2,15 +2,17 @@
 
 namespace Tests\Unit\Workflows;
 
+use App\Modules\Workflows\Services\CompiledSchedule;
 use App\Modules\Workflows\Services\WorkflowScheduleCompiler;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Compiler coverage: the single family->interval/cron/bespoke mapping. Pure computation, no
- * container needed. Asserts the EXACT cron string per family (including `L`, the quarterly month
- * list, the weekly weekday set, every_n_months' January-anchored month grid, and the `#`/`WL`
- * weekday-of-month tokens) so the cadence grammar is pinned. last_working_day_of_month is a bespoke
- * kind (the `LW` token is broken in dragonmantank v3.6.0), asserted on the compiled kind not a cron.
+ * Compiler coverage: the ONE { time, day, month } -> cron/last-working-day mapping. Pure computation,
+ * no container. Asserts the EXACT cron string(s) per axis combination so the cadence grammar is
+ * pinned — including the minute-window UNION, the `from-to/n` step fields, the `L`/`#`/`WL` day
+ * tokens, and the fact that every time expression carries the SAME day/month fields. last_working_day
+ * is a bespoke kind (the `LW` token is broken in dragonmantank v3.6.0), asserted on the compiled kind
+ * plus its times[] and allowed-months filter.
  *
  * Cron field order is: minute hour day-of-month month day-of-week.
  */
@@ -24,187 +26,221 @@ class WorkflowScheduleCompilerTest extends TestCase
         $this->compiler = new WorkflowScheduleCompiler;
     }
 
-    private function compile(string $family, array $params = []): \App\Modules\Workflows\Services\CompiledSchedule
-    {
-        return $this->compiler->compile(['family' => $family, 'params' => $params]);
-    }
-
-    /** Compile a schedule block that may carry the optional `times[]`/`exclusions` extensions. */
-    private function compileBlock(array $schedule): \App\Modules\Workflows\Services\CompiledSchedule
+    private function compile(array $schedule): CompiledSchedule
     {
         return $this->compiler->compile($schedule);
     }
 
-    public function test_every_n_minutes_is_an_interval_not_cron(): void
+    /** @return array<int, string> */
+    private function expressions(array $schedule): array
     {
-        $compiled = $this->compile('every_n_minutes', ['n' => 15]);
-
-        $this->assertTrue($compiled->isInterval());
-        $this->assertSame(15, $compiled->minutes);
-        $this->assertNull($compiled->expression);
+        return $this->compile($schedule)->expressions;
     }
 
-    public function test_hourly_compiles_to_top_of_every_hour(): void
-    {
-        $compiled = $this->compile('hourly');
+    // ---- time.at -------------------------------------------------------------
 
-        $this->assertTrue($compiled->isCron());
-        $this->assertSame('0 * * * *', $compiled->expression);
+    public function test_time_at_single_compiles_to_minute_hour(): void
+    {
+        $this->assertSame(['30 9 * * *'], $this->expressions(['time' => ['mode' => 'at', 'at' => ['09:30']]]));
     }
 
-    public function test_hourly_at_pins_the_minute(): void
+    public function test_time_at_multiple_yields_one_expression_per_time(): void
     {
-        $this->assertSame('30 * * * *', $this->compile('hourly_at', ['minute' => 30])->expression);
-    }
-
-    public function test_every_n_hours_uses_hour_of_day_modulo(): void
-    {
-        // Laravel's everyThreeHours => `M */3 * * *` (hour-of-day modulo, not a rolling interval).
-        $this->assertSame('0 */3 * * *', $this->compile('every_n_hours', ['n' => 3])->expression);
-        $this->assertSame('15 */6 * * *', $this->compile('every_n_hours', ['n' => 6, 'minute' => 15])->expression);
-    }
-
-    public function test_daily_compiles_to_minute_hour(): void
-    {
-        $this->assertSame('30 9 * * *', $this->compile('daily', ['time' => '09:30'])->expression);
-    }
-
-    public function test_twice_daily_lists_both_hours(): void
-    {
-        $this->assertSame('0 9,17 * * *', $this->compile('twice_daily', ['first_hour' => 9, 'second_hour' => 17])->expression);
-        $this->assertSame('30 1,13 * * *', $this->compile('twice_daily', ['first_hour' => 1, 'second_hour' => 13, 'minute' => 30])->expression);
-    }
-
-    public function test_weekly_lists_the_weekday_set_sorted_and_deduped(): void
-    {
-        // weekday 0 = Sunday (our convention AND cron dow 0=Sunday). Single-day list.
-        $this->assertSame('0 9 * * 0', $this->compile('weekly', ['weekdays' => [0], 'time' => '09:00'])->expression);
-        // Multi-day: sorted ascending and comma-joined.
-        $this->assertSame('0 8 * * 1,3', $this->compile('weekly', ['weekdays' => [1, 3], 'time' => '08:00'])->expression);
-        // Out-of-order + duplicate input is sorted and deduped.
-        $this->assertSame('30 8 * * 1,3,5', $this->compile('weekly', ['weekdays' => [5, 1, 3, 1], 'time' => '08:30'])->expression);
-    }
-
-    public function test_weekly_tolerates_a_legacy_scalar_weekday_on_read(): void
-    {
-        // Bot-module read tolerance: a legacy record carrying a scalar `weekday` (no `weekdays`)
-        // still compiles as a single-element list. New writes are validated to the list shape.
-        $this->assertSame('30 8 * * 5', $this->compile('weekly', ['weekday' => 5, 'time' => '08:30'])->expression);
-        $this->assertSame('0 9 * * 0', $this->compile('weekly', ['weekday' => 0, 'time' => '09:00'])->expression);
-    }
-
-    public function test_every_n_months_uses_a_january_anchored_month_grid(): void
-    {
-        // n=2 anchored at January: 1,3,5,7,9,11 (every other month, resets each January).
-        $this->assertSame('0 8 1 1,3,5,7,9,11 *', $this->compile('every_n_months', ['n' => 2, 'day' => 1, 'time' => '08:00'])->expression);
-        // n=5 anchored at January: 1,6,11 (the last gap Nov->Jan is 2 months, not 5 — modulo-year).
-        $this->assertSame('30 9 15 1,6,11 *', $this->compile('every_n_months', ['n' => 5, 'day' => 15, 'time' => '09:30'])->expression);
-    }
-
-    public function test_nth_weekday_of_month_uses_the_hash_token(): void
-    {
-        // dragonmantank `#`: the O-th weekday W of the month -> `W#O` in the dow field.
-        $this->assertSame('0 8 * * 1#1', $this->compile('nth_weekday_of_month', ['ordinal' => 1, 'weekday' => 1, 'time' => '08:00'])->expression);
-        // ordinal 5 compiled verbatim — months without a 5th occurrence simply won't match (skip).
-        $this->assertSame('30 9 * * 3#5', $this->compile('nth_weekday_of_month', ['ordinal' => 5, 'weekday' => 3, 'time' => '09:30'])->expression);
-    }
-
-    public function test_last_weekday_of_month_uses_the_weekday_l_token(): void
-    {
-        // dragonmantank `WL`: the last weekday W of the month.
-        $this->assertSame('0 8 * * 5L', $this->compile('last_weekday_of_month', ['weekday' => 5, 'time' => '08:00'])->expression);
-        $this->assertSame('30 9 * * 0L', $this->compile('last_weekday_of_month', ['weekday' => 0, 'time' => '09:30'])->expression);
-    }
-
-    public function test_last_working_day_of_month_is_a_bespoke_kind_not_cron(): void
-    {
-        // NOT cron: dragonmantank's `LW` token is broken (it parses as "nearest weekday to day 0"),
-        // so this family compiles to a bespoke last-working-day cadence the service resolves.
-        $compiled = $this->compile('last_working_day_of_month', ['time' => '17:00']);
-
-        $this->assertTrue($compiled->isLastWorkingDay());
-        $this->assertNull($compiled->expression);
-        $this->assertSame(17, $compiled->hour);
-        $this->assertSame(0, $compiled->minute);
-    }
-
-    public function test_monthly_pins_the_day_of_month(): void
-    {
-        $this->assertSame('0 9 15 * *', $this->compile('monthly', ['day' => 15, 'time' => '09:00'])->expression);
-        // Day 31 is compiled verbatim — short months simply won't match (documented skip).
-        $this->assertSame('0 0 31 * *', $this->compile('monthly', ['day' => 31, 'time' => '00:00'])->expression);
-    }
-
-    public function test_twice_monthly_lists_both_days(): void
-    {
-        $this->assertSame('0 9 1,15 * *', $this->compile('twice_monthly', ['first_day' => 1, 'second_day' => 15, 'time' => '09:00'])->expression);
-    }
-
-    public function test_last_day_of_month_uses_the_l_token(): void
-    {
-        $this->assertSame('0 18 L * *', $this->compile('last_day_of_month', ['time' => '18:00'])->expression);
-    }
-
-    public function test_quarterly_targets_jan_apr_jul_oct(): void
-    {
-        $this->assertSame('0 9 1 1,4,7,10 *', $this->compile('quarterly', ['day' => 1, 'time' => '09:00'])->expression);
-    }
-
-    public function test_yearly_pins_month_and_day(): void
-    {
-        $this->assertSame('0 9 25 12 *', $this->compile('yearly', ['month' => 12, 'day' => 25, 'time' => '09:00'])->expression);
-    }
-
-    // ---- multiple fire times (times[]) ---------------------------------------
-
-    public function test_single_time_compiles_to_a_one_element_expression_list(): void
-    {
-        // A scalar params.time yields a one-element expressions list; `expression` mirrors the first.
-        $compiled = $this->compile('daily', ['time' => '09:30']);
-
-        $this->assertSame(['30 9 * * *'], $compiled->expressions);
-        $this->assertSame('30 9 * * *', $compiled->expression);
-    }
-
-    public function test_times_list_expands_to_one_expression_per_time(): void
-    {
-        // daily with times ["08:00","17:00"] -> one cron expression per time (same date fields).
-        $compiled = $this->compileBlock(['family' => 'daily', 'params' => [], 'times' => ['08:00', '17:00']]);
+        $compiled = $this->compile(['time' => ['mode' => 'at', 'at' => ['08:00', '17:00']]]);
 
         $this->assertTrue($compiled->isCron());
         $this->assertSame(['0 8 * * *', '0 17 * * *'], $compiled->expressions);
-        // `expression` back-compat accessor is the first of the list.
-        $this->assertSame('0 8 * * *', $compiled->expression);
     }
 
-    public function test_times_list_shares_the_family_date_fields(): void
-    {
-        // weekly Mon (1) at 08:15 and 20:45 -> both expressions keep the `* * 1` weekday field.
-        $compiled = $this->compileBlock([
-            'family' => 'weekly',
-            'params' => ['weekdays' => [1]],
-            'times' => ['08:15', '20:45'],
-        ]);
+    // ---- time.every_minutes --------------------------------------------------
 
-        $this->assertSame(['15 8 * * 1', '45 20 * * 1'], $compiled->expressions);
+    public function test_every_minutes_without_window_is_a_whole_hour_grid(): void
+    {
+        $this->assertSame(['*/15 * * * *'], $this->expressions(['time' => ['mode' => 'every_minutes', 'minutes' => 15]]));
     }
 
-    public function test_last_working_day_times_list_carries_every_time(): void
+    public function test_every_minutes_window_within_one_hour_is_a_single_step_in_range(): void
     {
-        // last_working_day_of_month is bespoke (not cron); times[] populates its HH:mm pair list.
-        $compiled = $this->compileBlock([
-            'family' => 'last_working_day_of_month',
-            'params' => [],
-            'times' => ['09:00', '17:30'],
+        // 09:00..09:45 every 15 -> a single `0-45/15 9` (spike-confirmed step-in-range).
+        $this->assertSame(
+            ['0-45/15 9 * * *'],
+            $this->expressions(['time' => ['mode' => 'every_minutes', 'minutes' => 15, 'from' => '09:00', 'to' => '09:45']]),
+        );
+    }
+
+    public function test_every_minutes_window_across_hours_is_the_three_expression_union(): void
+    {
+        // 09:30..17:45 every 15 -> head (30-59/15 @9), full middle (*/15 @10-16), tail (0-45/15 @17).
+        $this->assertSame(
+            ['30-59/15 9 * * *', '*/15 10-16 * * *', '0-45/15 17 * * *'],
+            $this->expressions(['time' => ['mode' => 'every_minutes', 'minutes' => 15, 'from' => '09:30', 'to' => '17:45']]),
+        );
+    }
+
+    public function test_every_minutes_window_across_adjacent_hours_omits_the_empty_middle(): void
+    {
+        // 09:30..10:15: H1+1 (10) > H2-1 (9), so no full middle expression is emitted.
+        $this->assertSame(
+            ['30-59/15 9 * * *', '0-15/15 10 * * *'],
+            $this->expressions(['time' => ['mode' => 'every_minutes', 'minutes' => 15, 'from' => '09:30', 'to' => '10:15']]),
+        );
+    }
+
+    // ---- time.every_hours ----------------------------------------------------
+
+    public function test_every_hours_without_window_uses_hour_of_day_modulo(): void
+    {
+        $this->assertSame(['0 */3 * * *'], $this->expressions(['time' => ['mode' => 'every_hours', 'hours' => 3]]));
+        $this->assertSame(['15 */6 * * *'], $this->expressions(['time' => ['mode' => 'every_hours', 'hours' => 6, 'minute' => 15]]));
+    }
+
+    public function test_every_hours_with_window_uses_a_range_step(): void
+    {
+        $this->assertSame(
+            ['0 9-17/2 * * *'],
+            $this->expressions(['time' => ['mode' => 'every_hours', 'hours' => 2, 'from' => 9, 'to' => 17]]),
+        );
+    }
+
+    // ---- day axis ------------------------------------------------------------
+
+    public function test_day_weekdays_lists_the_sorted_deduped_set_in_the_dow_field(): void
+    {
+        $at = ['mode' => 'at', 'at' => ['09:00']];
+        $this->assertSame(['0 9 * * 0'], $this->expressions(['time' => $at, 'day' => ['mode' => 'weekdays', 'weekdays' => [0]]]));
+        $this->assertSame(['0 9 * * 1,3'], $this->expressions(['time' => $at, 'day' => ['mode' => 'weekdays', 'weekdays' => [3, 1]]]));
+        $this->assertSame(['0 9 * * 1,3,5'], $this->expressions(['time' => $at, 'day' => ['mode' => 'weekdays', 'weekdays' => [5, 1, 3, 1]]]));
+    }
+
+    public function test_day_month_days_lists_the_days_in_the_dom_field(): void
+    {
+        $this->assertSame(
+            ['0 9 1,15 * *'],
+            $this->expressions(['time' => ['mode' => 'at', 'at' => ['09:00']], 'day' => ['mode' => 'month_days', 'days' => [15, 1]]]),
+        );
+    }
+
+    public function test_day_every_n_days_uses_a_dom_step_field(): void
+    {
+        $at = ['mode' => 'at', 'at' => ['09:00']];
+        // No window: a bare `*/n` dom (resets on the 1st each month).
+        $this->assertSame(['0 9 */2 * *'], $this->expressions(['time' => $at, 'day' => ['mode' => 'every_n_days', 'n' => 2]]));
+        // Window: a `from-to/n` dom step (spike-confirmed `5-10/2`).
+        $this->assertSame(
+            ['0 9 5-10/2 * *'],
+            $this->expressions(['time' => $at, 'day' => ['mode' => 'every_n_days', 'n' => 2, 'from' => 5, 'to' => 10]]),
+        );
+    }
+
+    public function test_day_special_last_day_uses_the_l_token(): void
+    {
+        $this->assertSame(['0 18 L * *'], $this->expressions(['time' => ['mode' => 'at', 'at' => ['18:00']], 'day' => ['mode' => 'special', 'special' => 'last_day']]));
+    }
+
+    public function test_day_special_nth_weekday_uses_the_hash_token(): void
+    {
+        $at = ['mode' => 'at', 'at' => ['08:00']];
+        $this->assertSame(['0 8 * * 1#1'], $this->expressions(['time' => $at, 'day' => ['mode' => 'special', 'special' => 'nth_weekday', 'ordinal' => 1, 'weekday' => 1]]));
+        // ordinal 5 compiled verbatim (months without a 5th occurrence simply won't match).
+        $this->assertSame(['0 8 * * 2#5'], $this->expressions(['time' => $at, 'day' => ['mode' => 'special', 'special' => 'nth_weekday', 'ordinal' => 5, 'weekday' => 2]]));
+    }
+
+    public function test_day_special_last_weekday_uses_the_weekday_l_token(): void
+    {
+        $this->assertSame(['0 8 * * 5L'], $this->expressions(['time' => ['mode' => 'at', 'at' => ['08:00']], 'day' => ['mode' => 'special', 'special' => 'last_weekday', 'weekday' => 5]]));
+    }
+
+    // ---- month axis ----------------------------------------------------------
+
+    public function test_month_months_lists_the_set_in_the_month_field(): void
+    {
+        $this->assertSame(
+            ['0 9 1 1,4,7,10 *'],
+            $this->expressions(['time' => ['mode' => 'at', 'at' => ['09:00']], 'day' => ['mode' => 'month_days', 'days' => [1]], 'month' => ['mode' => 'months', 'months' => [1, 4, 7, 10]]]),
+        );
+    }
+
+    public function test_month_every_n_months_uses_a_step_field_with_and_without_a_window(): void
+    {
+        $at = ['mode' => 'at', 'at' => ['09:00']];
+        $this->assertSame(['0 9 * */2 *'], $this->expressions(['time' => $at, 'month' => ['mode' => 'every_n_months', 'n' => 2]]));
+        $this->assertSame(['0 9 * 3-11/3 *'], $this->expressions(['time' => $at, 'month' => ['mode' => 'every_n_months', 'n' => 3, 'from' => 3, 'to' => 11]]));
+    }
+
+    // ---- composition ---------------------------------------------------------
+
+    public function test_axes_compose_into_one_expression(): void
+    {
+        // Mondays of March at 09:00: dow 1, month 3, dom *.
+        $this->assertSame(
+            ['0 9 * 3 1'],
+            $this->expressions([
+                'time' => ['mode' => 'at', 'at' => ['09:00']],
+                'day' => ['mode' => 'weekdays', 'weekdays' => [1]],
+                'month' => ['mode' => 'months', 'months' => [3]],
+            ]),
+        );
+    }
+
+    public function test_every_time_expression_shares_the_day_and_month_fields(): void
+    {
+        // Two times, Monday only -> both expressions keep the `* * 1` day/month fields.
+        $this->assertSame(
+            ['15 8 * * 1', '45 20 * * 1'],
+            $this->expressions([
+                'time' => ['mode' => 'at', 'at' => ['08:15', '20:45']],
+                'day' => ['mode' => 'weekdays', 'weekdays' => [1]],
+            ]),
+        );
+    }
+
+    // ---- last_working_day (bespoke) ------------------------------------------
+
+    public function test_last_working_day_is_a_bespoke_kind_over_all_months_by_default(): void
+    {
+        $compiled = $this->compile([
+            'time' => ['mode' => 'at', 'at' => ['17:00']],
+            'day' => ['mode' => 'special', 'special' => 'last_working_day'],
         ]);
 
         $this->assertTrue($compiled->isLastWorkingDay());
-        $this->assertSame(
-            [['hour' => 9, 'minute' => 0], ['hour' => 17, 'minute' => 30]],
-            $compiled->times,
-        );
-        // First-time back-compat accessors.
-        $this->assertSame(9, $compiled->hour);
-        $this->assertSame(0, $compiled->minute);
+        $this->assertSame([['hour' => 17, 'minute' => 0]], $compiled->times);
+        $this->assertSame(range(1, 12), $compiled->months);
+    }
+
+    public function test_last_working_day_carries_every_time_and_the_allowed_month_filter(): void
+    {
+        // last_working_day restricted to a quarter-end month set, at two fire times.
+        $compiled = $this->compile([
+            'time' => ['mode' => 'at', 'at' => ['09:00', '17:30']],
+            'day' => ['mode' => 'special', 'special' => 'last_working_day'],
+            'month' => ['mode' => 'months', 'months' => [3, 6, 9, 12]],
+        ]);
+
+        $this->assertTrue($compiled->isLastWorkingDay());
+        $this->assertSame([['hour' => 9, 'minute' => 0], ['hour' => 17, 'minute' => 30]], $compiled->times);
+        $this->assertSame([3, 6, 9, 12], $compiled->months);
+    }
+
+    public function test_last_working_day_month_filter_expands_an_every_n_months_grid(): void
+    {
+        // every_n_months n=2 (no window) -> the January-anchored grid 1,3,5,7,9,11.
+        $compiled = $this->compile([
+            'time' => ['mode' => 'at', 'at' => ['17:00']],
+            'day' => ['mode' => 'special', 'special' => 'last_working_day'],
+            'month' => ['mode' => 'every_n_months', 'n' => 2],
+        ]);
+
+        $this->assertSame([1, 3, 5, 7, 9, 11], $compiled->months);
+    }
+
+    // ---- read-shim: a legacy block compiles through the upgrader -------------
+
+    public function test_a_legacy_block_is_upgraded_before_compilation(): void
+    {
+        // The compiler upgrades a legacy { family, params } block to v2 first (read-shim), so a
+        // stored legacy row compiles to the same grammar as its v2 equivalent.
+        $this->assertSame(['30 9 * * *'], $this->expressions(['family' => 'daily', 'params' => ['time' => '09:30']]));
+        $this->assertSame(['*/15 * * * *'], $this->expressions(['family' => 'every_n_minutes', 'params' => ['n' => 15]]));
     }
 }

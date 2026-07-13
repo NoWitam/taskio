@@ -44,7 +44,7 @@ class WorkflowScheduleSweepTest extends TestCase
         User $owner,
         ?\Carbon\CarbonInterface $nextDueAt = null,
         WorkflowStatus $status = WorkflowStatus::ACTIVE,
-        array $schedule = ['family' => 'daily', 'params' => ['time' => '09:00']],
+        array $schedule = ['time' => ['mode' => 'at', 'at' => ['09:00']]],
     ): Workflow {
         return Workflow::factory()->create([
             'creator_id' => $owner->id,
@@ -292,14 +292,14 @@ class WorkflowScheduleSweepTest extends TestCase
             $owner,
             nextDueAt: now()->addDay(),
             status: WorkflowStatus::ACTIVE,
-            schedule: ['family' => 'daily', 'params' => ['time' => '09:00']],
+            schedule: ['time' => ['mode' => 'at', 'at' => ['09:00']]],
         );
 
         // Change the cadence to hourly via the update endpoint; the active workflow re-arms.
         $this->putJson("/api/workflows/{$workflow->id}", [
             'name' => $workflow->name,
             'trigger_type' => WorkflowTriggerType::SCHEDULE->value,
-            'trigger_config' => ['schedule' => ['family' => 'hourly']],
+            'trigger_config' => ['schedule' => ['time' => ['mode' => 'every_hours', 'hours' => 1]]],
             'steps' => $workflow->steps,
         ])->assertOk();
 
@@ -321,18 +321,17 @@ class WorkflowScheduleSweepTest extends TestCase
             $owner,
             nextDueAt: \Carbon\Carbon::parse('2026-07-13 09:00:00', 'UTC'), // Monday
             status: WorkflowStatus::ACTIVE,
-            schedule: ['family' => 'daily', 'params' => ['time' => '09:00'], 'tz' => 'UTC'],
+            schedule: ['time' => ['mode' => 'at', 'at' => ['09:00']], 'tz' => 'UTC'],
         );
 
         // Edit adds an exclusion that eliminates the nearest slots (Sat/Sun AND Monday) — the whole
-        // block (family+params+tz+exclusions) is compared/re-armed, so next_due_at must move to the
-        // next non-excluded day (Tuesday 2026-07-14).
+        // block (time+tz+exclusions) is compared/re-armed, so next_due_at must move to the next
+        // non-excluded day (Tuesday 2026-07-14).
         $this->putJson("/api/workflows/{$workflow->id}", [
             'name' => $workflow->name,
             'trigger_type' => WorkflowTriggerType::SCHEDULE->value,
             'trigger_config' => ['schedule' => [
-                'family' => 'daily',
-                'params' => ['time' => '09:00'],
+                'time' => ['mode' => 'at', 'at' => ['09:00']],
                 'tz' => 'UTC',
                 'exclusions' => ['weekdays' => [0, 6, 1]], // Sun, Sat, Mon
             ]],
@@ -362,7 +361,7 @@ class WorkflowScheduleSweepTest extends TestCase
             $owner,
             nextDueAt: now()->subMinute(),
             status: WorkflowStatus::ACTIVE,
-            schedule: ['family' => 'daily', 'params' => ['time' => '09:00'], 'tz' => 'UTC', 'exclusions' => ['weekdays' => [0, 5, 6]]],
+            schedule: ['time' => ['mode' => 'at', 'at' => ['09:00']], 'tz' => 'UTC', 'exclusions' => ['weekdays' => [0, 5, 6]]],
         );
 
         $this->sweep();
@@ -388,8 +387,8 @@ class WorkflowScheduleSweepTest extends TestCase
             nextDueAt: null,
             status: WorkflowStatus::ACTIVE,
             schedule: [
-                'family' => 'weekly',
-                'params' => ['weekdays' => [1], 'time' => '09:00'],
+                'time' => ['mode' => 'at', 'at' => ['09:00']],
+                'day' => ['mode' => 'weekdays', 'weekdays' => [1]],
                 'tz' => 'UTC',
                 'exclusions' => ['weekdays' => [1]],
             ],
@@ -410,7 +409,7 @@ class WorkflowScheduleSweepTest extends TestCase
         $response = $this->postJson('/api/workflows', [
             'name' => 'Nightly digest',
             'trigger_type' => WorkflowTriggerType::SCHEDULE->value,
-            'trigger_config' => ['schedule' => ['family' => 'daily', 'params' => ['time' => '09:00']]],
+            'trigger_config' => ['schedule' => ['time' => ['mode' => 'at', 'at' => ['09:00']]]],
             'steps' => [
                 ['type' => WorkflowStepType::CREATE_TASK->value, 'key' => 'noop', 'config' => ['title' => 'x']],
             ],

@@ -14,8 +14,9 @@
 //         only_non_anonymous → null/true/false), shown whenever a form is selected
 //         (the §9-gap-2 PRIMARY fallback — the FE can't cheaply know the form's
 //         anonymous flag; the backend accepts anonymous regardless).
-//   • schedule panel: WorkflowScheduleAssist (top) + WorkflowScheduleBuilder (below);
-//     assist apply(draft) overwrites the builder draft.
+//   • schedule panel: WorkflowScheduleBuilder — the three-tab builder (Czas | Dzień |
+//     Miesiąc) hosting the summary + preview strip + the AI assist MODAL (opened from
+//     the summary); the builder exposes `isValid` for the drawer's step/save gate.
 //
 // Contract (the drawer owns the whole trigger state upward):
 //   • :type                  → WorkflowTriggerType ('form_submitted' | 'schedule') — READ-ONLY.
@@ -29,7 +30,8 @@ import FormField from '../../ui/forms/FormField.vue';
 import FormSelect from '../../ui/forms/FormSelect.vue';
 import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedControl.vue';
 import Checkbox from '../../ui/forms/Checkbox.vue';
-import WorkflowScheduleAssist from './WorkflowScheduleAssist.vue';
+// The AI assist is hosted INSIDE the builder (opened from the summary), so
+// WorkflowTriggerFields renders only the builder for a schedule trigger.
 import WorkflowScheduleBuilder from './WorkflowScheduleBuilder.vue';
 import { useI18n } from '../../app/i18n';
 import { type FormTriggerDraft } from './workflowEditorModel';
@@ -112,12 +114,8 @@ const anonymousModel = computed<AnonymousChoice>({
   },
 });
 
-// --- schedule: assist → builder + validity exposure -------------------------
+// --- schedule: builder validity exposure ------------------------------------
 const builderRef = useTemplateRef<InstanceType<typeof WorkflowScheduleBuilder>>('builder');
-
-function onAssistApply(draft: ScheduleDraft): void {
-  scheduleDraft.value = draft;
-}
 
 /** Expose the schedule builder's validity so the drawer can gate the step / save (§4.10). */
 function scheduleValid(): boolean {
@@ -182,10 +180,10 @@ defineExpose({ scheduleValid });
       </div>
     </template>
 
-    <!-- schedule panel (§4.5): assist on top, builder below. -->
+    <!-- schedule panel (§4.5): the builder hosts the summary + preview strip + the
+         AI assist (opened from the summary). -->
     <template v-else-if="type === 'schedule'">
-      <WorkflowScheduleAssist :tz="scheduleTz" @apply="onAssistApply" />
-      <WorkflowScheduleBuilder ref="builder" v-model="scheduleDraft" :errors="errors" />
+      <WorkflowScheduleBuilder ref="builder" v-model="scheduleDraft" :errors="errors" :tz="scheduleTz" />
     </template>
   </section>
 </template>

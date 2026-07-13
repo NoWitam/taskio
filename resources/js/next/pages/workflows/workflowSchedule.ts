@@ -1,132 +1,102 @@
-// workflowSchedule — the PURE, testable schedule helpers for the descriptor-driven
-// progressive builder + AI assist (§4.5, B4). This module NEVER hard-codes a family's
-// inputs: it reads the /meta descriptors so it can never drift from what the backend
-// accepts. It owns:
-//   • descriptor lookup (find a family / a param descriptor),
-//   • CLIENT-side validators (the `lt` ordering invariants + min/max bounds, the
-//     weekday_list / times / exclusions rules) so an invalid schedule is caught
-//     BEFORE a 422,
-//   • describeSchedule(config, t) — the human cadence sentence (with the multi-time
-//     clause + the exclusions clause) reused by the detail Trigger panel (§3.2),
-//   • configToDraft / draftToConfig — the assist-apply + save mapping between the
-//     wire ScheduleConfig and the builder's local ScheduleDraft (times/exclusions
-//     unified: times[] always holds the hours; exclusions default to empty arrays).
-//   • simple-mode representability + family→intent mapping for the progressive tabs.
+// workflowSchedule — the PURE, testable core of the v2 compositional schedule
+// (§4.5, REVISION 4). The 16-family model is RETIRED: a schedule is now a
+// composition of three independent axes — a TIME rule, a DAY rule and a MONTH rule
+// (AND-semantics) — minus a set of `exclusions`, in a `tz`. This module owns:
+//   • the local `ScheduleDraft` shape (nested, editor-friendly) + `emptyScheduleDraft`,
+//   • CLIENT-side validators (axis bounds + the window `from < to` invariant) so an
+//     invalid schedule is caught BEFORE a 422 (§4.5.11),
+//   • `describeSchedule(draft, t)` — the human cadence sentence with FULL PL/EN
+//     grammar (cased month/weekday names + Polish plurals; ZERO cron jargon, §4.5.10),
+//   • `configToDraft` / `draftToConfig` — the wire ⇄ draft mapping (FLAT wire ⇄ nested
+//     draft; a tolerant read-shim upgrades a legacy `{family, params}` block only to
+//     seed a draft from GET),
+//   • occurrence formatting helpers (shared by the preview strip + the AI modal) and
+//     `isPreviousOccurrence` (the strip's prev-or-at tile marker).
 //
-// All labels are FE-owned i18n: describeSchedule takes a `t` translator so it stays
-// locale-reactive.
+// The FE owns ALL numeric bounds (mirrored from `App\Modules\Workflows\Enums\
+// ScheduleLimits` — a single contract, no meta endpoint) and ALL labels (i18n).
 import type {
-  ScheduleConfig,
-  ScheduleFamilyDescriptor,
-  ScheduleParamDescriptor,
+  ScheduleDayConfig,
+  ScheduleDaySpecialKind,
+  ScheduleMonthConfig,
+  ScheduleTimeConfig,
   WorkflowScheduleConfig,
   WorkflowScheduleExclusions,
-  WorkflowScheduleFamily,
 } from './types';
 
 type Translate = (key: string, defaultValue?: string, params?: Record<string, string | number>) => string;
 
-/** A single draft param value (int/time → number|string; weekday_list → number[]). */
-export type ScheduleParamValue = number | string | number[];
+// ── Draft model (§4.5.1) ─────────────────────────────────────────────────────
+// The nested, editor-friendly shape the whole builder manipulates. It differs from
+// the FLAT wire (`WorkflowScheduleConfig`) on purpose: the interval `n` is named `n`
+// here (wire: `minutes`/`hours`), the optional bound is a nested `window` (wire: flat
+// `from`/`to`), and a day `special` is an object union (wire: a string + flat params).
 
-/** The exclusions block on the draft — always the three arrays (possibly empty). */
-export interface ScheduleDraftExclusions {
+export type TimeAxis =
+  | { mode: 'at'; at: string[] }
+  | { mode: 'every_minutes'; n: number; window?: { from: string; to: string } }
+  | { mode: 'every_hours'; n: number; minute: number; window?: { from: number; to: number } };
+
+export type DaySpecial =
+  | { kind: 'last_day' }
+  | { kind: 'last_working_day' }
+  | { kind: 'nth_weekday'; ordinal: number; weekday: number }
+  | { kind: 'last_weekday'; weekday: number };
+
+export type DayAxis =
+  | { mode: 'every_day' }
+  | { mode: 'every_n_days'; n: number; window?: { from: number; to: number } }
+  | { mode: 'weekdays'; weekdays: number[] }
+  | { mode: 'month_days'; days: number[] }
+  | { mode: 'special'; special: DaySpecial };
+
+export type MonthAxis =
+  | { mode: 'every_month' }
+  | { mode: 'every_n_months'; n: number; window?: { from: number; to: number } }
+  | { mode: 'months'; months: number[] };
+
+export interface ScheduleExclusions {
   months: number[];
   weekdays: number[];
   dates: string[];
 }
 
-/**
- * The schedule builder's LOCAL editable state (§4.5, B4). `family` drives which param
- * controls render; `params` holds one value per the family's NON-time descriptors
- * (int → number, weekday → number 0..6, weekday_list → number[]); `times` UNIFIES the
- * hour(s): for a family carrying a `time` param the draft ALWAYS keeps its hours in
- * `times[]` (length ≥1) instead of `params.time`, so single- and multi-time modes
- * share one control. `exclusions` is always the three arrays (empty when unused).
- * `tz` is the optional override ('' = server UTC).
- */
 export interface ScheduleDraft {
-  family: WorkflowScheduleFamily;
-  params: Record<string, ScheduleParamValue>;
+  time: TimeAxis;
+  day: DayAxis;
+  month: MonthAxis;
+  exclusions: ScheduleExclusions;
+  /** '' ⇒ omit ⇒ server UTC. */
   tz: string;
-  times: string[];
-  exclusions: ScheduleDraftExclusions;
 }
 
-/** One client-side validation error: the offending param + an i18n key (+ params). */
-export interface ScheduleValidationError {
-  /** The descriptor param name (or 'times' / 'exclusions.<key>') the error belongs to. */
-  param: string;
-  /** The i18n key the builder renders via t(). */
-  key: string;
-  /** Interpolation params for the message (e.g. {min}, {max}, {field}, {other}). */
-  messageParams?: Record<string, string | number>;
-}
-
-// --- Exclusion limits (mirror the backend) ----------------------------------
-export const EXCLUSION_LIMITS = { months: 11, weekdays: 6, dates: 50 } as const;
-/** A schedule may carry at most 6 distinct times. */
-export const MAX_TIMES = 6;
-
-/** A fresh, empty exclusions block. */
-export function emptyExclusions(): ScheduleDraftExclusions {
-  return { months: [], weekdays: [], dates: [] };
-}
-
-// --- Descriptor lookup ------------------------------------------------------
-
-/** Find a family's descriptor in the /meta catalog (null when absent/unknown). */
-export function findFamilyDescriptor(
-  families: ScheduleFamilyDescriptor[],
-  family: WorkflowScheduleFamily | string | null | undefined,
-): ScheduleFamilyDescriptor | null {
-  if (!family) return null;
-  return families.find((f) => f.family === family) ?? null;
-}
-
-/** The param descriptors for a family (empty when the family is absent/unknown). */
-export function paramDescriptorsFor(
-  families: ScheduleFamilyDescriptor[],
-  family: WorkflowScheduleFamily | string | null | undefined,
-): ScheduleParamDescriptor[] {
-  return findFamilyDescriptor(families, family)?.params ?? [];
-}
-
-/** Find a single param descriptor by name within a family (null when absent). */
-export function findParamDescriptor(
-  families: ScheduleFamilyDescriptor[],
-  family: WorkflowScheduleFamily | string | null | undefined,
-  paramName: string,
-): ScheduleParamDescriptor | null {
-  return paramDescriptorsFor(families, family).find((p) => p.name === paramName) ?? null;
-}
-
-/** Whether a family's descriptors include a `time` param (⇒ the family uses `times[]`). */
-export function familyHasTime(
-  families: ScheduleFamilyDescriptor[],
-  family: WorkflowScheduleFamily | string | null | undefined,
-): boolean {
-  return paramDescriptorsFor(families, family).some((p) => p.type === 'time');
-}
-
-// --- Client-side validation (bounds + lt + list + times + exclusions) -------
-
-/** Coerce a draft param value to a number for bound/lt checks (NaN when non-numeric). */
-function toNumber(value: ScheduleParamValue | undefined | null): number {
-  if (typeof value === 'number') return value;
-  if (typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Number(value))) {
-    return Number(value);
-  }
-  return Number.NaN;
-}
-
-/** Whether a value is "present" (a required check). */
-function isPresent(value: ScheduleParamValue | undefined | null): boolean {
-  if (value === null || value === undefined) return false;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === 'string') return value.trim() !== '';
-  return !Number.isNaN(value);
-}
+// ── Numeric bounds — mirror `ScheduleLimits` verbatim (a single contract) ─────
+export const SCHEDULE_LIMITS = {
+  atTimesMax: 6,
+  everyMinutesMin: 1,
+  everyMinutesMax: 59,
+  everyHoursMin: 1,
+  everyHoursMax: 23,
+  minuteMin: 0,
+  minuteMax: 59,
+  hourMin: 0,
+  hourMax: 23,
+  everyNDaysMin: 1,
+  everyNDaysMax: 31,
+  monthDayMin: 1,
+  monthDayMax: 31,
+  weekdayMin: 0,
+  weekdayMax: 6,
+  ordinalMin: 1,
+  ordinalMax: 5,
+  everyNMonthsMin: 1,
+  everyNMonthsMax: 12,
+  monthMin: 1,
+  monthMax: 12,
+  exclusionsMonthsMax: 11,
+  exclusionsWeekdaysMax: 6,
+  exclusionsDatesMax: 50,
+} as const;
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -135,206 +105,284 @@ export function isValidTime(value: string): boolean {
   return TIME_RE.test(value);
 }
 
-/**
- * Validate a schedule DRAFT against its family's descriptors + the B4 additions —
- * the same rules the backend enforces, run client-side so the user never hits a 422
- * first (§4.5.2):
- *   • required params present; int/weekday bounds; the `lt` ordering invariant,
- *   • `weekday_list`: non-empty, unique, each 0..6,
- *   • `times`: 1..6 entries, unique, each 'HH:mm' (a duplicate flags 'times'),
- *   • `exclusions`: bounds (months 1..12, weekdays 0..6) + limits (11 / 6 / 50) +
- *     uniqueness.
- * Returns one error per offending field (empty ⇒ valid).
- */
-export function validateScheduleDraft(
-  families: ScheduleFamilyDescriptor[],
-  draft: ScheduleDraft,
-): ScheduleValidationError[] {
-  const descriptors = paramDescriptorsFor(families, draft.family);
-  const errors: ScheduleValidationError[] = [];
-  const usesTime = descriptors.some((d) => d.type === 'time');
-
-  for (const descriptor of descriptors) {
-    // The `time` param is represented by the draft's `times[]`, validated below.
-    if (descriptor.type === 'time') continue;
-
-    const value = draft.params[descriptor.name];
-
-    // A weekday LIST owns its own emptiness message (non-empty / unique / each 0..6).
-    if (descriptor.type === 'weekday_list') {
-      const list = Array.isArray(value) ? value : [];
-      if (list.length === 0) {
-        errors.push({ param: descriptor.name, key: 'workflows.schedule.validation.weekdayListRequired' });
-      } else if (new Set(list).size !== list.length) {
-        errors.push({ param: descriptor.name, key: 'workflows.schedule.validation.weekdayListDuplicate' });
-      } else if (list.some((d) => d < 0 || d > 6)) {
-        errors.push({ param: descriptor.name, key: 'workflows.schedule.validation.weekdayListRange' });
-      }
-      continue;
-    }
-
-    // Required presence.
-    if (descriptor.required && !isPresent(value)) {
-      errors.push({ param: descriptor.name, key: 'workflows.schedule.validation.required' });
-      continue;
-    }
-    if (!isPresent(value)) continue;
-
-    // Numeric bounds (int + weekday).
-    if (descriptor.type === 'int' || descriptor.type === 'weekday') {
-      const n = toNumber(value);
-      if (Number.isNaN(n)) {
-        errors.push({ param: descriptor.name, key: 'workflows.schedule.validation.number' });
-        continue;
-      }
-      if (descriptor.min !== undefined && n < descriptor.min) {
-        errors.push({
-          param: descriptor.name,
-          key: 'workflows.schedule.validation.min',
-          messageParams: { min: descriptor.min },
-        });
-      }
-      if (descriptor.max !== undefined && n > descriptor.max) {
-        errors.push({
-          param: descriptor.name,
-          key: 'workflows.schedule.validation.max',
-          messageParams: { max: descriptor.max },
-        });
-      }
-    }
-
-    // The `lt` ordering invariant — strictly less than the named sibling.
-    if (descriptor.lt) {
-      const a = toNumber(value);
-      const b = toNumber(draft.params[descriptor.lt]);
-      if (!Number.isNaN(a) && !Number.isNaN(b) && a >= b) {
-        errors.push({
-          param: descriptor.name,
-          key: 'workflows.schedule.validation.lt',
-          messageParams: { field: descriptor.name, other: descriptor.lt },
-        });
-      }
-    }
-  }
-
-  // Times (only meaningful for families with a `time` param).
-  if (usesTime) {
-    const times = draft.times ?? [];
-    if (times.length === 0) {
-      errors.push({ param: 'times', key: 'workflows.schedule.validation.timesRequired' });
-    } else if (times.length > MAX_TIMES) {
-      errors.push({
-        param: 'times',
-        key: 'workflows.schedule.validation.timesMax',
-        messageParams: { max: MAX_TIMES },
-      });
-    } else if (times.some((tm) => !isValidTime(tm))) {
-      errors.push({ param: 'times', key: 'workflows.schedule.validation.timesFormat' });
-    } else if (new Set(times).size !== times.length) {
-      errors.push({ param: 'times', key: 'workflows.schedule.validation.timesDuplicate' });
-    }
-  }
-
-  // Exclusions.
-  errors.push(...validateExclusions(draft.exclusions));
-
-  return errors;
-}
-
-/** Validate the exclusions block (bounds + limits + uniqueness). */
-export function validateExclusions(exclusions: ScheduleDraftExclusions): ScheduleValidationError[] {
-  const errors: ScheduleValidationError[] = [];
-  const { months, weekdays, dates } = exclusions;
-
-  if (months.length > EXCLUSION_LIMITS.months) {
-    errors.push({ param: 'exclusions.months', key: 'workflows.schedule.validation.exclusionsMonthsMax', messageParams: { max: EXCLUSION_LIMITS.months } });
-  }
-  if (months.some((m) => m < 1 || m > 12) || new Set(months).size !== months.length) {
-    errors.push({ param: 'exclusions.months', key: 'workflows.schedule.validation.exclusionsMonths' });
-  }
-
-  if (weekdays.length > EXCLUSION_LIMITS.weekdays) {
-    errors.push({ param: 'exclusions.weekdays', key: 'workflows.schedule.validation.exclusionsWeekdaysMax', messageParams: { max: EXCLUSION_LIMITS.weekdays } });
-  }
-  if (weekdays.some((d) => d < 0 || d > 6) || new Set(weekdays).size !== weekdays.length) {
-    errors.push({ param: 'exclusions.weekdays', key: 'workflows.schedule.validation.exclusionsWeekdays' });
-  }
-
-  if (dates.length > EXCLUSION_LIMITS.dates) {
-    errors.push({ param: 'exclusions.dates', key: 'workflows.schedule.validation.exclusionsDatesMax', messageParams: { max: EXCLUSION_LIMITS.dates } });
-  }
-  if (new Set(dates).size !== dates.length) {
-    errors.push({ param: 'exclusions.dates', key: 'workflows.schedule.validation.exclusionsDatesDuplicate' });
-  }
-
-  return errors;
-}
-
-/** True when the draft has NO client-side validation errors for its family. */
-export function isScheduleDraftValid(
-  families: ScheduleFamilyDescriptor[],
-  draft: ScheduleDraft,
-): boolean {
-  return validateScheduleDraft(families, draft).length === 0;
-}
-
-// --- describeSchedule (§4.5.6 — the human cadence sentence) -----------------
-
-/** A number param, or a fallback (used when a param is absent while building text). */
-function num(params: Record<string, ScheduleParamValue>, name: string, fallback = 0): number {
-  const n = toNumber(params[name]);
-  return Number.isNaN(n) ? fallback : n;
-}
-
-/** A time param as-is ("HH:mm"), or '' when absent. */
-function timeOf(params: Record<string, ScheduleParamValue>, name: string): string {
-  const v = params[name];
-  return typeof v === 'string' ? v : v == null ? '' : String(v);
-}
-
-/** The weekday LIST param as number[] (empty when absent). */
-function weekdayList(params: Record<string, ScheduleParamValue>, name: string): number[] {
-  const v = params[name];
-  return Array.isArray(v) ? v : [];
-}
-
-/** The ordinal LABEL for nth_weekday_of_month (1..5 → first..fifth). */
-function ordinalLabel(ordinal: number, t: Translate): string {
-  return t(`workflows.schedule.ordinal.${ordinal}`);
+/** A fresh, empty exclusions block. */
+export function emptyExclusions(): ScheduleExclusions {
+  return { months: [], weekdays: [], dates: [] };
 }
 
 /**
- * Join a list of localized labels into a natural-language conjunction
- * ("a", "a and b", "a, b and c") using the shared i18n `and` connector.
+ * The viewer's active IANA zone via `Intl`, or `''` when unavailable (⇒ server UTC).
+ * ONE place resolves it: it SEEDS a fresh draft's `tz` (§4.5.8, "nowe = strefa
+ * przeglądarki") and is the DEFAULT `activeTz` for the conditional tz clause in
+ * `describeSchedule` (§4.5.10), so a user's own new schedule reads with no "(…)" tail.
  */
+export function resolveBrowserZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The NEUTRAL draft — the seed on a fresh schedule (§4.5.1): once a day at 09:00,
+ * every day, every month, no exclusions. Renders as "Codziennie o 09:00".
+ * REV5: `tz` SEEDS the resolved browser zone (fallback `''`), so the wall-clock
+ * sentence + preview run in the viewer's own zone (§4.5.8). An EDITED schedule keeps
+ * its saved zone (seedFromDetail overrides via `configToDraft`).
+ */
+export function emptyScheduleDraft(): ScheduleDraft {
+  return {
+    time: { mode: 'at', at: ['09:00'] },
+    day: { mode: 'every_day' },
+    month: { mode: 'every_month' },
+    exclusions: emptyExclusions(),
+    tz: resolveBrowserZone(),
+  };
+}
+
+// ── Client-side validation (§4.5.11) ─────────────────────────────────────────
+
+/** One client-side validation error: an axis path + an i18n key (+ interp params). */
+export interface ScheduleValidationError {
+  /** The offending control's path, e.g. 'time.at' / 'day.weekdays' / 'exclusions.dates'. */
+  path: string;
+  /** The i18n key the builder renders via t(). */
+  key: string;
+  messageParams?: Record<string, string | number>;
+}
+
+const K = 'workflows.schedule.validation.';
+
+function inRange(n: number, min: number, max: number): boolean {
+  return Number.isFinite(n) && n >= min && n <= max;
+}
+
+/** Validate an integer field against bounds, pushing number/min/max errors. */
+function checkInt(
+  errors: ScheduleValidationError[],
+  value: number,
+  path: string,
+  min: number,
+  max: number,
+): void {
+  if (!Number.isFinite(value)) {
+    errors.push({ path, key: K + 'number' });
+    return;
+  }
+  if (value < min) errors.push({ path, key: K + 'min', messageParams: { min } });
+  if (value > max) errors.push({ path, key: K + 'max', messageParams: { max } });
+}
+
+/**
+ * Validate a schedule DRAFT against the same rules the backend enforces, run
+ * client-side so the user never hits a 422 first (§4.5.11). Returns one error per
+ * offending field (empty ⇒ client-valid). The preview `empty` gate is layered on
+ * TOP of this by the builder (a preview outage never blocks; an empty schedule does).
+ */
+export function validateScheduleDraft(draft: ScheduleDraft): ScheduleValidationError[] {
+  const errors: ScheduleValidationError[] = [];
+  validateTime(errors, draft);
+  validateDay(errors, draft);
+  validateMonth(errors, draft.month);
+  validateExclusions(errors, draft.exclusions);
+  return errors;
+}
+
+function validateTime(errors: ScheduleValidationError[], draft: ScheduleDraft): void {
+  const time = draft.time;
+  if (time.mode === 'at') {
+    const at = time.at ?? [];
+    const nonEmpty = at.filter((s) => s !== '');
+    if (nonEmpty.length === 0) {
+      errors.push({ path: 'time.at', key: K + 'timeRequired' });
+    } else if (at.length > SCHEDULE_LIMITS.atTimesMax) {
+      errors.push({ path: 'time.at', key: K + 'timesMax', messageParams: { max: SCHEDULE_LIMITS.atTimesMax } });
+    } else if (at.some((s) => !isValidTime(s))) {
+      errors.push({ path: 'time.at', key: K + 'timeFormat' });
+    } else if (new Set(at).size !== at.length) {
+      errors.push({ path: 'time.at', key: K + 'timeDuplicate' });
+    }
+    return;
+  }
+  if (time.mode === 'every_minutes') {
+    checkInt(errors, time.n, 'time.n', SCHEDULE_LIMITS.everyMinutesMin, SCHEDULE_LIMITS.everyMinutesMax);
+    if (time.window) {
+      const { from, to } = time.window;
+      if (!isValidTime(from) || !isValidTime(to)) {
+        errors.push({ path: 'time.window', key: K + 'timeFormat' });
+      } else if (minutesOfDay(from) >= minutesOfDay(to)) {
+        errors.push({ path: 'time.window', key: K + 'windowOrder' });
+      }
+    }
+    return;
+  }
+  // every_hours
+  checkInt(errors, time.n, 'time.n', SCHEDULE_LIMITS.everyHoursMin, SCHEDULE_LIMITS.everyHoursMax);
+  checkInt(errors, time.minute, 'time.minute', SCHEDULE_LIMITS.minuteMin, SCHEDULE_LIMITS.minuteMax);
+  if (time.window) {
+    const { from, to } = time.window;
+    if (!inRange(from, SCHEDULE_LIMITS.hourMin, SCHEDULE_LIMITS.hourMax) || !inRange(to, SCHEDULE_LIMITS.hourMin, SCHEDULE_LIMITS.hourMax)) {
+      errors.push({ path: 'time.window', key: K + 'number' });
+    } else if (from >= to) {
+      errors.push({ path: 'time.window', key: K + 'windowOrder' });
+    }
+  }
+}
+
+function validateDay(errors: ScheduleValidationError[], draft: ScheduleDraft): void {
+  const day = draft.day;
+  switch (day.mode) {
+    case 'every_day':
+      return;
+    case 'every_n_days': {
+      checkInt(errors, day.n, 'day.n', SCHEDULE_LIMITS.everyNDaysMin, SCHEDULE_LIMITS.everyNDaysMax);
+      if (day.window) {
+        const { from, to } = day.window;
+        if (!inRange(from, SCHEDULE_LIMITS.monthDayMin, SCHEDULE_LIMITS.monthDayMax) || !inRange(to, SCHEDULE_LIMITS.monthDayMin, SCHEDULE_LIMITS.monthDayMax)) {
+          errors.push({ path: 'day.window', key: K + 'number' });
+        } else if (from >= to) {
+          errors.push({ path: 'day.window', key: K + 'windowOrder' });
+        }
+      }
+      return;
+    }
+    case 'weekdays':
+      if ((day.weekdays ?? []).length === 0) errors.push({ path: 'day.weekdays', key: K + 'pickAtLeastOne' });
+      return;
+    case 'month_days':
+      if ((day.days ?? []).length === 0) errors.push({ path: 'day.days', key: K + 'pickAtLeastOne' });
+      return;
+    case 'special': {
+      const s = day.special;
+      if (s.kind === 'nth_weekday') {
+        checkInt(errors, s.ordinal, 'day.special.ordinal', SCHEDULE_LIMITS.ordinalMin, SCHEDULE_LIMITS.ordinalMax);
+        if (!inRange(s.weekday, SCHEDULE_LIMITS.weekdayMin, SCHEDULE_LIMITS.weekdayMax)) {
+          errors.push({ path: 'day.special.weekday', key: K + 'pickAtLeastOne' });
+        }
+      } else if (s.kind === 'last_weekday') {
+        if (!inRange(s.weekday, SCHEDULE_LIMITS.weekdayMin, SCHEDULE_LIMITS.weekdayMax)) {
+          errors.push({ path: 'day.special.weekday', key: K + 'pickAtLeastOne' });
+        }
+      } else if (s.kind === 'last_working_day' && draft.time.mode !== 'at') {
+        // Belt-and-braces: the builder auto-resets time to `at`, so this is unreachable.
+        errors.push({ path: 'time.mode', key: K + 'lastWorkingDayNeedsAt' });
+      }
+      return;
+    }
+  }
+}
+
+function validateMonth(errors: ScheduleValidationError[], month: MonthAxis): void {
+  switch (month.mode) {
+    case 'every_month':
+      return;
+    case 'every_n_months': {
+      checkInt(errors, month.n, 'month.n', SCHEDULE_LIMITS.everyNMonthsMin, SCHEDULE_LIMITS.everyNMonthsMax);
+      if (month.window) {
+        const { from, to } = month.window;
+        if (!inRange(from, SCHEDULE_LIMITS.monthMin, SCHEDULE_LIMITS.monthMax) || !inRange(to, SCHEDULE_LIMITS.monthMin, SCHEDULE_LIMITS.monthMax)) {
+          errors.push({ path: 'month.window', key: K + 'number' });
+        } else if (from >= to) {
+          errors.push({ path: 'month.window', key: K + 'windowOrder' });
+        }
+      }
+      return;
+    }
+    case 'months':
+      if ((month.months ?? []).length === 0) errors.push({ path: 'month.months', key: K + 'pickAtLeastOne' });
+      return;
+  }
+}
+
+function validateExclusions(errors: ScheduleValidationError[], ex: ScheduleExclusions): void {
+  if (ex.dates.length > SCHEDULE_LIMITS.exclusionsDatesMax) {
+    errors.push({ path: 'exclusions.dates', key: K + 'max', messageParams: { max: SCHEDULE_LIMITS.exclusionsDatesMax } });
+  }
+  if (new Set(ex.dates).size !== ex.dates.length) {
+    errors.push({ path: 'exclusions.dates', key: K + 'timeDuplicate' });
+  }
+}
+
+/** True when the draft has NO client-side validation errors. */
+export function isScheduleDraftValid(draft: ScheduleDraft): boolean {
+  return validateScheduleDraft(draft).length === 0;
+}
+
+// ── describeSchedule (§4.5.10 — the sentence grammar, PL + EN) ────────────────
+
+const D = 'workflows.schedule.describe.';
+
+/** Read the active language via a dedicated i18n probe key ('pl' | 'en'). */
+function langOf(t: Translate): string {
+  return t(D + 'lang');
+}
+
+/** Zero-pad a number to 2 digits. */
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/** Minutes-of-day for an 'HH:mm' string (window ordering). */
+function minutesOfDay(time: string): number {
+  const [h, m] = time.split(':');
+  return Number(h) * 60 + Number(m);
+}
+
+/** The Polish plural CATEGORY of a count: one / few / many. EN keys resolve one form. */
+function pluralCategory(n: number): 'one' | 'few' | 'many' {
+  const abs = Math.abs(n);
+  if (abs === 1) return 'one';
+  const mod10 = abs % 10;
+  const mod100 = abs % 100;
+  if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return 'few';
+  return 'many';
+}
+
+/** The pluralized unit noun for a count ('minute'|'hour'|'day'|'month'). */
+function unitNoun(unit: 'minute' | 'hour' | 'day' | 'month', n: number, t: Translate): string {
+  return t(`${D}unit.${unit}.${pluralCategory(n)}`);
+}
+
+/** The English ordinal SUFFIX form (1st, 2nd, 3rd, 21st…). */
+function englishOrdinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`;
+}
+
+/** An ordinal used INLINE where the PL template supplies its own dot: PL "{n}", EN "{n}th". */
+function ordinalInline(n: number, t: Translate): string {
+  return langOf(t) === 'en' ? englishOrdinal(n) : String(n);
+}
+
+/** An ordinal used as a STANDALONE list item: PL "{n}.", EN "{n}th". */
+function ordinalDay(n: number, t: Translate): string {
+  return langOf(t) === 'en' ? englishOrdinal(n) : `${n}.`;
+}
+
+// Cased-name accessors — one i18n key per grammatical case; each locale supplies the
+// right form so `describeSchedule` stays locale-unaware (it only holds `t`).
+const weekdayLong = (i: number, t: Translate): string => t(`workflows.schedule.weekday.long.${i}`);
+const weekdayPlural = (i: number, t: Translate): string => t(`${D}weekdayPlural.${i}`);
+const weekdayAcc = (i: number, t: Translate): string => t(`${D}weekdayAcc.${i}`);
+const lastWeekdayClause = (i: number, t: Translate): string => t(`${D}lastWeekdayClause.${i}`);
+const monthLong = (i: number, t: Translate): string => t(`workflows.schedule.month.long.${i}`);
+const monthLocative = (i: number, t: Translate): string => t(`${D}monthIn.${i}`);
+const monthGenitive = (i: number, t: Translate): string => t(`${D}monthGen.${i}`);
+
+/** Join localized labels into a natural-language conjunction ("a", "a i b", "a, b i c"). */
 function joinList(items: string[], t: Translate): string {
   if (items.length === 0) return '';
   if (items.length === 1) return items[0];
-  const and = t('workflows.schedule.and');
-  return `${items.slice(0, -1).join(', ')} ${and} ${items[items.length - 1]}`;
+  const sep = t(D + 'listSep');
+  const init = items.slice(0, -1).join(sep);
+  return t(D + 'listLast', undefined, { init, last: items[items.length - 1] });
 }
 
-/** The time CLAUSE: single time → "at HH:mm"; several → "at h1, h2 and h3". */
-function timeClause(config: ScheduleConfigLike, t: Translate): string {
-  const times = timesOf(config);
-  if (times.length === 0) return '';
-  return t('workflows.schedule.describe.timeClause', '', { times: joinList(times, t) });
-}
-
-/** The exclusions CLAUSE — only the present arrays are stitched in. */
-function exclusionsClause(exclusions: WorkflowScheduleExclusions | undefined, t: Translate): string {
-  if (!exclusions) return '';
-  const parts: string[] = [];
-  const months = exclusions.months ?? [];
-  const weekdays = exclusions.weekdays ?? [];
-  const dates = exclusions.dates ?? [];
-  if (weekdays.length) parts.push(joinList(weekdays.map((d) => t(`workflows.schedule.weekday.${d}`)), t));
-  if (months.length) parts.push(joinList(months.map((m) => t(`workflows.schedule.month.${m}`)), t));
-  if (dates.length) parts.push(joinList(dates.map(formatIsoDate), t));
-  if (parts.length === 0) return '';
-  const sep = t('workflows.schedule.describe.exclusionSeparator');
-  return t('workflows.schedule.describe.exclusionClause', '', { list: parts.join(` ${sep} `) });
-}
+const sortNums = (list: number[]): number[] => [...list].sort((a, b) => a - b);
+const isWorkweek = (wds: number[]): boolean => sortNums(wds).join(',') === '1,2,3,4,5';
+const isWeekend = (wds: number[]): boolean => sortNums(wds).join(',') === '0,6';
 
 /** 'YYYY-MM-DD' → 'DD.MM.YYYY' (a locale-neutral compact rendering for the sentence). */
 function formatIsoDate(iso: string): string {
@@ -342,330 +390,445 @@ function formatIsoDate(iso: string): string {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
 }
 
-// --- Occurrence formatting (shared by the builder preview + the assist) -------
+/** The TIME head clause (capitalized) — always present, heads the sentence. */
+function timeHead(time: TimeAxis, day: DayAxis, t: Translate): string {
+  if (time.mode === 'at') {
+    const times = time.at;
+    if (times.length === 1 && day.mode === 'every_day') {
+      return t(D + 'daily', undefined, { t: times[0] });
+    }
+    return t(D + 'at', undefined, { times: joinList(times, t) });
+  }
+  if (time.mode === 'every_minutes') {
+    let s = t(D + 'everyMinutes', undefined, { n: time.n, unit: unitNoun('minute', time.n, t) });
+    if (time.window) s += t(D + 'everyMinutesWindow', undefined, { from: time.window.from, to: time.window.to });
+    return s;
+  }
+  // every_hours
+  let s = t(D + 'everyHours', undefined, { n: time.n, unit: unitNoun('hour', time.n, t) });
+  if (time.minute) s += t(D + 'everyHoursMinute', undefined, { mm: pad2(time.minute) });
+  if (time.window) {
+    s += t(D + 'everyHoursWindow', undefined, { from: `${pad2(time.window.from)}:00`, to: `${pad2(time.window.to)}:00` });
+  }
+  return s;
+}
 
-/** Map an i18n NextLocale ('pl' | 'en') onto the BCP-47 tag the formatter uses. */
+/** The DAY clause (lowercase, appended; '' when every_day). */
+function dayClause(day: DayAxis, t: Translate): string {
+  switch (day.mode) {
+    case 'every_day':
+      return '';
+    case 'every_n_days': {
+      let s = t(D + 'everyNDays', undefined, { n: day.n, unit: unitNoun('day', day.n, t) });
+      if (day.window) {
+        s += t(D + 'everyNDaysWindow', undefined, { from: ordinalInline(day.window.from, t), to: ordinalInline(day.window.to, t) });
+      }
+      return s;
+    }
+    case 'weekdays': {
+      const wds = sortNums(day.weekdays);
+      if (isWorkweek(wds)) return t(D + 'workdays');
+      if (isWeekend(wds)) return t(D + 'weekend');
+      return t(D + 'weekdays', undefined, { days: joinList(wds.map((w) => weekdayPlural(w, t)), t) });
+    }
+    case 'month_days': {
+      const days = sortNums(day.days);
+      return t(D + 'monthDays', undefined, { days: joinList(days.map((d) => ordinalDay(d, t)), t) });
+    }
+    case 'special': {
+      const s = day.special;
+      switch (s.kind) {
+        case 'last_day':
+          return t(D + 'lastDay');
+        case 'last_working_day':
+          return t(D + 'lastWorkingDay');
+        case 'nth_weekday':
+          return t(D + 'nthWeekday', undefined, { ordinal: ordinalInline(s.ordinal, t), weekday: weekdayAcc(s.weekday, t) });
+        case 'last_weekday':
+          return t(D + 'lastWeekday', undefined, { weekday: weekdayLong(s.weekday, t), clause: lastWeekdayClause(s.weekday, t) });
+      }
+    }
+  }
+}
+
+/** The MONTH clause (lowercase, appended; '' when every_month). */
+function monthClause(month: MonthAxis, t: Translate): string {
+  switch (month.mode) {
+    case 'every_month':
+      return '';
+    case 'every_n_months': {
+      let s = t(D + 'everyNMonths', undefined, { n: month.n, unit: unitNoun('month', month.n, t) });
+      if (month.window) {
+        s += t(D + 'everyNMonthsWindow', undefined, { from: monthGenitive(month.window.from, t), to: monthGenitive(month.window.to, t) });
+      }
+      return s;
+    }
+    case 'months': {
+      const ms = sortNums(month.months);
+      return t(D + 'months', undefined, { months: joinList(ms.map((m) => monthLocative(m, t)), t) });
+    }
+  }
+}
+
+/** The EXCLUSION clause (" — z wyjątkami: {list}"), or '' when nothing is excluded. */
+function exclusionsClause(ex: ScheduleExclusions, t: Translate): string {
+  const parts: string[] = [];
+  const wds = sortNums(ex.weekdays);
+  const ms = sortNums(ex.months);
+  const dates = [...ex.dates].sort();
+  if (wds.length) {
+    parts.push(isWeekend(wds) ? t(D + 'exclusionWeekend') : joinList(wds.map((w) => weekdayPlural(w, t)), t));
+  }
+  if (ms.length) {
+    parts.push(joinList(ms.map((m) => monthLong(m, t)), t));
+  }
+  if (dates.length) {
+    if (dates.length === 1) {
+      parts.push(formatIsoDate(dates[0]));
+    } else {
+      const key = pluralCategory(dates.length) === 'few' ? 'exclusionDatesFew' : 'exclusionDatesMany';
+      parts.push(t(D + key, undefined, { n: dates.length }));
+    }
+  }
+  if (parts.length === 0) return '';
+  return t(D + 'exclusionClause', undefined, { list: parts.join(t(D + 'exclusionSep')) });
+}
+
+/**
+ * Produce the human cadence sentence from a DRAFT (§4.5.10), i18n-driven so the
+ * whole grammar (Polish cases + plurals) stays in the catalog + this pure helper.
+ * Reused by the summary (§4.5.3), the detail Trigger panel (§3.2) and the AI modal
+ * (§4.5.9). It ALWAYS returns a non-empty string (the neutral draft → "Codziennie o
+ * 09:00").
+ *
+ * REV5 tz clause (decision C): the additive optional `activeTz` (defaulting to the
+ * viewer's zone) makes the "({tz})" clause CONDITIONAL — it shows ONLY when the
+ * schedule's `tz` is non-empty AND differs from the viewer's active zone (§4.5.10), so
+ * a user's own new schedule reads clean and only a foreign/legacy zone surfaces the
+ * label. An empty/undefined `activeTz` never suppresses. The exclusion clause still
+ * renders weekday/month exclusions a legacy/AI/edited config may carry (§4.5.7).
+ */
+export function describeSchedule(
+  draft: ScheduleDraft,
+  t: Translate,
+  activeTz: string = resolveBrowserZone(),
+): string {
+  let sentence = timeHead(draft.time, draft.day, t);
+  if (draft.day.mode !== 'every_day') sentence += ', ' + dayClause(draft.day, t);
+  if (draft.month.mode !== 'every_month') sentence += ', ' + monthClause(draft.month, t);
+  sentence += exclusionsClause(draft.exclusions, t);
+  const tz = draft.tz.trim();
+  if (tz && tz !== activeTz) sentence += t(D + 'tzClause', undefined, { tz });
+  return sentence;
+}
+
+// ── config ⇄ draft mapping (wire is FLAT; draft is nested) ────────────────────
+
+/** TIME draft → wire (flat `minutes`/`hours` + flat `from`/`to`). */
+function timeToWire(time: TimeAxis): ScheduleTimeConfig {
+  switch (time.mode) {
+    case 'at':
+      return { mode: 'at', at: [...time.at] };
+    case 'every_minutes':
+      return time.window
+        ? { mode: 'every_minutes', minutes: time.n, from: time.window.from, to: time.window.to }
+        : { mode: 'every_minutes', minutes: time.n };
+    case 'every_hours':
+      return time.window
+        ? { mode: 'every_hours', hours: time.n, minute: time.minute, from: time.window.from, to: time.window.to }
+        : { mode: 'every_hours', hours: time.n, minute: time.minute };
+  }
+}
+
+/** DAY draft → wire, or `undefined` when every_day (omitted from the payload). */
+function dayToWire(day: DayAxis): ScheduleDayConfig | undefined {
+  switch (day.mode) {
+    case 'every_day':
+      return undefined;
+    case 'every_n_days':
+      return day.window
+        ? { mode: 'every_n_days', n: day.n, from: day.window.from, to: day.window.to }
+        : { mode: 'every_n_days', n: day.n };
+    case 'weekdays':
+      return { mode: 'weekdays', weekdays: [...day.weekdays] };
+    case 'month_days':
+      return { mode: 'month_days', days: [...day.days] };
+    case 'special': {
+      const s = day.special;
+      if (s.kind === 'nth_weekday') return { mode: 'special', special: 'nth_weekday', ordinal: s.ordinal, weekday: s.weekday };
+      if (s.kind === 'last_weekday') return { mode: 'special', special: 'last_weekday', weekday: s.weekday };
+      return { mode: 'special', special: s.kind };
+    }
+  }
+}
+
+/** MONTH draft → wire, or `undefined` when every_month. */
+function monthToWire(month: MonthAxis): ScheduleMonthConfig | undefined {
+  switch (month.mode) {
+    case 'every_month':
+      return undefined;
+    case 'every_n_months':
+      return month.window
+        ? { mode: 'every_n_months', n: month.n, from: month.window.from, to: month.window.to }
+        : { mode: 'every_n_months', n: month.n };
+    case 'months':
+      return { mode: 'months', months: [...month.months] };
+  }
+}
+
+/** Exclusions draft → wire (only non-empty keys), or `undefined` when all empty. */
+function exclusionsToWire(ex: ScheduleExclusions): WorkflowScheduleExclusions | undefined {
+  const out: WorkflowScheduleExclusions = {};
+  if (ex.months.length) out.months = [...ex.months];
+  if (ex.weekdays.length) out.weekdays = [...ex.weekdays];
+  if (ex.dates.length) out.dates = [...ex.dates];
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Map the builder's ScheduleDraft onto the FLAT v2 wire config for SAVE / PREVIEW.
+ * `day` is omitted when every_day, `month` when every_month, `exclusions` when empty,
+ * `tz` when blank — the idiomatic minimal payload the backend defaults from.
+ */
+export function draftToConfig(draft: ScheduleDraft): WorkflowScheduleConfig {
+  const config: WorkflowScheduleConfig = { time: timeToWire(draft.time) };
+  const day = dayToWire(draft.day);
+  if (day) config.day = day;
+  const month = monthToWire(draft.month);
+  if (month) config.month = month;
+  const exclusions = exclusionsToWire(draft.exclusions);
+  if (exclusions) config.exclusions = exclusions;
+  const tz = draft.tz.trim();
+  if (tz) config.tz = tz;
+  return config;
+}
+
+/** TIME wire → draft (nested `window`). */
+function timeFromWire(time: ScheduleTimeConfig | undefined): TimeAxis {
+  if (!time || time.mode === 'at') {
+    const at = time && time.mode === 'at' ? time.at : undefined;
+    return { mode: 'at', at: at && at.length ? [...at] : ['09:00'] };
+  }
+  if (time.mode === 'every_minutes') {
+    const axis: TimeAxis = { mode: 'every_minutes', n: time.minutes };
+    if (time.from != null && time.to != null) axis.window = { from: time.from, to: time.to };
+    return axis;
+  }
+  const axis: TimeAxis = { mode: 'every_hours', n: time.hours, minute: time.minute ?? 0 };
+  if (time.from != null && time.to != null) axis.window = { from: time.from, to: time.to };
+  return axis;
+}
+
+/** DAY wire → draft. */
+function dayFromWire(day: ScheduleDayConfig | undefined): DayAxis {
+  if (!day || day.mode === 'every_day') return { mode: 'every_day' };
+  if (day.mode === 'every_n_days') {
+    const axis: DayAxis = { mode: 'every_n_days', n: day.n };
+    if (day.from != null && day.to != null) axis.window = { from: day.from, to: day.to };
+    return axis;
+  }
+  if (day.mode === 'weekdays') return { mode: 'weekdays', weekdays: [...(day.weekdays ?? [])] };
+  if (day.mode === 'month_days') return { mode: 'month_days', days: [...(day.days ?? [])] };
+  // special
+  return { mode: 'special', special: specialFromWire(day.special, day.ordinal, day.weekday) };
+}
+
+function specialFromWire(kind: ScheduleDaySpecialKind, ordinal?: number, weekday?: number): DaySpecial {
+  switch (kind) {
+    case 'last_day':
+      return { kind: 'last_day' };
+    case 'last_working_day':
+      return { kind: 'last_working_day' };
+    case 'nth_weekday':
+      return { kind: 'nth_weekday', ordinal: ordinal ?? 1, weekday: weekday ?? 1 };
+    case 'last_weekday':
+      return { kind: 'last_weekday', weekday: weekday ?? 1 };
+  }
+}
+
+/** MONTH wire → draft. */
+function monthFromWire(month: ScheduleMonthConfig | undefined): MonthAxis {
+  if (!month || month.mode === 'every_month') return { mode: 'every_month' };
+  if (month.mode === 'every_n_months') {
+    const axis: MonthAxis = { mode: 'every_n_months', n: month.n };
+    if (month.from != null && month.to != null) axis.window = { from: month.from, to: month.to };
+    return axis;
+  }
+  return { mode: 'months', months: [...(month.months ?? [])] };
+}
+
+function exclusionsFromWire(ex: WorkflowScheduleExclusions | undefined): ScheduleExclusions {
+  return {
+    months: [...(ex?.months ?? [])],
+    weekdays: [...(ex?.weekdays ?? [])],
+    dates: [...(ex?.dates ?? [])],
+  };
+}
+
+/** A legacy REV3 `{family, params}` block (read-shim source only). */
+interface LegacyScheduleConfig {
+  family: string;
+  params?: Record<string, unknown>;
+  tz?: string | null;
+  times?: string[];
+  exclusions?: WorkflowScheduleExclusions;
+}
+
+function isLegacyConfig(config: unknown): config is LegacyScheduleConfig {
+  return !!config && typeof config === 'object' && 'family' in (config as object) && !('time' in (config as object));
+}
+
+/**
+ * A TOLERANT read-shim: seed a v2 draft from a stored legacy `{family, params}` block
+ * (§4.5.1 note). Best-effort only — it covers the common families' time + day so an
+ * old row still renders/edits; the backend itself upgrades on read, so this only ever
+ * seeds the FE draft from a GET, never a write.
+ */
+function legacyToDraft(config: LegacyScheduleConfig): ScheduleDraft {
+  const params = config.params ?? {};
+  const times = Array.isArray(config.times) && config.times.length
+    ? config.times
+    : typeof params.time === 'string' && params.time
+      ? [params.time]
+      : ['09:00'];
+  const draft = emptyScheduleDraft();
+  draft.time = { mode: 'at', at: [...times] };
+  if (config.family === 'weekly' && Array.isArray(params.weekdays) && params.weekdays.length) {
+    draft.day = { mode: 'weekdays', weekdays: (params.weekdays as unknown[]).map((n) => Number(n)) };
+  } else if ((config.family === 'monthly' || config.family === 'quarterly') && params.day != null) {
+    draft.day = { mode: 'month_days', days: [Number(params.day)] };
+  }
+  draft.month = { mode: 'every_month' };
+  draft.exclusions = exclusionsFromWire(config.exclusions);
+  draft.tz = config.tz ?? '';
+  return draft;
+}
+
+/**
+ * Map a wire ScheduleConfig onto the builder's ScheduleDraft (assist-apply + GET
+ * seeding). Accepts the FLAT v2 wire; a legacy `{family, params}` block is upgraded
+ * via the read-shim so an old cached row still seeds a usable draft.
+ */
+export function configToDraft(config: WorkflowScheduleConfig | LegacyScheduleConfig): ScheduleDraft {
+  if (isLegacyConfig(config)) return legacyToDraft(config);
+  const c = config as WorkflowScheduleConfig;
+  return {
+    time: timeFromWire(c.time),
+    day: dayFromWire(c.day),
+    month: monthFromWire(c.month),
+    exclusions: exclusionsFromWire(c.exclusions),
+    tz: c.tz ?? '',
+  };
+}
+
+// ── Occurrence formatting (shared by the preview strip + the AI modal) ────────
+
+/** Map an i18n locale ('pl'|'en') onto the BCP-47 tag the formatter uses (24h). */
 function occurrenceLocaleTag(locale: string): string {
   return locale === 'pl' ? 'pl-PL' : 'en-GB';
 }
 
-/** The shared Intl options: weekday (short) + date + time — the preview cadence rows. */
-function occurrenceFormatOptions(timeZone: string): Intl.DateTimeFormatOptions {
+/** A safe IANA zone: '' / null / invalid → 'UTC' (the list still renders). */
+function safeZone(tz: string | null | undefined): string {
+  return tz && tz.trim() !== '' ? tz.trim() : 'UTC';
+}
+
+/** The three per-tile Intl formatters (weekday / date / time) in the schedule tz. */
+export interface OccurrenceFormatters {
+  weekday: Intl.DateTimeFormat;
+  date: Intl.DateTimeFormat;
+  time: Intl.DateTimeFormat;
+}
+
+/** Build the per-tile formatters for a locale + tz (invalid tz falls back to UTC). */
+export function occurrencePartsFormatter(locale: string, tz: string | null | undefined): OccurrenceFormatters {
+  const tag = occurrenceLocaleTag(locale);
+  const build = (options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat => {
+    try {
+      return new Intl.DateTimeFormat(tag, { ...options, timeZone: safeZone(tz) });
+    } catch {
+      return new Intl.DateTimeFormat(tag, { ...options, timeZone: 'UTC' });
+    }
+  };
   return {
-    weekday: 'short',
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone,
+    weekday: build({ weekday: 'short' }),
+    date: build({ day: 'numeric', month: 'short' }),
+    time: build({ hour: '2-digit', minute: '2-digit', hour12: false }),
   };
 }
 
-/**
- * Build the localized occurrence formatter reused by BOTH the builder preview and the
- * assist alternative preview (B5). `tz` is the config's IANA zone ('' / null → UTC); an
- * invalid tz falls back to UTC so the list still renders instead of throwing.
- */
+/** Format one ISO occurrence into its three tile parts; an unparseable value → '—'. */
+export function formatOccurrenceParts(
+  iso: string,
+  f: OccurrenceFormatters,
+): { weekday: string; date: string; time: string } {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return { weekday: '', date: iso, time: '' };
+  return { weekday: f.weekday.format(d), date: f.date.format(d), time: f.time.format(d) };
+}
+
+/** The shared single-line Intl options (weekday + date + time) — the AI-modal preview. */
+function occurrenceFormatOptions(timeZone: string): Intl.DateTimeFormatOptions {
+  return { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone };
+}
+
+/** A single-line occurrence formatter (weekday + date + time) in the config tz. */
 export function occurrenceFormatter(locale: string, tz: string | null | undefined): Intl.DateTimeFormat {
   const tag = occurrenceLocaleTag(locale);
-  const zone = tz && tz.trim() !== '' ? tz.trim() : 'UTC';
   try {
-    return new Intl.DateTimeFormat(tag, occurrenceFormatOptions(zone));
+    return new Intl.DateTimeFormat(tag, occurrenceFormatOptions(safeZone(tz)));
   } catch {
     return new Intl.DateTimeFormat(tag, occurrenceFormatOptions('UTC'));
   }
 }
 
-/**
- * Format a single ISO8601 occurrence with a prepared formatter (weekday + date + time
- * in the config tz). An unparseable value falls back to the raw string.
- */
+/** Format a single ISO8601 occurrence with a prepared single-line formatter. */
 export function formatOccurrence(iso: string, formatter: Intl.DateTimeFormat): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : formatter.format(d);
 }
 
-/** A config-ish shape describeSchedule accepts (wire config, assist config, or a draft-derived config). */
-type ScheduleConfigLike =
-  | (Pick<WorkflowScheduleConfig, 'family' | 'params'> & Partial<Pick<WorkflowScheduleConfig, 'tz' | 'times' | 'exclusions'>>)
-  | ScheduleConfig;
-
-/** The times of a config: prefer `times[]`, else the scalar `params.time`, else []. */
-function timesOf(config: ScheduleConfigLike): string[] {
-  if (Array.isArray(config.times) && config.times.length) return config.times;
-  const single = timeOf(config.params ?? {}, 'time');
-  return single ? [single] : [];
+/**
+ * Whether an occurrence is the "previous" (prev-or-at) tile for a given anchor — the
+ * strip marks tile[0] as previous when an anchor is active AND the occurrence is at or
+ * before it (§4.5.4). Robust to the anchor being an ISO instant or a local datetime.
+ */
+export function isPreviousOccurrence(iso: string, anchorIso: string | null): boolean {
+  if (!anchorIso) return false;
+  const occ = new Date(iso).getTime();
+  const anchor = new Date(anchorIso).getTime();
+  if (Number.isNaN(occ) || Number.isNaN(anchor)) return false;
+  return occ <= anchor;
 }
+
+// ── In-card slotted sentences (§4.5.5/§4.5.12, REV5) ──────────────────────────
+// The `next` i18n is string-only (no component slots), so each in-card sentence is a
+// normal translated string with `{slot}` tokens (e.g. "co {n} minut"). The FE renders
+// it by SPLITTING on the token regex into an ORDERED list of literal-text and slot
+// segments — a `<span>` per literal, the mapped control per slot. Because WORD ORDER
+// lives in the locale STRING (not in component markup), PL and EN reorder slots freely
+// and the panels NEVER hardcode order. Slot ids: n, minute, from, to, ordinal, weekday.
+
+/** One segment of a split sentence template: a literal run or a `{slot}` placeholder. */
+export type SentenceSegment =
+  | { type: 'text'; value: string }
+  | { type: 'slot'; name: string };
+
+// A capturing group so `String.prototype.split` KEEPS the `{slot}` delimiters.
+const SENTENCE_SLOT_RE = /(\{[a-z]+\})/;
+const SENTENCE_SLOT_EXACT = /^\{([a-z]+)\}$/;
 
 /**
- * Produce the human cadence sentence from a WIRE config (§4.5.6), i18n-driven so
- * adding a family later needs one label, not new rendering code. Accepts the full
- * config (family + params + tz + times + exclusions) so the detail panel shows the
- * complete opis (with the multi-time + exclusions clauses).
- *
- * @param config the wire schedule config (family, params, tz?, times?, exclusions?)
- * @param t      the i18n translator
+ * Split a slotted i18n template into an ordered text/slot segment list (§4.5.12).
+ * Pass the RAW template (call `t(key)` WITHOUT params so the `{slot}` tokens survive).
+ * Empty runs (adjacent slots / leading-or-trailing tokens) are dropped.
  */
-export function describeSchedule(config: ScheduleConfigLike, t: Translate): string {
-  const params = config.params ?? {};
-  const tz = config.tz;
-  const zone = tz && tz.trim() !== '' ? tz.trim() : t('workflows.schedule.utc');
-  const weekday = (index: number): string => t(`workflows.schedule.weekday.${index}`);
-  const time = timeClause(config, t);
-  const exclusions = exclusionsClause(config.exclusions, t);
-
-  let base: string;
-  switch (config.family) {
-    case 'every_n_minutes':
-      base = t('workflows.schedule.describe.every_n_minutes', '', { n: num(params, 'n', 1), tz: zone });
-      break;
-    case 'hourly':
-      base = t('workflows.schedule.describe.hourly', '', { tz: zone });
-      break;
-    case 'hourly_at':
-      base = t('workflows.schedule.describe.hourly_at', '', { minute: num(params, 'minute'), tz: zone });
-      break;
-    case 'every_n_hours':
-      base = t('workflows.schedule.describe.every_n_hours', '', { n: num(params, 'n', 2), minute: num(params, 'minute'), tz: zone });
-      break;
-    case 'daily':
-      base = t('workflows.schedule.describe.daily', '', { time, tz: zone });
-      break;
-    case 'twice_daily': {
-      // Compose full HH:mm strings (the shared minute included) — a template with a
-      // hardcoded ':00' would lie about a schedule running at e.g. 09:30/17:30.
-      const pad = (n: number): string => String(n).padStart(2, '0');
-      const minute = pad(num(params, 'minute'));
-      base = t('workflows.schedule.describe.twice_daily', '', {
-        first: `${pad(num(params, 'first_hour'))}:${minute}`,
-        second: `${pad(num(params, 'second_hour'))}:${minute}`,
-        tz: zone,
-      });
-      break;
-    }
-    case 'weekly':
-      base = t('workflows.schedule.describe.weekly', '', {
-        weekdays: joinList(weekdayList(params, 'weekdays').map(weekday), t),
-        time,
-        tz: zone,
-      });
-      break;
-    case 'monthly':
-      base = t('workflows.schedule.describe.monthly', '', { day: num(params, 'day', 1), time, tz: zone });
-      break;
-    case 'twice_monthly':
-      base = t('workflows.schedule.describe.twice_monthly', '', {
-        first: num(params, 'first_day', 1),
-        second: num(params, 'second_day', 1),
-        time,
-        tz: zone,
-      });
-      break;
-    case 'last_day_of_month':
-      base = t('workflows.schedule.describe.last_day_of_month', '', { time, tz: zone });
-      break;
-    case 'quarterly':
-      base = t('workflows.schedule.describe.quarterly', '', { day: num(params, 'day', 1), time, tz: zone });
-      break;
-    case 'yearly':
-      base = t('workflows.schedule.describe.yearly', '', {
-        month: t(`workflows.schedule.month.${num(params, 'month', 1)}`),
-        day: num(params, 'day', 1),
-        time,
-        tz: zone,
-      });
-      break;
-    case 'every_n_months':
-      base = t('workflows.schedule.describe.every_n_months', '', {
-        n: num(params, 'n', 2),
-        day: num(params, 'day', 1),
-        time,
-        tz: zone,
-      });
-      break;
-    case 'nth_weekday_of_month':
-      base = t('workflows.schedule.describe.nth_weekday_of_month', '', {
-        ordinal: ordinalLabel(num(params, 'ordinal', 1), t),
-        weekday: weekday(num(params, 'weekday')),
-        time,
-        tz: zone,
-      });
-      break;
-    case 'last_weekday_of_month':
-      base = t('workflows.schedule.describe.last_weekday_of_month', '', {
-        weekday: weekday(num(params, 'weekday')),
-        time,
-        tz: zone,
-      });
-      break;
-    case 'last_working_day_of_month':
-      base = t('workflows.schedule.describe.last_working_day_of_month', '', { time, tz: zone });
-      break;
-    default:
-      base = t('workflows.schedule.describe.unknown', '', { tz: zone });
-  }
-
-  return exclusions ? `${base} ${exclusions}` : base;
-}
-
-// --- config ⇄ draft mapping (assist-apply + save) ---------------------------
-
-/**
- * Map a wire ScheduleConfig onto the builder's ScheduleDraft (§4.5.5a, B4). Params
- * are cloned as-is EXCEPT the `time` param, which is lifted into `times[]`
- * (params.time → [time]; config.times → times). exclusions default to empty arrays.
- * A null/absent tz becomes '' (the builder's "use UTC" state).
- */
-export function configToDraft(config: ScheduleConfig | WorkflowScheduleConfig): ScheduleDraft {
-  const rawParams = { ...(config.params ?? {}) } as Record<string, ScheduleParamValue>;
-
-  // Unify the time(s) into times[]: prefer an explicit times[], else the scalar time.
-  let times: string[];
-  if (Array.isArray(config.times) && config.times.length) {
-    times = [...config.times];
-  } else if (typeof rawParams.time === 'string' && rawParams.time !== '') {
-    times = [rawParams.time];
-  } else {
-    times = [];
-  }
-  delete rawParams.time; // times[] is the single source of truth
-
-  const ex = config.exclusions ?? {};
-  return {
-    family: config.family,
-    params: rawParams,
-    tz: config.tz ?? '',
-    times,
-    exclusions: {
-      months: [...(ex.months ?? [])],
-      weekdays: [...(ex.weekdays ?? [])],
-      dates: [...(ex.dates ?? [])],
-    },
-  };
-}
-
-/**
- * Map the builder's ScheduleDraft onto the wire ScheduleConfig for SAVE (B4). Only the
- * family's OWN params are emitted (foreign keys dropped so an impossible combo can
- * never be sent). Time mapping: for a family with a `time` param, times.length===1 →
- * `params.time` (NO `times` key); length>1 → `times[]` (NO `params.time`). `tz` is
- * emitted only when a non-empty override is set. `exclusions` is emitted only when at
- * least one array is non-empty, and inside it only non-empty keys (emit-or-omit).
- */
-export function draftToConfig(
-  draft: ScheduleDraft,
-  families?: ScheduleFamilyDescriptor[],
-): WorkflowScheduleConfig {
-  const descriptors = families ? paramDescriptorsFor(families, draft.family) : null;
-  const allowed = descriptors ? descriptors.map((p) => p.name) : null;
-  const usesTime = descriptors ? descriptors.some((p) => p.type === 'time') : draft.times.length > 0;
-
-  const params: Record<string, number | string | number[]> = {};
-  for (const [name, value] of Object.entries(draft.params)) {
-    if (allowed && !allowed.includes(name)) continue; // drop foreign params
-    if (name === 'time') continue; // time is carried via times[]
-    if (value === '' || value === null || value === undefined) continue; // drop empties
-    if (Array.isArray(value) && value.length === 0) continue; // drop empty lists
-    params[name] = value;
-  }
-
-  const config: WorkflowScheduleConfig = { family: draft.family, params };
-
-  // Times: single → params.time; multiple → times[].
-  if (usesTime) {
-    const times = draft.times.filter((tm) => tm !== '');
-    if (times.length === 1) {
-      params.time = times[0];
-    } else if (times.length > 1) {
-      config.times = [...times];
-    }
-  }
-
-  const tz = draft.tz?.trim();
-  if (tz) config.tz = tz;
-
-  const exclusions = emitExclusions(draft.exclusions);
-  if (exclusions) config.exclusions = exclusions;
-
-  return config;
-}
-
-/** Build the wire exclusions object (only non-empty keys), or null when all empty. */
-function emitExclusions(exclusions: ScheduleDraftExclusions): WorkflowScheduleExclusions | null {
-  const out: WorkflowScheduleExclusions = {};
-  if (exclusions.months.length) out.months = [...exclusions.months];
-  if (exclusions.weekdays.length) out.weekdays = [...exclusions.weekdays];
-  if (exclusions.dates.length) out.dates = [...exclusions.dates];
-  return Object.keys(out).length ? out : null;
-}
-
-/**
- * A fresh empty draft for a family: seeds each NON-time descriptor param with a
- * sensible default (int/weekday → its `min` when bounded, else 0; weekday_list → []),
- * a single blank time when the family uses one, and empty exclusions.
- */
-export function emptyScheduleDraft(
-  families: ScheduleFamilyDescriptor[],
-  family: WorkflowScheduleFamily,
-): ScheduleDraft {
-  const params: Record<string, ScheduleParamValue> = {};
-  let usesTime = false;
-  for (const descriptor of paramDescriptorsFor(families, family)) {
-    if (descriptor.type === 'time') {
-      usesTime = true;
-    } else if (descriptor.type === 'weekday_list') {
-      params[descriptor.name] = [];
-    } else {
-      params[descriptor.name] = descriptor.min ?? 0;
-    }
-  }
-  return {
-    family,
-    params,
-    tz: '',
-    times: usesTime ? [''] : [],
-    exclusions: emptyExclusions(),
-  };
-}
-
-// --- Simple/advanced mode representability (§4.5 progressive tabs) -----------
-
-/**
- * The five SIMPLE-mode intents (the SegmentedControl above the simple builder). Each
- * maps to a small, curated slice of families:
- *   minutes → every_n_minutes; hours → hourly_at | every_n_hours; daily → daily;
- *   weekly → weekly; monthly → monthly | last_day_of_month.
- */
-export type SimpleIntent = 'minutes' | 'hours' | 'daily' | 'weekly' | 'monthly';
-
-/** The families each simple intent can represent. */
-export const SIMPLE_INTENT_FAMILIES: Record<SimpleIntent, WorkflowScheduleFamily[]> = {
-  minutes: ['every_n_minutes'],
-  hours: ['hourly_at', 'every_n_hours'],
-  daily: ['daily'],
-  weekly: ['weekly'],
-  monthly: ['monthly', 'last_day_of_month'],
-};
-
-/** The intent a family belongs to in simple mode, or null when it is advanced-only. */
-export function intentForFamily(family: WorkflowScheduleFamily): SimpleIntent | null {
-  for (const intent of Object.keys(SIMPLE_INTENT_FAMILIES) as SimpleIntent[]) {
-    if (SIMPLE_INTENT_FAMILIES[intent].includes(family)) return intent;
-  }
-  return null;
-}
-
-/**
- * Whether a DRAFT is representable in SIMPLE mode. Simple mode covers the curated
- * intent families ONLY, a single time, and NO exclusions. Anything richer (times>1,
- * any exclusion, or an advanced-only family such as twice_daily / twice_monthly /
- * quarterly / yearly / nth_* / last_* / every_n_months) forces ADVANCED.
- */
-export function isSimpleRepresentable(draft: ScheduleDraft): boolean {
-  if (intentForFamily(draft.family) === null) return false;
-  if (draft.times.length > 1) return false;
-  const ex = draft.exclusions;
-  if (ex.months.length || ex.weekdays.length || ex.dates.length) return false;
-  return true;
+export function splitSentenceTemplate(template: string): SentenceSegment[] {
+  return template
+    .split(SENTENCE_SLOT_RE)
+    .filter((part) => part !== '')
+    .map((part) => {
+      const match = SENTENCE_SLOT_EXACT.exec(part);
+      return match ? { type: 'slot', name: match[1] } : { type: 'text', value: part };
+    });
 }

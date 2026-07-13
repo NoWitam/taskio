@@ -44,29 +44,13 @@ const FormSelectStub = {
   },
 };
 
-// A schedule assist stub exposing a button that emits apply(draft) with a marker draft.
-const APPLIED_DRAFT: ScheduleDraft = {
-  family: 'weekly',
-  params: { weekdays: [3] },
-  tz: 'Europe/Warsaw',
-  times: ['08:00'],
-  exclusions: { months: [], weekdays: [], dates: [] },
-};
-const ScheduleAssistStub = {
-  name: 'WorkflowScheduleAssist',
-  props: ['tz', 'disabled'],
-  emits: ['apply'],
-  setup(_props: Record<string, unknown>, { emit }: { emit: (e: string, v: unknown) => void }) {
-    return () => h('button', { class: 'assist-apply-stub', onClick: () => emit('apply', APPLIED_DRAFT) }, 'assist');
-  },
-};
-
-// A schedule builder stub: renders the current family + exposes isValid for the host.
+// A schedule builder stub: renders the current v2 time mode (the builder now hosts the
+// AI assist internally, so TriggerFields no longer renders an assist sibling).
 const ScheduleBuilderStub = {
   name: 'WorkflowScheduleBuilder',
-  props: ['modelValue', 'errors'],
+  props: ['modelValue', 'errors', 'tz'],
   setup(props: Record<string, unknown>) {
-    return () => h('div', { class: 'builder-stub' }, (props.modelValue as ScheduleDraft)?.family ?? '');
+    return () => h('div', { class: 'builder-stub' }, (props.modelValue as ScheduleDraft)?.time?.mode ?? '');
   },
 };
 
@@ -78,7 +62,7 @@ function mountFields(initial: {
   const state = reactive({
     type: initial.type ?? 'form_submitted',
     formConfig: initial.formConfig ?? emptyFormTriggerDraft(),
-    scheduleDraft: initial.scheduleDraft ?? emptyScheduleDraft([], 'daily'),
+    scheduleDraft: initial.scheduleDraft ?? emptyScheduleDraft(),
   });
   const formChanges: Array<string | null> = [];
   const wrapper = mount(WorkflowTriggerFields, {
@@ -86,7 +70,6 @@ function mountFields(initial: {
     global: {
       stubs: {
         FormSelect: FormSelectStub,
-        WorkflowScheduleAssist: ScheduleAssistStub,
         WorkflowScheduleBuilder: ScheduleBuilderStub,
       },
     },
@@ -180,17 +163,10 @@ describe('WorkflowTriggerFields', () => {
     wrapper.unmount();
   });
 
-  it('schedule assist apply(draft) flows into the schedule v-model', async () => {
-    const { wrapper, state } = mountFields({ type: 'schedule' });
-
-    await wrapper.get('.assist-apply-stub').trigger('click');
-    await nextTick();
-
-    expect(state.scheduleDraft.family).toBe('weekly');
-    expect(state.scheduleDraft.params).toEqual({ weekdays: [3] });
-    expect(state.scheduleDraft.times).toEqual(['08:00']);
-    expect(wrapper.find('.builder-stub').text()).toBe('weekly');
-
+  it('renders the v2 schedule builder for a schedule trigger', () => {
+    const { wrapper } = mountFields({ type: 'schedule' });
+    // The stub echoes the draft's v2 time mode (the neutral seed is `at`).
+    expect(wrapper.find('.builder-stub').text()).toBe('at');
     wrapper.unmount();
   });
 });

@@ -127,7 +127,8 @@ const form = reactive<{
   icon: null,
   triggerType: 'form_submitted',
   formTrigger: emptyFormTriggerDraft(),
-  scheduleDraft: emptyScheduleDraft([], 'daily'),
+  // The neutral v2 schedule draft (once daily at 09:00, §4.5.1).
+  scheduleDraft: emptyScheduleDraft(),
   conditions: [],
   steps: [makeStepDraft('create_task', [])],
 });
@@ -142,6 +143,11 @@ try {
 } catch {
   activeTz.value = null;
 }
+
+// REV5: the FRESH-schedule tz seed moved INTO `emptyScheduleDraft()` (the sole allowed
+// touch of the draft model, §4.5.8) — it already seeds the resolved browser zone, so the
+// wall-clock sentence + preview run in the viewer's zone. An EDITED schedule keeps its
+// saved tz — seedFromDetail() overrides the draft below via configToDraft.
 
 // Seed ONCE from the prefetched detail when editing (the layout keys this component
 // by id, so it remounts + re-seeds per workflow → setup runs fresh).
@@ -455,9 +461,10 @@ function buildFormTriggerConfig(): FormSubmittedTriggerConfig {
   return cfg;
 }
 
-/** Build the schedule trigger_config via the descriptor-filtered draftToConfig. */
+/** Build the schedule trigger_config from the v2 draft (§4.5.1). */
 function buildScheduleTriggerConfig(): ScheduleTriggerConfig {
-  return { schedule: draftToConfig(form.scheduleDraft, store.scheduleFamilies ?? undefined) };
+  // v2 has no families vocabulary; draftToConfig emits the flat wire (time × day × month).
+  return { schedule: draftToConfig(form.scheduleDraft) };
 }
 
 function buildPayload(): WorkflowWritePayload {

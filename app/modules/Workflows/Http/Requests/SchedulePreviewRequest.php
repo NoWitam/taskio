@@ -3,24 +3,31 @@
 namespace App\Modules\Workflows\Http\Requests;
 
 use App\Modules\Workflows\Services\WorkflowScheduleRulesValidator;
+use App\Modules\Workflows\Services\WorkflowScheduleService;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 
 /**
  * Validates a live SCHEDULE-PREVIEW request (POST /workflows/meta/schedule-preview): a bare
- * `schedule` cadence block plus an optional `count` of occurrences to project.
+ * `schedule` cadence block, an optional `count` of occurrences to project, and an optional `anchor`
+ * instant to project AROUND (rather than from now).
  *
- * Authorization mirrors the schedule-family / schedule-assist endpoints — any authenticated
- * workspace member may preview (the endpoint exposes no tenant data; it only projects fire times
- * from a public cadence vocabulary). Membership is enforced upstream by ResolveWorkspace, so there
- * is no per-object policy; a guest is stopped by auth:sanctum with a 401.
+ * Authorization mirrors the schedule-assist endpoint — any authenticated workspace member may
+ * preview (the endpoint exposes no tenant data; it only projects fire times from a public cadence
+ * descriptor). Membership is enforced upstream by ResolveWorkspace, so there is no per-object policy;
+ * a guest is stopped by auth:sanctum with a 401.
  *
  * The `schedule` block is validated by the SAME shared WorkflowScheduleRulesValidator the write and
- * AI-assist paths use, under a bare `schedule` prefix — with ONE difference: the empty-schedule
- * guard is OFF (secondPass checkEmpty: false). An over-constrained config (its exclusions rule out
- * every fire time) is NOT a 422 here; it comes back as data (`empty: true`) so the FE can render the
- * live "these exclusions remove every occurrence" warning BEFORE the user saves. Every STRUCTURAL
- * error (unknown family, out-of-bounds params, malformed times/exclusions) still returns 422.
+ * AI-assist paths use, under a bare `schedule` prefix — with ONE difference: the empty-schedule guard
+ * is OFF (secondPass checkEmpty: false). An over-constrained config is NOT a 422 here; it comes back
+ * as data (`empty: true`) so the FE can render the live "these rules remove every occurrence" warning
+ * BEFORE the user saves. Every STRUCTURAL error (unknown mode, out-of-bounds field, malformed
+ * window/exclusions) still returns 422.
+ *
+ * ANCHOR: an ISO-8601 datetime the preview centres on. WITHOUT an offset it is a WALL-CLOCK time read
+ * in the schedule's own tz; WITH an offset it is an absolute instant (the offset wins). It seeds
+ * WorkflowScheduleService::occurrencesFrom, which returns the occurrence at-or-before the anchor first.
  */
 class SchedulePreviewRequest extends FormRequest
 {
@@ -46,7 +53,12 @@ class SchedulePreviewRequest extends FormRequest
     {
         return array_merge(
             app(WorkflowScheduleRulesValidator::class)->baseRules('schedule'),
-            ['count' => ['nullable', 'integer', 'min:1', 'max:' . self::MAX_COUNT]],
+            [
+                'count' => ['nullable', 'integer', 'min:1', 'max:' . self::MAX_COUNT],
+                // A parseable ISO-8601 datetime; the offset-vs-wall-clock interpretation is applied
+                // against the schedule tz in anchor(). `date` accepts both offset and offset-less forms.
+                'anchor' => ['nullable', 'string', 'date'],
+            ],
         );
     }
 
@@ -79,5 +91,23 @@ class SchedulePreviewRequest extends FormRequest
     public function occurrenceCount(): int
     {
         return (int) ($this->validated('count') ?? self::DEFAULT_COUNT);
+    }
+
+    /**
+     * The optional anchor as a CarbonImmutable, folded into the schedule's tz: an offset-less string
+     * is read as wall-clock time in that tz; a string with an offset keeps its absolute instant (the
+     * offset wins). Null when no anchor was supplied — the controller then projects from now().
+     */
+    public function anchor(): ?CarbonImmutable
+    {
+        $raw = $this->validated('anchor');
+
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+
+        $tz = app(WorkflowScheduleService::class)->timezone($this->scheduleBlock());
+
+        return CarbonImmutable::parse($raw, $tz);
     }
 }

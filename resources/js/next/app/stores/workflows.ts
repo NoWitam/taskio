@@ -30,8 +30,6 @@ import { api } from '../lib/api';
 import type {
   ScheduleAssistEnvelope,
   ScheduleAssistResponse,
-  ScheduleFamiliesResponse,
-  ScheduleFamilyDescriptor,
   SchedulePreviewResponse,
   WorkflowScheduleConfig,
   WorkflowCatalog,
@@ -123,11 +121,9 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
   const detailLoading = ref(false);
   const detailError = ref<string | null>(null);
 
-  // --- Schedule-family vocabulary cache (§4.5) -----------------------------
-  // The /meta/schedule-families vocabulary is static per app version, so it is
-  // fetched ONCE and cached for the session (all editor instances share it).
-  const scheduleFamilies = ref<ScheduleFamilyDescriptor[] | null>(null);
-  let scheduleFamiliesInFlight: Promise<ScheduleFamilyDescriptor[]> | null = null;
+  // v2 (Phase 4a) has NO schedule-families vocabulary endpoint — the FE owns every
+  // label and mirrors the numeric bounds as constants (workflowSchedule.ts). The REV3
+  // `scheduleFamilies` cache + `fetchScheduleFamilies` were REMOVED.
 
   // --- Variable-catalog cache, keyed per form id (§4.7) --------------------
   // Each form's catalog is cached so switching steps/fields on one form doesn't
@@ -343,30 +339,7 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
     return res.data;
   }
 
-  // --- Schedule builder meta / catalog / assist (§4.5, §4.7) ---------------
-
-  /**
-   * Fetch the schedule-family vocabulary + param descriptors
-   * (`GET /workflows/meta/schedule-families`). CACHED for the session — the second
-   * call returns the cached array; concurrent first calls share one request. The
-   * FE owns all labels, so only the `{family, params}` descriptors are stored.
-   */
-  async function fetchScheduleFamilies(): Promise<ScheduleFamilyDescriptor[]> {
-    if (scheduleFamilies.value) return scheduleFamilies.value;
-    if (scheduleFamiliesInFlight) return scheduleFamiliesInFlight;
-
-    scheduleFamiliesInFlight = api
-      .get<ScheduleFamiliesResponse>('/workflows/meta/schedule-families')
-      .then((res) => {
-        scheduleFamilies.value = res.data ?? [];
-        return scheduleFamilies.value;
-      })
-      .finally(() => {
-        scheduleFamiliesInFlight = null;
-      });
-
-    return scheduleFamiliesInFlight;
-  }
+  // --- Schedule builder catalog / assist / preview (§4.5, §4.7) ------------
 
   /**
    * Fetch the TYPED variable catalog for a form
@@ -425,23 +398,26 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
   }
 
   /**
-   * Preview the next N occurrences of a schedule (`POST /workflows/meta/schedule-preview`,
-   * B4). NOT cached (the result depends on the live draft) and NOT retried — the
-   * builder debounces the call and only fires it for a client-valid draft. The
-   * response carries `occurrences` (ISO8601 UTC ascending), `empty` (the schedule
-   * never fires — NOT a 422), and `approximate` (every_n_minutes only). A 422 is
-   * structural and bubbles up for the caller to swallow (quiet, non-blocking).
+   * Preview the next N occurrences of a v2 schedule
+   * (`POST /workflows/meta/schedule-preview`). NOT cached (the result depends on the
+   * live draft) and NOT retried — the strip debounces the call and only fires it for
+   * a client-valid draft. `count` is 1..12 (default 6); an optional `anchor` (ISO-8601)
+   * centres the projection so `occurrences[0]` is the occurrence AT-OR-BEFORE it
+   * (prev-or-at) and the rest ascend after it — the strip pages FORWARD by re-calling
+   * with `anchor` = the last shown occurrence (§4.5.4). The FLAT response carries
+   * `occurrences` (ISO8601 UTC ascending), `empty` (the schedule never fires — NOT a
+   * 422), and `approximate` (always false in v2). A 422 is structural and bubbles up
+   * for the caller to swallow (quiet, non-blocking).
    */
   async function schedulePreview(
     schedule: WorkflowScheduleConfig,
-    count = 6,
+    { count = 6, anchor }: { count?: number; anchor?: string | null } = {},
   ): Promise<SchedulePreviewResponse> {
     // UNWRAPPED response: unlike the assist (which nests its envelope under `data`),
     // the preview controller returns the flat body — api.post already yields it.
-    return api.post<SchedulePreviewResponse>('/workflows/meta/schedule-preview', {
-      schedule,
-      count,
-    });
+    const body: { schedule: WorkflowScheduleConfig; count: number; anchor?: string } = { schedule, count };
+    if (anchor != null && anchor !== '') body.anchor = anchor;
+    return api.post<SchedulePreviewResponse>('/workflows/meta/schedule-preview', body);
   }
 
   return {
@@ -458,8 +434,7 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
     detail,
     detailLoading,
     detailError,
-    // schedule builder meta / catalog caches
-    scheduleFamilies,
+    // schedule builder catalog cache
     catalogByForm,
     // list actions
     fetchWorkflows,
@@ -478,8 +453,7 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
     deleteWorkflow,
     restoreWorkflow,
     run,
-    // schedule builder meta / catalog / assist (§4.5, §4.7)
-    fetchScheduleFamilies,
+    // schedule builder catalog / assist / preview (§4.5, §4.7)
     fetchWorkflowCatalog,
     invalidateCatalog,
     scheduleAssist,

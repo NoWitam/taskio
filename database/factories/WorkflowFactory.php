@@ -42,12 +42,12 @@ class WorkflowFactory extends Factory
         return $this->state(fn () => ['status' => WorkflowStatus::INACTIVE]);
     }
 
-    /** A schedule-triggered workflow (daily 09:00 cadence). */
+    /** A schedule-triggered workflow (daily 09:00 cadence, v2 { time } descriptor). */
     public function scheduled(): static
     {
         return $this->state(fn () => [
             'trigger_type' => WorkflowTriggerType::SCHEDULE->value,
-            'trigger_config' => ['schedule' => ['family' => 'daily', 'params' => ['time' => '09:00']]],
+            'trigger_config' => ['schedule' => ['time' => ['mode' => 'at', 'at' => ['09:00']]]],
         ]);
     }
 }

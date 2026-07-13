@@ -3,17 +3,11 @@
 use App\Modules\Workflows\Http\Controllers\WorkflowController;
 use App\Modules\Workflows\Http\Controllers\WorkflowRunController;
 use App\Modules\Workflows\Http\Controllers\WorkflowScheduleAssistController;
-use App\Modules\Workflows\Http\Controllers\WorkflowScheduleFamilyController;
 use App\Modules\Workflows\Http\Controllers\WorkflowSchedulePreviewController;
 use App\Modules\Workflows\Http\Controllers\WorkflowVariableCatalogController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth:sanctum')->group(function () {
-    // Schedule-family vocabulary + param descriptors for the schedule builder (and AI-assist).
-    // A static /meta path, declared before the {workflow} resource so it never binds as an id.
-    Route::get('workflows/meta/schedule-families', [WorkflowScheduleFamilyController::class, 'index'])
-        ->name('workflows.meta.schedule-families');
-
     // LIVE SCHEDULE PREVIEW: projects the next N fire instants of a proposed cadence so the FE
     // schedule builder shows a running preview. A static /meta path, declared before the {workflow}
     // resource so it never binds as an id. Any member may call it; it validates the block with the

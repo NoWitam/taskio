@@ -314,35 +314,14 @@ describe('next workflows store', () => {
     expect(run.id).toBe('run2');
   });
 
-  // --- schedule builder meta / catalog / assist (§4.5, §4.7) ---------------
+  // --- schedule builder catalog / assist / preview (§4.5, §4.7) ------------
+  // v2 (Phase 4a) has NO schedule-families endpoint — the FE owns every label, so the
+  // REV3 fetchScheduleFamilies + its cache were removed (and are asserted GONE below).
 
-  it('fetchScheduleFamilies fetches once and caches for the session', async () => {
-    const store = useWorkflowsStore();
-    const families = [
-      { family: 'daily', params: [{ name: 'time', type: 'time', required: true }] },
-      { family: 'hourly', params: [] },
-    ];
-    apiMock.get.mockResolvedValueOnce({ data: families });
-
-    const first = await store.fetchScheduleFamilies();
-    expect(first.map((f) => f.family)).toEqual(['daily', 'hourly']);
-    expect(store.scheduleFamilies?.map((f) => f.family)).toEqual(['daily', 'hourly']);
-
-    // A second call returns the cache WITHOUT a second request.
-    const second = await store.fetchScheduleFamilies();
-    expect(second).toBe(first);
-    expect(apiMock.get).toHaveBeenCalledTimes(1);
-    expect(apiMock.get).toHaveBeenCalledWith('/workflows/meta/schedule-families');
-  });
-
-  it('concurrent fetchScheduleFamilies calls share one in-flight request', async () => {
-    const store = useWorkflowsStore();
-    apiMock.get.mockResolvedValueOnce({
-      data: [{ family: 'daily', params: [] }],
-    });
-    const [a, b] = await Promise.all([store.fetchScheduleFamilies(), store.fetchScheduleFamilies()]);
-    expect(a).toBe(b);
-    expect(apiMock.get).toHaveBeenCalledTimes(1);
+  it('does not expose the removed families vocabulary (v2)', () => {
+    const store = useWorkflowsStore() as unknown as Record<string, unknown>;
+    expect(store.fetchScheduleFamilies).toBeUndefined();
+    expect(store.scheduleFamilies).toBeUndefined();
   });
 
   it('fetchWorkflowCatalog caches PER form id (a different form refetches)', async () => {
@@ -418,7 +397,7 @@ describe('next workflows store', () => {
     await expect(store.scheduleAssist('boom')).rejects.toMatchObject({ kind: 'failed' });
   });
 
-  it('schedulePreview POSTs the schedule + count and returns the FLAT body (B4)', async () => {
+  it('schedulePreview POSTs the v2 schedule + count and returns the FLAT body', async () => {
     const store = useWorkflowsStore();
     // REGRESSION: the endpoint returns the flat body (no `data` wrapper, unlike the
     // assist) and api.post already unwraps the axios response — mocking a wrapped
@@ -431,8 +410,8 @@ describe('next workflows store', () => {
     };
     apiMock.post.mockResolvedValueOnce(body);
 
-    const schedule = { family: 'daily' as const, params: { time: '08:00' }, tz: 'Europe/Warsaw' };
-    const result = await store.schedulePreview(schedule, 6);
+    const schedule = { time: { mode: 'at' as const, at: ['08:00'] }, tz: 'Europe/Warsaw' };
+    const result = await store.schedulePreview(schedule, { count: 6 });
 
     expect(apiMock.post).toHaveBeenCalledWith('/workflows/meta/schedule-preview', { schedule, count: 6 });
     expect(result.occurrences).toHaveLength(2);
@@ -442,11 +421,26 @@ describe('next workflows store', () => {
   it('schedulePreview defaults count to 6 and surfaces empty:true (not an error)', async () => {
     const store = useWorkflowsStore();
     apiMock.post.mockResolvedValueOnce({ occurrences: [], count: 0, empty: true, approximate: false });
-    const result = await store.schedulePreview({ family: 'daily', params: { time: '08:00' } });
-    expect(apiMock.post).toHaveBeenCalledWith('/workflows/meta/schedule-preview', {
-      schedule: { family: 'daily', params: { time: '08:00' } },
-      count: 6,
-    });
+    const schedule = { time: { mode: 'at' as const, at: ['08:00'] } };
+    const result = await store.schedulePreview(schedule);
+    expect(apiMock.post).toHaveBeenCalledWith('/workflows/meta/schedule-preview', { schedule, count: 6 });
     expect(result.empty).toBe(true);
+  });
+
+  it('schedulePreview forwards an anchor for prev-or-at paging (§4.5.4)', async () => {
+    const store = useWorkflowsStore();
+    apiMock.post.mockResolvedValueOnce({
+      occurrences: ['2026-07-10T08:00:00Z', '2026-07-11T08:00:00Z'],
+      count: 2,
+      empty: false,
+      approximate: false,
+    });
+    const schedule = { time: { mode: 'at' as const, at: ['08:00'] } };
+    await store.schedulePreview(schedule, { count: 2, anchor: '2026-07-10T12:00:00' });
+    expect(apiMock.post).toHaveBeenCalledWith('/workflows/meta/schedule-preview', {
+      schedule,
+      count: 2,
+      anchor: '2026-07-10T12:00:00',
+    });
   });
 });

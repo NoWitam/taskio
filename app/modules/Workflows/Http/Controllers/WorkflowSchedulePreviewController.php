@@ -15,9 +15,12 @@ use Illuminate\Http\JsonResponse;
  *
  * The occurrences are ISO8601 UTC, formatted like WorkflowResource serves next_due_at (toISOString),
  * so the FE parses one shape everywhere. `empty` is true when the cadence yields no occurrence (an
- * over-constrained exclusion set) — surfaced as data for a pre-save warning, never a 422. `approximate`
- * is true ONLY for the interval family (every_n_minutes), whose live phase is set at activation, so a
- * now-anchored preview is indicative.
+ * over-constrained rule/exclusion set) — surfaced as data for a pre-save warning, never a 422.
+ * `approximate` is retained for response-shape stability but is ALWAYS false: every v2 cadence is a
+ * calendar-anchored wall-clock grid, so the projection is exact.
+ *
+ * When the request carries an `anchor`, the projection is centred on it (occurrencesFrom: the
+ * occurrence at-or-before the anchor first, then the later ones); otherwise it projects from now().
  */
 class WorkflowSchedulePreviewController extends Controller
 {
@@ -29,8 +32,11 @@ class WorkflowSchedulePreviewController extends Controller
     {
         $block = $request->scheduleBlock();
         $count = $request->occurrenceCount();
+        $anchor = $request->anchor();
 
-        $occurrences = $this->schedule->nextOccurrences($block, $count);
+        $occurrences = $anchor !== null
+            ? $this->schedule->occurrencesFrom($block, $anchor, $count)
+            : $this->schedule->nextOccurrences($block, $count);
 
         return response()->json([
             'occurrences' => array_map(fn ($occurrence) => $occurrence->toISOString(), $occurrences),

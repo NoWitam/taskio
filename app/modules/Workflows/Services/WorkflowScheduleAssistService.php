@@ -23,6 +23,9 @@ use Throwable;
  *        - main `config` failing => downgrade feasible:false, config:null, and append a
  *          validation-derived note to `unsupported`.
  *        - `alternative.config` failing => drop the alternative.
+ *      A SURVIVING config (main or alternative) is normalized to the v2 descriptor via
+ *      LegacyScheduleUpgrader, so the envelope never hands the legacy { family, params } shape back
+ *      to the client (a model that answers in the pre-v2 shape is bridged, not leaked).
  *   5. whitelist-pick the response keys (never merge unknown model keys into the API payload).
  */
 class WorkflowScheduleAssistService
@@ -30,6 +33,7 @@ class WorkflowScheduleAssistService
     public function __construct(
         private WorkflowScheduleRulesValidator $rules,
         private WorkflowScheduleCompiler $compiler,
+        private LegacyScheduleUpgrader $upgrader = new LegacyScheduleUpgrader,
     ) {}
 
     /**
@@ -47,7 +51,7 @@ class WorkflowScheduleAssistService
 
         $raw = $this->run($prompt, $language);
 
-        return $this->revalidate($this->parse($raw), $tz);
+        return $this->revalidate($this->parse($raw, $language), $tz);
     }
 
     /**
@@ -92,17 +96,19 @@ class WorkflowScheduleAssistService
 
     /**
      * Parse the model's JSON text into the strict envelope, whitelisting ONLY the known keys.
-     * Malformed/empty/non-object output yields the safe generic feasible:false envelope. Unknown
-     * keys the model may have invented are dropped here — they never reach the API response.
+     * Malformed/empty/non-object output yields the safe generic feasible:false envelope (localized
+     * to $language). Unknown keys the model may have invented are dropped here — they never reach
+     * the API response.
      *
+     * @param  string  $language  localizes the generic fallback explanation ('en' -> English, else Polish)
      * @return array{feasible: bool, config: array<string, mixed>|null, unsupported: array<int, string>, alternative: array{config: array<string, mixed>, note: string}|null, explanation: string}
      */
-    private function parse(string $raw): array
+    private function parse(string $raw, string $language): array
     {
         $decoded = json_decode(trim($raw), true);
 
         if (!is_array($decoded)) {
-            return $this->generic();
+            return $this->generic($language);
         }
 
         return [
@@ -120,7 +126,9 @@ class WorkflowScheduleAssistService
      *   - a main `config` that fails validation or compile is downgraded (feasible:false, config
      *     null) and the failure reason is appended to `unsupported`.
      *   - an `alternative.config` that fails is dropped (alternative:null).
-     * A surviving config with no tz inherits the caller's $tz hint (when supplied).
+     * A surviving config with no tz inherits the caller's $tz hint (when supplied), and is then
+     * normalized to the v2 descriptor via LegacyScheduleUpgrader so the envelope NEVER carries the
+     * legacy { family, params } shape back to the client (the upgrader is a no-op on a v2 config).
      *
      * @param  array{feasible: bool, config: array<string, mixed>|null, unsupported: array<int, string>, alternative: array{config: array<string, mixed>, note: string}|null, explanation: string}  $envelope
      * @return array{feasible: bool, config: array<string, mixed>|null, unsupported: array<int, string>, alternative: array{config: array<string, mixed>, note: string}|null, explanation: string}
@@ -133,7 +141,7 @@ class WorkflowScheduleAssistService
             $errors = $this->gate($config);
 
             if ($errors === []) {
-                $envelope['config'] = $config;
+                $envelope['config'] = $this->upgrader->toV2($config);
             } else {
                 $envelope['feasible'] = false;
                 $envelope['config'] = null;
@@ -150,7 +158,7 @@ class WorkflowScheduleAssistService
             $altConfig = $this->applyTz($envelope['alternative']['config'], $tz);
 
             if ($this->gate($altConfig) === []) {
-                $envelope['alternative']['config'] = $altConfig;
+                $envelope['alternative']['config'] = $this->upgrader->toV2($altConfig);
             } else {
                 $envelope['alternative'] = null;
             }
@@ -200,11 +208,13 @@ class WorkflowScheduleAssistService
     }
 
     /**
-     * Whitelist a config object to { family, params, tz, times, exclusions } — drops any extra keys
-     * the model added. `times` and `exclusions` are the optional extensions; a non-array value for
-     * either is passed through as-is so the gate's rules reject the bad shape (the whitelist only
-     * strips UNKNOWN keys, it never pre-judges the VALUE of a known one). A non-object config
-     * becomes null (nothing to validate).
+     * Whitelist a config object to the v2 descriptor keys { time, day, month, exclusions, tz }, plus
+     * the LEGACY { family, params, times } vocabulary — a model still answering in the pre-v2 shape
+     * stays valid because LegacyScheduleUpgrader upgrades it to v2 inside the gate, so it is bridged
+     * here rather than stripped. Every kept key's VALUE is forwarded VERBATIM so the gate's rules
+     * judge it; the whitelist only strips UNKNOWN top-level keys (which the validator does NOT police
+     * — a foreign INNER field such as time.foo is rejected by the rules in gate(), not here). A
+     * non-object config becomes null (nothing to validate).
      *
      * @return array<string, mixed>|null
      */
@@ -214,23 +224,20 @@ class WorkflowScheduleAssistService
             return null;
         }
 
-        $picked = [
-            // A non-string family stays as-is here and is rejected by the enum rule in gate()
-            // — the whitelist only strips UNKNOWN keys, it does not pre-judge values.
-            'family' => $config['family'] ?? null,
-            'params' => is_array($config['params'] ?? null) ? $config['params'] : [],
-        ];
+        $picked = [];
 
+        // v2 axes + the shared skip-filter, and the legacy read-shim bridge — all forwarded as-is so
+        // gate() judges the value; only keys absent from this list are dropped.
+        foreach (['time', 'day', 'month', 'exclusions', 'family', 'params', 'times'] as $key) {
+            if (array_key_exists($key, $config)) {
+                $picked[$key] = $config[$key];
+            }
+        }
+
+        // tz is shape-identical across v1/v2; keep only a string|null (a bad type is dropped, never
+        // forwarded — matching the prior contract).
         if (array_key_exists('tz', $config) && (is_string($config['tz']) || $config['tz'] === null)) {
             $picked['tz'] = $config['tz'];
-        }
-
-        if (array_key_exists('times', $config)) {
-            $picked['times'] = $config['times'];
-        }
-
-        if (array_key_exists('exclusions', $config)) {
-            $picked['exclusions'] = $config['exclusions'];
         }
 
         return $picked;
@@ -275,18 +282,22 @@ class WorkflowScheduleAssistService
 
     /**
      * The safe fallback envelope for a malformed/absent model response — honest infeasibility with
-     * a generic explanation, never a 500.
+     * a generic explanation (localized to $language, matching the language the caller requested for
+     * the agent), never a 500.
      *
+     * @param  string  $language  'en' yields the English explanation, otherwise Polish
      * @return array{feasible: bool, config: null, unsupported: array<int, string>, alternative: null, explanation: string}
      */
-    private function generic(): array
+    private function generic(string $language): array
     {
         return [
             'feasible' => false,
             'config' => null,
             'unsupported' => [],
             'alternative' => null,
-            'explanation' => 'Nie udało się przetworzyć opisu harmonogramu. Spróbuj opisać go inaczej lub ustaw harmonogram ręcznie.',
+            'explanation' => $language === 'en'
+                ? 'Could not process the schedule description. Try describing it differently or set the schedule manually.'
+                : 'Nie udało się przetworzyć opisu harmonogramu. Spróbuj opisać go inaczej lub ustaw harmonogram ręcznie.',
         ];
     }
 }

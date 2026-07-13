@@ -1,210 +1,293 @@
 // @vitest-environment happy-dom
-// WorkflowScheduleBuilder.spec — the PROGRESSIVE descriptor-driven builder (§4.5, B4).
-// Asserts the simple/advanced modes, the descriptor-driven param controls, the times
-// editor (add/remove/duplicate), the exclusions chips, the mode transitions (a config
-// with exclusions opens advanced), the empty-schedule preview blocking `isValid`, and
-// the approximate info note. The store is mocked so no HTTP happens; the families
-// descriptor mirrors the B4 WorkflowScheduleFamily::paramDescriptors().
+// WorkflowScheduleBuilder.spec — the v2 THREE-TAB builder (Phase 4b, §4.5). Mounts the
+// REAL builder (real panels + window field + Tabs + SegmentedControl + Accordion) over a
+// v2 ScheduleDraft. The store is mocked (schedulePreview), the AI modal + the strip's
+// DateTimePicker + the exclusions DatePicker are stubbed. Covers: sub-mode switching
+// (foreign-field clearing), the window both-or-neither + from<to gate, the LWD lock
+// (auto-reset + disabled cards), the at[] limit, the 422→tab mapping, the isValid gate,
+// and the modal-apply flow into the v-model.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
-import { nextTick } from 'vue';
+import { mount, type VueWrapper } from '@vue/test-utils';
+import { nextTick, h } from 'vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
-import type { ScheduleFamilyDescriptor, SchedulePreviewResponse } from '../types';
+import { setLocale } from '../../../app/i18n';
+import { en } from '../../../app/i18n/en';
 import { emptyScheduleDraft, type ScheduleDraft } from '../workflowSchedule';
 
-const FAMILIES: ScheduleFamilyDescriptor[] = [
-  { family: 'daily', params: [{ name: 'time', type: 'time', required: true }] },
-  { family: 'weekly', params: [
-    { name: 'weekdays', type: 'weekday_list', required: true },
-    { name: 'time', type: 'time', required: true },
-  ] },
-  { family: 'hourly', params: [] },
-  { family: 'hourly_at', params: [{ name: 'minute', type: 'int', required: true, min: 0, max: 59 }] },
-  { family: 'every_n_hours', params: [
-    { name: 'n', type: 'int', required: true, min: 2, max: 12 },
-    { name: 'minute', type: 'int', required: false, min: 0, max: 59 },
-  ] },
-  { family: 'every_n_minutes', params: [{ name: 'n', type: 'int', required: true, min: 1, max: 59 }] },
-  { family: 'monthly', params: [
-    { name: 'day', type: 'int', required: true, min: 1, max: 31 },
-    { name: 'time', type: 'time', required: true },
-  ] },
-  { family: 'last_day_of_month', params: [{ name: 'time', type: 'time', required: true }] },
-  { family: 'twice_daily', params: [
-    { name: 'first_hour', type: 'int', required: true, min: 0, max: 23, lt: 'second_hour' },
-    { name: 'second_hour', type: 'int', required: true, min: 0, max: 23 },
-  ] },
-];
-
-const fetchScheduleFamilies = vi.fn(async () => FAMILIES);
-const schedulePreview = vi.fn<() => Promise<SchedulePreviewResponse>>();
-
+const schedulePreview = vi.fn();
 vi.mock('../../../app/stores/workflows', () => ({
-  useWorkflowsStore: () => ({ fetchScheduleFamilies, schedulePreview }),
+  useWorkflowsStore: () => ({ schedulePreview, scheduleAssist: vi.fn() }),
   ScheduleAssistError: class ScheduleAssistError extends Error {},
 }));
 
 import WorkflowScheduleBuilder from '../WorkflowScheduleBuilder.vue';
 
-async function mountBuilder(draft: ScheduleDraft) {
+const SCH = en.workflows.schedule;
+
+// Applied by the (stubbed) AI modal → proves apply(draft) flows into the v-model.
+const APPLIED: ScheduleDraft = {
+  time: { mode: 'at', at: ['08:00'] },
+  day: { mode: 'weekdays', weekdays: [3] },
+  month: { mode: 'every_month' },
+  exclusions: { months: [], weekdays: [], dates: [] },
+  tz: '',
+};
+const AssistModalStub = {
+  name: 'WorkflowScheduleAssistModal',
+  props: ['open', 'tz'],
+  emits: ['apply', 'update:open'],
+  setup(_: unknown, { emit }: { emit: (e: string, v?: unknown) => void }) {
+    return () => h('button', { class: 'assist-apply', onClick: () => emit('apply', APPLIED) }, 'apply');
+  },
+};
+const InputStub = { props: ['modelValue'], setup: () => () => h('input') };
+// A v-model-forwarding stub for the jump-to-date field: a native input carrying the aria-label
+// so a test can read/drive the host `anchor` directly (the real DateTimePicker calendar +
+// its INNER clear ✕ are covered by its own spec). Setting a value emits update:modelValue;
+// clearing (empty value) sends null. It mirrors the `dirty` prop (= !!anchor) onto data-dirty
+// so a test can observe the anchor state without the host exposing it.
+const AnchorFieldStub = {
+  name: 'DateTimePicker',
+  props: ['modelValue', 'ariaLabel', 'placeholder', 'clearable', 'dirty', 'size'],
+  emits: ['update:modelValue'],
+  setup(props: Record<string, unknown>, { emit }: { emit: (e: string, v?: unknown) => void }) {
+    return () =>
+      h('input', {
+        'aria-label': props.ariaLabel as string | undefined,
+        'data-dirty': String(!!props.dirty),
+        value: (props.modelValue as string | null) ?? '',
+        onInput: (e: Event) => emit('update:modelValue', (e.target as HTMLInputElement).value || null),
+      });
+  },
+};
+
+function page(occurrences: string[], empty = false) {
+  return { occurrences, count: occurrences.length, empty, approximate: false };
+}
+
+function mountBuilder(draft: ScheduleDraft, errors: Record<string, string> = {}) {
   const wrapper = mount(WorkflowScheduleBuilder, {
-    attachTo: document.body,
-    props: { modelValue: draft, 'onUpdate:modelValue': (v: ScheduleDraft) => wrapper.setProps({ modelValue: v }) },
+    props: {
+      modelValue: draft,
+      errors,
+      'onUpdate:modelValue': (v: ScheduleDraft) => wrapper.setProps({ modelValue: v }),
+    },
+    global: {
+      stubs: {
+        WorkflowScheduleAssistModal: AssistModalStub,
+        DateTimePicker: AnchorFieldStub,
+        DatePicker: InputStub,
+      },
+    },
   });
-  await nextTick();
-  await Promise.resolve();
-  await nextTick();
   return wrapper;
 }
 
-/** Flush the 400ms debounced preview + its resolution. */
+type W = VueWrapper;
+const draftOf = (w: W) => w.props('modelValue') as ScheduleDraft;
+const radio = (w: W, label: string) => w.findAll('[role="radio"]').find((r) => r.text().includes(label));
+const tab = (w: W, label: string) => w.findAll('[role="tab"]').find((t) => t.text().includes(label));
+
 async function flushPreview(): Promise<void> {
   vi.advanceTimersByTime(450);
   await Promise.resolve();
   await Promise.resolve();
   await nextTick();
+  await nextTick();
 }
 
-describe('WorkflowScheduleBuilder (progressive, B4)', () => {
+describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
   beforeEach(() => {
     installBrowserMocks();
     vi.useFakeTimers();
+    setLocale('en');
     schedulePreview.mockReset();
-    schedulePreview.mockResolvedValue({ occurrences: ['2026-07-01T06:00:00.000000Z'], count: 1, empty: false, approximate: false });
+    schedulePreview.mockResolvedValue(page(['2026-07-13T09:00:00Z']));
   });
   afterEach(() => {
     vi.useRealTimers();
     restoreBrowserMocks();
   });
 
-  it('opens in SIMPLE mode with the intent segments', async () => {
-    const wrapper = await mountBuilder(emptyScheduleDraft(FAMILIES, 'daily'));
-    // The simple intent SegmentedControl (role=radiogroup) is present.
-    expect(wrapper.findAll('[role="radio"]').length).toBeGreaterThanOrEqual(3);
-    // An "Advanced settings" toggle exists.
-    const advanced = wrapper.findAll('button').find((b) => b.text().includes('Advanced settings'));
-    expect(advanced).toBeTruthy();
+  it('renders the summary sentence + the three axis tabs', () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    expect(wrapper.text()).toContain('Daily at 09:00');
+    expect(tab(wrapper, SCH.tab.time)).toBeTruthy();
+    expect(tab(wrapper, SCH.tab.day)).toBeTruthy();
+    expect(tab(wrapper, SCH.tab.month)).toBeTruthy();
     wrapper.unmount();
   });
 
-  it('switching to ADVANCED reveals the sections + the family Select', async () => {
-    const wrapper = await mountBuilder(emptyScheduleDraft(FAMILIES, 'daily'));
-    const advanced = wrapper.findAll('button').find((b) => b.text().includes('Advanced settings'));
-    await advanced!.trigger('click');
+  it('switching a Time sub-mode reshapes ONLY the time axis (foreign fields drop)', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    await radio(wrapper, SCH.time.mode.everyMinutes)!.trigger('click');
     await nextTick();
-
-    const text = wrapper.text();
-    expect(text).toContain('Repeat');
-    expect(text).toContain('Times');
-    expect(text).toContain('Exclusions');
-    // The grouped family Select is a combobox.
-    expect(wrapper.findAll('[role="combobox"]').length).toBeGreaterThanOrEqual(1);
+    // `at` is gone; a fresh every_minutes axis (n default 1) with no window.
+    expect(draftOf(wrapper).time).toEqual({ mode: 'every_minutes', n: 1 });
+    // Day + month + exclusions are preserved untouched.
+    expect(draftOf(wrapper).day).toEqual({ mode: 'every_day' });
     wrapper.unmount();
   });
 
-  it('the times editor adds, removes, and flags a duplicate', async () => {
-    // Start in advanced (multi-time is advanced-only).
-    const draft = emptyScheduleDraft(FAMILIES, 'daily');
-    draft.times = ['08:00'];
-    const wrapper = await mountBuilder(draft);
-    await wrapper.findAll('button').find((b) => b.text().includes('Advanced settings'))!.trigger('click');
+  it('switching Day → weekdays clears foreign fields; a weekday chip toggles membership', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    await radio(wrapper, SCH.day.mode.weekdays)!.trigger('click');
     await nextTick();
-
-    // Add a second time.
-    const addBtn = wrapper.findAll('button').find((b) => b.text().includes('Add time'));
-    await addBtn!.trigger('click');
+    expect(draftOf(wrapper).day).toEqual({ mode: 'weekdays', weekdays: [] });
+    // The weekday chip group (scoped by its aria-label, distinct from the exclusions group).
+    const group = wrapper.findAll('[role="group"]').find((g) => g.attributes('aria-label') === SCH.day.mode.weekdays)!;
+    const mon = group.findAll('button').find((b) => b.text() === SCH.weekday.short['1'])!;
+    await mon.trigger('click');
     await nextTick();
-    expect((wrapper.props('modelValue') as ScheduleDraft).times.length).toBe(2);
-
-    // Make the two times identical → the duplicate validation message appears.
-    await wrapper.setProps({ modelValue: { ...draft, times: ['08:00', '08:00'] } });
-    await nextTick();
-    expect(wrapper.text()).toContain('The same time is listed twice.');
-
+    expect((draftOf(wrapper).day as { weekdays: number[] }).weekdays).toEqual([1]);
     wrapper.unmount();
   });
 
-  it('exclusion month chips toggle onto the draft', async () => {
-    const wrapper = await mountBuilder(emptyScheduleDraft(FAMILIES, 'daily'));
-    await wrapper.findAll('button').find((b) => b.text().includes('Advanced settings'))!.trigger('click');
+  it('the window is both-or-neither: the toggle switch adds/removes the whole window', async () => {
+    const draft = emptyScheduleDraft();
+    draft.time = { mode: 'every_minutes', n: 5 };
+    const wrapper = mountBuilder(draft);
+    // REV5.1: the gate is a bare Switch (role="switch"), not a checkbox; the from/to inputs
+    // are always rendered and just flip disabled — toggling still adds/removes the window.
+    const sw = wrapper.find('button[role="switch"]');
+    expect(sw.exists()).toBe(true);
+    await sw.trigger('click');
     await nextTick();
-
-    const augustChip = wrapper.findAll('button[aria-pressed]').find((b) => b.text().trim() === 'August');
-    expect(augustChip).toBeTruthy();
-    await augustChip!.trigger('click');
+    expect((draftOf(wrapper).time as { window?: unknown }).window).toEqual({ from: '09:00', to: '17:00' });
+    await sw.trigger('click');
     await nextTick();
-    expect((wrapper.props('modelValue') as ScheduleDraft).exclusions.months).toEqual([8]);
-
+    expect((draftOf(wrapper).time as { window?: unknown }).window).toBeUndefined();
     wrapper.unmount();
   });
 
-  it('a config with exclusions opens the builder in ADVANCED mode', async () => {
-    const draft = emptyScheduleDraft(FAMILIES, 'daily');
-    draft.times = ['08:00'];
-    draft.exclusions = { months: [8], weekdays: [], dates: [] };
-    const wrapper = await mountBuilder(draft);
-    // Advanced sections are visible without the user toggling.
-    expect(wrapper.text()).toContain('Repeat');
-    expect(wrapper.text()).toContain('Exclusions');
-    wrapper.unmount();
-  });
-
-  it('an lt violation shows the validation message and marks the builder invalid', async () => {
-    const draft: ScheduleDraft = {
-      family: 'twice_daily',
-      params: { first_hour: 10, second_hour: 8 },
-      tz: '',
-      times: ['08:00'],
-      exclusions: { months: [], weekdays: [], dates: [] },
-    };
-    const wrapper = await mountBuilder(draft);
-    expect(wrapper.text()).toContain('First hour must be before Second hour.');
+  it('a from ≥ to window surfaces the order error and blocks isValid', async () => {
+    const draft = emptyScheduleDraft();
+    draft.time = { mode: 'every_minutes', n: 5, window: { from: '18:00', to: '09:00' } };
+    const wrapper = mountBuilder(draft);
+    await flushPreview();
+    expect(wrapper.text()).toContain(SCH.validation.windowOrder);
     expect((wrapper.vm as unknown as { isValid: boolean }).isValid).toBe(false);
     wrapper.unmount();
   });
 
-  it('an EMPTY preview blocks isValid and shows the warning', async () => {
-    schedulePreview.mockResolvedValue({ occurrences: [], count: 0, empty: true, approximate: false });
-    const draft = emptyScheduleDraft(FAMILIES, 'daily');
-    draft.times = ['08:00'];
-    const wrapper = await mountBuilder(draft);
-    await flushPreview();
-
-    expect((wrapper.vm as unknown as { isValid: boolean }).isValid).toBe(false);
-    expect(wrapper.text()).toContain('never fire');
+  it('the last_working_day rule LOCKS time to `at` (auto-reset + disabled cards)', async () => {
+    const draft = emptyScheduleDraft();
+    draft.time = { mode: 'every_minutes', n: 10 };
+    const wrapper = mountBuilder(draft);
+    await radio(wrapper, SCH.day.mode.lastWorkingDay)!.trigger('click');
+    await nextTick();
+    // Time auto-reset to `at` (§4.5.5a).
+    expect(draftOf(wrapper).time).toEqual({ mode: 'at', at: ['09:00'] });
+    // The every_* time cards are disabled + the explanation is shown (never a bare gray-out).
+    expect(radio(wrapper, SCH.time.mode.everyMinutes)!.attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain(SCH.time.lockedByLastWorkingDay);
     wrapper.unmount();
   });
 
-  it('a LOADING preview blocks isValid until it settles (U1 regression)', async () => {
-    // During the debounce+RTT window previewEmpty still holds the PREVIOUS settled
-    // value, so saving mid-flight could slip an empty schedule past the gate.
-    const draft = emptyScheduleDraft(FAMILIES, 'daily');
-    draft.times = ['08:00'];
-    const wrapper = await mountBuilder(draft);
-
-    // Client-valid draft, preview still in flight → the gate stays CLOSED…
-    expect((wrapper.vm as unknown as { isValid: boolean }).isValid).toBe(false);
-
-    // …and opens once the preview settles non-empty.
-    await flushPreview();
-    expect((wrapper.vm as unknown as { isValid: boolean }).isValid).toBe(true);
+  it('the at[] list caps at the schedule limit (add disabled at 6)', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    const addBtn = () => wrapper.findAll('button').find((b) => b.text().includes(SCH.field.addTime))!;
+    for (let i = 0; i < 5; i += 1) {
+      if (addBtn().attributes('disabled') !== undefined) break;
+      await addBtn().trigger('click');
+      await nextTick();
+    }
+    expect((draftOf(wrapper).time as { at: string[] }).at.length).toBe(6);
+    expect(addBtn().attributes('disabled')).toBeDefined();
     wrapper.unmount();
   });
 
-  it('an APPROXIMATE preview shows the info note', async () => {
-    schedulePreview.mockResolvedValue({
-      occurrences: ['2026-07-01T06:00:00.000000Z'],
-      count: 1,
-      empty: false,
-      approximate: true,
-    });
-    const draft = emptyScheduleDraft(FAMILIES, 'every_n_minutes');
-    draft.params = { n: 15 };
-    const wrapper = await mountBuilder(draft);
-    await flushPreview();
+  it('a 422 under trigger_config.schedule.day.* switches to the Day tab', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    expect(tab(wrapper, SCH.tab.time)!.attributes('aria-selected')).toBe('true');
+    await wrapper.setProps({ errors: { 'trigger_config.schedule.day.weekdays': 'bad' } });
+    await nextTick();
+    expect(tab(wrapper, SCH.tab.day)!.attributes('aria-selected')).toBe('true');
+    wrapper.unmount();
+  });
 
-    expect(wrapper.text()).toContain('indicative');
-    expect((wrapper.vm as unknown as { isValid: boolean }).isValid).toBe(true);
+  it('a 422 under trigger_config.schedule.exclusions.* opens the exceptions disclosure', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    await wrapper.setProps({ errors: { 'trigger_config.schedule.exclusions.dates': 'bad' } });
+    await nextTick();
+    const header = wrapper.findAll('button').find((b) => b.text().includes(SCH.exclusions.title))!;
+    expect(header.attributes('aria-expanded')).toBe('true');
+    wrapper.unmount();
+  });
+
+  it('isValid is TRUE for a valid draft + non-empty preview, FALSE for an empty preview', async () => {
+    const ok = mountBuilder(emptyScheduleDraft());
+    await flushPreview();
+    expect((ok.vm as unknown as { isValid: boolean }).isValid).toBe(true);
+    ok.unmount();
+
+    schedulePreview.mockResolvedValue(page([], true));
+    const blocked = mountBuilder(emptyScheduleDraft());
+    await flushPreview();
+    expect((blocked.vm as unknown as { isValid: boolean }).isValid).toBe(false);
+    blocked.unmount();
+  });
+
+  it('applying the AI modal proposal replaces the whole draft', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    await wrapper.find('.assist-apply').trigger('click');
+    await nextTick();
+    expect(draftOf(wrapper)).toEqual(APPLIED);
+    wrapper.unmount();
+  });
+
+  it('REV5.1: jump-to-date is a DIRECT field bound to the anchor — no Popover, and clear lives INSIDE the field (no external button)', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    // The live sentence + the "Skocz do daty" FIELD live together in the one segment (the
+    // anchor lives with the host). The field is rendered DIRECTLY — no icon+Popover trigger.
+    expect(wrapper.text()).toContain('Daily at 09:00');
+    const field = () => wrapper.find(`input[aria-label="${SCH.preview.jumpTo}"]`);
+    expect(field().exists()).toBe(true);
+    // REV5.1: the clear ✕ now lives INSIDE the field (DateTimePicker `clearable`, default on),
+    // so there is NO external sibling clear button in the segment — ever. The field's inner ✕
+    // behavior is covered by the DateTimePicker spec; here we assert the host wiring only.
+    expect(wrapper.find(`button[aria-label="${en.common.clear}"]`).exists()).toBe(false);
+    // The anchor starts null → the field is not dirty (its inner ✕ would be hidden)…
+    expect(field().attributes('data-dirty')).toBe('false');
+    // …setting a date THROUGH the field drives the host anchor (dirty tint on)…
+    await field().setValue('2026-07-20T09:00');
+    await nextTick();
+    expect(field().attributes('data-dirty')).toBe('true');
+    // …and emptying it (the field's own clear path) resets the anchor back to null.
+    await field().setValue('');
+    await nextTick();
+    expect(field().attributes('data-dirty')).toBe('false');
+    expect(wrapper.find(`button[aria-label="${en.common.clear}"]`).exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('REV5 fix: `at` times render in ONE horizontal flex-wrap row (left→right, not stacked)', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    // Add a 2nd time so there are two pickers to place side by side.
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes(SCH.field.addTime))!;
+    await addBtn.trigger('click');
+    await nextTick();
+    // The `at` card body (role=group, labelled by the mode title) holds ONE wrapping row…
+    const atBody = wrapper.findAll('[role="group"]').find((g) => g.attributes('aria-label') === SCH.time.mode.at)!;
+    const row = atBody.find('.flex.flex-wrap');
+    expect(row.exists()).toBe(true);
+    // …and BOTH time inputs live inside that single wrapping row (horizontal flow, not stacked).
+    const times = row.findAll(`input[aria-label^="${SCH.field.times}"]`);
+    expect(times.length).toBe(2);
+    wrapper.unmount();
+  });
+
+  it('REV5: the exceptions disclosure holds skip-DATES only (no weekday/month chips, no tz field)', async () => {
+    const wrapper = mountBuilder(emptyScheduleDraft());
+    const header = wrapper.findAll('button').find((b) => b.text().includes(SCH.exclusions.title))!;
+    await header.trigger('click');
+    await nextTick();
+    // The dates control is present; the weekday/month exclusion labels + the tz field keys
+    // were superseded (removed from the catalog entirely — §4.5.7/§4.5.8).
+    expect(wrapper.text()).toContain(SCH.exclusions.datesLabel);
+    expect((SCH.exclusions as Record<string, unknown>).weekdaysLabel).toBeUndefined();
+    expect((SCH.exclusions as Record<string, unknown>).monthsLabel).toBeUndefined();
+    expect((SCH as Record<string, unknown>).tz).toBeUndefined();
     wrapper.unmount();
   });
 });

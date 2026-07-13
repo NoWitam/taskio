@@ -91,31 +91,51 @@ export type WorkflowConditionOperator =
   | 'is_true'
   | 'is_false';
 
+// REVISION 4 (Phase 4a) — the 16-family model is RETIRED. The `schedule` trigger is
+// now a COMPOSITIONAL descriptor v2 (§4.5.1): a TIME axis × a DAY axis × a MONTH
+// axis (AND-semantics), minus `exclusions`, in a `tz`. The wire shapes below mirror
+// the VERIFIED backend contract EXACTLY (WorkflowScheduleRulesValidator + the
+// Schedule{Time,Day,Month,DaySpecial,Limits} enums): the wire is FLAT — `time.minutes`
+// / `time.hours` (not `n`), a flat `from`/`to` window (not a nested `window`), and
+// `day.special` as a STRING enum (not an object). The FE's richer nested `ScheduleDraft`
+// (workflowSchedule.ts) adapts to/from these via `draftToConfig`/`configToDraft`.
+
+/** The DAY axis's `special` rule (mirrors `ScheduleDaySpecial`). */
+export type ScheduleDaySpecialKind = 'last_day' | 'last_working_day' | 'nth_weekday' | 'last_weekday';
+
 /**
- * The 16 schedule cadence FAMILIES (mirrors `WorkflowScheduleFamily`). The FE never
- * hard-codes a family's inputs — it renders from the /meta descriptors — but the
- * closed union is the vocabulary describeSchedule + the builder tier grouping use.
- * (B4 added `every_n_months`, `nth_weekday_of_month`, `last_weekday_of_month`,
- * `last_working_day_of_month`; `weekly` changed from a scalar `weekday` to a
- * `weekdays` list.)
+ * The TIME axis wire (mirrors `ScheduleTimeMode` + the validator's per-mode keys).
+ * The ONLY required axis. `at` = 1..6 'HH:mm'; `every_minutes` = a minute step
+ * (`minutes` 1..59) with an OPTIONAL HH:mm window; `every_hours` = an hour step
+ * (`hours` 1..23) at `minute` (0..59) with an OPTIONAL whole-hour (0..23) window.
  */
-export type WorkflowScheduleFamily =
-  | 'every_n_minutes'
-  | 'hourly'
-  | 'hourly_at'
-  | 'every_n_hours'
-  | 'daily'
-  | 'twice_daily'
-  | 'weekly'
-  | 'monthly'
-  | 'twice_monthly'
-  | 'last_day_of_month'
-  | 'quarterly'
-  | 'yearly'
-  | 'every_n_months'
-  | 'nth_weekday_of_month'
-  | 'last_weekday_of_month'
-  | 'last_working_day_of_month';
+export type ScheduleTimeConfig =
+  | { mode: 'at'; at: string[] }
+  | { mode: 'every_minutes'; minutes: number; from?: string; to?: string }
+  | { mode: 'every_hours'; hours: number; minute?: number; from?: number; to?: number };
+
+/**
+ * The DAY axis wire (mirrors `ScheduleDayMode`; optional, default `every_day`).
+ * `every_n_days` = a day-of-month step (`n` 1..31) with an OPTIONAL 1..31 window;
+ * `weekdays` / `month_days` = non-empty sets; `special` names a month-anchored rule
+ * with FLAT `ordinal` (1..5) / `weekday` (0..6) params.
+ */
+export type ScheduleDayConfig =
+  | { mode: 'every_day' }
+  | { mode: 'every_n_days'; n: number; from?: number; to?: number }
+  | { mode: 'weekdays'; weekdays: number[] }
+  | { mode: 'month_days'; days: number[] }
+  | { mode: 'special'; special: ScheduleDaySpecialKind; ordinal?: number; weekday?: number };
+
+/**
+ * The MONTH axis wire (mirrors `ScheduleMonthMode`; optional, default `every_month`).
+ * `every_n_months` = a month step (`n` 1..12) with an OPTIONAL 1..12 window;
+ * `months` = a non-empty set 1..12.
+ */
+export type ScheduleMonthConfig =
+  | { mode: 'every_month' }
+  | { mode: 'every_n_months'; n: number; from?: number; to?: number }
+  | { mode: 'months'; months: number[] };
 
 /** A form-submission source (form_submitted trigger's `source.in[]`). */
 export type SubmissionSource = 'manual' | 'task';
@@ -189,7 +209,7 @@ export type WorkflowFieldValue<T = unknown> =
 // --- trigger_config (per-type wire shapes, §4.4) ---------------------------
 
 /**
- * Schedule exclusions (B4). Every array is OPTIONAL + emit-or-omit: omit a key when
+ * Schedule exclusions (v2). Every array is OPTIONAL + emit-or-omit: omit a key when
  * empty. `months` int[1..12] (max 11); `weekdays` int[0..6], 0=Sunday (max 6);
  * `dates` 'YYYY-MM-DD' strings (max 50); all values unique. When all present
  * exclusions strip every occurrence the server rejects the save (422).
@@ -200,36 +220,39 @@ export interface WorkflowScheduleExclusions {
   dates?: string[];
 }
 
-/** The `schedule.*` sub-object (schedule trigger only, §4.4/§4.5). */
+/**
+ * The `schedule` trigger_config sub-object — the compositional descriptor v2
+ * (§4.5.1). Wire shape mirrors the VERIFIED backend contract: `time` REQUIRED;
+ * `day` / `month` OPTIONAL (default `every_day` / `every_month`); `exclusions` a
+ * post-filter; `tz` an optional IANA zone (omit ⇒ UTC server-side).
+ */
 export interface WorkflowScheduleConfig {
-  family: WorkflowScheduleFamily;
-  /** Only the selected family's descriptor params (int → number, time → "HH:mm", weekday(_list) → 0..6). */
-  params: Record<string, number | string | number[]>;
-  /** Optional IANA timezone; defaults to UTC server-side. */
-  tz?: string | null;
-  /**
-   * OPTIONAL multi-time list (B4): 1..6 unique 'HH:mm', ONLY for families carrying a
-   * `time` param, MUTUALLY EXCLUSIVE with `params.time` (never both on the wire).
-   */
-  times?: string[];
-  /** OPTIONAL exclusions (B4); omit entirely when nothing is excluded. */
+  time: ScheduleTimeConfig;
+  day?: ScheduleDayConfig;
+  month?: ScheduleMonthConfig;
   exclusions?: WorkflowScheduleExclusions;
+  tz?: string | null;
 }
 
 /**
- * Request body for `POST /workflows/meta/schedule-preview` (B4). `count` is
- * optional (1..12, server default 6).
+ * Request body for `POST /workflows/meta/schedule-preview`. `count` optional
+ * (1..12, server default 6); `anchor` optional (ISO-8601) centres the projection so
+ * `occurrences[0]` is the occurrence AT-OR-BEFORE it (prev-or-at) and the rest
+ * ascend after it — the strip pages FORWARD by re-calling with `anchor` = the last
+ * shown occurrence (§4.5.4).
  */
 export interface SchedulePreviewRequest {
   schedule: WorkflowScheduleConfig;
   count?: number;
+  anchor?: string;
 }
 
 /**
- * `POST /workflows/meta/schedule-preview` response (B4). `occurrences` are ISO8601
- * UTC ascending. `empty:true` (occurrences=[]) means the schedule never fires (NOT
- * a 422). `approximate:true` ONLY for `every_n_minutes` (phase is measured from
- * activation, so the dates are indicative).
+ * `POST /workflows/meta/schedule-preview` response — FLAT (no `data` wrapper).
+ * `occurrences` are ISO8601 UTC ascending. `empty:true` (occurrences=[]) means the
+ * schedule never fires (NOT a 422). `approximate` is ALWAYS `false` in v2 (the clock
+ * grid makes every projection exact — REV3's indicative note is retired) but is kept
+ * in the shape for contract fidelity.
  */
 export interface SchedulePreviewResponse {
   occurrences: string[];
@@ -326,49 +349,18 @@ export interface CreateFormReportStepConfig {
   submissions_to?: WorkflowFieldValue<string> | string | null;
 }
 
-// --- Schedule descriptors (GET /workflows/meta/schedule-families, §4.5) ----
+// The REV3 schedule-descriptor types (`ScheduleParamType`, `ScheduleParamDescriptor`,
+// `ScheduleFamilyDescriptor`, `ScheduleFamiliesResponse`) were REMOVED in Phase 4a —
+// v2 has NO `GET /workflows/meta/schedule-families` endpoint. The FE owns every label
+// (§4.5.12) and mirrors the numeric bounds as constants (workflowSchedule.ts).
+
+// --- Schedule assist (POST /workflows/schedule-assist, §4.5.9) --------------
 
 /**
- * A single param descriptor's type vocabulary. `weekday_list` (B4) is a non-empty
- * unique array of int 0..6 (0=Sunday) — used by the new `weekly` shape.
+ * The re-validated schedule config the assist returns — the SAME v2 wire shape the
+ * write path accepts.
  */
-export type ScheduleParamType = 'int' | 'time' | 'weekday' | 'weekday_list';
-
-/**
- * One per-family param descriptor (mirrors `paramDescriptors()`): `{name, type,
- * required, min?, max?, lt?}`. `lt` names ANOTHER param this one must be strictly
- * less than (the ordering invariant).
- */
-export interface ScheduleParamDescriptor {
-  name: string;
-  type: ScheduleParamType;
-  required: boolean;
-  min?: number;
-  max?: number;
-  lt?: string;
-}
-
-/** One family entry from the meta endpoint: `{family, params}`. */
-export interface ScheduleFamilyDescriptor {
-  family: WorkflowScheduleFamily;
-  params: ScheduleParamDescriptor[];
-}
-
-/** The meta envelope `{ data: ScheduleFamilyDescriptor[] }`. */
-export interface ScheduleFamiliesResponse {
-  data: ScheduleFamilyDescriptor[];
-}
-
-// --- Schedule assist (POST /workflows/schedule-assist, §4.5.5) --------------
-
-/** The re-validated schedule config the assist returns (same shape as the wire). */
-export interface ScheduleConfig {
-  family: WorkflowScheduleFamily;
-  params: Record<string, number | string | number[]>;
-  tz?: string | null;
-  times?: string[];
-  exclusions?: WorkflowScheduleExclusions;
-}
+export type ScheduleConfig = WorkflowScheduleConfig;
 
 /** The assist request body. */
 export interface ScheduleAssistRequest {

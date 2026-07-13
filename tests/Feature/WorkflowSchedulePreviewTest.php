@@ -9,18 +9,20 @@ use Tests\TestCase;
 
 /**
  * The LIVE SCHEDULE-PREVIEW endpoint (POST /api/workflows/meta/schedule-preview). It projects the
- * next N fire instants of a PROPOSED cadence (family/params/tz/times/exclusions) so the FE schedule
- * builder renders a running preview as the user edits.
+ * next N fire instants of a PROPOSED v2 cadence ({ time, day, month, tz, exclusions }) so the FE
+ * schedule builder renders a running preview as the user edits.
  *
  * The backend contract under test:
  *   - occurrences are ISO8601 UTC, ascending, with the schedule tz correctly folded into UTC;
- *   - `times[]` produces the interleaved union of fire times;
- *   - `exclusions.dates` drops the named day;
- *   - an OVER-CONSTRAINED cadence (exclusions rule out every fire time) returns 200 with
- *     `empty: true` and `occurrences: []` — NOT a 422, so the FE can warn before saving;
- *   - `approximate` is true ONLY for the interval family (every_n_minutes);
+ *   - time.at with multiple times produces the interleaved union of fire times;
+ *   - exclusions.dates drops the named day;
+ *   - an OVER-CONSTRAINED cadence (rules out every fire time) returns 200 with `empty: true` and
+ *     `occurrences: []` — NOT a 422, so the FE can warn before saving;
+ *   - `approximate` is ALWAYS false (every v2 cadence is a wall-clock grid);
  *   - `count` defaults to 6, honours 1..12, and rejects 0 / 13;
- *   - a STRUCTURAL error (unknown family) is still a 422; a guest is 401.
+ *   - an optional `anchor` centres the projection: the occurrence AT-OR-BEFORE it comes first;
+ *   - the response is FLAT: exactly { occurrences, count, empty, approximate };
+ *   - a STRUCTURAL error (unknown time.mode) is still a 422; a guest is 401.
  *
  * Time is frozen so the now-anchored projection is deterministic. A summer anchor keeps Europe/Warsaw
  * on CEST (+02:00), so a wall-clock 08:00 folds to 06:00Z.
@@ -35,8 +37,7 @@ class WorkflowSchedulePreviewTest extends TestCase
     {
         parent::setUp();
 
-        // A fixed SUMMER anchor: 2026-07-01 00:00 UTC. Europe/Warsaw is on CEST (+02:00) here, so a
-        // wall-clock 08:00 schedule fires at 06:00 UTC — the DST fold the happy path asserts.
+        // A fixed SUMMER anchor: 2026-07-01 00:00 UTC. Europe/Warsaw is on CEST (+02:00) here.
         Carbon::setTestNow(Carbon::parse('2026-07-01T00:00:00Z'));
     }
 
@@ -50,18 +51,18 @@ class WorkflowSchedulePreviewTest extends TestCase
     /** @return array<int, string> the response's occurrences list */
     private function preview(User $user, array $payload): array
     {
-        $response = $this->actingAs($user)->postJson(self::ENDPOINT, $payload);
+        return $this->actingAs($user)->postJson(self::ENDPOINT, $payload)->assertOk()->json('occurrences');
+    }
 
-        $response->assertOk();
-
-        return $response->json('occurrences');
+    /** A time.mode=at block for one or more HH:mm fire times. */
+    private function at(string ...$times): array
+    {
+        return ['mode' => 'at', 'at' => array_values($times)];
     }
 
     public function test_guest_is_unauthenticated(): void
     {
-        $this->postJson(self::ENDPOINT, [
-            'schedule' => ['family' => 'daily', 'params' => ['time' => '08:00']],
-        ])->assertUnauthorized();
+        $this->postJson(self::ENDPOINT, ['schedule' => ['time' => $this->at('08:00')]])->assertUnauthorized();
     }
 
     public function test_daily_wall_clock_projects_six_ascending_utc_instants(): void
@@ -69,23 +70,17 @@ class WorkflowSchedulePreviewTest extends TestCase
         $user = User::factory()->create();
 
         $occurrences = $this->preview($user, [
-            'schedule' => [
-                'family' => 'daily',
-                'params' => ['time' => '08:00'],
-                'tz' => 'Europe/Warsaw',
-            ],
+            'schedule' => ['time' => $this->at('08:00'), 'tz' => 'Europe/Warsaw'],
         ]);
 
         $this->assertCount(6, $occurrences);
 
-        // Every instant is 06:00Z (08:00 CEST) and the six days are strictly ascending.
         $previous = null;
         foreach ($occurrences as $iso) {
-            // A trailing-Z ISO8601 instant: zero UTC offset, formatted at 06:00 (08:00 CEST).
             $this->assertStringEndsWith('Z', $iso);
             $moment = Carbon::parse($iso);
             $this->assertSame(0, $moment->getOffset());
-            $this->assertSame('06:00:00', $moment->format('H:i:s'));
+            $this->assertSame('06:00:00', $moment->format('H:i:s')); // 08:00 CEST folds to 06:00Z
 
             if ($previous !== null) {
                 $this->assertTrue($moment->greaterThan($previous));
@@ -93,7 +88,7 @@ class WorkflowSchedulePreviewTest extends TestCase
             $previous = $moment;
         }
 
-        // First fire is the day after the anchor (strictly-after now = 2026-07-01T00:00Z).
+        // First fire is the day of the anchor (08:00 CEST is strictly after 2026-07-01T00:00Z).
         $this->assertSame('2026-07-01', Carbon::parse($occurrences[0])->format('Y-m-d'));
     }
 
@@ -102,9 +97,7 @@ class WorkflowSchedulePreviewTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'daily', 'params' => ['time' => '08:00']],
-            ])
+            ->postJson(self::ENDPOINT, ['schedule' => ['time' => $this->at('08:00')]])
             ->assertOk()
             ->assertJsonPath('count', 6)
             ->assertJsonPath('empty', false)
@@ -112,25 +105,19 @@ class WorkflowSchedulePreviewTest extends TestCase
             ->assertJsonCount(6, 'occurrences');
     }
 
-    public function test_times_list_interleaves_the_two_fire_times(): void
+    public function test_time_at_list_interleaves_the_two_fire_times(): void
     {
         $user = User::factory()->create();
 
-        // Two wall-clock times in UTC keep the fold trivial: 08:00Z and 20:00Z, alternating.
+        // Two wall-clock UTC times keep the fold trivial: 08:00Z and 20:00Z, alternating.
         $occurrences = $this->preview($user, [
-            'schedule' => [
-                'family' => 'daily',
-                'times' => ['08:00', '20:00'],
-                'tz' => 'UTC',
-            ],
+            'schedule' => ['time' => $this->at('08:00', '20:00'), 'tz' => 'UTC'],
             'count' => 4,
         ]);
 
         $this->assertCount(4, $occurrences);
 
         $hours = array_map(fn ($iso) => Carbon::parse($iso)->format('H:i'), $occurrences);
-
-        // Anchored at midnight, the union fires 08:00, 20:00, 08:00, 20:00 across two days.
         $this->assertSame(['08:00', '20:00', '08:00', '20:00'], $hours);
     }
 
@@ -138,12 +125,12 @@ class WorkflowSchedulePreviewTest extends TestCase
     {
         $user = User::factory()->create();
 
-        // Weekly on Monday; the first Monday after the anchor is 2026-07-06 — excluded by date, so
-        // the projection skips straight to the following Monday (2026-07-13).
+        // Weekly on Monday; the first Monday after the anchor is 2026-07-06 — excluded by date, so the
+        // projection skips to the following Monday (2026-07-13).
         $occurrences = $this->preview($user, [
             'schedule' => [
-                'family' => 'weekly',
-                'params' => ['weekdays' => [1], 'time' => '08:00'],
+                'time' => $this->at('08:00'),
+                'day' => ['mode' => 'weekdays', 'weekdays' => [1]],
                 'tz' => 'UTC',
                 'exclusions' => ['dates' => ['2026-07-06']],
             ],
@@ -153,7 +140,6 @@ class WorkflowSchedulePreviewTest extends TestCase
         $days = array_map(fn ($iso) => Carbon::parse($iso)->format('Y-m-d'), $occurrences);
 
         $this->assertNotContains('2026-07-06', $days);
-        $this->assertSame('2026-07-13', $days[0]);
         $this->assertSame(['2026-07-13', '2026-07-20', '2026-07-27'], $days);
     }
 
@@ -161,13 +147,13 @@ class WorkflowSchedulePreviewTest extends TestCase
     {
         $user = User::factory()->create();
 
-        // Weekly on Monday that ALSO excludes Mondays can never fire. The write path rejects this
-        // with a 422; the preview returns it as data so the FE can warn before saving.
+        // Weekly on Monday that ALSO excludes Mondays can never fire. The write path rejects this with a
+        // 422; the preview returns it as data so the FE can warn before saving. Response stays FLAT.
         $this->actingAs($user)
             ->postJson(self::ENDPOINT, [
                 'schedule' => [
-                    'family' => 'weekly',
-                    'params' => ['weekdays' => [1], 'time' => '08:00'],
+                    'time' => $this->at('08:00'),
+                    'day' => ['mode' => 'weekdays', 'weekdays' => [1]],
                     'exclusions' => ['weekdays' => [1]],
                 ],
             ])
@@ -180,17 +166,18 @@ class WorkflowSchedulePreviewTest extends TestCase
             ]);
     }
 
-    public function test_interval_family_is_flagged_approximate(): void
+    public function test_every_minutes_is_not_approximate_and_projects_a_grid(): void
     {
         $user = User::factory()->create();
 
+        // The interval kind is gone: every_minutes is a wall-clock grid, so its preview is EXACT.
         $this->actingAs($user)
             ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'every_n_minutes', 'params' => ['n' => 15]],
+                'schedule' => ['time' => ['mode' => 'every_minutes', 'minutes' => 15]],
                 'count' => 3,
             ])
             ->assertOk()
-            ->assertJsonPath('approximate', true)
+            ->assertJsonPath('approximate', false)
             ->assertJsonPath('empty', false)
             ->assertJsonCount(3, 'occurrences');
     }
@@ -200,9 +187,7 @@ class WorkflowSchedulePreviewTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'daily', 'params' => ['time' => '08:00']],
-            ])
+            ->postJson(self::ENDPOINT, ['schedule' => ['time' => $this->at('08:00')]])
             ->assertOk()
             ->assertJsonPath('approximate', false);
     }
@@ -212,9 +197,7 @@ class WorkflowSchedulePreviewTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'daily', 'params' => ['time' => '08:00']],
-            ])
+            ->postJson(self::ENDPOINT, ['schedule' => ['time' => $this->at('08:00')]])
             ->assertOk()
             ->assertJsonPath('count', 6)
             ->assertJsonCount(6, 'occurrences');
@@ -225,10 +208,7 @@ class WorkflowSchedulePreviewTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'daily', 'params' => ['time' => '08:00']],
-                'count' => 2,
-            ])
+            ->postJson(self::ENDPOINT, ['schedule' => ['time' => $this->at('08:00')], 'count' => 2])
             ->assertOk()
             ->assertJsonPath('count', 2)
             ->assertJsonCount(2, 'occurrences');
@@ -239,10 +219,7 @@ class WorkflowSchedulePreviewTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'daily', 'params' => ['time' => '08:00']],
-                'count' => 13,
-            ])
+            ->postJson(self::ENDPOINT, ['schedule' => ['time' => $this->at('08:00')], 'count' => 13])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['count']);
     }
@@ -252,23 +229,67 @@ class WorkflowSchedulePreviewTest extends TestCase
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'daily', 'params' => ['time' => '08:00']],
-                'count' => 0,
-            ])
+            ->postJson(self::ENDPOINT, ['schedule' => ['time' => $this->at('08:00')], 'count' => 0])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['count']);
     }
 
-    public function test_unknown_family_is_still_a_structural_422(): void
+    public function test_unknown_time_mode_is_still_a_structural_422(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->postJson(self::ENDPOINT, [
-                'schedule' => ['family' => 'not_a_family', 'params' => []],
-            ])
+            ->postJson(self::ENDPOINT, ['schedule' => ['time' => ['mode' => 'not_a_mode']]])
             ->assertUnprocessable()
-            ->assertJsonValidationErrors(['schedule.family']);
+            ->assertJsonValidationErrors(['schedule.time.mode']);
+    }
+
+    // ---- anchor (prev-or-at) -------------------------------------------------
+
+    public function test_anchor_between_occurrences_lists_the_earlier_one_first(): void
+    {
+        $user = User::factory()->create();
+
+        // Daily 08:00 UTC, anchor 2026-07-10 12:00 (between the 07-10 and 07-11 fires): the projection
+        // starts with the occurrence AT-OR-BEFORE the anchor (07-10 08:00Z), then the later ones.
+        $occurrences = $this->preview($user, [
+            'schedule' => ['time' => $this->at('08:00'), 'tz' => 'UTC'],
+            'anchor' => '2026-07-10T12:00:00',
+            'count' => 3,
+        ]);
+
+        $days = array_map(fn ($iso) => Carbon::parse($iso)->format('Y-m-d H:i:s'), $occurrences);
+        $this->assertSame(['2026-07-10 08:00:00', '2026-07-11 08:00:00', '2026-07-12 08:00:00'], $days);
+        $this->assertTrue(Carbon::parse($occurrences[0])->lessThanOrEqualTo(Carbon::parse('2026-07-10T12:00:00Z')));
+    }
+
+    public function test_anchor_exactly_on_an_occurrence_lists_it_first(): void
+    {
+        $user = User::factory()->create();
+
+        $occurrences = $this->preview($user, [
+            'schedule' => ['time' => $this->at('08:00'), 'tz' => 'UTC'],
+            'anchor' => '2026-07-10T08:00:00',
+            'count' => 2,
+        ]);
+
+        $days = array_map(fn ($iso) => Carbon::parse($iso)->format('Y-m-d H:i:s'), $occurrences);
+        $this->assertSame(['2026-07-10 08:00:00', '2026-07-11 08:00:00'], $days);
+    }
+
+    public function test_anchor_with_an_offset_is_an_absolute_instant(): void
+    {
+        $user = User::factory()->create();
+
+        // With an explicit offset the anchor is absolute: 08:00+02:00 = 06:00Z, so the prev-or-at daily
+        // 08:00Z occurrence is the PREVIOUS day's (2026-07-09 08:00Z <= 2026-07-10 06:00Z).
+        $occurrences = $this->preview($user, [
+            'schedule' => ['time' => $this->at('08:00'), 'tz' => 'UTC'],
+            'anchor' => '2026-07-10T08:00:00+02:00',
+            'count' => 2,
+        ]);
+
+        $days = array_map(fn ($iso) => Carbon::parse($iso)->format('Y-m-d H:i:s'), $occurrences);
+        $this->assertSame(['2026-07-09 08:00:00', '2026-07-10 08:00:00'], $days);
     }
 }
