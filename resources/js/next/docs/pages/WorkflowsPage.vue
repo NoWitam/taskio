@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // Gallery: Workflows (automation) module — module overview, the 5.1 typed contract
 // (2 trigger types, 2 step types, typed conditions, the variable directive/union
-// system), the schedule builder (16 families, times/exclusions, live preview) +
-// AI schedule-assist, run lifecycle, manual/test runs, cost limits, and
-// monitoring. Documents the IMPLEMENTED behavior of app/modules/Workflows/ AFTER
-// the Etap 5.1 re-scope (B1-B7) AND the schedule rebuild (B1-B5, ADR-0010) — not
-// planned behavior. Deferred/planned items are called out explicitly (see the
-// last section).
+// system), the schedule builder (a compositional time/day/month descriptor +
+// exclusions + live preview) + AI schedule-assist, run lifecycle, manual/test
+// runs, cost limits, and monitoring. Documents the IMPLEMENTED behavior of
+// app/modules/Workflows/ AFTER the Etap 5.1 re-scope (B1-B7) AND the schedule
+// descriptor v2 rebuild (ADR-0012, which supersedes the earlier 12/16-family
+// model from ADR-0009 §3 / ADR-0010) — not planned behavior. Deferred/planned
+// items are called out explicitly (see the last section).
 //
 // Sections:
 //   1. Module overview & concepts (the 5.1 re-scope)
@@ -16,7 +17,7 @@
 //   5. Typed conditions (form_submitted only)
 //   6. The typed variable system (directive + {kind} union)
 //   7. Steps: create_task + create_form_report
-//   8. Schedule: 16 families + the compiler + times/exclusions + live preview
+//   8. Schedule: the time/day/month descriptor + exclusions + live preview
 //   9. AI schedule-assist
 //   10. Trigger dispatch pipeline + loop protection
 //   11. Cost limits
@@ -42,8 +43,7 @@ const workflowEndpointRows: ApiRow[] = [
   { name: 'POST /workflows/{id}/run',      type: '{ target_id? }',           description: 'Manual run — any member, works on INACTIVE workflows too (test-run). Returns 202.' },
   { name: 'GET /workflows/{id}/runs',      type: '?state=&origin=&cursor=',  description: 'Run monitoring list. Cursor-paginated, 15/page. Any workspace member.' },
   { name: 'GET /workflows/{id}/runs/{run}', type: '—',                       description: 'One run + its full step timeline. 404 if {run} belongs to a different workflow.' },
-  { name: 'GET /workflows/meta/schedule-families', type: '—',                description: 'Discovery: the 16 schedule families + per-family param descriptors.' },
-  { name: 'POST /workflows/meta/schedule-preview', type: '{ schedule, count? }', description: 'Live preview: projects the next N (1-12, default 6) fire instants of a draft schedule. The ONLY place occurrence dates are computed — the FE never re-implements cadence math.' },
+  { name: 'POST /workflows/meta/schedule-preview', type: '{ schedule, count?, anchor? }', description: 'Live preview: projects the next N (1-12, default 6) fire instants of a draft schedule, optionally centred on an anchor instant. The ONLY place occurrence dates are computed — the FE never re-implements cadence math.' },
   { name: 'GET /forms/{form}/workflow-catalog', type: '—',                   description: 'The TYPED variable catalog for a form_submitted workflow built on {form}. FormPolicy::view.' },
   { name: 'POST /workflows/schedule-assist', type: '{ prompt, tz? }',        description: 'AI natural-language → structured schedule config. 429 throttled per user.' },
 ];
@@ -99,7 +99,7 @@ const workflowListResourceRows: ApiRow[] = [
 // ── Trigger types + their trigger_config shapes ─────────────────────────────
 const triggerTypeRows: ApiRow[] = [
   { name: 'form_submitted', type: '{ form_id?, source?: { in: (manual|task)[] }, anonymous? }', description: 'Fires when a submission is APPROVED (Taskio has no separate "submit" event). form_id null = any form; conditions REQUIRE it to be set.' },
-  { name: 'schedule',       type: '{ schedule: { family, params, tz? } }', description: 'NEVER event-dispatched — only the schedule sweep starts these runs. See the Schedule section.' },
+  { name: 'schedule',       type: '{ schedule: { time, day?, month?, exclusions?, tz? } }', description: 'NEVER event-dispatched — only the schedule sweep starts these runs. See the Schedule section.' },
 ];
 
 // ── Condition operator × type matrix ────────────────────────────────────────
@@ -133,30 +133,33 @@ const manualRun422Rows: ApiRow[] = [
   { name: 'workflow',  type: '422', description: 'The run-budget cap is reached (per-workflow or workspace-wide).' },
 ];
 
-// ── Schedule families (16) ──────────────────────────────────────────────────
-const scheduleFamilyRows: ApiRow[] = [
-  { name: 'every_n_minutes',   type: '{ n: 1-59 }', description: 'BESPOKE interval (not cron): from + n minutes, phased on the arm instant, no wall-clock snapping.' },
-  { name: 'hourly',            type: '—', description: 'Next top-of-hour strictly after from.' },
-  { name: 'hourly_at',         type: '{ minute: 0-59 }', description: 'Minute M of every hour.' },
-  { name: 'every_n_hours',     type: '{ n: 2-12, minute? }', description: 'HOUR-OF-DAY MODULO N (e.g. n=5 → 00,05,10,15,20 then resets at midnight) — not a rolling interval.' },
-  { name: 'daily',             type: "{ time: 'HH:mm' }", description: 'Today at time if still future, else tomorrow. Accepts times[] (see below).' },
-  { name: 'twice_daily',       type: '{ first_hour (lt second_hour), second_hour, minute? }', description: 'Two explicit daily fires. Does NOT accept times[] (no time param).' },
-  { name: 'weekly',            type: '{ weekdays: weekday_list, time }', description: 'weekdays is a non-empty LIST of distinct 0-6 (0=Sunday) — several days per week in one schedule. A legacy scalar weekday is read-tolerated on old rows only; new writes must use weekdays.' },
-  { name: 'monthly',           type: '{ day: 1-31, time }', description: 'Day-31 SKIP in shorter months (not clamped) — use last_day_of_month for a guaranteed month-end fire.' },
-  { name: 'twice_monthly',     type: '{ first_day (lt second_day), second_day, time }', description: 'Two explicit monthly fires.' },
-  { name: 'last_day_of_month', type: '{ time }', description: 'Cron `L` token — GUARANTEED month-end fire.' },
-  { name: 'quarterly',         type: '{ day: 1-31, time }', description: 'Day D of Jan/Apr/Jul/Oct.' },
-  { name: 'yearly',            type: '{ month: 1-12, day: 1-31, time }', description: 'month=2 day=29 fires ONLY in leap years.' },
-  { name: 'every_n_months',    type: '{ n: 2-6, day: 1-31, time }', description: 'NEW. JANUARY-ANCHORED month grid (1, 1+n, 1+2n, … ≤12), modulo the year — mirrors every_n_hours’ doctrine. The Nov→Jan gap can be shorter than n.' },
-  { name: 'nth_weekday_of_month', type: '{ ordinal: 1-5, weekday: 0-6, time }', description: 'NEW. E.g. "first Monday" (ordinal=1). ordinal=5 SKIPS a month with only 4 occurrences of that weekday.' },
-  { name: 'last_weekday_of_month', type: '{ weekday: 0-6, time }', description: 'NEW. E.g. "last Friday" — a GUARANTEED monthly fire (unlike ordinal=5).' },
-  { name: 'last_working_day_of_month', type: '{ time }', description: 'NEW. The last Mon-Fri of the month. BESPOKE (not cron) — dragonmantank’s LW token is defective in the installed version. Public holidays NOT accounted for.' },
+// ── Schedule v2: the three axes ─────────────────────────────────────────────
+const scheduleTimeAxisRows: ApiRow[] = [
+  { name: 'at',            type: "{ at: string[] } — 1-6 'HH:mm'", description: 'Fires at EACH listed time of day (e.g. at:["08:00","17:00"] fires twice a day). The only required axis; everything else defaults to no restriction.' },
+  { name: 'every_minutes', type: '{ minutes: 1-59, from?/to?: HH:mm }', description: 'A wall-clock minute grid (:00,:15,:30,:45 for minutes:15) — not phased from when the workflow was activated. Optional window bounds it to part of the day.' },
+  { name: 'every_hours',   type: '{ hours: 1-23, minute?: 0-59, from?/to?: 0-23 }', description: 'An every-N-hours grid at :minute past the hour, counted from midnight (resets at midnight, so the gap across it can be shorter than N). Optional window bounds it to a range of hours.' },
 ];
 
-// ── Schedule block extensions (times / exclusions) ─────────────────────────
+const scheduleDayAxisRows: ApiRow[] = [
+  { name: 'every_day',    type: '— (default)', description: 'No day restriction.' },
+  { name: 'every_n_days', type: '{ n: 1-31, from?/to?: 1-31 }', description: 'A day-of-month step, with an optional day-of-month window.' },
+  { name: 'weekdays',     type: '{ weekdays: number[] } — 0-6, 0=Sunday', description: 'A SET of weekdays in ONE schedule (e.g. Mon+Wed+Fri).' },
+  { name: 'month_days',   type: '{ days: number[] } — 1-31', description: 'A SET of calendar days. A day a shorter month lacks (31 in Feb) simply SKIPS that month — never clamped. Use the "last day" rule for a guaranteed month-end fire.' },
+  { name: 'special: last_day', type: '—', description: 'The last calendar day of the month.' },
+  { name: 'special: nth_weekday', type: '{ ordinal: 1-5, weekday: 0-6 }', description: 'E.g. "first Monday" (ordinal=1). ordinal=5 SKIPS a month with only 4 occurrences of that weekday.' },
+  { name: 'special: last_weekday', type: '{ weekday: 0-6 }', description: 'E.g. "last Friday" — a GUARANTEED monthly fire (unlike ordinal=5).' },
+  { name: 'special: last_working_day', type: '—', description: 'The last Mon-Fri of the month. Requires the time axis to be "at set times". Public holidays are NOT accounted for. Optionally restricted to specific months via the month axis.' },
+];
+
+const scheduleMonthAxisRows: ApiRow[] = [
+  { name: 'every_month',    type: '— (default)', description: 'No month restriction.' },
+  { name: 'every_n_months', type: '{ n: 1-12, from?/to?: 1-12 }', description: 'A month step counted from January (resets each year, so the Nov→Jan gap can be shorter than n), with an optional month-range window.' },
+  { name: 'months',         type: '{ months: number[] } — 1-12', description: 'A SET of months (1=January).' },
+];
+
+// ── Schedule exclusions ──────────────────────────────────────────────────────
 const scheduleExtensionRows: ApiRow[] = [
-  { name: 'schedule.times',      type: "string[] 1-6 'HH:mm'", description: 'Multiple fire times, replacing params.time. Only for families with a time param; mutually exclusive with params.time. Compiles to one cron expression per time — the earliest strictly-after candidate wins.' },
-  { name: 'schedule.exclusions', type: '{ months?, weekdays?, dates? }', description: 'A post-filter (NOT part of the cron grammar): drops any candidate whose month/weekday/date matches. months max 11, weekdays max 6, dates max 50 — each list alone can never exclude every value of that dimension.' },
+  { name: 'schedule.exclusions', type: '{ months?, weekdays?, dates? }', description: 'A post-filter evaluated after a candidate fire time is computed: drops any candidate whose month/weekday/date matches. months max 11, weekdays max 6, dates max 50 — each list alone can never exclude every value of that dimension (a combination still can, which is rejected on save).' },
 ];
 
 // ── Schedule-assist envelope ─────────────────────────────────────────────────
@@ -172,7 +175,7 @@ const assistEnvelopeRows: ApiRow[] = [
 <template>
   <StoryPage
     title="Workflows module (automation)"
-    description="The 5.1 re-scoped contract: 2 trigger types, 2 step types, typed conditions/variables, a 16-family schedule compiler with times/exclusions and a live preview endpoint, and AI schedule-assist. Documents implemented behavior only (Etap 5.1 B1-B7 + the schedule rebuild B1-B5, ADR-0010). Backend: app/modules/Workflows/."
+    description="The 5.1 re-scoped contract: 2 trigger types, 2 step types, typed conditions/variables, a compositional time/day/month schedule descriptor with exclusions and a live preview endpoint, and AI schedule-assist. Documents implemented behavior only (Etap 5.1 B1-B7 + the schedule descriptor v2 rebuild, ADR-0012). Backend: app/modules/Workflows/."
   >
 
     <!-- 1. Module overview -->
@@ -468,48 +471,43 @@ WorkflowRun (one execution)
     </StorySection>
 
     <!-- 8. Schedule -->
-    <StorySection title="Schedule: 16 families + the compiler + times/exclusions + live preview">
+    <StorySection title="Schedule: the time/day/month descriptor + exclusions + live preview">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <p class="text-next-muted-foreground">
-          The 4 Etap-5 hand-coded presets were replaced by descriptor-driven
-          families compiled to a REAL cron expression (via
-          <code class="font-next-mono">dragonmantank/cron-expression</code>) — only
-          <code class="font-next-mono">every_n_minutes</code> and (see below)
-          <code class="font-next-mono">last_working_day_of_month</code> stay bespoke. Every
-          family's param shape is declared ONCE (<code class="font-next-mono">WorkflowScheduleFamily::paramDescriptors()</code>)
-          and drives THREE consumers: write-path validation, the
-          <code class="font-next-mono">/meta/schedule-families</code> discovery endpoint, and the
-          AI-assist's prompt vocabulary — they cannot drift apart.
+          A schedule is a COMPOSITION of three independent rules that all must match for a fire to
+          happen: a <strong>time</strong> rule (WHEN in the day — the only required one), a
+          <strong>day</strong> rule (WHICH day — optional, defaults to every day), and a
+          <strong>month</strong> rule (WHICH month — optional, defaults to every month), minus any
+          <strong>exclusions</strong>. This replaces an earlier closed list of named presets: instead
+          of picking one preset off a list, the three rules below are combined freely — e.g. "the
+          15th of every third month" is simply the day rule + the month rule together, not a
+          separate preset. Every rule is validated in ONE place
+          (<code class="font-next-mono">WorkflowScheduleRulesValidator</code>) shared by the write
+          path, the AI assist, and the live preview, so they can never drift apart.
         </p>
-        <Alert variant="info" size="sm">
-          <strong>Schedule rebuild (B1-B5).</strong> The vocabulary grew from 12 to
-          <strong>16 families</strong> (<code class="font-next-mono">every_n_months</code>,
-          <code class="font-next-mono">nth_weekday_of_month</code>,
-          <code class="font-next-mono">last_weekday_of_month</code>,
-          <code class="font-next-mono">last_working_day_of_month</code> added),
-          <code class="font-next-mono">weekly</code> moved from a single weekday to a LIST, and
-          the schedule block gained two optional keys (<code class="font-next-mono">times</code>,
-          <code class="font-next-mono">exclusions</code>) plus a new live preview endpoint. See
-          <code class="font-next-mono">docs/decisions/ADR-0010-workflows-schedule-rebuild.md</code>
-          for the full rationale.
-        </Alert>
-        <ApiTable title="WorkflowScheduleFamily (16)" type-header="Params" :rows="scheduleFamilyRows" />
+        <ApiTable title="TIME rule (required)" type-header="Fields" :rows="scheduleTimeAxisRows" />
+        <ApiTable title="DAY rule (optional, defaults to every day)" type-header="Fields" :rows="scheduleDayAxisRows" />
+        <ApiTable title="MONTH rule (optional, defaults to every month)" type-header="Fields" :rows="scheduleMonthAxisRows" />
+        <ApiTable title="Exclusions (optional post-filter)" type-header="Shape" :rows="scheduleExtensionRows" />
 
-        <ApiTable title="Schedule block extensions (both optional)" type-header="Shape" :rows="scheduleExtensionRows" />
+        <Alert variant="info" size="sm">
+          <strong>Windows.</strong> Four fields — the minute grid, the hour grid, the every-N-days
+          step, and the every-N-months step — accept an OPTIONAL "from/to" window to bound them to
+          part of the day, a day-of-month range, or a month range (e.g. every 15 minutes, but only
+          between 09:00 and 17:00). A window is either BOTH bounds or NEITHER, and its start must
+          come before its end.
+        </Alert>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">The empty-schedule guard (optional, off for preview)</p>
           <p class="text-next-xs text-next-muted-foreground">
             After every structural rule passes, the write path rejects (422 on
-            <code class="font-next-mono">trigger_config.schedule.exclusions</code>) a cadence whose
-            <code class="font-next-mono">exclusions</code> rule out EVERY occurrence (e.g. weekly-on-
-            Monday that also excludes Monday) — an unfireable schedule must never persist. This
-            guard is a parameter on the shared validator
-            (<code class="font-next-mono">WorkflowScheduleRulesValidator::secondPass(checkEmpty:
-            …)</code>): the write path and AI-assist re-validation keep it ON; the live
-            <code class="font-next-mono">schedule-preview</code> endpoint turns it OFF, so an
-            over-constrained DRAFT comes back as <code class="font-next-mono">{ empty: true }</code>
-            data for a pre-save warning instead of a 422 mid-edit.
+            <code class="font-next-mono">trigger_config.schedule.exclusions</code>) a cadence that
+            would never actually fire (e.g. a weekly-on-Monday schedule whose exclusions also
+            exclude Monday) — an unfireable schedule must never be saved. This guard is a parameter
+            on the shared validator: the write path and AI-assist re-validation keep it ON; the live
+            preview turns it OFF, so an over-constrained DRAFT comes back as "this never runs" data
+            for a pre-save warning instead of a validation error mid-edit.
           </p>
         </div>
 
@@ -517,40 +515,26 @@ WorkflowRun (one execution)
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
             <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">Timezone</p>
             <p class="text-next-xs text-next-muted-foreground">
-              <code class="font-next-mono">schedule.tz</code> defaults to
-              <code class="font-next-mono">config('app.timezone')</code> (UTC). Wall-clock
-              families resolve IN the schedule's own tz, then convert to UTC for storage — so
-              "09:00 Europe/Warsaw" fires at the correct UTC instant year-round. Weekday
-              convention: <code class="font-next-mono">0 = Sunday</code> .. 6 = Saturday.
-              <code class="font-next-mono">exclusions</code> are evaluated against the candidate
-              re-expressed in this same tz.
+              <code class="font-next-mono">schedule.tz</code> defaults to the server's own
+              timezone (UTC) when omitted; a freshly-created schedule in the builder instead
+              defaults to the BROWSER's timezone (an existing schedule always keeps its saved
+              value). Every rule resolves in the schedule's own tz, then converts to the correct
+              instant for storage — so "09:00 Europe/Warsaw" fires at the right moment year-round.
+              Weekday convention: Sunday is day 0 through Saturday as day 6.
+              <code class="font-next-mono">exclusions</code> are evaluated against the same tz.
             </p>
           </div>
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
             <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">DST: spring-forward AND fall-back</p>
             <p class="text-next-xs text-next-muted-foreground">
               <strong>Spring-forward:</strong> a requested local time that doesn't exist shifts
-              FORWARD past the gap rather than crashing. <strong>Fall-back (pinned by tests in this
-              revision):</strong> a wall-clock time inside the repeated hour (e.g. Warsaw
-              2026-10-25, local 02:00-03:00 happens twice) fires TWICE that night at two DISTINCT
-              UTC instants — the strictly-after invariant guarantees the same UTC moment is never
-              fired twice; the next day returns to a single fire. Accepted, not a bug.
+              FORWARD past the gap rather than crashing. <strong>Fall-back:</strong> a wall-clock
+              time inside the repeated hour (e.g. Warsaw 2026-10-25, local 02:00-03:00 happens
+              twice) fires TWICE that night, at two different underlying instants — the same
+              instant is never fired twice, and the next day returns to a single fire. Accepted,
+              not a bug.
             </p>
           </div>
-        </div>
-
-        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">last_working_day_of_month is BESPOKE, not cron</p>
-          <p class="text-next-xs text-next-muted-foreground">
-            <code class="font-next-mono">dragonmantank/cron-expression</code> v3.6.0's
-            <code class="font-next-mono">LW</code> token is DEFECTIVE (it parses the
-            <code class="font-next-mono">L</code> as day 0, normalizing to the PREVIOUS month and
-            returning wrong dates — verified against the installed version). "Last working day" also
-            cannot be expressed as any single standard cron expression (it's the latest of {last
-            Mon, …, last Fri}). <code class="font-next-mono">WorkflowScheduleService</code>
-            therefore computes it directly: the month's last calendar day, stepped backward over
-            Sat/Sun. Public holidays are NOT accounted for. See ADR-0010 §4.
-          </p>
         </div>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
@@ -558,33 +542,45 @@ WorkflowRun (one execution)
           <p class="text-next-xs text-next-muted-foreground">
             Projects the next 1-12 (default 6) fire instants of a DRAFT (not-yet-saved) schedule —
             the ONLY place occurrence dates are computed for the frontend; the FE never
-            re-implements cron/interval math locally. Response:
-            <code class="font-next-mono">{ occurrences: string[] (ISO-8601 UTC, ascending), count,
-            empty, approximate }</code>. <code class="font-next-mono">empty</code> is true when the
-            cadence has no reachable occurrence (never a 422 here, see the guard note above).
-            <code class="font-next-mono">approximate</code> is true ONLY for
-            <code class="font-next-mono">every_n_minutes</code> (its phase is set at activation, not
-            the calendar, so a preview from "now" is indicative). Both the schedule builder's live
-            preview and the AI-assist's alternative preview call this same endpoint.
+            re-implements the cadence math locally. An optional <code class="font-next-mono">anchor</code>
+            instant centres the projection ("jump to date"): the occurrence at-or-before the anchor
+            comes first, then the rest ascend after it — the preview strip pages forward by simply
+            calling again with the anchor set to the last occurrence already shown, no separate
+            paging token needed. Response: <code class="font-next-mono">{ occurrences: string[]
+            (ascending), count, empty, approximate }</code>. <code class="font-next-mono">empty</code>
+            is true when the cadence has no reachable occurrence (never a validation error here, see
+            the guard note above). <code class="font-next-mono">approximate</code> is now ALWAYS
+            false (every rule is calendar-based, so a preview is always exact — the field is kept
+            only for response-shape stability). Both the schedule builder's live preview strip and
+            the AI-assist modal's proposal preview call this same endpoint.
           </p>
         </div>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-2 font-next-semibold text-next-fg">workflows:run-scheduled sweep</p>
           <p class="mb-next-2 text-next-xs text-next-muted-foreground">
-            <code class="font-next-mono">everyMinute() + withoutOverlapping()</code>. The ONLY
-            path that starts a schedule run — the event dispatcher hard-refuses
-            <code class="font-next-mono">schedule</code> workflows by design. Requires
-            <code class="font-next-mono">schedule:run</code> on cron/supervisor.
+            Runs every minute, without overlapping itself. The ONLY path that starts a schedule
+            run — the event dispatcher hard-refuses <code class="font-next-mono">schedule</code>
+            workflows by design. Requires the app's task scheduler entry to actually be registered
+            on the server (cron/supervisor).
           </p>
           <p class="text-next-xs text-next-muted-foreground">
             <strong>Race-safe compare-and-swap</strong>: each due workflow's slot is claimed by a
-            SINGLE conditional UPDATE — Postgres row-locks it, so exactly one concurrent sweep
+            SINGLE conditional update — the database locks it, so exactly one concurrent sweep
             wins even under overlap. <strong>Slot-consumed doctrine:</strong> the slot advances
-            the MOMENT the CAS is won, BEFORE the cap check — a capped workflow consumes and
+            the MOMENT it is claimed, BEFORE the cap check — a capped workflow consumes and
             skips its slot instead of backlog-firing later.
           </p>
         </div>
+
+        <Alert variant="info" size="sm">
+          <strong>Existing schedules keep working unchanged.</strong> A schedule saved before this
+          descriptor existed is transparently upgraded to the current shape every time it is read
+          or evaluated — it keeps firing and keeps rendering in the editor with no migration and no
+          re-save required. Only a schedule created or edited from now on is written in the current
+          shape. See <code class="font-next-mono">docs/decisions/ADR-0012-workflows-schedule-descriptor-v2.md</code>
+          for the full design record.
+        </Alert>
       </div>
     </StorySection>
 
@@ -597,25 +593,25 @@ WorkflowRun (one execution)
           infeasibility. <strong>The model's self-report is NEVER trusted directly.</strong>
         </p>
         <Alert variant="info" size="sm">
-          <strong>Wider vocabulary (schedule rebuild).</strong> The agent's prompt is generated
-          from <code class="font-next-mono">WorkflowScheduleFamily::paramDescriptors()</code> at
-          runtime, so it picked up the 4 new families plus
-          <code class="font-next-mono">times</code>/<code class="font-next-mono">exclusions</code>
-          automatically. Requests like "the last Friday of every month" or "daily except weekends"
-          are now genuinely <code class="font-next-mono">feasible:true</code> — previously they
-          could only reach the <code class="font-next-mono">alternative</code> channel. Still
-          honestly unsupported: no every-N-days family, and no continuous time-window cadence
-          (only discrete <code class="font-next-mono">times[]</code> fire points).
+          <strong>The prompt is generated from the schedule rules themselves.</strong> The agent's
+          instructions are assembled programmatically from the same time/day/month rule
+          definitions and numeric bounds the validator enforces, so the model is never told about
+          an option the backend does not actually accept — the two cannot drift apart. Requests
+          like "the last Friday of every month" or "daily except weekends" are genuinely
+          <code class="font-next-mono">feasible:true</code>. Still honestly unsupported: a rolling
+          interval not tied to the clock (e.g. "exactly every 90 minutes"), "every N weeks",
+          one-off single dates, and sub-minute cadences.
         </Alert>
         <ApiTable title="Response envelope" :rows="assistEnvelopeRows" />
         <p class="text-next-xs text-next-muted-foreground">
-          When the response is infeasible WITH an alternative, the frontend's
-          <code class="font-next-mono">WorkflowScheduleAssist.vue</code> now renders a PREVIEW of
-          the alternative before the user applies it — the deterministic
-          <code class="font-next-mono">describeSchedule</code> sentence, the model's plain-text
-          <code class="font-next-mono">note</code>, and the alternative's next 4 occurrences (its
-          own call to <code class="font-next-mono">POST schedule-preview</code>) — so the user sees
-          exactly what they'd get before committing to it.
+          The result is ALWAYS shown as a reviewable proposal in the
+          <code class="font-next-mono">WorkflowScheduleAssistModal</code> — never applied
+          automatically, even when <code class="font-next-mono">feasible:true</code>. The modal
+          renders the deterministic human-readable sentence for the proposed config plus a compact
+          preview of its next occurrences (its own call to the live-preview endpoint), and the
+          model's plain-text <code class="font-next-mono">note</code> when it is only proposing an
+          approximating alternative — the user must press "Zastosuj" (Apply) before anything
+          changes in the builder. Cancelling the modal discards the proposal entirely.
         </p>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
@@ -628,20 +624,21 @@ WorkflowRun (one execution)
             <code class="font-next-mono">alternative.config</code> that fails is dropped rather
             than surfaced broken. This means a config returned as
             <code class="font-next-mono">feasible:true</code> is GUARANTEED structurally valid
-            and compilable — the backend re-derives that itself, it does not take the model's word.
+            and schedulable — the backend re-derives that itself, it does not take the model's word.
           </p>
         </div>
 
         <Alert variant="warning" size="sm">
           <strong>The residual honesty limit (accepted, not solved).</strong> Re-validation
-          proves STRUCTURAL validity and compilability — it CANNOT prove the config SEMANTICALLY
-          matches what the user asked for. If the model mis-reads "every weekday" as
-          <code class="font-next-mono">daily</code> and wrongly self-reports feasible, the
-          backend cannot detect that mismatch (the resulting config IS validly compilable, just
-          not what was meant). Mitigations: the closed family vocabulary in the agent's
-          instructions, the mandatory <code class="font-next-mono">alternative</code> channel for
-          approximations (never silently merged into <code class="font-next-mono">config</code>),
-          and always surfacing <code class="font-next-mono">explanation</code> to the user.
+          proves STRUCTURAL validity — it CANNOT prove the config SEMANTICALLY matches what the
+          user asked for. If the model mis-reads "every weekday" as a plain daily schedule and
+          wrongly self-reports feasible, the backend cannot detect that mismatch (the resulting
+          config IS validly schedulable, just not what was meant). Mitigations: the closed rule
+          vocabulary in the agent's instructions, the mandatory <code class="font-next-mono">alternative</code>
+          channel for approximations (never silently merged into <code class="font-next-mono">config</code>),
+          always surfacing <code class="font-next-mono">explanation</code> to the user, AND —
+          unchanged from before — the review-before-apply modal above, so a wrong-but-valid
+          proposal is never applied without the user seeing its sentence and preview first.
         </Alert>
 
         <p class="text-next-xs text-next-muted-foreground">
@@ -845,21 +842,55 @@ WHERE id = ? AND state = 'pending'</pre>
         </p>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <p class="mb-next-1 font-next-semibold text-next-fg">Schedule builder — simple/advanced two-mode (schedule rebuild)</p>
+          <p class="mb-next-1 font-next-semibold text-next-fg">Schedule builder — a three-tab surface over time/day/month</p>
           <p class="text-next-xs text-next-muted-foreground">
-            <code class="font-next-mono">WorkflowScheduleBuilder.vue</code> fetches the 16 families
-            + descriptors from the store (never hard-coded) and renders one control per descriptor.
-            <strong>Simple mode</strong> (default) offers five curated intents (Minutes / Hours /
-            Daily / Weekly / Monthly) with a reduced control set; <strong>advanced mode</strong>
-            exposes four sections — Repeat (grouped family <code class="font-next-mono">Select</code>),
-            Days &amp; dates, Times (a 1-6 <code class="font-next-mono">HH:mm</code> editor), and
-            Exclusions (months/weekdays/dates chips). Both modes write the SAME
-            <code class="font-next-mono">ScheduleDraft</code> — simple is a curated VIEW over the
-            full model, never a separate schema. A live preview card (natural-language sentence +
-            debounced next-occurrences list from <code class="font-next-mono">POST schedule-preview</code>)
-            is always visible in both modes. <code class="font-next-mono">WorkflowScheduleAssist.vue</code>
-            is a third path (natural language) — a collapsed sparkles affordance that expands and
-            moves focus into the prompt <code class="font-next-mono">Textarea</code>.
+            <code class="font-next-mono">WorkflowScheduleBuilder.vue</code> is the host: a summary
+            sentence + "Zaplanuj z AI" opener (<code class="font-next-mono">WorkflowScheduleSummary</code>),
+            an upcoming-runs preview strip (<code class="font-next-mono">WorkflowSchedulePreviewStrip</code>),
+            three tabs — Czas / Dzień / Miesiąc — each rendering a `SegmentedControl` of sub-modes
+            over ONE shared draft (<code class="font-next-mono">WorkflowScheduleTimePanel</code>,
+            <code class="font-next-mono">WorkflowScheduleDayPanel</code>,
+            <code class="font-next-mono">WorkflowScheduleMonthPanel</code>, all sharing the "od–do"
+            window pattern via <code class="font-next-mono">WorkflowScheduleWindowField</code>), a
+            collapsed-by-default Exceptions section, and an optional timezone field. There is no
+            simple/advanced split anymore — every schedule is built from the same three tabs,
+            whether it is "daily at 9" or "the 15th and last day of the month, except August, at 8
+            and 17".
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            The preview strip supports a "Skocz do daty" (jump to date) anchor: setting it re-seeds
+            the strip with the previous run (visually distinct) followed by the runs after it, and
+            scrolling to the end of the strip lazily loads more. The AI path is a MODAL
+            (<code class="font-next-mono">WorkflowScheduleAssistModal</code>, opened from the
+            summary's "Zaplanuj z AI" button) rather than an inline panel: it composes a
+            natural-language prompt, shows the result as a reviewable proposal (sentence + compact
+            preview), and only changes the builder's draft once the user presses "Zastosuj" — it
+            never applies a result automatically. The pure helpers behind all of this
+            (<code class="font-next-mono">workflowSchedule.ts</code>: the draft type, client-side
+            validators, the <code class="font-next-mono">describeSchedule</code> sentence grammar
+            in Polish and English, and the draft ⇄ wire config mapping) own every numeric bound and
+            every label — there is no discovery call to a backend vocabulary endpoint.
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg">Schedule i18n — <code class="font-next-mono">workflows.schedule.*</code></p>
+          <p class="text-next-xs text-next-muted-foreground">
+            Every visible string is a translation key, grouped by concern:
+            <code class="font-next-mono">tab.*</code> (the three tab labels),
+            <code class="font-next-mono">time.*</code> / <code class="font-next-mono">day.*</code> /
+            <code class="font-next-mono">month.*</code> (each mode's label + its own helper notes,
+            e.g. the "last working day" restriction note or the "fifth occurrence can skip a month"
+            note), <code class="font-next-mono">field.*</code> / <code class="font-next-mono">unit.*</code>
+            (control labels and units), <code class="font-next-mono">window.*</code> (the shared
+            "od–do" pattern), <code class="font-next-mono">weekday.*</code> / <code class="font-next-mono">month.*</code>
+            (day/month names, short and long forms), <code class="font-next-mono">exclusions.*</code>,
+            <code class="font-next-mono">tz.*</code>, <code class="font-next-mono">preview.*</code>
+            (the strip's states and labels), <code class="font-next-mono">assist.*</code> (the AI
+            modal's copy), <code class="font-next-mono">validation.*</code> (client-side error
+            copy), and <code class="font-next-mono">describe.*</code> (the sentence-grammar
+            templates, including the Polish plural/case tables the grammar needs). PL and EN are
+            kept in full parity.
           </p>
         </div>
 
@@ -890,11 +921,13 @@ WHERE id = ? AND state = 'pending'</pre>
 
         <p class="text-next-xs text-next-muted-foreground">
           See <code class="font-next-mono">docs/decisions/ADR-0009-workflows-rescope-typed-variables.md</code>
-          for the full 5.1 reasoning, <code class="font-next-mono">docs/decisions/ADR-0010-workflows-schedule-rebuild.md</code>
-          for the schedule rebuild's reasoning (16 families, times/exclusions, live preview,
-          LW-defect), and <code class="font-next-mono">docs/next/workflows-uxui-spec.md</code>
-          (REVISION 3, marked IMPLEMENTED) for the complete UX/UI specification these frontend
-          decisions were drawn from.
+          for the full 5.1 reasoning, <code class="font-next-mono">docs/decisions/ADR-0012-workflows-schedule-descriptor-v2.md</code>
+          for the current schedule descriptor's design reasoning (the compositional time/day/month
+          model, the wall-clock-grid semantics, the anchored live preview, the AI-modal-with-approval
+          flow — and what it supersedes from the earlier family-based
+          <code class="font-next-mono">docs/decisions/ADR-0010-workflows-schedule-rebuild.md</code>),
+          and <code class="font-next-mono">docs/next/workflows-uxui-spec.md</code> §4.5 (REVISION 4)
+          for the complete UX/UI specification these frontend decisions were drawn from.
         </p>
       </div>
     </StorySection>
@@ -910,8 +943,8 @@ WHERE id = ? AND state = 'pending'</pre>
           <li><strong>TaskSelect extraction</strong> — largely MOOT after the re-scope (the standalone <code class="font-next-mono">task_id</code> fields it would have served, on the removed <code class="font-next-mono">assign_bot</code>/<code class="font-next-mono">attach_form</code>/<code class="font-next-mono">start_approval</code> steps, no longer exist). The manual-run FormSubmission target picker still has the same raw-TextInput gap.</li>
           <li><strong>Visual canvas builder</strong> — only warranted if the step model grows real branching/parallelism; the current linear model is well served by the ▲▼ list.</li>
           <li><strong>Per-tenant error isolation in the sweep commands</strong> — <code class="font-next-mono">workflows:run-scheduled</code> / <code class="font-next-mono">workflows:reap-stale-runs</code> have no per-tenant try/catch yet (consistent with the existing Bot reaper pattern; hardening queued separately).</li>
-          <li><strong>Public holiday awareness</strong> — <code class="font-next-mono">last_working_day_of_month</code> (and every other family) has no holiday-calendar concept; a fire date landing on a holiday still fires normally. Would need a real holiday-calendar data source.</li>
-          <li><strong>An every-N-days family and continuous time-window cadences</strong> — no "every N days" family (only N-minute/N-hour/N-month grids) and no continuous "between HH:mm and HH:mm" window (only discrete <code class="font-next-mono">times[]</code> fire points). Named explicitly in the AI-assist's honest-unsupported list rather than silently approximated.</li>
+          <li><strong>Public holiday awareness</strong> — the "last working day" rule (and every other schedule rule) has no holiday-calendar concept; a fire date landing on a holiday still fires normally. Would need a real holiday-calendar data source.</li>
+          <li><strong>Rolling intervals, every-N-weeks, one-off dates, and sub-minute cadences</strong> — the schedule vocabulary has no cadence phased from an arbitrary start rather than the wall clock (e.g. "exactly every 90 minutes"), no "every N weeks" rule, no single one-off-date cadence, and no sub-minute grid. Named explicitly in the AI-assist's honest-unsupported list rather than silently approximated.</li>
         </ul>
       </div>
     </StorySection>

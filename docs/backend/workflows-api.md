@@ -14,15 +14,21 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > hold. This document describes IMPLEMENTED behavior only; anything not yet built is marked
 > **PLANNED**.
 >
-> **Schedule rebuild (B1–B5, this revision).** The schedule vocabulary grew from 12 to **16
-> families** (`every_n_months`, `nth_weekday_of_month`, `last_weekday_of_month`,
-> `last_working_day_of_month` added), `weekly` moved from a single `weekday` scalar to a
-> `weekdays` list (legacy scalar tolerated on READ only), and the schedule block gained two
-> optional keys — `times[]` (multiple fire times) and `exclusions` (a skip filter) — plus a new
-> live preview endpoint (`POST /workflows/meta/schedule-preview`). See ADR-0010 for the design
-> decisions. Some narrative below that used to describe an infeasible request (e.g. "last Friday
-> of the month", "every weekday") is now EXPRESSIBLE — read the Schedule section for the current
-> family table, not just the AI-assist examples.
+> **Schedule model v2 (this revision) — BREAKING, supersedes the 12/16-family model.** The
+> family-based vocabulary (`WorkflowScheduleFamily`, previously 16 members) described in earlier
+> revisions of this document is RETIRED. `trigger_config.schedule` is now a COMPOSITIONAL
+> descriptor of three independent axes — `{ time, day?, month?, exclusions?, tz? }` — combined
+> with AND, instead of one of 16 named presets. This is a BREAKING wire change: the write path and
+> the schedule-preview endpoint no longer accept `{ family, params }`; every response
+> (`WorkflowResource`, the assist envelope) always returns the v2 shape; and
+> `GET /workflows/meta/schedule-families` (the family-discovery endpoint) is REMOVED — there is no
+> vocabulary left to discover, the frontend owns the axis/mode list and mirrors the numeric bounds
+> from `ScheduleLimits` directly. A schedule **stored** before this change keeps firing and keeps
+> rendering unchanged — `LegacyScheduleUpgrader` transparently upgrades a legacy `{ family, params
+> }` block to v2 at every read/compile boundary, so no data migration was run. See ADR-0012 for
+> the design decisions (ADR-0012 supersedes ADR-0010 §7's frontend two-mode decision) and the
+> Schedule section below for the full v2 contract — the family table that used to live there is
+> gone.
 
 ---
 
@@ -63,7 +69,7 @@ manually (test-before-activate — see the manual-run endpoint below).
 | Value             | Fires when…                                                                 |
 |--------------------|-------------------------------------------------------------------------------|
 | `form_submitted`    | A form submission transitions into its **approved** state (Taskio has no separate "submit" event — a submission counts as submitted once approved). |
-| `schedule`           | A cadence fires (16 families — see the Schedule section). Never event-dispatched. |
+| `schedule`           | A cadence fires (a v2 compositional `{ time, day?, month? }` descriptor — see the Schedule section). Never event-dispatched. |
 
 **The other three Etap-5 trigger types (`task_created`, `task_status_changed`,
 `approval_finished`) were REMOVED in the 5.1 re-scope** — see ADR-0009 §1. Any workflow
@@ -411,125 +417,63 @@ the same workspace) is requested under this workflow's URL — otherwise it woul
 
 ---
 
-### GET /api/workflows/meta/schedule-families
+### ~~GET /api/workflows/meta/schedule-families~~ — REMOVED (v2)
 
-Discovery endpoint for the schedule builder: the 16-family vocabulary plus each family's
-per-param descriptors, so the FE renders correct controls and the AI-assist proposes a valid
-`params` object. Static path, declared before the `{workflow}` resource so it never binds as an
-id. Any authenticated member may read it (no policy object — it exposes no tenant data; labels
-are NOT included, the FE supplies its own i18n — mirrors the Bot tool-registry discovery
-endpoint). The endpoint (`WorkflowScheduleFamilyCatalog::all()`) is a thin `array_map` over
-`WorkflowScheduleFamily::cases()` — it has no family list of its own, so it can never fall behind
-the enum; the response below reflects the CURRENT 16-family output verbatim.
-
-**Response** `200 OK`
-
-```json
-{
-  "data": [
-    { "family": "every_n_minutes", "params": [ { "name": "n", "type": "int", "required": true, "min": 1, "max": 59 } ] },
-    { "family": "hourly", "params": [] },
-    { "family": "hourly_at", "params": [ { "name": "minute", "type": "int", "required": true, "min": 0, "max": 59 } ] },
-    { "family": "every_n_hours", "params": [
-      { "name": "n", "type": "int", "required": true, "min": 2, "max": 12 },
-      { "name": "minute", "type": "int", "required": false, "min": 0, "max": 59 }
-    ] },
-    { "family": "daily", "params": [ { "name": "time", "type": "time", "required": true } ] },
-    { "family": "twice_daily", "params": [
-      { "name": "first_hour", "type": "int", "required": true, "min": 0, "max": 23, "lt": "second_hour" },
-      { "name": "second_hour", "type": "int", "required": true, "min": 0, "max": 23 },
-      { "name": "minute", "type": "int", "required": false, "min": 0, "max": 59 }
-    ] },
-    { "family": "weekly", "params": [
-      { "name": "weekdays", "type": "weekday_list", "required": true, "min": 0, "max": 6 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "monthly", "params": [
-      { "name": "day", "type": "int", "required": true, "min": 1, "max": 31 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "twice_monthly", "params": [
-      { "name": "first_day", "type": "int", "required": true, "min": 1, "max": 31, "lt": "second_day" },
-      { "name": "second_day", "type": "int", "required": true, "min": 1, "max": 31 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "last_day_of_month", "params": [ { "name": "time", "type": "time", "required": true } ] },
-    { "family": "quarterly", "params": [
-      { "name": "day", "type": "int", "required": true, "min": 1, "max": 31 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "yearly", "params": [
-      { "name": "month", "type": "int", "required": true, "min": 1, "max": 12 },
-      { "name": "day", "type": "int", "required": true, "min": 1, "max": 31 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "every_n_months", "params": [
-      { "name": "n", "type": "int", "required": true, "min": 2, "max": 6 },
-      { "name": "day", "type": "int", "required": true, "min": 1, "max": 31 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "nth_weekday_of_month", "params": [
-      { "name": "ordinal", "type": "int", "required": true, "min": 1, "max": 5 },
-      { "name": "weekday", "type": "weekday", "required": true, "min": 0, "max": 6 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "last_weekday_of_month", "params": [
-      { "name": "weekday", "type": "weekday", "required": true, "min": 0, "max": 6 },
-      { "name": "time", "type": "time", "required": true }
-    ] },
-    { "family": "last_working_day_of_month", "params": [
-      { "name": "time", "type": "time", "required": true }
-    ] }
-  ]
-}
-```
-
-`lt` names ANOTHER param of the same family this one must be strictly LESS THAN (the
-`twice_daily` / `twice_monthly` ordering invariants) — see the Schedule section for the full
-family table with next-fire semantics. `weekly`'s param is `weekdays` (type `weekday_list`, a
-non-empty array of distinct weekday ints), not shown as a scalar `weekday` above — the `weekly`
-entry in this endpoint's actual JSON now reads `{ "name": "weekdays", "type": "weekday_list",
-"required": true, "min": 0, "max": 6 }` (the `min`/`max` bound each ARRAY ELEMENT, 0..6 — not the
-list length). See the Schedule section for the full weekly write shape and the legacy scalar
-read-tolerance note.
+The REV3 family-discovery endpoint (the 16-family vocabulary + per-family param descriptors) no
+longer exists. The v2 compositional descriptor has no closed family list to discover — the
+frontend owns the axis/mode/label inventory itself and mirrors every numeric bound from
+`App\Modules\Workflows\Enums\ScheduleLimits` as a TypeScript constant
+(`SCHEDULE_LIMITS` in `resources/js/next/pages/workflows/workflowSchedule.ts`), so there is nothing
+left for a runtime discovery call to serve. A request to this path now 404s (unmatched route).
 
 ---
 
 ### POST /api/workflows/meta/schedule-preview
 
-LIVE SCHEDULE PREVIEW: projects the next N fire instants of a proposed (not-yet-saved) cadence, so
-the FE schedule builder can show a running "next runs" list as the user edits. Static path,
-declared before the `{workflow}` resource. Any authenticated member may call it — it exposes no
-tenant data, only a projection over the public cadence vocabulary. Backed by
-`WorkflowSchedulePreviewController` + `WorkflowScheduleService::nextOccurrences()` (a PURE
-function — no tenancy, no model writes).
+LIVE SCHEDULE PREVIEW: projects the next N fire instants of a proposed (not-yet-saved) v2 cadence,
+so the FE schedule builder can show a running "next runs" list as the user edits, and can centre
+that list on an arbitrary anchor instant ("jump to date"). Static path, declared before the
+`{workflow}` resource. Any authenticated member may call it — it exposes no tenant data, only a
+projection over the public cadence grammar. Backed by `WorkflowSchedulePreviewController` +
+`WorkflowScheduleService::nextOccurrences()` / `occurrencesFrom()` (PURE functions — no tenancy, no
+model writes). Throttled `60,1` (per user) on top of the FE's own debounce, since the projection
+loop is CPU-bound.
 
 **Body**
 
 ```json
-{ "schedule": { "family": "weekly", "params": { "weekdays": [1, 3], "time": "09:00" }, "tz": "Europe/Warsaw" }, "count": 6 }
+{ "schedule": { "time": { "mode": "at", "at": ["08:00"] }, "day": { "mode": "weekdays", "weekdays": [1, 3] }, "tz": "Europe/Warsaw" }, "count": 6 }
 ```
 
 | Field       | Required | Constraints                                                          |
 |--------------|-----------|--------------------------------------------------------------------------|
-| `schedule`     | **yes**    | the same `{ family, params, tz?, times?, exclusions? }` block the write path accepts, validated by the SAME `WorkflowScheduleRulesValidator` — with ONE difference (below). |
-| `count`          | no          | integer 1–12, default 6 — how many upcoming occurrences to project.       |
+| `schedule`     | **yes**    | the same v2 `{ time, day?, month?, exclusions?, tz? }` block the write path accepts, validated by the SAME `WorkflowScheduleRulesValidator` — with ONE difference (below). A legacy `{ family, params }` block is upgraded through the read-shim first (`LegacyScheduleUpgrader`), so a not-yet-migrated draft still previews. |
+| `count`          | no          | integer 1–12, default 6 — how many occurrences to project.       |
+| `anchor`           | no          | an ISO-8601 datetime string to centre the projection on (see below). Omitted ⇒ project forward from `now()`. |
 
 **The ONE validation difference from the write path**: `SchedulePreviewRequest` calls
 `WorkflowScheduleRulesValidator::secondPass(..., checkEmpty: false)` — the empty-schedule guard
-(the check that rejects a cadence whose `exclusions` rule out every occurrence) is OFF. Every
-STRUCTURAL rule (unknown family, out-of-bounds params, malformed `times`/`exclusions`, the `lt`
-ordering invariants) still returns a 422 exactly as it would on save. An over-constrained but
-otherwise well-formed schedule (e.g. `weekly` on Monday whose `exclusions.weekdays` also excludes
-Monday) is NOT a 422 here — it comes back as DATA (`empty: true`), so the FE can render a
-pre-save warning instead of surfacing a confusing validation error for a block that is otherwise
-well-formed.
+(the check that rejects a cadence with no reachable occurrence) is OFF. Every STRUCTURAL rule
+(unknown mode, out-of-bounds field, malformed window/exclusions, a field foreign to the chosen
+mode) still returns a 422 exactly as it would on save. An over-constrained but otherwise
+well-formed schedule (e.g. `day.weekdays:[1]` whose `exclusions.weekdays` also excludes Monday) is
+NOT a 422 here — it comes back as DATA (`empty: true`), so the FE can render a pre-save warning
+instead of surfacing a confusing validation error for a block that is otherwise well-formed.
 
-**Response** `200 OK`
+**`anchor` — centres the projection instead of starting from `now()`.** An ISO-8601 datetime.
+WITHOUT a UTC offset it is read as a WALL-CLOCK time in the schedule's own `tz`; WITH an offset it
+is an absolute instant (the offset wins). When present, `occurrences[0]` is the occurrence AT OR
+BEFORE the anchor (prev-or-at) when one exists within the horizon, followed by the ascending
+occurrences strictly after it — so a caller can render a "previous" tile distinct from the
+forward list. **Paging is a plain re-call**: to fetch the next page, call again with `anchor` set
+to the last occurrence already shown; there is no separate cursor field. Omitting `anchor` behaves
+exactly like the pre-anchor contract (`nextOccurrences()` from `now()`).
+
+**Response** `200 OK` — FLAT, no `data` wrapper:
 
 ```json
 {
-  "occurrences": ["2026-07-13T07:00:00.000000Z", "2026-07-15T07:00:00.000000Z", "2026-07-20T07:00:00.000000Z"],
+  "occurrences": ["2026-07-13T06:00:00.000000Z", "2026-07-15T06:00:00.000000Z", "2026-07-20T06:00:00.000000Z"],
   "count": 6,
   "empty": false,
   "approximate": false
@@ -538,14 +482,15 @@ well-formed.
 
 | Field           | Meaning                                                                                    |
 |-------------------|-----------------------------------------------------------------------------------------------|
-| `occurrences`       | ISO-8601 UTC instants, STRICTLY ascending, computed from `now()` — at most `count`, may be FEWER (or `[]`) when the cadence has no reachable occurrence within `WorkflowScheduleService`'s horizon (1000 iterations / 10 years). Same string format `WorkflowResource` uses for `next_due_at` (`toISOString()`), so the FE parses one shape everywhere. |
+| `occurrences`       | ISO-8601 UTC instants, ASCENDING — at most `count`, may be FEWER (or `[]`) when the cadence has no reachable occurrence within `WorkflowScheduleService`'s horizon (1000 iterations / 10 years). Without `anchor` every entry is strictly after `now()`; WITH `anchor`, `occurrences[0]` may equal the anchor's prev-or-at occurrence exactly (the rest are strictly ascending after it). Same string format `WorkflowResource` uses for `next_due_at` (`toISOString()`), so the FE parses one shape everywhere. |
 | `count`               | echoes the resolved (defaulted/clamped) count that was requested.                             |
 | `empty`                 | `true` when `occurrences` is `[]` — an over-constrained `exclusions` set (or, in principle, any cadence the compiler cannot resolve). This is DATA, never a 422, on this endpoint. |
-| `approximate`             | `true` ONLY for `every_n_minutes`. Its phase is set by the workflow's ARM instant (activation), not the calendar — a preview computed from "now" is indicative of the cadence, not the exact grid the live workflow will fire on once activated. Every wall-clock cron / `last_working_day_of_month` family is calendar-anchored, so its preview is EXACT. Decided on the COMPILED kind (`CompiledSchedule::isInterval()`), never on the family string. |
+| `approximate`             | **ALWAYS `false` in v2.** Every v2 cadence is a wall-clock-anchored grid (there is no phase-from-activation interval left — see `CompiledSchedule`'s docblock), so a projection is always exact. The field is KEPT (not dropped) purely for response-shape stability; do not read it as a live signal. |
 
 **This is the ONLY place occurrence dates are computed for the FE.** The frontend never
-locally re-implements cron/interval math to render a preview or a "next run" hint — every preview
-surface (the builder's live preview, the AI-assist's alternative preview) calls this endpoint.
+locally re-implements cron math to render a preview or a "next run" hint — every preview
+surface (the builder's live preview strip, the AI-assist modal's proposal preview) calls this
+endpoint.
 
 ---
 
@@ -601,30 +546,37 @@ See ADR-0009 §7.
 
 ### POST /api/workflows/schedule-assist
 
-AI SCHEDULE ASSIST: turns a natural-language schedule description into the structured
-`trigger_config.schedule` config the human builder uses — or an honest report of what cannot be
-expressed, with an optional approximating alternative. Authorization: any authenticated
-workspace member (workspace membership already enforced upstream by `ResolveWorkspace`; the
-endpoint exposes no tenant data).
+AI SCHEDULE ASSIST: turns a natural-language schedule description into the structured v2
+`trigger_config.schedule` config (`{ time, day?, month?, exclusions?, tz? }`) the human builder
+uses — or an honest report of what cannot be expressed, with an optional approximating
+alternative. Authorization: any authenticated workspace member (workspace membership already
+enforced upstream by `ResolveWorkspace`; the endpoint exposes no tenant data).
 
-**This revision's vocabulary is wider.** The agent's prompt (`ScheduleAssistAgent`) is generated
-from `WorkflowScheduleFamily::paramDescriptors()` at runtime, so it automatically picked up the 4
-new families plus the `times`/`exclusions` extensions — no prompt hand-editing was needed. Two
-requests that were previously reported `feasible:false` are now genuinely feasible:
-- **"the last Friday of every month at 9am"** → `last_weekday_of_month` (`{weekday: 5, time:
-  "09:00"}`) — previously there was no weekday-of-month family at all.
-- **"daily except weekends, at 9am"** → `daily` with `exclusions.weekdays: [0, 6]` — previously
-  there was no exclusion mechanism.
+**The prompt's vocabulary is assembled programmatically from the v2 enums** — `ScheduleAssistAgent`
+builds its instructions from `ScheduleTimeMode`, `ScheduleDayMode`, `ScheduleMonthMode`,
+`ScheduleDaySpecial` and `ScheduleLimits` at construction time (one line per mode, one bound per
+constant), so the model is never told about a mode or a bound the validator/compiler do not
+actually enforce — the prompt cannot drift from the code. A model that still answers in the
+PRE-v2 `{ family, params }` shape is not rejected either: the re-validation gate below runs every
+proposed config through `LegacyScheduleUpgrader` first, so an old-format proposal is judged by the
+same v2 rules and, if valid, returned **normalized to v2** — both `config` and `alternative.config`
+are rewritten through the upgrader before the envelope is returned, so the FE always receives v2.
 
-**Still genuinely infeasible** (see `ScheduleAssistAgent::semanticCaveats()` for the exact,
-current list the model is instructed to report honestly): no every-N-days family (only every-N-
-MINUTES/HOURS/MONTHS grids exist, no every-N-days), and no continuous time-WINDOW cadence (only
-discrete fire times — `times[]` covers "at 8 and at 17", not "sometime between 9 and 17").
+**Genuinely feasible today** (a non-exhaustive sample — see `ScheduleAssistAgent::examplesSection()`
+for the full worked list the model is shown): multiple daily fire times ("o 8 i 17"), a set of
+weekdays in one schedule ("w poniedziałki i środy"), the Nth/last weekday of the month ("ostatni
+piątek miesiąca"), the last working day of the month, an every-N-days/hours/minutes grid with an
+optional time-of-day window, and an `exclusions` skip filter ("oprócz weekendów", "oprócz sierpnia").
+
+**Still genuinely infeasible** (see `ScheduleAssistAgent::semanticCaveats()` for the exact, current
+list the model is instructed to report honestly): a rolling interval the wall-clock grids cannot
+express (e.g. "dokładnie co 90 minut", "co 2,5 godziny" — the grids are modulo-N, not phased from
+an arbitrary start), "every N weeks" (no such axis), one-off single dates, and sub-minute cadences.
 
 **Body**
 
 ```json
-{ "prompt": "every weekday morning at 9", "tz": "Europe/Warsaw" }
+{ "prompt": "codziennie o 8 i 17 oprócz weekendów", "tz": "Europe/Warsaw" }
 ```
 
 | Field    | Required | Constraints                                    |
@@ -632,28 +584,29 @@ discrete fire times — `times[]` covers "at 8 and at 17", not "sometime between
 | `prompt`   | yes        | string, max 500 — UNTRUSTED free text, treated purely as data by the agent. |
 | `tz`         | no          | nullable, a valid IANA timezone string.         |
 
-**Response** `200 OK`
+**Response** `200 OK` — a feasible multi-time-plus-exclusions example (pinned by
+`WorkflowScheduleAssistTest::test_feasible_multi_time_config_with_exclusions_passes_the_gate`):
 
 ```json
 {
   "data": {
     "feasible": true,
-    "config": { "family": "weekly", "params": { "weekdays": [1], "time": "09:00" }, "tz": "Europe/Warsaw" },
+    "config": { "time": { "mode": "at", "at": ["08:00", "17:00"] }, "exclusions": { "weekdays": [0, 6] }, "tz": "Europe/Warsaw" },
     "unsupported": [],
     "alternative": null,
-    "explanation": "Ustawiłem harmonogram na każdy poniedziałek o 9:00 (Europe/Warsaw)."
+    "explanation": "Codziennie o 8:00 i 17:00, z pominięciem weekendów."
   }
 }
 ```
 
-A feasible example using a family this revision ADDED (previously would have needed the
-`alternative` channel):
+A feasible example using the `day.special` axis (the last weekday of the month — previously only
+reachable through the `alternative` channel in the pre-v2 vocabulary):
 
 ```json
 {
   "data": {
     "feasible": true,
-    "config": { "family": "last_weekday_of_month", "params": { "weekday": 5, "time": "09:00" }, "tz": "Europe/Warsaw" },
+    "config": { "time": { "mode": "at", "at": ["09:00"] }, "day": { "mode": "special", "special": "last_weekday", "weekday": 5 }, "tz": "Europe/Warsaw" },
     "unsupported": [],
     "alternative": null,
     "explanation": "Ustawiłem harmonogram na ostatni piątek każdego miesiąca o 9:00 (Europe/Warsaw)."
@@ -661,18 +614,18 @@ A feasible example using a family this revision ADDED (previously would have nee
 }
 ```
 
-An honest infeasible example (the model correctly reports no every-weekday-only-Mon-Fri family
-exists — `times`/`exclusions` widened the vocabulary, but there is still no continuous Mon-Fri-
-only cadence family):
+An honest infeasible example WITH a valid alternative (pinned by
+`test_infeasible_with_valid_alternative_is_passed_through` — "co 2 tygodnie", every-other-week, has
+no axis; the model honestly falls back to a plain weekly schedule):
 
 ```json
 {
   "data": {
     "feasible": false,
     "config": null,
-    "unsupported": ["brak rodziny \"co dzień roboczy\" (pon-pt) — dostępne są tylko cykle dzienne/tygodniowe/miesięczne"],
-    "alternative": { "config": { "family": "daily", "params": { "time": "09:00" }, "tz": "Europe/Warsaw", "exclusions": { "weekdays": [0, 6] } }, "note": "To uruchomi harmonogram codziennie z pominięciem sobót i niedziel — nie jest to identyczne z \"dniem roboczym\" (nie uwzględnia świąt), ale w praktyce odpowiada dniom pon-pt." },
-    "explanation": "Nie ma rodziny harmonogramu ograniczonej wyłącznie do dni roboczych (święta nie są uwzględniane w żadnej rodzinie). Zaproponowałem alternatywę: codziennie o 9:00, z pominięciem weekendów."
+    "unsupported": ["co 2 tygodnie — brak osi „co N tygodni”"],
+    "alternative": { "config": { "time": { "mode": "at", "at": ["08:00"] }, "day": { "mode": "weekdays", "weekdays": [1] } }, "note": "Zaproponowano co tydzień w poniedziałek zamiast co 2 tygodnie." },
+    "explanation": "Nie można ustawić co 2 tygodnie; proponuję co tydzień w poniedziałek."
   }
 }
 ```
@@ -689,14 +642,19 @@ directly:
    defensively; malformed/empty output collapses to a safe `feasible:false` envelope, never a
    500.
 2. Every response key is WHITELISTED — unknown keys the model invented are dropped before
-   reaching the API response.
-3. A `config` claimed `feasible:true` is RE-VALIDATED against the exact same rules the write path
-   uses (`WorkflowScheduleRulesValidator`) AND run through the real compiler
+   reaching the API response. The whitelist forwards BOTH the v2 axis keys (`time`, `day`,
+   `month`, `exclusions`) AND the legacy bridge keys (`family`, `params`, `times`) verbatim, so a
+   still-legacy-speaking proposal reaches the gate unmodified rather than being stripped.
+3. A `config` claimed `feasible:true` is upgraded through `LegacyScheduleUpgrader` (a no-op on an
+   already-v2 block) and RE-VALIDATED against the exact same rules the write path uses
+   (`WorkflowScheduleRulesValidator`) AND run through the real compiler
    (`WorkflowScheduleCompiler::compile()`) as a final sanity gate. Either failing downgrades the
    response to `feasible:false`, `config:null`, with the validation failure appended to
    `unsupported`.
 4. An `alternative.config` that fails the same gate is dropped (`alternative:null`) rather than
-   surfaced broken.
+   surfaced broken — its failure reason is NOT appended to `unsupported` (only a main-config
+   downgrade does that; a dropped alternative is simply removed, pinned by
+   `test_dropped_alternative_does_not_leak_validator_jargon`).
 5. A surviving config with no `tz` inherits the caller's `tz` hint (an explicit `tz` from the
    model wins).
 
@@ -706,14 +664,15 @@ model's word for it.
 
 **The residual honesty limit (accepted, not a bug).** The re-validation gate proves a returned
 config is STRUCTURALLY valid and COMPILABLE — it cannot prove the config SEMANTICALLY matches
-what the user asked for. If the model mis-reads "every weekday" as `daily` and wrongly marks it
-`feasible:true`, the backend has no way to detect that the resulting (valid, compilable) `daily`
-schedule is not what was actually requested — a structurally-valid-but-wrong config can still
-reach the caller. Mitigations: the agent's instructions explicitly enumerate the closed family
-vocabulary and forbid inventing families/approximating silently into `config` (an
-approximation must go through `alternative` + an honest `note`, never straight into `feasible:
-true`/`config`); the frontend always surfaces `explanation` so the user can sanity-check the
-result before saving; nothing about this endpoint is fully closed-loop-verifiable server-side.
+what the user asked for. If the model mis-reads "every weekday" as a plain daily `time.at` and
+wrongly marks it `feasible:true`, the backend has no way to detect that the resulting (valid,
+compilable) config is not what was actually requested — a structurally-valid-but-wrong config can
+still reach the caller. Mitigations: the agent's instructions explicitly enumerate the closed
+axis/mode vocabulary and forbid inventing a mode/field or approximating silently into `config`
+(an approximation must go through `alternative` + an honest `note`, never straight into
+`feasible: true`/`config`); the frontend always surfaces `explanation` so the user can
+sanity-check the result before saving; nothing about this endpoint is fully
+closed-loop-verifiable server-side.
 
 **Stateless, not run-cap-counted.** A schedule-assist call creates nothing (no task, no run) — it
 is metered by its OWN per-user throttle (`assist_rate_per_minute`), never against
@@ -779,17 +738,25 @@ this", which IS the third state.
 ### `schedule`
 
 ```json
-{ "schedule": { "family": "weekly", "params": { "weekdays": [1, 3, 5], "time": "09:00" }, "tz": "Europe/Warsaw" } }
+{ "schedule": { "time": { "mode": "at", "at": ["09:00"] }, "day": { "mode": "weekdays", "weekdays": [1, 3, 5] }, "tz": "Europe/Warsaw" } }
 ```
+
+`schedule` is the v2 COMPOSITIONAL descriptor — three independent axes combined with AND, not one
+of a closed set of named presets. See the Schedule section below for the complete axis/mode
+reference; this table is the top-level shape only.
 
 | Key                 | Required                        | Notes                                              |
 |-----------------------|------------------------------------|-----------------------------------------------------|
-| `schedule`             | **yes**                             | object, `{ family, params, tz?, times?, exclusions? }`. |
-| `schedule.family`      | **yes**                             | one of the 16 `WorkflowScheduleFamily` values.       |
-| `schedule.params`      | per-family                          | see the family table in the Schedule section; validated by `WorkflowScheduleRulesValidator`, derived from `WorkflowScheduleFamily::paramDescriptors()` (the SAME source `/meta/schedule-families` exposes). |
-| `schedule.tz`           | no                                  | IANA timezone string; default `config('app.timezone')` (UTC). |
-| `schedule.times`         | no                                  | array, 1–6 DISTINCT `'HH:mm'` strings — an alternate way to say "fire at each of these times", replacing `params.time`. Only for families whose descriptors carry a `time` param (`supportsTimes()`); mutually exclusive with `params.time`. See the Schedule section. |
-| `schedule.exclusions`      | no                                  | object, `{ months?: int[1-12] max 11, weekdays?: int[0-6] max 6, dates?: 'Y-m-d'[] max 50 }` — a post-filter that drops any occurrence matching. See the Schedule section. |
+| `schedule`             | **yes**                             | object, `{ time, day?, month?, exclusions?, tz? }`. |
+| `schedule.time`      | **yes**                             | the WHEN-in-the-day axis; one of `at` / `every_minutes` / `every_hours`. The only required axis. |
+| `schedule.day`      | no (default `every_day`)                          | the WHICH-day axis; one of `every_day` / `every_n_days` / `weekdays` / `month_days` / `special`. |
+| `schedule.month`           | no (default `every_month`)                                  | the WHICH-month axis; one of `every_month` / `every_n_months` / `months`. |
+| `schedule.exclusions`         | no                                  | object, `{ months?: int[1-12] max 11, weekdays?: int[0-6] max 6, dates?: 'Y-m-d'[] max 50 }` — a post-filter that drops any occurrence matching. See the Schedule section. |
+| `schedule.tz`      | no                                  | IANA timezone string; default `config('app.timezone')` (UTC). |
+
+Every field is validated by the ONE shared `WorkflowScheduleRulesValidator` (write path, AI-assist
+re-validation, and the preview endpoint all delegate to it), so the accepted shape can never drift
+from what `WorkflowScheduleCompiler` understands.
 
 `schedule` workflows are **never event-dispatched** — `WorkflowDispatchService::dispatch()`
 hard-refuses `WorkflowTriggerType::SCHEDULE` at the top. The ONLY path that starts a schedule run
@@ -1051,7 +1018,7 @@ form_submitted wire` / `SAVE payload — schedule wire`).
   "description": null,
   "icon": null,
   "trigger_type": "schedule",
-  "trigger_config": { "schedule": { "family": "daily", "params": { "time": "09:00" } } },
+  "trigger_config": { "schedule": { "time": { "mode": "at", "at": ["09:00"] } } },
   "steps": [
     { "type": "create_task", "key": "task", "config": { "title": "Do it" } }
   ]
@@ -1205,81 +1172,101 @@ ABOUT to start:
 
 `schedule`-triggered workflows are driven entirely by `WorkflowScheduleService` (the single
 source of truth for "what is this workflow's next fire time") plus the
-`workflows:run-scheduled` console sweep. The 5.1 re-scope replaced the 4 hand-coded Etap-5
-presets (`every_n_minutes`/`hourly`/`daily`/`weekly`) with 12 descriptor-driven families compiled
-to a real cron expression (via `dragonmantank/cron-expression`) or a bespoke interval — see
-ADR-0009 §3. **This revision (B1–B5) grew the vocabulary to 16 families**, changed `weekly` from
-a single weekday to a list, and added the optional `times[]` / `exclusions` schedule-block
-extensions plus the `POST /workflows/meta/schedule-preview` endpoint — see ADR-0010 for the
-design decisions.
+`workflows:run-scheduled` console sweep. **This revision replaces the closed 12/16-family
+vocabulary (ADR-0009 §3, ADR-0010) with a COMPOSITIONAL descriptor v2** — see ADR-0012 for the
+full design record. Instead of picking one of N named presets, a schedule is now THREE
+INDEPENDENT axes combined with AND — `time` (WHEN in the day, required), `day` (WHICH day,
+optional) and `month` (WHICH month, optional) — plus an optional `exclusions` skip filter and an
+optional `tz`. A fire happens only when time AND day AND month all match, minus any exclusion:
 
-### Families (`WorkflowScheduleFamily`) — param descriptors + next-fire semantics
-
-| Family                | Params                                                        | Compiles to                        | Next-fire semantics |
-|-------------------------|--------------------------------------------------------------------|---------------------------------------|-----------------------|
-| `every_n_minutes`         | `n` (1–59, required)                                                 | **bespoke interval** (not cron)        | `$from + n minutes` — phased on the ARM instant, no wall-clock alignment (armed at 10:02 with n=15 fires 10:17, 10:32, …, never snapping to :00/:15/:30/:45). |
-| `hourly`                    | — (none)                                                              | `0 * * * *`                              | Next top-of-hour STRICTLY after `$from` (exactly-on-the-hour rolls to the FOLLOWING hour). |
-| `hourly_at`                   | `minute` (0–59, required)                                              | `M * * * *`                                | Minute `M` of every hour, strictly after `$from`.                       |
-| `every_n_hours`                 | `n` (2–12, required), `minute` (0–59, optional)                          | `M */N * * *`                                | **HOUR-OF-DAY MODULO N**, not a rolling interval — for `n=5` fires at 00,05,10,15,20 then RESETS at midnight (the gap across midnight is 4h, not 5h). |
-| `daily`                            | `time` (`HH:mm`, required)                                                 | `M H * * *`                                    | Today at `time` if still future, else tomorrow.                          |
-| `twice_daily`                        | `first_hour` (0–23, lt `second_hour`), `second_hour` (0–23), `minute` (0–59, optional) | `M h1,h2 * * *`                                  | Two explicit daily fires; `first_hour < second_hour` enforced. Does NOT accept `times[]` (no `time` param).           |
-| `weekly`                               | `weekdays` (`weekday_list`, non-empty, required), `time` (required)                                 | `M H * * d1,d2,…`                                        | Next occurrence of ANY listed weekday at `time`, strictly after `$from`; same-day-but-passed rolls to next matching weekday. `0=Sunday`. See the "weekly: list, not scalar" note below. |
-| `monthly`                                 | `day` (1–31, required), `time` (required)                                      | `M H D * *`                                          | Day `D` of the month at `time`. **Day-31 skip**: a day that does not exist in a shorter month (e.g. 31 in February) is SKIPPED, not clamped. |
-| `twice_monthly`                             | `first_day` (1–31, lt `second_day`), `second_day` (1–31), `time` (required)      | `M H d1,d2 * *`                                        | Two explicit monthly fires; `first_day < second_day` enforced; same day-31-skip caveat per day. |
-| `last_day_of_month`                           | `time` (required)                                                                 | `M H L * *` (`L` = dragonmantank's "last calendar day") | GUARANTEED month-end fire — use this instead of `monthly` day 31 when a reliable month-end trigger matters. |
-| `quarterly`                                      | `day` (1–31, required), `time` (required)                                          | `M H D 1,4,7,10 *`                                       | Day `D` of Jan/Apr/Jul/Oct. Same day-skip caveat.                        |
-| `yearly`                                            | `month` (1–12, required), `day` (1–31, required), `time` (required)                  | `M H D Mon *`                                              | Day `D` of month `Mon`. **`month=2, day=29` fires ONLY in leap years** (~once every 4 years) — pinned by a unit test. |
-| `every_n_months`                                        | `n` (2–6, required), `day` (1–31, required), `time` (required)                        | `M H D m1,m2,… *`                                            | Day `D` of a **JANUARY-ANCHORED** month grid (`1, 1+n, 1+2n, … ≤ 12`), MODULO the year — mirrors `every_n_hours`' hour-of-day-modulo-N doctrine. `n=5` gives Jan(1)/Jun(6)/Nov(11), then resets to Jan — the gap across the year boundary (Nov→Jan, 2 months) can be SHORTER than `n`. Same day-skip caveat as `monthly`. |
-| `nth_weekday_of_month`                                    | `ordinal` (1–5, required), `weekday` (0–6, required), `time` (required)                 | `M H * * W#O` (dragonmantank `#` token)                        | The `O`-th occurrence of weekday `W` in the month at `time` (e.g. ordinal=1 = "first Monday"). **`ordinal=5` SKIPS** any month that has only four occurrences of that weekday — same skip doctrine as day-31, not clamped to the fourth. |
-| `last_weekday_of_month`                                     | `weekday` (0–6, required), `time` (required)                                             | `M H * * WL` (dragonmantank `L` suffix on the dow field)          | The LAST occurrence of weekday `W` in the month at `time` (e.g. "last Friday") — a guaranteed fire every month, unlike `nth_weekday_of_month` ordinal=5. |
-| `last_working_day_of_month`                                   | `time` (required)                                                                           | **BESPOKE** (not cron — see note below)                            | The last Mon–Fri of the month at `time`. **Does NOT account for public holidays** — a month whose last weekday is a holiday still fires that day. |
-
-**`weekday` convention: `0 = Sunday` … `6 = Saturday`** (matches `Carbon::dayOfWeek` /
-`Carbon::SUNDAY` AND cron's day-of-week field, which also treats 0 as Sunday) — unchanged and
-used consistently by both the scalar `weekday` type and the `weekday_list` type.
-
-**`weekly`: a list, not a scalar (read-tolerant).** The write path now stores `params.weekdays` —
-a non-empty array of DISTINCT weekday ints (the `weekday_list` descriptor type) — compiling to a
-cron day-of-week field with every listed day (`M H * * d1,d2,…`, sorted+deduped). A **legacy
-record** written before this change may still carry a scalar `params.weekday`; the compiler
-(`WorkflowScheduleCompiler::weekdayList()`) reads it as a one-element list so old rows keep
-compiling unchanged — this is READ-ONLY tolerance. **New writes MUST use `weekdays`**; a `weekday`
-scalar submitted on write is rejected as a foreign param (422) because it is not in `weekly`'s
-current descriptor set (see `WorkflowScheduleFamily::paramDescriptors()`).
-
-**Why `last_working_day_of_month` is bespoke, not cron.** `dragonmantank/cron-expression` v3.6.0's
-`LW` token does NOT mean "last working day of the month" — it parses the `L` in `LW` as day `0`,
-which normalizes to the PREVIOUS month and returns wrong/garbage dates (verified against the
-installed version; see `CompiledSchedule`'s docblock for the exact failure mode). "Last working
-day" also cannot be expressed as any single standard cron expression (it is the LATEST of {last
-Mon, …, last Fri}, not a fixed day-of-month or day-of-week rule). `WorkflowScheduleService`
-therefore computes it directly: start at the month's last calendar day and step backward over
-Saturday/Sunday (`lastWorkingDayOfMonth()`), resolved as a local wall-clock time in the schedule's
-tz then converted to UTC — the same wall-clock-then-convert pattern every other family follows.
-See ADR-0010 for the full LW-defect record (this decision supersedes nothing — it is new).
-
-### Multiple fire times (`schedule.times`)
-
-Any family whose descriptors carry a `time` param (`WorkflowScheduleFamily::supportsTimes()` —
-every family above except the 5 interval/no-time families: `every_n_minutes`, `hourly`,
-`hourly_at`, `every_n_hours`, `twice_daily`) may carry `schedule.times` INSTEAD of `params.time`:
-a list of 1–6 DISTINCT `'HH:mm'` strings meaning "fire at EACH of these times" (e.g. a `daily`
-schedule with `times: ["08:00", "17:00"]` fires twice a day). The two are MUTUALLY EXCLUSIVE — a
-422 if both are present. `WorkflowScheduleCompiler` expands `times` into ONE cron expression per
-time (sharing every other date field) — a `CompiledSchedule` with a `cron` kind is always a LIST
-of expressions now, one element for a plain `params.time` schedule, N elements for a
-`times[]` schedule. `WorkflowScheduleService` takes the EARLIEST strictly-after candidate across
-the whole list — the union of the per-time occurrences. `last_working_day_of_month` supports
-`times` the same way (a list of HH:mm last-working-day candidates, earliest wins).
-
-```json
-{ "family": "daily", "params": {}, "times": ["08:00", "17:00"], "tz": "Europe/Warsaw" }
 ```
+{ "time": { "mode": "…", … }, "day"?: { "mode": "…", … }, "month"?: { "mode": "…", … },
+  "exclusions"?: { "months"?: [...], "weekdays"?: [...], "dates"?: [...] }, "tz"?: "…" }
+```
+
+Every field is validated in ONE place, `WorkflowScheduleRulesValidator` (shared verbatim by the
+write path, the AI-assist re-validation, and the preview endpoint), and compiled in ONE place,
+`WorkflowScheduleCompiler`. All numeric bounds live in `App\Modules\Workflows\Enums\ScheduleLimits`
+— the single contract the frontend mirrors as a TypeScript constant. Validation errors are keyed
+`trigger_config.schedule.{time,day,month,exclusions,tz}.*` (write path) or `schedule.*` (the
+AI-assist's standalone re-check).
+
+### TIME axis (`schedule.time`) — the only required axis
+
+| `time.mode` | Fields | Limits | Semantics |
+|---|---|---|---|
+| `at` | `at`: string[] of `'HH:mm'` | 1–6 distinct entries | Fires at EACH listed wall-clock time (the union across the list) — e.g. `at:["08:00","17:00"]` fires twice a day. |
+| `every_minutes` | `minutes`: int; optional `from`/`to`: `'HH:mm'` | `minutes` 1–59 | A WALL-CLOCK minute grid (`:00,:15,:30,:45` for `minutes:15`) — NOT an activation-phased interval. The optional window bounds it to part of the day (both-or-neither, `from` strictly before `to`). |
+| `every_hours` | `hours`: int; `minute`: int (optional, default 0); optional `from`/`to`: int hour | `hours` 1–23, `minute` 0–59, window bounds 0–23 | An every-N-hours grid at `:minute` past the hour, MODULO N within the day (resets at midnight — the gap across midnight can be shorter than `hours`). The optional window bounds it to a whole-hour range. |
+
+### DAY axis (`schedule.day`) — optional, defaults to `every_day`
+
+| `day.mode` | Fields | Limits | Semantics |
+|---|---|---|---|
+| `every_day` | — | — | No day restriction (the default). |
+| `every_n_days` | `n`: int; optional `from`/`to`: int day-of-month | `n` 1–31, window bounds 1–31 | A day-of-month step. The optional window bounds it to a day-of-month range. |
+| `weekdays` | `weekdays`: int[] | 1–7 distinct, each 0–6 (`0`=Sunday) | A SET of weekdays — several days per week in ONE schedule (e.g. Mon+Wed+Fri → `[1,3,5]`). |
+| `month_days` | `days`: int[] | 1–31 distinct, each 1–31 | A SET of calendar days. A day a given month lacks (31 in February) SKIPS that month's fire — never clamped. Use `special:last_day` for a guaranteed month-end fire. |
+| `special` | `special`: one of the rules below, + that rule's own params | — | A month-anchored day a plain set cannot express. |
+
+**`day.special` rules** (`ScheduleDaySpecial`):
+
+| `special` | Extra params | Semantics |
+|---|---|---|
+| `last_day` | — | The last calendar day of the month. |
+| `nth_weekday` | `ordinal` (1–5), `weekday` (0–6) | The ordinal-th occurrence of a weekday in the month (e.g. ordinal=1, weekday=1 → "first Monday"). `ordinal=5` SKIPS any month with only four occurrences of that weekday — not clamped to the fourth. |
+| `last_weekday` | `weekday` (0–6) | The LAST occurrence of a weekday in the month (e.g. weekday=5 → "last Friday") — a GUARANTEED monthly fire, unlike `nth_weekday` ordinal=5. |
+| `last_working_day` | — | The last Mon–Fri of the month. **BESPOKE** — see the note below — and therefore **REQUIRES `time.mode = at`** (a dedicated 422 on `time.mode` otherwise); it fires at explicit `HH:mm` times, never on a minute/hour grid. Does **NOT** account for public holidays — a month whose last weekday is a holiday still fires that day. |
+
+**Why `last_working_day` is bespoke, not compiled to a cron token.** The
+`dragonmantank/cron-expression` v3.6.0 `LW` token does NOT mean "last working day of the month" —
+it parses the `L` in `LW` as day `0`, which normalizes to the PREVIOUS month and returns
+wrong/garbage dates (verified directly against the installed version, not assumed from
+documentation). "Last working day" also cannot be expressed as any single standard cron
+expression (it is the LATEST of {last Mon, …, last Fri}, not a fixed day-of-month/day-of-week
+rule). `WorkflowScheduleService` therefore computes it directly: start at the month's last
+calendar day and step backward over Saturday/Sunday, resolved as a local wall-clock time in the
+schedule's tz then converted to UTC — the same wall-clock-then-convert pattern every other axis
+follows. It carries the `time.at` list (one or more `HH:mm` fire times) and the set of months the
+`month` axis allows, so it composes with a month restriction (e.g. "last working day of every
+quarter-end month"). See ADR-0012 for the full record.
+
+### MONTH axis (`schedule.month`) — optional, defaults to `every_month`
+
+| `month.mode` | Fields | Limits | Semantics |
+|---|---|---|---|
+| `every_month` | — | — | No month restriction (the default). |
+| `every_n_months` | `n`: int; optional `from`/`to`: int month | `n` 1–12, window bounds 1–12 | A **JANUARY-ANCHORED** month step (`1, 1+n, 1+2n, … ≤ 12`), MODULO the year — mirrors `every_hours`' hour-of-day-modulo-N doctrine. `n=5` gives {1,6,11} (Jan/Jun/Nov), then resets in January — the gap across the year boundary (Nov→Jan, 2 months) can be SHORTER than `n`. The optional window narrows the grid to a month range (e.g. `n:3, from:3, to:11` → March/June/September). |
+| `months` | `months`: int[] | 1–12 distinct, each 1–12 | A SET of months (1=January). |
+
+### Windows (`from`/`to`) — the shared bounded-range pattern
+
+Four axis fields carry an OPTIONAL window: `time.every_minutes` (`'HH:mm'` pair), `time.every_hours`
+(int hour 0–23 pair), `day.every_n_days` (int day-of-month 1–31 pair), and `month.every_n_months`
+(int month 1–12 pair). Every window is **BOTH-OR-NEITHER** (supplying only `from` or only `to` is
+a 422) and **`from` strictly less than `to`** — a window never wraps midnight (time) or the year
+end (month). Omitting the window entirely means "unbounded" (the full grid, all day / all hours /
+all months).
+
+### Composition semantics
+
+The three axes are INDEPENDENT and AND-combined: `day` fills EITHER the compiled day-of-month OR
+day-of-week field (never both at once, so the classic cron dom/dow OR-trap cannot arise), and
+`month` fills the month field — every `time` fire moment carries the SAME day/month restriction.
+`exclusions` and `tz` never reach the compiled cadence grammar: exclusions are applied as a
+POST-FILTER (below) and `tz` only resolves wall-clock fields before converting to UTC.
+
+**Compiled form (implementation detail).** `WorkflowScheduleCompiler` turns a validated descriptor
+into either a NON-EMPTY LIST of `dragonmantank/cron-expression` strings (one per `time.at` entry,
+or up to 3 for a minute window split across an hour boundary — `WorkflowScheduleService` takes the
+earliest strictly-after candidate across the whole list) or, for `day.special:last_working_day`,
+the bespoke non-cron form described above. This is an implementation detail the FE never needs —
+the wire contract is always the `{ time, day, month }` descriptor, never a cron string.
 
 ### Exclusions (`schedule.exclusions`)
 
 An optional post-filter, `{ months?, weekdays?, dates? }`, evaluated in the SCHEDULE's own
-timezone AFTER a candidate fire time is computed — never inside the cron grammar itself:
+timezone AFTER a candidate fire time is computed — never inside the compiled cadence itself:
 
 | Key         | Shape                                          | Effect                                                      |
 |---------------|--------------------------------------------------|------------------------------------------------------------------|
@@ -1294,36 +1281,36 @@ EVERY possible value of that dimension by itself — but a combination (or `date
 a schedule with no reachable occurrence at all; see "the empty-schedule guard" below.
 
 ```json
-{ "family": "daily", "params": { "time": "09:00" }, "exclusions": { "weekdays": [0, 6] } }
+{ "time": { "mode": "at", "at": ["09:00"] }, "exclusions": { "weekdays": [0, 6] } }
 ```
 
 The filter is a LOOP inside `WorkflowScheduleService::nextDueAt()`: compute the next union
 candidate, and if it is excluded, advance the cursor past it and recompute — for EVERY compiled
-kind, including the bespoke `every_n_minutes` interval ("every 15 minutes except weekends" really
-does skip the whole weekend, not just the boundary instant). Two HARD LIMITS bound the loop so an
+form, including the bespoke `last_working_day` cadence ("every day except weekends" really does
+skip the whole weekend, not just the boundary instant). Two HARD LIMITS bound the loop so an
 unreachable schedule can never hang: at most **1000 iterations**, and a **10-year horizon** from
 the search's start instant — exceeding either returns `null` (treated as "no occurrence").
 
 **The empty-schedule guard.** After every structural rule passes, `WorkflowScheduleRulesValidator`
 computes the schedule's actual first occurrence (reusing `WorkflowScheduleService::nextOccurrences`)
 and rejects the write with a 422 on `trigger_config.schedule.exclusions` if the cadence has NO
-reachable occurrence (e.g. `weekly` on Monday whose `exclusions.weekdays` also excludes Monday) —
+reachable occurrence (e.g. `day.weekdays:[1]` whose `exclusions.weekdays` also excludes Monday) —
 an unfireable schedule must never persist. **This guard is OPTIONAL**, controlled by the
 validator's `checkEmpty` parameter: the write path (`StoreWorkflowRequest`/`UpdateWorkflowRequest`)
 and the AI-assist re-validation keep it ON; the live `schedule-preview` endpoint turns it OFF, so
 an over-constrained draft comes back as `{ empty: true }` DATA for a pre-save warning instead of a
-422 while the user is still mid-edit. Every STRUCTURAL check (bad family, out-of-bounds params,
-malformed `times`/`exclusions` shape) still runs and still 422s on preview.
+422 while the user is still mid-edit. Every STRUCTURAL check (unknown mode, out-of-bounds field,
+malformed window/exclusions) still runs and still 422s on preview.
 
 ### Timezone
 
-`schedule.tz` defaults to `config('app.timezone')` (UTC). Every wall-clock family (everything
-except `every_n_minutes`) is resolved **IN** the schedule's own timezone by the cron library (or,
-for `last_working_day_of_month`, by the bespoke calculation), then converted to UTC for storage —
-so a "09:00 Europe/Warsaw" daily schedule fires at the correct UTC instant year-round (07:00 UTC
-in winter CET, 06:00 UTC in summer CEST). `exclusions` are evaluated against the candidate
-RE-EXPRESSED in this same tz (an exclusion is a wall-clock-day concept, like the rest of the
-cadence).
+`schedule.tz` defaults to `config('app.timezone')` (UTC). Every axis is now a WALL-CLOCK cadence
+(there is no phase-from-activation interval left in v2), so every axis resolves **IN** the
+schedule's own timezone — via the compiled cron form for a normal descriptor, or the bespoke
+calculation for `last_working_day` — then converts to UTC for storage; a "09:00 Europe/Warsaw"
+schedule fires at the correct UTC instant year-round (07:00 UTC in winter CET, 06:00 UTC in summer
+CEST). `exclusions` are evaluated against the candidate RE-EXPRESSED in this same tz (an exclusion
+is a wall-clock-day concept, like the rest of the cadence).
 
 Every computed fire time is **strictly after** the `$from` instant it was computed from
 (never equal), and always stored/returned in UTC.
@@ -1336,25 +1323,41 @@ library shifts the non-existent local time FORWARD past the gap (e.g. that day's
 03:30 local instead of crashing or looping) — one skewed fire is the accepted trade-off for a
 rare boundary; the following day returns to the configured time.
 
-**Fall-back overlap (new in this revision's test coverage)**: during a fall-back the local
-wall-clock hour repeats (Europe/Warsaw 2026-10-25 03:00→02:00, so local 02:00–03:00 happens
-TWICE that night). A `daily` schedule at `02:30` therefore fires **TWICE** that calendar night, at
-two DISTINCT UTC instants: `00:30 UTC` (02:30 CEST, +02:00 — the first pass, before the clock
-rolls back) then `01:30 UTC` (02:30 CET, +01:00 — the second pass, after). The strictly-after
-invariant is what makes this safe: because the two local 02:30s are different UTC instants,
-advancing the cursor from the first to the second is genuine forward progress — the SAME UTC
-moment is never fired twice, and the following day returns to a single 02:30 (01:30 UTC). This is
-the cron library's observed resolution and is **PINNED as accepted behavior**, not something the
-module works around — see
-`tests/Unit/Workflows/WorkflowScheduleServiceTest.php::test_daily_across_fall_back_dst_fires_both_local_0230_instances`.
+**Fall-back overlap**: during a fall-back the local wall-clock hour repeats (Europe/Warsaw
+2026-10-25 03:00→02:00, so local 02:00–03:00 happens TWICE that night). A wall-clock schedule at
+`02:30` therefore fires **TWICE** that calendar night, at two DISTINCT UTC instants: `00:30 UTC`
+(02:30 CEST, +02:00 — the first pass, before the clock rolls back) then `01:30 UTC` (02:30 CET,
++01:00 — the second pass, after). The strictly-after invariant is what makes this safe: because
+the two local 02:30s are different UTC instants, advancing the cursor from the first to the
+second is genuine forward progress — the SAME UTC moment is never fired twice, and the following
+day returns to a single 02:30 (01:30 UTC). This is the cron library's observed resolution and is
+**PINNED as accepted behavior**, not something the module works around — see
+`tests/Unit/Workflows/WorkflowScheduleServiceTest.php::test_fall_back_fires_both_local_0230_instances`.
+
+### Legacy read-shim (`LegacyScheduleUpgrader`) — no data migration was run
+
+A schedule stored BEFORE this revision in the pre-v2 `{ family, params }` shape (or the earlier
+Etap-5 preset shape) is upgraded to v2 TRANSPARENTLY at every read/compile boundary —
+`WorkflowResource` (so the FE editor always seeds from the v2 shape), `WorkflowScheduleService` /
+`WorkflowScheduleCompiler` (so an old row keeps firing), and the AI-assist re-validation (so a
+model that still answers in the old vocabulary is judged fairly). Detection is by the presence of
+a `family` key (v2 blocks never carry one); a v2 block is returned VERBATIM (the shim is
+idempotent), and an unknown/garbage family is returned unchanged too — it then fails v2 validation
+honestly on its missing `time`, exactly like any malformed block. `exclusions`/`tz` pass through
+unchanged in both shapes. **No data migration or backfill was run** — every previously stored
+schedule keeps working through this shim; only a NEW write must use the v2 shape (the write path
+does not accept `{ family, params }` at all — see the BREAKING note at the top of this document).
+See `LegacyScheduleUpgrader`'s docblock for the complete family→axis mapping table.
 
 ### Live preview — `POST /workflows/meta/schedule-preview`
 
 See the endpoint section above for the full request/response contract. In short: it is the ONLY
-place occurrence dates are computed for the frontend (the FE never re-implements cron/interval
-math locally), it validates with the empty-guard OFF (`empty: true` instead of a 422), and it
-flags `approximate: true` only for `every_n_minutes` (an activation-phased interval, not a
-calendar-anchored cadence).
+place occurrence dates are computed for the frontend (the FE never re-implements cadence math
+locally); it validates with the empty-guard OFF (`empty: true` instead of a 422); it accepts an
+optional `anchor` to centre the projection (the prev-or-at occurrence first, then ascending) so a
+"jump to date" / paging UI needs no separate cursor field; and `approximate` is now ALWAYS
+`false` (every v2 cadence is a wall-clock grid — there is no activation-phased interval left to
+be indicative about).
 
 ### `workflows:run-scheduled` sweep
 
@@ -1501,12 +1504,12 @@ These are documented, reviewed trade-offs — not a TODO list.
 - **The residual schedule-assist honesty limit.** Re-validation guarantees STRUCTURAL
   validity/compilability of an AI-proposed schedule, never SEMANTIC correctness against the
   user's actual intent — see the `/workflows/schedule-assist` endpoint section above.
-- **`last_working_day_of_month` and every other family ignore public holidays.** A computed "last
-  working day" (or any other family's fire date) that lands on a public holiday still fires
+- **`day.special:last_working_day` and every other axis/mode ignore public holidays.** A computed
+  "last working day" (or any other fire date) that lands on a public holiday still fires
   normally — there is no holiday-calendar concept anywhere in the schedule vocabulary. See
   Planned/deferred below.
 - **DST fall-back double-fire is accepted, not a bug.** A wall-clock schedule whose time falls in
-  a fall-back-overlap hour (e.g. `daily 02:30` in Europe/Warsaw on the October changeover) fires
+  a fall-back-overlap hour (e.g. a daily `02:30` in Europe/Warsaw on the October changeover) fires
   TWICE that calendar night at two distinct UTC instants — see the DST section above. This is the
   cron library's observed resolution, pinned by a unit test, and treated as correct: the
   wall-clock time genuinely occurred twice that night.
@@ -1555,14 +1558,16 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Workflows/Services/WorkflowTriggerPayloadFactory.php` — the whitelisted `{{trigger.*}}` payload builder
 - `app/modules/Workflows/Services/WorkflowVariableResolver.php` — the directive + `{kind}` union resolver (replaces the Etap-5 flat `ReferenceResolver`)
 - `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — the typed variable/condition catalog
-- `app/modules/Workflows/Services/WorkflowScheduleService.php` — cadence math + CAS claim + `nextOccurrences()` (the preview seam) + the `times`/`exclusions` post-filter loop
-- `app/modules/Workflows/Services/WorkflowScheduleCompiler.php` — family → cron-list/interval/last-working-day compiler
-- `app/modules/Workflows/Services/CompiledSchedule.php` — the compiled cadence value object (`interval` / `cron` list / `last_working_day` list kinds)
+- `app/modules/Workflows/Enums/ScheduleTimeMode.php`, `ScheduleDayMode.php`, `ScheduleMonthMode.php`, `ScheduleDaySpecial.php` — the v2 axis/mode enums
+- `app/modules/Workflows/Enums/ScheduleLimits.php` — the ONE place every numeric bound lives (the FE mirrors it verbatim)
+- `app/modules/Workflows/Services/WorkflowScheduleService.php` — cadence math + CAS claim + `nextOccurrences()`/`occurrencesFrom()` (the preview + anchor seam) + the `exclusions` post-filter loop
+- `app/modules/Workflows/Services/WorkflowScheduleCompiler.php` — the v2 descriptor → cron-list/last-working-day compiler (the one cadence grammar)
+- `app/modules/Workflows/Services/CompiledSchedule.php` — the compiled cadence value object (`cron` list / `last_working_day` kinds — no interval kind in v2)
 - `app/modules/Workflows/Services/WorkflowScheduleRulesValidator.php` — the ONE schedule-block rule set (write path + AI re-validation + preview, `checkEmpty` toggle)
-- `app/modules/Workflows/Services/WorkflowScheduleFamilyCatalog.php` — the `/meta/schedule-families` discovery source (16 families)
+- `app/modules/Workflows/Services/LegacyScheduleUpgrader.php` — the read-shim upgrading a stored/proposed legacy `{ family, params }` block to v2 (no data migration was run)
 - `app/modules/Workflows/Services/WorkflowScheduleAssistService.php` — AI assist orchestration + re-validation gate
-- `app/modules/Workflows/Agents/ScheduleAssistAgent.php` — the tool-less natural-language agent
-- `app/modules/Workflows/Http/Requests/SchedulePreviewRequest.php`, `Http/Controllers/WorkflowSchedulePreviewController.php` — the live schedule-preview endpoint
+- `app/modules/Workflows/Agents/ScheduleAssistAgent.php` — the tool-less natural-language agent, prompt built from the v2 enums/limits
+- `app/modules/Workflows/Http/Requests/SchedulePreviewRequest.php`, `Http/Controllers/WorkflowSchedulePreviewController.php` — the live schedule-preview endpoint (incl. the `anchor` param)
 - `app/modules/Workflows/Steps/` — the 2 step implementations (`CreateTaskStep`, `CreateFormReportStep`)
 - `app/modules/Workflows/Jobs/WorkflowRunJob.php`
 - `app/modules/Workflows/Console/RunScheduledWorkflowsCommand.php`
@@ -1579,20 +1584,21 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `tests/Feature/WorkflowRunEngineTest.php`
 - `tests/Feature/WorkflowRunReadTest.php`
 - `tests/Feature/WorkflowScheduleSweepTest.php`
-- `tests/Feature/WorkflowScheduleAssistTest.php`
-- `tests/Feature/WorkflowScheduleFamilyMetaTest.php`
-- `tests/Feature/WorkflowSchedulePreviewTest.php` — the preview endpoint (empty/approximate semantics, checkEmpty-off behavior)
+- `tests/Feature/WorkflowScheduleAssistTest.php` — v2 examples incl. the legacy-proposal read-shim case
+- `tests/Feature/WorkflowSchedulePreviewTest.php` — the preview endpoint (empty/`anchor`/prev-or-at semantics, `approximate` always false, checkEmpty-off behavior)
 - `tests/Feature/WorkflowStepsTest.php`
 - `tests/Feature/WorkflowVariableCatalogTest.php`
 - `tests/Unit/Workflows/WorkflowConditionEvaluatorTest.php`
-- `tests/Unit/Workflows/WorkflowScheduleServiceTest.php` — includes the DST spring-forward AND fall-back pins, `times`/`exclusions` cases, `last_working_day_of_month`
-- `tests/Unit/Workflows/WorkflowScheduleCompilerTest.php`
+- `tests/Unit/Workflows/WorkflowScheduleServiceTest.php` — includes the DST spring-forward AND fall-back pins, the `exclusions` post-filter loop, `last_working_day`
+- `tests/Unit/Workflows/WorkflowScheduleCompilerTest.php` — per-axis compiled-cron assertions, the `last_working_day` month-filter cases
+- `tests/Unit/Workflows/WorkflowScheduleLegacyUpgraderTest.php` — the full legacy-family → v2 mapping table
 - `tests/Unit/Workflows/WorkflowVariableResolverTest.php`
-- `resources/js/next/pages/workflows/__tests__/WorkflowEditorDrawer.spec.ts` — pins the exact create-payload wires reproduced above
-- `docs/decisions/ADR-0010-workflows-schedule-rebuild.md` — this revision's schedule design decisions (16 families, times, exclusions, preview, LW-defect)
+- `resources/js/next/pages/workflows/__tests__/WorkflowEditorDrawer.spec.ts` — pins the exact create-payload wires reproduced above (incl. the v2 `schedule` wire)
+- `docs/decisions/ADR-0012-workflows-schedule-descriptor-v2.md` — this revision's schedule design decisions (compositional descriptor, read-shim, flat anchored preview, AI-modal-with-approval)
+- `docs/decisions/ADR-0010-workflows-schedule-rebuild.md` — the 12→16-family batch; §7 (frontend two-mode) is SUPERSEDED by ADR-0012, the rest stands as history
 - `docs/decisions/ADR-0009-workflows-rescope-typed-variables.md` — the 5.1 re-scope decisions
 - `docs/decisions/ADR-0008-workflows-module-design.md` — run-engine decisions that still hold (superseded sections marked)
-- `docs/next/workflows-uxui-spec.md` — the frontend UX/UI specification
+- `docs/next/workflows-uxui-spec.md` — the frontend UX/UI specification (REVISION 4 — the v2 compositional builder)
 
 ## Planned / deferred (not implemented)
 
@@ -1608,12 +1614,15 @@ These are documented, reviewed trade-offs — not a TODO list.
   lookup + type coercion only — no computed operations (string concatenation, date formatting,
   arithmetic) on a resolved variable. Deliberately deferred — see ADR-0009 §2.
 - **Per-tenant error isolation in the sweep commands**: see the accepted-risk note above.
-- **Public holiday awareness**: `last_working_day_of_month` (and every other family) has NO
+- **Public holiday awareness**: `day.special:last_working_day` (and every other axis/mode) has NO
   concept of a public holiday calendar — a computed "last working day" or any other fire date
   that lands on a holiday still fires normally. Would need a holiday-calendar data source (and
   almost certainly a per-workspace/per-locale one), a real scope increase, not a tweak.
-- **An every-N-days family and continuous time-window cadences**: the vocabulary has no "every N
-  days" family (only N-minute/N-hour/N-month grids) and no continuous "between HH:mm and HH:mm"
-  window — only discrete `times[]` fire points. Both are named explicitly in the AI-assist's
+- **Rolling intervals, every-N-weeks, one-off dates, and sub-minute cadences**: the v2 vocabulary
+  has no rolling interval axis (a cadence phased from an arbitrary start rather than a wall-clock
+  grid — e.g. "dokładnie co 90 minut", "co 2,5 godziny"), no "every N weeks" axis, no single
+  one-off-date cadence, and no sub-minute grid. All four are named explicitly in the AI-assist's
   honest-unsupported list (`ScheduleAssistAgent::semanticCaveats()`) rather than silently
-  approximated.
+  approximated. `every_n_days`/`every_n_hours`/`every_n_minutes` WITH an optional time-of-day
+  window ARE supported (see the TIME/DAY axis tables) — do not confuse these with the unsupported
+  rolling-interval case.

@@ -1,5 +1,69 @@
 # Workflows module — UX/UI specification
 
+> **REVISION 5 — step 2a `schedule` builder UX compaction (fresh user feedback on the
+> shipped REV4) — STATUS: PLANNED (this spec drives it), date 2026-07-13.** REV5 is a
+> SURGICAL delta on REV4's schedule builder — the compositional descriptor v2
+> (time × day × month, AND-semantics), the summary sentence GRAMMAR, the AI modal
+> (`§4.5.9`), the preview endpoint, and the four load states are all UNCHANGED. Four
+> things change, all inside `§4.5`:
+> - **A — one compact header segment.** REV4's separate summary band, the visible
+>   "Najbliższe uruchomienia" heading, the labelled "Skocz do daty" field and the
+>   "Zaplanuj z AI" button collapse into a SINGLE framed segment with a far smaller
+>   vertical budget: one sentence+actions row over a rail of COMPACT two-line tiles.
+>   The "Najbliższe uruchomienia" heading becomes an aria-label (not visible text);
+>   "Skocz do daty" sits in the same row as a compact always-visible `DateTimePicker`
+>   field (REV5.1 correction — the original icon+`Popover` was inscrutable and broke
+>   the nested calendar; see `§4.5.3`) (`§4.5.2`–`§4.5.4`).
+> - **B — options carry their own settings.** The per-tab "`SegmentedControl` of
+>   cards + controls stacked BELOW" is replaced by a radio-group of selection cards
+>   where the SELECTED card EXPANDS to show its inputs woven into a natural-language
+>   sentence ("co [n] minut ☐ od [od] do [do]"). New LOCAL component
+>   `WorkflowScheduleOptionCards.vue`; the `SegmentedControl` PRIMITIVE is left
+>   UNTOUCHED (other consumers are pinned to it). Unselected cards show their title
+>   only (`§4.5.5`–`§4.5.6`, `§4.5.15`).
+> - **C — no timezone field.** The tz text field leaves the UI; the MODEL still
+>   carries `tz` (a NEW schedule seeds the browser's active zone, an EDITED one keeps
+>   its saved zone — the wire round-trip is unchanged). The summary's "({tz})" clause
+>   now shows ONLY when the schedule's tz differs from the viewer's active zone
+>   (`§4.5.8`, `§4.5.10`).
+> - **D — exceptions are dates only.** The "oprócz dni tygodnia / miesięcy" chip
+>   filters leave the UI (the same effect is reachable by choosing days/months on the
+>   Dzień/Miesiąc axes); the "Wyjątki" disclosure now holds ONLY skip-dates. The
+>   backend still ACCEPTS weekday/month exclusions (the FE simply stops AUTHORING
+>   them), and `describeSchedule` still RENDERS them when a config carries them
+>   (`§4.5.7`, `§4.5.10`, `§4.5.12`).
+>
+> Sections REV5 rewrites in place, each carrying a REV5 supersede marker: `§4.5.2`,
+> `§4.5.3`, `§4.5.4`, `§4.5.5` (+ 5a/5b/5c), `§4.5.6`, `§4.5.7`, `§4.5.8`, the tz
+> clause of `§4.5.10`, the key inventory `§4.5.12`, and the component inventory
+> `§4.5.15`. `§4.5.9` (AI modal) is UNCHANGED except that its compact in-modal preview
+> inherits REV5's compact tiles. Everything else in this spec (REV4 and earlier) still
+> describes the module. A follow-up ADR records the compaction decision (flagged for
+> the docs phase; not written by this UX pass).
+
+> **REVISION 4 — step 2a `schedule` rebuild (compositional descriptor v2) — STATUS:
+> PLANNED (this spec drives it), date 2026-07-12.** The `schedule` trigger leaves
+> the 16-family model behind for a **compositional descriptor**: an occurrence
+> fires when a **time** rule, a **day** rule, and a **month** rule ALL match
+> (AND-semantics), minus `exclusions`, in a `tz`. `§4.5` below was **rewritten in
+> place** to: a top **summary sentence + "Zaplanuj z AI"** (`WorkflowScheduleSummary`),
+> a horizontally-scrolled **preview strip** with a "jump to date" anchor
+> (`WorkflowSchedulePreviewStrip`), a **three-tab manual builder** (Czas | Dzień |
+> Miesiąc — each tab a `SegmentedControl` of sub-modes, never tabs-in-tabs), a
+> collapsible **exceptions** disclosure, and an **AI assist MODAL**
+> (`WorkflowScheduleAssistModal`) that **no longer auto-applies** — every result is
+> reviewed and committed via **Zastosuj**. The **clock grid** (co-X counted from the
+> top of the hour / start of the day) makes every preview EXACT, so REV3's
+> `approximate` note is **retired**. The REV3 simple/advanced two-mode text is
+> **SUPERSEDED**; its `workflows.schedule.*` sketch in `§7.1` and its read-side use
+> in `§3.2` are reconciled by the authoritative REV4 grammar (`§4.5.10`) + key
+> inventory (`§4.5.12`) — where those pre-REV4 sections and REV4 differ, REV4 wins,
+> and `§3.2`'s `describeSchedule` reference now resolves to `§4.5.10`. Everything
+> outside `§4.5` is UNCHANGED from REVISION 3. This revision DEPENDS on the backend
+> descriptor-v2 contract (owned by the same plan's backend phase); where this spec
+> names a wire/endpoint shape it is the FE's REQUIREMENT on that phase, flagged
+> `[backend-dep]` — it invents no field.
+
 > **REVISION 3 — schedule rebuild (B1–B5) — STATUS: IMPLEMENTED.** The schedule
 > vocabulary grew from 12 to 16 families, `weekly` moved to a weekday LIST,
 > `times`/`exclusions` were added to the schedule block, and a live preview
@@ -377,210 +441,911 @@ A `<section>` under the info band.
   > Emit `anonymous` only when the tri-state is not `any`. Emit `tz` only when a
   > non-empty override is set.
 
-### 4.5 Schedule builder (REWRITTEN in REVISION 3 — 16 families, simple/advanced modes, times/exclusions, live preview, AI assist)
+### 4.5 Schedule builder (REWRITTEN in REVISION 4 — compositional descriptor v2: time × day × month, tabbed builder, summary + preview strip, AI modal)
 
-Fed by `GET /workflows/meta/schedule-families` →
-`{data:[{family, params:[{name, type, required, min?, max?, lt?}]}]}` (now 16
-entries — `weekly`'s param is `weekdays`, type `weekday_list`, not a scalar
-`weekday`). The FE owns **all** labels (backend sends none). The builder never
-hard-codes a family's inputs — it renders from the descriptors, so it can never
-drift from what the backend accepts. Component: `WorkflowScheduleBuilder.vue`.
+> **Supersede marker.** This section REPLACES the REVISION 3 simple/advanced
+> two-mode builder (16 families, one grouped family `Select`, an inline assist
+> composer, a bottom preview card). None of REV3's §4.5.1–§4.5.7 structure survives:
+> there is no simple/advanced toggle, no family `Select`, no `intent.*`/`family.*`/
+> `tier.*` keys, and no `approximate` state. The REV3 text below was rewritten in
+> place. `ADR-0010 §7`'s two-mode decision is superseded by the compositional model
+> here (a follow-up ADR records this — flagged for the docs phase; not written by
+> this UX pass).
 
-The REVISION 2 tier-based single-mode picker (three quick-pick chips + one grouped
-16-item `Select`, described in this section's earlier text) was superseded during
-the schedule rebuild by a **two-mode** builder — see ADR-0010 §7 for why: a single
-flat/grouped Select alone was judged not to scale to 16 items even with tiering,
-and the growing optional surface (`times`, `exclusions`) needed a place to live
-that a beginner never has to see.
+> **REV5 supersede marker (scoped).** REV5 does NOT re-open the descriptor model, the
+> AND-semantics, the tab structure, the AI modal, or the summary GRAMMAR. It compacts
+> the header (`§4.5.2`–`§4.5.4`), weaves each option's inputs into the option itself
+> (`§4.5.5`–`§4.5.6`), removes the tz field (`§4.5.8`, keeping the model), and reduces
+> exceptions to dates (`§4.5.7`). Subsections it rewrites carry their own REV5 marker;
+> subsections without a marker are REV4-as-built.
 
-#### 4.5.1 Simple mode (default) — five curated intents
+The `schedule` trigger is now a **composition of three independent axes** — WHEN in
+the day (`time`), WHICH days (`day`), WHICH months (`month`) — plus a set of
+`exclusions` and a `tz`. An occurrence fires **only when all three axes match at
+once** (AND-semantics), then any `exclusions` drop it. The user builds each axis in
+its own tab; the builder never asks them to pick from a flat list of pre-composed
+"families". The FE owns **all** labels (§4.5.12).
 
-A header `Button variant="ghost" size="sm"` toggle
-(`workflows.schedule.advancedToggle` / `.simpleToggle`, `aria-pressed`) switches
-between simple and advanced. **Simple is the default** and shows a
-`SegmentedControl` of five intents (`workflows.schedule.intent.*`):
+Host container: `WorkflowScheduleBuilder.vue` (rebuilt), rendered by
+`WorkflowTriggerFields.vue`'s `schedule` branch (§4.4). `v-model` is the local
+`ScheduleDraft` (§4.5.1); the drawer wires it into `trigger_config.schedule` on save
+via `draftToConfig` and gates the step/save on the builder's exposed `isValid`.
 
-| Intent | Maps to family | Curated controls shown |
+#### 4.5.1 The compositional descriptor v2 (the data model)
+
+The FE draft shape the whole section manipulates (the exact wire shape is finalized
+by the backend phase — `[backend-dep]`; `configToDraft`/`draftToConfig` in
+`workflowSchedule.ts` adapt between wire and this draft):
+
+```ts
+type TimeAxis =
+  | { mode: 'at'; at: string[] }                    // 1..6 'HH:mm', sorted, distinct
+  | { mode: 'every_minutes'; n: number;             // n 1..59 (default 1)
+      window?: { from: string; to: string } }       // 'HH:mm' each, from < to; default OFF
+  | { mode: 'every_hours'; n: number;               // n 1..23 (default 1)
+      minute: number;                                // 0..59 (default 0)
+      window?: { from: number; to: number } };       // whole hours 0..23, from < to; default OFF
+
+type DayAxis =
+  | { mode: 'every_day' }
+  | { mode: 'every_n_days'; n: number;              // n 1..31 (default 1)
+      window?: { from: number; to: number } }        // day-of-month 1..31, from < to; default OFF
+  | { mode: 'weekdays'; weekdays: number[] }        // non-empty subset of 0..6, 0 = Sunday
+  | { mode: 'month_days'; days: number[] }          // non-empty subset of 1..31
+  | { mode: 'special'; special:
+      | { kind: 'last_day' }
+      | { kind: 'last_working_day' }                 // RESTRICTION: requires TimeAxis.mode === 'at'
+      | { kind: 'nth_weekday'; ordinal: number; weekday: number }  // ordinal 1..5, weekday 0..6
+      | { kind: 'last_weekday'; weekday: number } };
+
+type MonthAxis =
+  | { mode: 'every_month' }
+  | { mode: 'every_n_months'; n: number;            // n 1..12 (default 1)
+      window?: { from: number; to: number } }        // month 1..12, from < to; default OFF
+  | { mode: 'months'; months: number[] };           // non-empty subset of 1..12
+
+interface ScheduleExclusions {
+  months: number[];   // 1..12
+  weekdays: number[]; // 0..6
+  dates: string[];    // 'YYYY-MM-DD', max 50, distinct
+}
+
+interface ScheduleDraft {
+  time: TimeAxis;
+  day: DayAxis;
+  month: MonthAxis;
+  exclusions: ScheduleExclusions;
+  tz: string;         // '' ⇒ omit ⇒ server UTC
+}
+```
+
+- **Neutral draft (the seed on a fresh schedule):**
+  `{ time:{mode:'at', at:['09:00']}, day:{mode:'every_day'}, month:{mode:'every_month'},
+  exclusions:{months:[],weekdays:[],dates:[]}, tz:<REV5: browser zone> }` → renders as
+  **"Codziennie o 09:00"** (§4.5.10). `every_day` and `every_month` are the **neutral**
+  modes and are omitted from the sentence. **REV5:** `tz` now seeds the resolved browser
+  IANA zone (fallback `''`) instead of `''`, and the sentence shows no "(…)" clause when
+  that zone equals the viewer's (§4.5.8/§4.5.10). `exclusions.months`/`.weekdays` stay in
+  the model (backend-supported) though the FE no longer authors them (§4.5.7).
+- **Defaults are deliberate:** the interval **N defaults to 1**; every **window is OFF
+  by default** (omitted from the wire); `every_hours.minute` **defaults to 0**.
+- **Clock grid (why the preview is always exact).** `every_minutes` is phased from the
+  **top of the hour** (n=15 ⇒ :00, :15, :30, :45), `every_hours` from the **start of
+  the day** (n=2 ⇒ 00:00, 02:00, … plus the `minute` offset). Because the phase is
+  fixed to the calendar, not to "now", the preview is deterministic — **REV3's
+  `approximate` state is retired** and no "w przybliżeniu / indicative" note is ever
+  shown.
+- **Switching a tab's sub-mode reshapes ONLY that axis**, preserving the other two and
+  the exclusions/tz (e.g. flipping the Day tab from `every_day` to `weekdays` keeps the
+  chosen times + months). `at` times are preserved across time sub-mode switches where
+  possible.
+
+#### 4.5.2 Panel structure (top → bottom) + component decomposition
+
+> **REV5 supersede marker.** REV4's five stacked blocks (separate summary band,
+> separate preview `<section>` with its own heading, separate tz field) become FOUR,
+> and the top TWO fuse into one **header segment**. Blocks below are the REV5 order.
+
+The `schedule` panel renders these blocks in order. Each is a small component so the
+host stays thin; all share the single `ScheduleDraft` `v-model`.
+
+| # | Block | Component | Purpose |
+| --- | --- | --- | --- |
+| 1 | **Header segment** (summary + preview, ONE frame) | `WorkflowScheduleSummary` (top row) + `WorkflowSchedulePreviewStrip` (rail row), composed inside a single `Surface bg="muted" border radius="lg"` owned by the host | ROW 1: the live `describeSchedule` sentence + a compact "Skocz do daty" `DateTimePicker` field (REV5.1) + the "Zaplanuj z AI" button. ROW 2: a rail of COMPACT two-line run tiles (`§4.5.3`–`§4.5.4`). |
+| 2 | **Manual builder** | `WorkflowScheduleBuilder` (tabs) | three tabs Czas / Dzień / Miesiąc, each a `WorkflowScheduleOptionCards` radio-group whose SELECTED card expands with its in-sentence inputs (`§4.5.5`). |
+| 3 | **Exceptions** | inside the builder (`Accordion`) | a collapsed disclosure holding ONLY skip-**dates** (`§4.5.7`). |
+| 4 | **AI modal** | `WorkflowScheduleAssistModal` | opened from block 1; reviews then commits via **Zastosuj** (`§4.5.9`). |
+
+- **The tz field is GONE from the panel** (REV4 block 5). The MODEL still carries `tz`
+  (`§4.5.8`); nothing in the panel edits it.
+- **Vertical rhythm:** the host is still `flex flex-col gap-next-4`, but block 1 now
+  reads as ONE compact unit — "here's what you built AND what it will do" in a single
+  framed segment above the controls, in a much smaller vertical budget than REV4's two
+  separate boxes. `describeSchedule` + the preview recompute on every draft change.
+- **The four load states** apply to the whole panel exactly as REV4: the descriptor
+  vocabulary is static in the FE, so there is no families fetch to fail — the **preview
+  strip** owns its own loading/empty/error/success (`§4.5.4`, now rendered INSIDE the
+  segment frame), and the `[backend-dep]` preview degrades quietly and never blocks
+  editing except the `empty` gate (`§4.5.11`).
+
+#### 4.5.3 `WorkflowScheduleSummary` — the sentence + the header row (REV5: no own band)
+
+> **REV5 supersede marker.** REV4's summary was its OWN `Surface bg="muted" p-next-4`
+> band, separate from the preview `<section>`. REV5 folds it into the shared header
+> segment (`§4.5.2` block 1): the HOST owns the single `Surface bg="muted" border
+> radius="lg" p-next-3` frame; the summary is just its **top row**, and that row now
+> also carries the "Skocz do daty" trigger + the "Zaplanuj z AI" button. This is the
+> "one visual segment, smaller footprint" the user asked for.
+
+The header row is `flex flex-wrap items-center gap-next-2` and wraps on mobile:
+
+- **Leading:** an inline `Icon name="calendar"` (the only calendar glyph in the curated
+  set), `text-next-muted-foreground`, `aria-hidden` — NO large `h-9 w-9` bubble (REV4 had
+  one; the bubble is dropped to reclaim width and height so the row stays one line on
+  desktop).
+- **Body:** the live `describeSchedule(draft, t)` sentence (`§4.5.10`) as one string,
+  `text-next-sm font-next-medium text-next-fg`, `min-w-0 flex-1` so it wraps, never
+  truncates. It is ALWAYS renderable (the neutral draft yields "Codziennie o 09:00"),
+  so there is no empty/placeholder state here.
+- **Trailing action cluster** (right-aligned on the same row, wraps under the sentence
+  on mobile), two controls in order:
+  1. the **"Skocz do daty"** anchor control — **REV5.1 correction (user feedback on the
+     built REV5):** NOT an icon+`Popover`. A bare icon was inscrutable, and nesting the
+     `DateTimePicker` (whose calendar is a teleported `FieldPopover`) inside
+     `ui/overlay/Popover` broke it — any click in the calendar landed "outside" the
+     panel and closed it. Instead: a **compact, always-visible `DateTimePicker` field**
+     rendered directly in the row (`w-56` wrap, `size="sm"`, placeholder + `aria-label`
+     `workflows.schedule.preview.jumpTo`, `dirty` tint when an anchor is set) plus an
+     field's own built-in `clearable` ✕ INSIDE the shell (REV5.2 — no external clear
+     button; the user's rule: clear/remove affordances live INSIDE the input). The
+     calendar is then a FIRST-level overlay and works. Never nest a FieldPopover-based
+     control inside `ui/overlay/Popover`.
+  2. the **"Zaplanuj z AI"** button — `Button variant="outline" size="sm"
+     leading-icon="sparkles"` `workflows.schedule.summary.assist` that opens
+     `WorkflowScheduleAssistModal` (`§4.5.9`); icon-only (`size="icon-sm"`, aria-label)
+     on the narrowest widths. Still a **builder affordance**, not a drawer/footer
+     action (the sticky-footer rule governs Save/Cancel — `§4.1` — and the modal's own
+     footer — `§4.5.9`).
+
+- **Anchor ownership.** The `anchor` state lives with the strip/host so the trigger
+  (row 1) and the rail (`§4.5.4`) stay in sync; whether the jump trigger is a summary
+  slot or a host-rendered sibling in the same row is an implementation choice — the
+  visual result is one row. `WorkflowScheduleSummary` still owns NO AI logic (it emits
+  `assist`; the host wires the modal).
+
+The summary is the single source of the human sentence; there is no second copy of it
+in a preview card (REV3 had one — removed).
+
+#### 4.5.4 `WorkflowSchedulePreviewStrip` — upcoming runs as a compact scrollable rail
+
+> **REV5 supersede marker.** REV4's strip was its OWN `<section>` with a visible
+> `Icon + <h4>` "Najbliższe uruchomienia" heading, a labelled `DateTimePicker`
+> beside it, and TALL three-line tiles (`w-[8.5rem]`, `~5.5rem`). REV5: (1) the
+> strip renders INSIDE the header segment frame with NO visible heading — the
+> "Najbliższe uruchomienia" text becomes the rail region's `aria-label`; (2) the
+> "Skocz do daty" control MOVES up into the segment row as a compact always-visible
+> `DateTimePicker` field (REV5.1 correction — see `§4.5.3`)
+> (`§4.5.3`) — this subsection only documents the anchor's EFFECT on the rail; (3)
+> tiles are COMPACT two-line (`§4.5.4` below). Everything else — paging, edge fades,
+> the anchor's "previous" tile, the 4 states, the preview contract — is REV4-as-built.
+
+A horizontal rail of **run tiles** as the second row of the header segment, so the
+user sees the concrete effect of the AND-composition. `[backend-dep]` — it consumes
+the preview endpoint (see the contract note at the end of this subsection). The rail's
+scroll region carries `aria-label = workflows.schedule.preview.title` (the ex-heading
+text) so it is still named for assistive tech.
+
+**Tile (a compact data card, per `reference-links.md` "data cards").** A `Surface
+bg="card" border radius="md"` (tiles pop against the muted segment frame), `w-[7rem]
+shrink-0`, `p-next-2`, **two** lines:
+1. **weekday + date on one line:** weekday `text-next-2xs uppercase tracking-wide
+   text-next-muted-foreground` (e.g. "pon") immediately followed by the date
+   `text-next-sm font-next-semibold text-next-fg tabular-nums` (e.g. "12 lip");
+2. **time:** `text-next-sm tabular-nums text-next-fg` (e.g. "09:00").
+This halves REV4's tile height while keeping every field. Both lines render in the
+**schedule's own `tz`** via the shared `occurrencePartsFormatter(locale, renderZone)`
+(`renderZone` = the schedule `tz`, or the active browser tz when blank — `§4.5.8`).
+Each tile has an `aria-label` = `workflows.schedule.preview.tileAria` (`{weekday}`,
+`{date}`, `{time}`) so a screen reader announces the whole instant.
+
+**Rail behavior.**
+- Container: `flex gap-next-2 overflow-x-auto scrollbar-none scroll-smooth`, with
+  **edge-fade** gradients on both sides (the technique `Tabs.vue` uses: `from-next-bg
+  to-transparent` overlays shown only when scrollable that way) so the rail visibly
+  continues off-screen.
+- **Lazy paging:** a zero-width sentinel at the right end; when it scrolls into the
+  viewport, request the next page and **append** tiles (a horizontal analogue of
+  `useInfiniteScroll`), plus a keyboard "Wczytaj kolejne" fallback button. A trailing
+  `Spinner` tile shows while a page is in flight.
+- **"Skocz do daty" (jump-to-date) — trigger MOVED to the segment row (`§4.5.3`).**
+  The anchor (a `DateTimePicker` inside the row's `Popover`) still re-seeds the rail:
+  setting an **anchor A** makes **tile[0] = the last occurrence ≤ A**, rendered as a
+  **"previous" tile** (visually distinct — `bg-next-muted border-dashed
+  text-next-muted-foreground` + a leading `rotate-ccw` glyph before the weekday; the
+  "poprzednie" word lives ONLY in the tile's `aria-label`, no stacked
+  caption line — dropping the REV4 caption chip keeps the compact two-line height),
+  followed by the occurrences **after A**. Clearing the anchor returns to the default
+  view (upcoming from now, **no** previous tile). The anchor is interpreted in the
+  schedule `tz`.
+
+**States (the 4 UI states, scoped to the strip):**
+
+| State | Trigger | UI |
 | --- | --- | --- |
-| **Minutes** | `every_n_minutes` | One `NumberInput` (1–59), `workflows.schedule.simple.minutesLabel`. |
-| **Hours** | `hourly_at` (N=1) or `every_n_hours` (N≥2) | One `NumberInput` for the interval (1–12) that SWITCHES the underlying family at the N=1/N≥2 boundary, plus an optional minute `NumberInput`. The user never sees the family switch — only "run every N hours". |
-| **Daily** | `daily` | One `TimePicker`. |
-| **Weekly** | `weekly` | Monday-first weekday chips (`aria-pressed` `Button`s, wire value stays `0=Sunday`) + one `TimePicker`. |
-| **Monthly** | `monthly` or `last_day_of_month` | A `RadioGroup` ("a day of the month" vs. "the last day of the month") that switches family, a day `NumberInput` (monthly only), and one `TimePicker`. |
+| **Loading** | first fetch / anchor change | 5–6 **skeleton tiles** (`Skeleton variant="rect"` at the COMPACT two-line tile size — `w-[7rem]` × ~`3.25rem`), `role="status"` + `workflows.schedule.preview.loading`. |
+| **Empty** | preview `empty: true` (exclusions/impossible AND rule out every run — e.g. `month_days:[31] ∧ months:[2]`) | an inline `Alert variant="warning" size="sm"` `workflows.schedule.preview.empty` REPLACING the rail; this **blocks save** (feeds `isValid=false`, §4.5.11) because the write path 422s an empty schedule. |
+| **Error** | network/parse failure | QUIET, non-blocking: `workflows.schedule.preview.unavailable` as muted text where the rail would be; the summary sentence stays and the schedule is still savable (a preview outage never blocks the builder). |
+| **Success** | occurrences returned | the tile rail (+ previous tile when anchored) + lazy paging. |
 
-Simple mode always writes a SINGLE time (`times[0]`) — it has no times/exclusions
-editors; those live in advanced mode only. `isSimpleRepresentable(draft)` decides
-whether the CURRENT draft can be shown in simple mode's reduced controls (e.g. a
-draft using `exclusions`, or a family with no simple intent, is NOT representable);
-when the loaded draft isn't representable the builder forces advanced mode instead
-of silently hiding configured state — the advanced-toggle `Button` is disabled
-(with a `Tooltip`, `workflows.schedule.simpleUnavailable`) while a non-representable
-draft is loaded, so the user cannot switch back to simple mode and lose it.
+**Preview contract this strip consumes — IMPLEMENTED, flat (no `previous`/`cursor`).**
+`POST /workflows/meta/schedule-preview` accepts the **v2 `{ time, day?, month?,
+exclusions?, tz? }` block** plus an optional **`count`** (1–12, default 6) and an
+optional **`anchor`** (an ISO-8601 datetime; without an offset it is read as a
+wall-clock time in the schedule's own tz). The response stays FLAT —
+`{ occurrences: string[], count: number, empty: boolean, approximate: boolean }` — with
+**no separate `previous` or `cursor` field**: when `anchor` is set, `occurrences[0]` IS
+the prev-or-at occurrence (the strip's `isPreviousOccurrence()` helper marks it as the
+"previous" tile by comparing it to the anchor), and the rest ascend after it. PAGING is
+a plain re-call with `anchor` set to the last occurrence already shown — there is no
+separate cursor concept. `approximate` is always `false` in v2 (kept only for
+response-shape stability). A pre-implementation sketch of this contract once proposed
+the richer `previous`/`cursor` shape; ADR-0012 §4 explicitly rejects it in favor of the
+flatter one actually shipped, for simplicity of the wire contract. One call —
+`store.schedulePreview(config, { count?, anchor? })`.
 
-Simple and advanced modes write the SAME `ScheduleDraft` shape
-(`{family, params, tz, times, exclusions}`) — simple mode is a curated VIEW over
-the full model, never a separate schema (ADR-0010 §7).
+#### 4.5.5 Manual builder — three tabs (Czas | Dzień | Miesiąc) with self-configuring option cards
 
-#### 4.5.2 Advanced mode — four sections, descriptor-driven
+> **REV5 supersede marker.** REV4 rendered each tab as a `SegmentedControl` of
+> sub-mode cards WITH the active sub-mode's controls stacked in separate `FormField`
+> rows BELOW the cards. The user's feedback: "if you pick an option in the tabs, the
+> inputs for its settings should be placed visually INSIDE that option, phrased in
+> natural language." REV5 therefore replaces the `SegmentedControl`+below-controls
+> per tab with a new LOCAL component **`WorkflowScheduleOptionCards.vue`** — a vertical
+> radio-group of selection cards where the SELECTED card EXPANDS to reveal its own
+> inputs woven into a sentence. The `SegmentedControl` PRIMITIVE is UNTOUCHED (its
+> other consumers stay pinned to their specs — `§4.4`, `§4.6`, `§5.2`).
 
-Toggling to advanced reveals four sections, each rendering only the controls the
-selected family's descriptors (plus the `times`/`exclusions` extensions) call for:
+The builder body is still a **`Tabs` (`variant="underline"`, `size="md"`,
+`ariaLabel=workflows.schedule.tabsAria`)** with exactly three tabs, one per axis:
+`workflows.schedule.tab.time` / `.day` / `.month` (icons `clock` / `calendar-days` /
+`calendar`). Each tab **panel** now holds ONE `WorkflowScheduleOptionCards` group.
+**Never tabs-in-tabs** — the tab switches the AXIS; the cards switch the sub-mode;
+sub-mode controls live INSIDE the selected card. Each tab label keeps at most a
+dot/none `Badge` (the full sentence lives in the summary `§4.5.3`).
 
-**Section 1 — Repeat** (`workflows.schedule.section.repeat`): a grouped family
-`Select` (`workflows.schedule.moreLabel`) organized into tiers — Common
-(`daily`/`weekly`/`hourly`), Intervals (`every_n_minutes`/`every_n_hours`/
-`hourly_at`/`twice_daily`/`every_n_months`), Calendar (`monthly`/`twice_monthly`/
-`last_day_of_month`/`nth_weekday_of_month`/`last_weekday_of_month`/
-`last_working_day_of_month`/`quarterly`/`yearly`) — plus any family the backend
-returns that isn't in a named tier falls into an `Other` group (defensive: the
-tiers are UI curation over the descriptor list, never a filter on it). The
-frequency params (`n`, `minute`) render here as `NumberInput`s.
+**The option-card pattern (`WorkflowScheduleOptionCards.vue`).** A `role=radiogroup`
+(`aria-label` = the axis) of stacked cards, each in the selection-card spirit
+(border + tint + radio indicator when chosen, never color alone). REV5 splits each
+card into a **radio header** and an **optional expanding body**:
 
-**Section 2 — Days & dates** (`workflows.schedule.section.daysAndDates`, shown
-only when the family has non-frequency params): renders one control per remaining
-descriptor by `type`:
+- **Card header = the radio.** A `button role="radio"` with `aria-checked`, carrying a
+  radio-dot indicator + the option **title** (`workflows.schedule.<axis>.mode.*`). For
+  an UNSELECTED card the header shows the **title ONLY** — no description, no inputs —
+  so the tab reads as a compact vertical list where only the active option is "open"
+  (decision B(4): unselected = title only, for compactness; it also complements the
+  header compaction of decision A).
+- **Card body = a SEPARATE region OUTSIDE the button.** The selected card's body is a
+  sibling of the header inside the same bordered card container (visual continuity via
+  the shared border + tint), NOT a child of the `role="radio"` button — because a
+  `radio` MUST NOT contain interactive controls. The body is `role="group"`
+  (`aria-label` = the option title) and holds that sub-mode's inputs woven into a
+  natural-language sentence (`§4.5.5a`–`§4.5.5c`; the "od–do" window is `§4.5.6`).
+  Modes with no inputs (`every_day`, `every_month`, `last_day`, `last_working_day`)
+  render an empty or note-only body.
 
-| Descriptor `type` | Control | Bounds / semantics |
+- **Keyboard / focus model (decision B(1)).**
+  - The card HEADERS form the radio group: roving tabindex (only the selected header is
+    in the tab order), arrow keys (↑/↓ **and** ←/→) move + select between headers,
+    Space/Enter selects, `Home`/`End` jump — the standard radio pattern.
+  - **Tab from the selected header moves focus INTO that card's body** (its first
+    input), then through the body inputs in order, then out to the next control after
+    the group. Because only the selected card has a body, there is exactly ONE body in
+    the tab path — no ambiguity.
+  - Disabled cards (the time cards under `last_working_day`, `§4.5.5a`) keep
+    `aria-disabled` + a visible explanation (`reference-links.md` "disabled buttons:
+    don't just gray out, explain"), never a bare gray-out.
+
+**Why option cards, not a `Select`.** The set per axis is 3–7 options that each imply a
+*different set of settings*; showing all options at once with the chosen one expanded
+in-place makes the current choice obvious AND puts its inputs where the eye already is,
+with arrow-key `radiogroup` nav — a `Select` would hide the alternatives and detach the
+settings from the choice. Cards stack **one per row** (full width) so the in-sentence
+body has room to read as a sentence; on `next-sm+` the SHORT no-input cards may pack
+two-up, but any card with a body spans full width.
+
+**Panels become declarative (decision B(5)).** `WorkflowScheduleTimePanel` /
+`…DayPanel` / `…MonthPanel` KEEP their axis-specific mutation logic (mode-switch
+reshaping, window toggling, chip grids, the ordinal/weekday selects, the
+`last_working_day` coupling) but now render their sub-modes THROUGH
+`WorkflowScheduleOptionCards`: each panel passes the option list (`{value, title,
+disabled?, disabledNote?}`) for the headers and fills a per-option **body slot**
+(`#body-<value>`) with that mode's in-sentence controls. The new component owns the
+card chrome + radio a11y + focus model; the panels own the body content — the smallest
+safe split (one new presentational/interaction component; no logic rewrite).
+
+##### 4.5.5a Tab: **Czas** (the `time` axis)
+
+`WorkflowScheduleOptionCards` (`workflows.schedule.time.mode.*`), 3 cards. Card TITLE is
+the header; the **selected card body** weaves the controls into a sentence (numeric
+`{slot}`s are `NumberInput`s, `{from}`/`{to}` are the `§4.5.6` window pair). The `field.*`
+/ `window.*` keys survive as the inputs' `aria-label`s; the VISIBLE text is the slotted
+template (`§4.5.12`).
+
+| Card (sub-mode) | Wire | Selected-card body (in-sentence) |
 | --- | --- | --- |
-| `int` | **`NumberInput`** | `:min`/`:max` from the descriptor; `required` from `required`. Wire value = number. |
-| `weekday` | **`Select`** of 0..6, **0 = Sunday** (Carbon convention), labels `workflows.schedule.weekday.<0..6>` | required. Wire value = number 0..6. Used by `nth_weekday_of_month`, `last_weekday_of_month`. |
-| `weekday_list` | **Monday-first chips** (`aria-pressed` `Button`s toggling membership), wire value stays a `0..6` (0=Sunday) array | required, non-empty. Used ONLY by `weekly`'s `weekdays` param. |
-| `ordinal` (the `nth_weekday_of_month` param, rendered specially) | **`Select`** 1st..5th (`workflows.schedule.ordinal.1-5`) | required, 1–5. |
+| **O określonych godzinach** (`at`) | `{mode:'at', at[]}` | Body lead `time.card.at.lead` ("Uruchom o wskazanych godzinach:") then a **1–6 `TimePicker` list flowing LEFT→RIGHT on one wrapping line** (`w-44 shrink-0 basis-44` each — wide enough for "09:00" WITH the built-in ✕; REV5.1/5.2): `Button variant="outline" size="sm" leading-icon="plus"` `field.addTime` appends inline (disabled at 6); removal = each picker's **built-in `clearable` ✕ INSIDE the shell** (`:clearable="length > 1"`; clearing a time removes its row, hidden at 1 — no external x button; `field.removeTime` is retired from the view). Displayed sorted; duplicates flagged (`§4.5.11`). Editable in place. |
+| **Co X minut** (`every_minutes`) | `{mode:'every_minutes', n, window?}` | Slotted sentence `time.card.everyMinutes.head` **"co {n} minut"** — `{n}` = `NumberInput` (`min 1 max 59`, default 1, aria `field.minutesEvery`) — followed by the inline **od–do window** (`§4.5.6`), `time.card.everyMinutes.window` **"od {from} do {to}"** with two **`TimePicker`s** (`HH:mm`, minute-precise, e.g. 09:30–17:45), gated by the inline window checkbox (default OFF). |
+| **Co X godzin** (`every_hours`) | `{mode:'every_hours', n, minute, window?}` | Slotted sentence `time.card.everyHours.head` **"co {n} godz. o {minute} min po pełnej godzinie"** — `{n}` = `NumberInput` (`min 1 max 23`, default 1, aria `field.hoursEvery`), `{minute}` = `NumberInput` (`min 0 max 59`, default 0, aria `field.minute`) — followed by the inline **od–do window** (`§4.5.6`), `time.card.everyHours.window` **"od {from} do {to}"** with two whole-hour **`NumberInput`s** (`0..23`, aria `window.fromHour`/`.toHour`; rendered `HH:00`). |
 
-- **`lt` invariant (client-side).** When a descriptor carries `lt: '<other>'`,
-  the field must be **strictly less than** the named sibling. Enforce live:
-  `twice_daily.first_hour < second_hour`, `twice_monthly.first_day < second_day`.
-  Show `workflows.schedule.validation.lt` (`{field}`, `{other}`) on the offending
-  field and block save — never let the 422 be the first the user hears of it.
-- **Semantic helper text** (a quiet `Alert size="sm"`, never noise) — one per edge
-  case the family/param combination can hit:
-  - `monthly`/`quarterly`/`yearly`/`every_n_months` with `day ∈ 29..31`:
-    `workflows.schedule.help.dayMayskip` + a `Button variant="link"`
-    (`workflows.schedule.help.switchToLastDay`) that switches the family to
-    `last_day_of_month`.
-  - `yearly` with `month = 2 && day = 29`: `workflows.schedule.help.leapDay`.
-  - `every_n_hours`: `workflows.schedule.help.hourModulo`.
-  - `every_n_months` when `12 % n !== 0`: `workflows.schedule.help.everyNMonths`
-    ("the month grid counts from January and resets at the turn of the year").
-  - `nth_weekday_of_month` with `ordinal = 5`: `workflows.schedule.help.fifthWeekday`.
-  - `last_working_day_of_month`: `workflows.schedule.help.lastWorkingDay`
-    (public holidays are not taken into account).
-  - Any non-blank `tz`: `workflows.schedule.help.dstNote` (a clock-change note —
-    non-existent times shift forward, repeated times run twice).
+- **`last_working_day` RESTRICTION (surface, don't hide — `reference-links.md`
+  "disabled buttons: don't just gray out, explain").** When the Day tab's sub-mode is
+  `special/last_working_day`, the **Co X minut** and **Co X godzin** cards render
+  `disabled` AND a helper `Alert variant="info" size="sm"`
+  `workflows.schedule.time.lockedByLastWorkingDay` ("Reguła „ostatni dzień roboczy"
+  działa tylko z określonymi godzinami.") appears under the cards. If the time axis was
+  `every_minutes`/`every_hours` at the moment `last_working_day` is chosen, the time
+  axis **auto-resets to `at`** (seeding `['09:00']` when empty) and a one-time inline
+  note `workflows.schedule.time.switchedToAt` explains the switch. This is the ONE
+  cross-axis coupling; everything else is independent.
 
-**Section 3 — Times** (`workflows.schedule.section.times`): for a family with a
-`time` descriptor, a repeatable list of 1–6 `TimePicker`s (`+` `Button`
-`workflows.schedule.times.add` disabled at 6, per-row `x` `Button`
-`workflows.schedule.times.remove` disabled at 1) writing `ScheduleDraft.times`
-(the wire's `schedule.times`, sent instead of `params.time` when there is more
-than one — see the backend's mutual-exclusion rule in `docs/backend/workflows-
-api.md`). For a family with no `time` param (the interval families), the section
-shows an info line instead (`workflows.schedule.times.selfPaced`) — "this cadence
-sets its own rhythm, so it has no fixed time of day."
+##### 4.5.5b Tab: **Dzień** (the `day` axis)
 
-**Section 4 — Exclusions** (`workflows.schedule.section.exclusions`, ALWAYS shown
-in advanced mode, on every family): a hint line
-(`workflows.schedule.exclusions.hint`), then three independent skip filters,
-all optional:
-- **Months** — 12 chips (`workflows.schedule.exclusions.monthsLabel`), toggle
-  membership.
-- **Weekdays** — the same Monday-first 7 chips pattern as `weekday_list`
-  (`workflows.schedule.exclusions.weekdaysLabel`).
-- **Dates** — a `DatePicker` + `Button` `workflows.schedule.exclusions.addDate`
-  building a removable chip list (`workflows.schedule.exclusions.datesEmpty` when
-  none), each chip a monospace `Y-m-d` string with a remove `x` `Button`
-  (`workflows.schedule.exclusions.removeDate`).
+`WorkflowScheduleOptionCards` (`workflows.schedule.day.mode.*`), **7 flat cards** — the
+model's `special{}` union is presented flat (one mode-selector per tab, no nested
+selector), and the FE maps cards 5–7 onto `day.mode='special'`. Selected-card bodies:
 
-**Timezone** (advanced mode only): an optional `TextInput`
-(`workflows.schedule.tzLabel`, placeholder `workflows.schedule.utc`, helper
-`workflows.schedule.tzHint`). No timezone-picker component exists; a text field
-matching the backend default is the pragmatic MVP (carried from REV 1). The
-user's **active timezone** is sent to the assist endpoint as the `tz` hint
-(§4.5.4) even when this field is blank.
-
-#### 4.5.3 Live preview (both modes, always visible)
-
-A dedicated card at the bottom of the builder (`workflows.schedule.section.preview`,
-a `calendar` icon heading), present in BOTH simple and advanced mode:
-
-1. **The natural-language sentence** — `describeSchedule(config, t)` (§4.5.6),
-   always current, recomputed on every draft change (no network call).
-2. **The next-occurrences list** — `POST /workflows/meta/schedule-preview`
-   (`store.schedulePreview(config, 6)`), **debounced 400ms**, fired only when the
-   draft passes CLIENT-SIDE validation (no wasted round-trips on an
-   incomplete/invalid draft — `schedulePreviewRefresh()` cancels/clears
-   in-flight state the moment the draft becomes invalid). Skeleton rows while
-   loading (`workflows.schedule.preview.loading`).
-3. **State handling**, in priority order:
-   - `empty: true` (the `exclusions` rule out every occurrence) →
-     `Alert variant="warning"` (`workflows.schedule.preview.empty`) — treated as a
-     CLIENT VALIDATION ERROR: the builder's exposed `isValid` becomes `false` and
-     save is blocked, because the server would reject an equally-empty schedule
-     with a 422 anyway (the write path keeps its empty-schedule guard ON; only
-     the preview endpoint turns it off — see `docs/backend/workflows-api.md`).
-   - `approximate: true` (only `every_n_minutes`) →
-     `Alert variant="info"` (`workflows.schedule.preview.approximate`) — the
-     dates are indicative because the real phase is set at activation, not "now".
-   - A network/parse failure on the preview call → QUIET, non-blocking:
-     `workflows.schedule.preview.unavailable` as plain muted text; the sentence
-     stays, the schedule is still savable (a preview outage never blocks the
-     builder).
-   - Otherwise → the occurrence list, each row formatted in the draft's own tz
-     (`occurrenceFormatter`/`formatOccurrence`, shared with the AI-assist's
-     alternative preview, §4.5.5).
-
-#### 4.5.4 AI assist affordance — placement
-
-A **secondary control at the TOP of the schedule panel**, above the mode toggle:
-a collapsed row `workflows.schedule.assist.prompt` with a `sparkles`-icon
-`Button variant="outline" size="sm"` `workflows.schedule.assist.open` ("Describe
-it in words"). Opening it reveals an inline composer (a `Textarea`
-`maxlength=500` + a `Button leading-icon="sparkles" :loading`
-`workflows.schedule.assist.run`) and moves focus into the `Textarea` on expand
-(a B7-review fix — see the REVISION 2 banner above). **It is a BUILDER AID, never
-a submit path** — it *prefills* the family + params below; the user then
-reviews/edits and the normal Save re-validates. Placing it above the builder (not
-replacing it) makes the "assist → review → save" flow read top-to-bottom.
-
-#### 4.5.5 AI assist — request
-
-`POST /workflows/schedule-assist { prompt (≤500), tz? }`. Always send the user's
-**active timezone** as `tz` (resolved via `Intl.DateTimeFormat().resolvedOptions()`
-when the host doesn't pass one — no app-level tz source exists yet; the assist
-merges it into a surviving config). Throttle: 5/min/user → 429.
-
-#### 4.5.6 AI assist — the four response states (design each)
-
-Envelope: `{feasible, config|null, unsupported: string[], alternative:{config,
-note}|null, explanation}`. **All model text (`explanation`, `unsupported[]`,
-`note`) renders as PLAIN TEXT — never HTML/markdown** (escape it; it is untrusted
-model output).
-
-| State | Condition | UI |
+| Card (sub-mode) | Wire | Selected-card body (in-sentence) |
 | --- | --- | --- |
-| **(a) Feasible** | `feasible && config` | Apply `config` to the builder (`configToDraft` — the §8.4 canonical helper — maps `{family, params, tz, times?, exclusions?}` onto the family picker + param controls + tz), and show a success `Alert variant="success" size="sm"` with the plain-text `explanation`. The user can still edit before saving. |
-| **(b) Infeasible + alternative** | `!feasible && alternative` | Show `Alert variant="warning" size="sm"` with `explanation`; a bulleted **unsupported** list (`workflows.schedule.assist.unsupportedTitle` + one `<li>` per plain-text string); AND (schedule-rebuild addition) a **preview of the alternative BEFORE the user applies it** — a bordered sub-card (`workflows.schedule.assist.alternativePreviewTitle`) showing the deterministic `describeSchedule` sentence for `alternative.config`, the model's plain-text `alternative.note`, and the alternative's next 4 occurrences (its own `store.schedulePreview(alternative.config, 4)` call, independently debounced/token-guarded, quietly dropping the list on a network error while keeping the sentence+note). A `Button variant="outline" size="sm" leading-icon="sparkles"` `workflows.schedule.assist.useAlternative` applies `alternative.config` to the builder and shows `alternative.note` as a plain-text caption under the builder (`workflows.schedule.assist.appliedNote`). The user therefore sees exactly what they'd get BEFORE committing to it, not only after applying. |
-| **(c) Infeasible, no alternative** | `!feasible && !alternative` | `Alert variant="warning" size="sm"` with `explanation` + the unsupported list. The manual builder stays as-is (untouched). |
-| **(d) Failure / throttle** | HTTP 429, or network/parse failure | `Alert variant="danger" size="sm"` with FE-owned copy `workflows.schedule.assist.throttled` for 429, else `workflows.schedule.assist.failed`. **Never surface the raw backend message.** The composer stays open so the user can retry or fall back to the builder. Keep the `Button :loading` width stable (Button loading contract). |
+| **Codziennie** (`every_day`) | `{mode:'every_day'}` | none (neutral) — empty body. |
+| **Co X dni** (`every_n_days`) | `{mode:'every_n_days', n, window?}` | Slotted sentence `day.card.everyNDays.head` **"co {n} dni"** — `{n}` = `NumberInput` (`min 1 max 31`, default 1, aria `.daysEvery`) — followed by the inline **od–do window** (`§4.5.6`), `day.card.everyNDays.window` **"od {from} do {to} dnia miesiąca"** with two **`NumberInput`s** (day-of-month `1..31`, aria `.window.fromDay`/`.toDay`). |
+| **W dni tygodnia** (`weekdays`) | `{mode:'weekdays', weekdays[]}` | Body lead `day.card.weekdays.lead` then **Monday-first weekday chips** (`aria-pressed` `Button`s; wire array stays `0=Sunday`, labels `weekday.short.<0..6>`) + two shortcut `Button variant="ghost" size="sm"`: `day.preset.workdays` ("Dni robocze" → [1–5]) / `.weekend` ("Weekend" → [0,6]). Non-empty required. |
+| **W dni miesiąca** (`month_days`) | `{mode:'month_days', days[]}` | Body lead `day.card.monthDays.lead` then a **wrapping chip grid of days 1..31** (`aria-pressed` `Button`s, `size="icon-sm"` tabular), calendar-like. Non-empty required. |
+| **Ostatni dzień miesiąca** (`special/last_day`) | `{mode:'special', special:{kind:'last_day'}}` | none — empty body. |
+| **Ostatni dzień roboczy** (`special/last_working_day`) | `{mode:'special', special:{kind:'last_working_day'}}` | note-only body: a helper `Alert size="sm"` `day.lastWorkingDayNote` (public holidays NOT counted) + the time-restriction reminder (`§4.5.5a`). Because unselected cards show title only (B(4)), this restriction copy lives in the SELECTED body, not on the resting card. |
+| **Określony dzień tygodnia** (`special/nth_weekday` \| `last_weekday`) | see below | Slotted sentence `day.card.weekdayInMonth.head` **"w {ordinal} {weekday} miesiąca"** — `{ordinal}` = the ordinal `Select`, `{weekday}` = the weekday `Select` (§ note) — + the 5th-week note when ordinal = 5. |
 
-- After any apply, the builder's own client validation (§4.5.2 bounds + `lt` +
-  the §4.5.3 empty-preview check) re-runs, so an applied config the user then
-  edits into an invalid state is caught before save exactly like a hand-built one.
+- **The ordinal Select — the "ordinal 5 = piąty, NOT ostatni" trap, resolved by
+  design.** The **Określony dzień tygodnia** card unifies the model's `nth_weekday`
+  (ordinal 1..5) and `last_weekday` under ONE control pair so the two are never
+  confused. Ordinal `Select` (`workflows.schedule.day.ordinal.*`) options:
+  **pierwszy (1) / drugi (2) / trzeci (3) / czwarty (4) / piąty (5) / ostatni (last)**.
+  Weekday `Select` (`workflows.schedule.weekday.long.<0..6>`, 0=Sunday).
+  - ordinal **1..5** → `special.kind='nth_weekday'` `{ordinal, weekday}` — "piąty" is a
+    genuine 5th-occurrence rule that **can skip months** (helper `Alert size="sm"`
+    `workflows.schedule.day.fifthWeekdayNote` when ordinal=5).
+  - ordinal **"ostatni"** → `special.kind='last_weekday'` `{weekday}` — a GUARANTEED
+    monthly fire. "piąty" and "ostatni" are two explicit, separate options; there is no
+    place where a "5th" is mislabelled "last".
 
-#### 4.5.7 Read-side helper — `describeSchedule(config, t)`
+##### 4.5.5c Tab: **Miesiąc** (the `month` axis)
 
-A pure FE helper (in `workflowSchedule.ts`) producing the human cadence sentence
-from the descriptor vocabulary, reused by the detail Trigger panel (§3.2), the
-live preview (§4.5.3), and the AI-assist's alternative preview (§4.5.6(b)). It is
-descriptor-driven (weekday index → localized name, time → as-is, `n`/`day`/`month`
-interpolated) so adding a family later needs one label, not new rendering code.
-The schedule-rebuild widened its signature from `(family, params, tz)` to
-`(config, t)` (the full `ScheduleConfig`, including `times`/`exclusions`) so it can
-append an optional TIME CLAUSE (`workflows.schedule.describe.timeClause`, when
-`times.length > 1`) and an optional EXCLUSION CLAUSE
-(`workflows.schedule.describe.exclusionClause`, a joined plain-language list) to
-the base per-family sentence — e.g. "Weekly on Mon, Wed, Fri at 08:00 and 17:00
-(Europe/Warsaw) except: weekends".
+`WorkflowScheduleOptionCards` (`workflows.schedule.month.mode.*`), 3 cards.
+Selected-card bodies:
+
+| Card (sub-mode) | Wire | Selected-card body (in-sentence) |
+| --- | --- | --- |
+| **Co miesiąc** (`every_month`) | `{mode:'every_month'}` | none (neutral) — empty body. |
+| **Co X miesięcy** (`every_n_months`) | `{mode:'every_n_months', n, window?}` | Slotted sentence `month.card.everyNMonths.head` **"co {n} miesięcy"** — `{n}` = `NumberInput` (`min 1 max 12`, default 1, aria `.monthsEvery`) — + a helper `Alert size="sm"` `month.everyNNote` when `12 % n !== 0` (the grid counts from January, resets at year end) + the inline **od–do window** (`§4.5.6`), `month.card.everyNMonths.window` **"od {from} do {to}"** with two **month `Select`s** (`month.long.<1..12>`, aria `.window.fromMonth`/`.toMonth`). |
+| **W wybrane miesiące** (`months`) | `{mode:'months', months[]}` | Body lead `month.card.months.lead` then a **month chip grid** (`month.short.<1..12>` — sty…gru), 6×2 / wraps; `aria-pressed` `Button`s. Non-empty required. |
+
+#### 4.5.6 The "od–do" window pattern — now IN-SENTENCE (jointed fields, reused across four axes)
+
+> **REV5 supersede marker.** REV4 rendered the window as a `Checkbox` ABOVE a
+> separately-stacked jointed "od [ ] do [ ]" `FormField` block, `pl-next-6` under the
+> `n` field. REV5 weaves it into the option-card sentence: the checkbox and the
+> "od [from] do [to]" fragment sit INLINE, continuing the same wrapping line as "co
+> {n} minut" — this is the user's "gdzie Y i Z domyślnie wyłączone" pattern (a
+> checkbox that turns on a sentence FRAGMENT carrying the inputs). `WorkflowSchedule
+> WindowField.vue` is REPURPOSED to render inline (it keeps its name + reuse).
+
+`every_minutes`, `every_hours`, `every_n_days`, and `every_n_months` each expose an
+OPTIONAL bound window. It is the SAME pattern everywhere so it is learned once:
+
+- **REV5.2 correction (user feedback on the built REV5.1):** the gate is a **bare
+  `Switch`** (`role="switch"`, NO visible text — `workflows.schedule.window.toggle.<axis>`
+  survives ONLY as its `aria-label`), and the "od {from} do {to}" fragment is rendered
+  **ALWAYS** — the switch toggles the two inputs' **`disabled`** state instead of
+  revealing/hiding the fragment. This is the user's original "od Y do Z, gdzie Y i Z
+  jest domyślnie WYŁĄCZONE" read literally: the fields are visible but disabled until
+  switched on. Default OFF still means the window is omitted from the wire. **Why
+  `Switch`, not `Checkbox`:** the bare (label-less) `Checkbox` primitive cannot carry an
+  accessible name without modifying the primitive (its root is a `<label>`; a fallthrough
+  `aria-label` never names the input), while `Switch` puts `aria-label` directly on the
+  `role="switch"` button and renders zero visible text without a `label`. Disabled
+  literals ("od"/"do") dim via `opacity-60`.
+- The **jointed field fragment** stays INLINE (`reference-links.md` "jointed fields:
+  simplify two-column forms") — the slotted template `<axis>.card.<mode>.window` reading
+  **"od {from} do {to}"** (…`dnia miesiąca` for the day axis) with the two inputs woven
+  at `{from}`/`{to}`, on the SAME `flex flex-wrap items-center gap-next-2` line as the
+  head, NOT a `pl-next-6` block below. `WorkflowScheduleWindowField` exposes a
+  `{ disabled }` slot prop the panels bind onto the pair. The pair is per `§4.5.5`
+  (two `TimePicker`s `w-36 shrink-0 basis-36` — REV5.2 widened from `w-28`, which
+  truncated "09:00" to "0…" / two hour `NumberInput`s / two day `NumberInput`s /
+  two month `Select`s); `window.from`/`.to`/`.fromHour`/… survive as the inputs'
+  `aria-label`s.
+- **Live `from < to` invariant** (strict): on violation show
+  `workflows.schedule.validation.windowOrder` under the sentence and block save
+  (`§4.5.11`) — the user never learns of it first from a 422.
+
+The only remaining invariant is the window's `from < to`, plus the two contextual notes
+(`fifthWeekdayNote`, `everyNNote`) inside their cards. **REV5 removes the `dstNote`**
+from the builder (the tz field is gone — `§4.5.8`).
+
+#### 4.5.7 Exclusions — a collapsible "Wyjątki" disclosure (REV5: skip-DATES only)
+
+> **REV5 supersede marker.** REV4's disclosure held THREE filters — skip-dates PLUS
+> "oprócz dni tygodnia" / "oprócz miesięcy" chip grids. The user's feedback: choosing
+> weekdays/months to EXCLUDE is redundant, because the same effect is achieved by
+> setting the **Dzień** / **Miesiąc** axes appropriately (`§4.5.5b`/`§4.5.5c`). REV5
+> therefore removes the weekday and month exclusion chips from the UI; the disclosure
+> holds ONLY skip-dates. **The backend still ACCEPTS `exclusions.weekdays[]` /
+> `exclusions.months[]`** (the wire shape is unchanged) — the FE simply stops AUTHORING
+> them; an edited legacy/AI-applied config that carries them still round-trips and is
+> still described by the sentence (`§4.5.10`). See the read-side note below.
+
+Because the POSITIVE selection lives in the tabs (`§4.5.5`), the remaining exclusion is
+framed as a **subtraction** ("oprócz konkretnych dni") tucked into a
+**collapsed-by-default disclosure** so a simple schedule never sees it. Keep
+`Accordion type="single"` with one `AccordionItem value="exclusions"` (reuse the
+existing primitive — collapse-by-default still earns its keep even with one control):
+
+- **Header:** `workflows.schedule.exclusions.title` ("Wyjątki") + an
+  `Icon name="calendar-x"` + a **count `Badge variant="neutral" tone="subtle"`** = the
+  DATES count only (hidden at 0). A short helper line `workflows.schedule.exclusions.hint`
+  under the header when open.
+- **Body (one filter):** **Pomiń konkretne dni**
+  (`workflows.schedule.exclusions.datesLabel`): a `DatePicker` (`yyyy-mm-dd` model) +
+  `Button variant="outline" size="sm" leading-icon="plus"` `.addDate` → a removable
+  **chip list** (each chip a `font-next-mono` `Y-m-d` + `Button size="icon-xs"
+  leading-icon="x"` `.removeDate`), sorted + de-duplicated, **max 50** (add disabled at
+  50, hint `.datesMax`); `.datesEmpty` muted line when none. Same chip pattern as the
+  create_task exclusion-date idiom — consistency, not a new widget.
+- **Weekday/month exclusions reachable via the axes:** if a user wants "never on
+  weekends" or "not in July", they set the **Dzień**/**Miesiąc** axis positively (e.g.
+  weekdays [1–5], or months excluding 7). The disclosure no longer duplicates that as a
+  subtraction. (Backend support is retained for API/legacy callers — `§4.5.15` store
+  note.)
+- **No cap gymnastics in the UI:** a genuinely unfireable COMBINATION (e.g. `month_days
+  [31] ∧ months [2]`) is caught by the **preview `empty` gate** (`§4.5.4` / `§4.5.11`),
+  not by per-control errors — the strip's warning is the single, honest signal.
+
+#### 4.5.8 Timezone (REV5: field REMOVED from the UI; the MODEL keeps `tz`)
+
+> **REV5 supersede marker.** REV4 exposed `tz` as a `TextInput` (label/hint/utc
+> placeholder + a `dstNote`). The user's feedback: choosing a timezone is unnecessary.
+> REV5 removes the field and its `dstNote` from the builder. The `tz` DATA is retained
+> end-to-end — the model, the draft, `configToDraft`/`draftToConfig`, the preview
+> `renderZone`, and the AI hint are unchanged.
+
+- **No tz control anywhere in the schedule panel.** The `tz.label`/`.hint`/`.utc`/
+  `.dstNote` keys are no longer rendered by the builder (marked superseded in
+  `§4.5.12`).
+- **Where the tz value now comes from (the model behavior to implement):**
+  - **New schedule** → the neutral draft SEEDS `tz` to the browser's active IANA zone
+    (`Intl.DateTimeFormat().resolvedOptions().timeZone`), so "Codziennie o 09:00"
+    created in Warsaw actually runs at 09:00 Warsaw — matching the preview, which
+    already renders in the browser zone. This is the "nowe = strefa przeglądarki"
+    behavior; it is the ONLY change to `emptyScheduleDraft` (a small, contained touch in
+    `workflowSchedule.ts`, flagged in `§4.5.15`). If `Intl` is unavailable the seed
+    falls back to `''` (⇒ server UTC), exactly as before.
+  - **Editing** → the saved `tz` round-trips untouched via `configToDraft`/
+    `draftToConfig` (no change). A schedule saved in a foreign zone keeps that zone.
+  - `draftToConfig` still omits `tz` when blank; a seeded new schedule simply carries a
+    non-blank zone, so it wires an explicit `tz`.
+- **Rendering** (unchanged): the preview strip and the summary render occurrences in the
+  schedule `tz` (or the active browser tz when blank — `§4.5.4`); the AI modal is sent
+  the **active timezone** as its `tz` hint (`§4.5.9`).
+- **The "({tz})" sentence clause** is now CONDITIONAL — see the tz-clause rule in
+  `§4.5.10` (decision C): it shows ONLY when the schedule's `tz` differs from the
+  viewer's active zone, so a user's own new schedule in their own zone reads clean and
+  only a foreign/legacy zone surfaces the label.
+
+#### 4.5.9 `WorkflowScheduleAssistModal` — AI natural language (no auto-apply)
+
+Opened by the summary's "Zaplanuj z AI" (§4.5.3). A **`Modal size="lg"`** (focus-
+trapped, Esc/scrim-closable — the primitive handles it), hosted by the schedule panel.
+It is a BUILDER AID that **prefills** the draft; the drawer's Save still re-validates.
+**The REV3 auto-apply is GONE** — even a feasible result is shown as a *proposal* the
+user commits with **Zastosuj**. This is `reference-links.md` "modal anatomy": one clear
+title, one purpose, a primary action, a safe cancel, managed focus.
+
+- **`#title`:** `workflows.schedule.assist.title` ("Opisz harmonogram słowami").
+  **`#description`:** `workflows.schedule.assist.subtitle` (one line on what to type).
+- **Body — composer:** a `Textarea` (`rows=3`, `maxlength=500`, `aria-label`
+  `.inputLabel`, placeholder `.placeholder`) + a `Button variant="primary" size="sm"
+  leading-icon="sparkles" :loading` `.run` ("Zaproponuj") that fires the request. On
+  open, focus moves into the `Textarea`. Re-running replaces the current proposal.
+- **Body — proposal card** (appears after a feasible/alternative response): a bordered
+  `Surface`, showing the deterministic **`describeSchedule` sentence** for the proposed
+  config (§4.5.10) as the headline "what you'll get", a **compact preview strip** (the
+  §4.5.4 tile look — **REV5: inherits the compact two-line tiles** — next 4–5 runs, its
+  own token-guarded `store.schedulePreview(config,
+  5)` call, quietly dropping the list on error while keeping the sentence), and — for an
+  ALTERNATIVE — the plain-text `alternative.note` + an "alternatywna propozycja" caption
+  (`.alternativeTag`) so the user knows it is a fallback, not their literal ask.
+- **Sticky `#footer`:** `Anuluj` (`Button variant="ghost"`, closes, discards) +
+  **`Zastosuj`** (`Button variant="primary"`, DISABLED until a proposal exists). Zastosuj
+  → `emit('apply', configToDraft(proposedConfig))`, close, and a success `useToast`
+  `.appliedToast`. The whole draft (all three axes + exclusions + tz) is replaced; the
+  summary, preview strip, and tabs re-render from it, and client validation (§4.5.11)
+  re-runs so an applied config the user then edits is gated exactly like a hand-built one.
+
+**Request:** `POST /workflows/schedule-assist { prompt (≤500), tz }` — always send the
+**active timezone** (§4.5.8). Throttle 5/min/user → 429. **Envelope:** `{feasible,
+config|null, unsupported: string[], alternative:{config, note}|null, explanation}`.
+**All model text (`explanation`, `unsupported[]`, `note`) renders as PLAIN TEXT via
+interpolation — never `v-html`** (untrusted output).
+
+**States (design each):**
+
+| State | Condition | Body | Footer `Zastosuj` |
+| --- | --- | --- | --- |
+| **Composing** | idle, before/after edits | just the composer (+ any prior proposal until re-run). | disabled unless a proposal is shown. |
+| **Loading** | request in flight | composer disabled; `.run` `:loading` (stable width — `reference-links.md` "button loading state"); a `Skeleton` proposal card. | disabled. |
+| **Proposal — feasible** | `feasible && config` | success `Alert size="sm"` (plain `explanation`) + proposal card for `config`. | **enabled** → applies `config`. |
+| **Proposal — alternative** | `!feasible && alternative` | warning `Alert size="sm"` (`explanation`) + an `.unsupportedTitle` bulleted plain-text list + proposal card for `alternative.config` (with its `note` + `.alternativeTag`). | **enabled** → applies `alternative.config`. |
+| **Infeasible, no alternative** | `!feasible && !alternative` | warning `Alert size="sm"` (`explanation`) + the unsupported list. No proposal card. | **disabled** (nothing to apply); user edits + re-runs or Anuluj. |
+| **Failure / throttle** | 429 / network / parse | danger `Alert size="sm"`: `.throttled` (429) else `.failed` — FE-owned copy, **never the raw backend message**. Composer stays open to retry. | disabled. |
+
+#### 4.5.10 `describeSchedule(draft, t, activeTz?)` — the sentence grammar (PL + EN)
+
+> **REV5 supersede marker (tz clause only).** The GRAMMAR of the summary sentence is
+> UNCHANGED by REV5 — the same `describe.*` templates, casing/plural machinery, and
+> clause composition. TWO read-side rules change: (1) the tz clause is now CONDITIONAL
+> on `tz !== activeTz` (decision C); the helper gains an OPTIONAL third param
+> `activeTz` (defaulting to the resolved browser zone) — additive, so the existing
+> callers (`§4.5.3`, `§3.2`, `§4.5.9`) keep working. (2) The exclusion clause STILL
+> renders weekday/month exclusions when a config carries them (they are no longer
+> AUTHORED in the UI — `§4.5.7` — but a legacy/AI/edited config may still carry them,
+> and the sentence must stay honest); the grammar drops nothing.
+
+A pure helper in `workflowSchedule.ts`, reused by the summary (`§4.5.3`), the detail
+Trigger panel (`§3.2`), and the AI modal (`§4.5.9`). It produces **one string**.
+Composition:
+
+```
+sentence = capitalize(TIME)                       // TIME always present; heads the sentence
+         + (day.mode !== 'every_day'   ? ", " + DAY   : "")
+         + (month.mode !== 'every_month' ? ", " + MONTH : "")
+         + (hasExclusions ? describe.exclusionClause : "")   //  " — z wyjątkami: {list}"
+         + (tz && tz !== activeTz ? describe.tzClause : "")   //  " ({tz})" — REV5: only when foreign
+```
+
+- **REV5 tz-clause rule (decision C).** `activeTz = Intl.DateTimeFormat().resolvedOptions().timeZone`
+  (the viewer's zone; `''`/undefined ⇒ never suppress). The clause is emitted **only**
+  when `draft.tz` is non-empty AND `draft.tz !== activeTz`. Consequences: a new schedule
+  seeded to the browser zone (`§4.5.8`) reads with NO "(…)" tail; an edited schedule
+  whose saved zone matches yours is likewise silent; only a schedule in a foreign/legacy
+  zone surfaces "(Europe/Warsaw)". Justification: with the tz field gone, the clause's
+  only remaining job is to WARN that a schedule runs in a zone other than the one you're
+  reading it in — showing it for your own zone would be redundant noise.
+
+- **Neutral collapse:** `every_day` and `every_month` produce NO clause. The friendly
+  head form **"Codziennie o {t}"** (EN "Daily at {t}") is used **only** when
+  `time.mode==='at' && time.at.length===1 && day.mode==='every_day'` — otherwise `at`
+  heads as **"O {times}"** ("At {times}") and the day/month clauses append as usual.
+
+**TIME head clause** (capitalized):
+
+| Sub-mode | PL | EN | Example |
+| --- | --- | --- | --- |
+| `at` (1 time, `every_day`) | `describe.daily` "Codziennie o {t}" | "Daily at {t}" | **Codziennie o 09:00** |
+| `at` (general) | `describe.at` "O {times}" | "At {times}" | **O 09:00 i 17:00** |
+| `every_minutes` | `describe.everyMinutes` "Co {n} minut" | "Every {n} minutes" | Co 15 minut |
+| `every_minutes` + window | `describe.everyMinutesWindow` "Co {n} minut między {from} a {to}" | "Every {n} minutes between {from} and {to}" | **Co 15 minut między 09:30 a 17:45** |
+| `every_hours` | `describe.everyHours` "Co {n} godzin" (+ `describe.everyHoursMinute` "(o :{mm})" when `minute≠0`) | "Every {n} hours (at :{mm})" | Co 2 godziny (o :15) |
+| `every_hours` + window | `describe.everyHoursWindow` "… między {from}:00 a {to}:00" | "… between {from}:00 and {to}:00" | **Co 2 godziny (o :15) między 08:00 a 18:00** |
+
+**DAY clause** (lowercase, appended; omitted when `every_day`):
+
+| Sub-mode | PL | EN | Example |
+| --- | --- | --- | --- |
+| `every_n_days` | `describe.everyNDays` "co {n} dni" | "every {n} days" | co 2 dni |
+| `every_n_days` + window | `describe.everyNDaysWindow` "co {n} dni od {from}. do {to}. dnia miesiąca" | "every {n} days from the {from} to the {to} of the month" | **co 2 dni od 5. do 20. dnia miesiąca** |
+| `weekdays` (general) | `describe.weekdays` "w {days}" (days = `weekdayPlural` joined) | "on {days}" | w poniedziałki i piątki |
+| `weekdays` = [1–5] | `describe.workdays` "w dni robocze" | "on workdays" | **w dni robocze** |
+| `weekdays` = [0,6] | `describe.weekend` "w weekendy" | "on weekends" | w weekendy |
+| `month_days` | `describe.monthDays` "{days} dnia miesiąca" (days = ordinal-dot list) | "on the {days} of the month" | **1. i 15. dnia miesiąca** |
+| `special/last_day` | `describe.lastDay` "ostatniego dnia miesiąca" | "on the last day of the month" | **ostatniego dnia miesiąca** |
+| `special/last_working_day` | `describe.lastWorkingDay` "ostatniego dnia roboczego miesiąca" | "on the last working day of the month" | **ostatniego dnia roboczego miesiąca** |
+| `special/nth_weekday` | `describe.nthWeekday` "w {ordinal}. {weekdayAcc} miesiąca" | "on the {ordinal-suffixed} {weekday} of the month" | **w 2. wtorek miesiąca** |
+| `special/last_weekday` | `describe.lastWeekday` "w {lastWeekdayClause} miesiąca" | "on the last {weekday} of the month" | **w ostatni piątek miesiąca** |
+
+**MONTH clause** (lowercase, appended; omitted when `every_month`):
+
+| Sub-mode | PL | EN | Example |
+| --- | --- | --- | --- |
+| `every_n_months` | `describe.everyNMonths` "co {n} {miesiące\|miesięcy}" | "every {n} months" | co 2 miesiące |
+| `every_n_months` + window | `describe.everyNMonthsWindow` "co {n} … od {monthGen from} do {monthGen to}" | "every {n} months from {month} to {month}" | **co 2 miesiące od marca do września** |
+| `months` | `describe.months` "w {monthsLoc}" (locative list) | "in {months}" | **w styczniu i czerwcu** |
+
+**EXCLUSION clause + tz + joins:**
+
+- `describe.exclusionClause` = " — z wyjątkami: {list}" / " — except: {list}"; parts
+  joined by `describe.exclusionSep` ("; "). Parts: weekdays →
+  `describe.exclusionWeekdays` (plural list, or "weekendy"/"weekends" for [0,6]);
+  months → `describe.exclusionMonths` (nominative list, e.g. "lipiec i sierpień");
+  dates → `describe.exclusionDates` (plural count "{n} wybranych dni" / "{n} selected
+  dates", or the single date when n=1).
+- `describe.tzClause` = " ({tz})" — REV5: appended only when `tz !== activeTz` (above).
+- List joins: `describe.listSep` (", ") + `describe.listLast` ("{init} i {last}" /
+  "{init} and {last}").
+
+**Full combined examples (AND across axes):**
+- `at[08:00,17:00] ∧ weekdays[1,3,5] ∧ every_month, tz Europe/Warsaw` →
+  **PL** "O 08:00 i 17:00, w poniedziałki, środy i piątki (Europe/Warsaw)" ·
+  **EN** "At 08:00 and 17:00, on Mondays, Wednesdays and Fridays (Europe/Warsaw)".
+- `at[09:00] ∧ every_day ∧ every_month, excl.months=[7,8]` →
+  **PL** "Codziennie o 09:00 — z wyjątkami: lipiec i sierpień" ·
+  **EN** "Daily at 09:00 — except: July and August".
+
+**Polish casing/plural — a REQUIREMENT, not a nicety** (EN uses one form throughout).
+Natural PL needs the month/weekday name in the right case per clause, so the inventory
+(§4.5.12) ships FOUR month arrays (short/long-nominative/locative/genitive) and FIVE
+weekday arrays (short/long-nominative/plural-acc/sing-acc/last-clause). Units go through
+the i18n plural machinery (minuta·y·ø, godzina·y·ø, dni, miesiąc·e·y). EN ordinals use
+`{n}ᵗʰ` suffixing (2nd, 15th).
+
+#### 4.5.11 Client validation & the preview-driven save gate
+
+The builder exposes `isValid` + `validationErrors` (consumed by
+`WorkflowTriggerFields.scheduleValid()` → the drawer step/save gate). `isValid` =
+**all axis rules pass AND `preview.empty !== true` AND `preview.loading !== true`**
+(a loading preview blocks mid-flight so an empty schedule can't slip past before its
+warning settles — as REV3). A network-failed preview does NOT block (server stays
+authoritative). Per-axis rules (each shows its i18n error on the offending control):
+
+- **time.at:** 1–6 entries, each a valid `HH:mm`, distinct, non-empty
+  (`validation.timeRequired`/`.timeFormat`/`.timeDuplicate`/`.timesMax`).
+- **time.every_minutes:** `n∈[1,59]`; window (if set) valid `HH:mm` + `from<to`.
+- **time.every_hours:** `n∈[1,23]`, `minute∈[0,59]`; window (if set) `0..23` + `from<to`.
+- **day.every_n_days:** `n∈[1,31]`; window (if set) `1..31` + `from<to`.
+- **day.weekdays / month_days / month.months:** non-empty (`validation.pickAtLeastOne`).
+- **day.special.nth_weekday:** `ordinal∈[1,5]`, weekday set; **last_weekday:** weekday set.
+- **day.special.last_working_day:** requires `time.mode==='at'` (enforced by §4.5.5a's
+  auto-reset + disabled cards, so this can't be reached; the guard stays as a belt-and-
+  braces `validation.lastWorkingDayNeedsAt`).
+- **month.every_n_months:** `n∈[1,12]`; window (if set) `1..12` + `from<to`.
+- **windows everywhere:** `from<to` (`validation.windowOrder`).
+- **exclusions.dates:** ≤50, valid, distinct.
+
+**422 surfacing** (wire keys under `trigger_config.schedule.*` are `[backend-dep]`):
+map `…schedule.time.*` → **Czas** tab, `…day.*` → **Dzień**, `…month.*` → **Miesiąc**,
+`…exclusions.*` → **Wyjątki** disclosure (auto-open it) — SWITCH to the offending tab and
+scroll the control into view. **REV5:** with the tz field removed (`§4.5.8`), a
+`…schedule.tz` 422 has no control to attach to → surface it as the translated danger
+toast (`workflows.editor.toasts.error`), same as any un-mappable 422. This mirrors
+§4.10's overall mapping.
+
+#### 4.5.12 i18n inventory (`workflows.schedule.*` — PL + EN, FE transcribes in Phase 5)
+
+Authoritative REV4 key set; **supersedes** the `workflows.schedule.*` sketch in §7.1
+(the REV3 `intent.*`/`family.*`/`tier.*`/`simple.*`/`mode.*`/`advancedToggle`/
+`approximate` keys are **removed**). Every visible string, placeholder, aria-label and
+state line goes through `t()`.
+
+> **REV5 delta (read with the REV5 markers on the rows below).** REV5 ADDS the in-card
+> slotted-sentence keys (new block "In-card slotted sentences (REV5)" after Month
+> modes), REWORDS the `window.toggle.*` labels to read as sentence continuations,
+> REPURPOSES `preview.title` (now the rail's `aria-label`, not a visible heading) and
+> `preview.jumpTo` (now the compact anchor field's placeholder + `aria-label`, REV5.1), and marks
+> **SUPERSEDED** the tz-field keys (`tz.label`/`.hint`/`.utc`/`.dstNote`) and the
+> weekday/month exclusion labels (`exclusions.weekdaysLabel`/`.monthsLabel`) — those
+> controls are gone (`§4.5.7`, `§4.5.8`). **Segmentation mechanism:** the `next` i18n
+> is string-only (`t()` interpolates `{param}`, no component slots), so each in-card
+> sentence is a normal translated string with `{slot}` tokens; the FE renders it by
+> SPLITTING on the `/(\{[a-z]+\})/` token regex into an ordered `text | {slot} | text`
+> list, emitting a `<span>` per literal and the mapped control per slot. Because the
+> WORD ORDER lives in the locale STRING (not in component markup), PL and EN reorder
+> slots freely — the "tablice segmentów per tryb" requirement, satisfied without arrays.
+> Slot ids per mode: `{n}`, `{minute}`, `{from}`, `{to}`, `{ordinal}`, `{weekday}`.
+
+| Key (under `workflows.schedule.`) | PL | EN |
+| --- | --- | --- |
+| `tabsAria` | Osie harmonogramu | Schedule axes |
+| `tab.time` / `.day` / `.month` | Czas / Dzień / Miesiąc | Time / Day / Month |
+| `summary.assist` | Zaplanuj z AI | Plan with AI |
+| **Time modes** | | |
+| `time.mode.at` | O określonych godzinach | At set times |
+| `time.mode.everyMinutes` | Co kilka minut | Every few minutes |
+| `time.mode.everyHours` | Co kilka godzin | Every few hours |
+| `time.lockedByLastWorkingDay` | Reguła „ostatni dzień roboczy" działa tylko z określonymi godzinami. | The "last working day" rule only works with set times. |
+| `time.switchedToAt` | Przełączono na określone godziny — wymaga ich reguła „ostatni dzień roboczy". | Switched to set times — the "last working day" rule needs them. |
+| **Day modes** | | |
+| `day.mode.everyDay` | Codziennie | Every day |
+| `day.mode.everyNDays` | Co kilka dni | Every few days |
+| `day.mode.weekdays` | W dni tygodnia | On weekdays |
+| `day.mode.monthDays` | W dni miesiąca | On days of the month |
+| `day.mode.lastDay` | Ostatni dzień miesiąca | Last day of the month |
+| `day.mode.lastWorkingDay` | Ostatni dzień roboczy | Last working day |
+| `day.mode.weekdayInMonth` | Określony dzień tygodnia | A specific weekday |
+| `day.preset.workdays` / `.weekend` | Dni robocze / Weekend | Workdays / Weekend |
+| `day.ordinal.1`–`.5` | pierwszy / drugi / trzeci / czwarty / piąty | first / second / third / fourth / fifth |
+| `day.ordinal.last` | ostatni | last |
+| `day.ordinalLabel` / `.weekdayLabel` | Który / Dzień tygodnia | Which / Weekday |
+| `day.fifthWeekdayNote` | „Piąty" występuje nie w każdym miesiącu — wtedy uruchomienie zostaje pominięte. | A "fifth" doesn't occur every month — those months are skipped. |
+| `day.lastWorkingDayNote` | Dni ustawowo wolne nie są uwzględniane. | Public holidays are not taken into account. |
+| **Month modes** | | |
+| `month.mode.everyMonth` | Co miesiąc | Every month |
+| `month.mode.everyNMonths` | Co kilka miesięcy | Every few months |
+| `month.mode.months` | W wybrane miesiące | In selected months |
+| `month.everyNNote` | Miesiące liczone są od stycznia i resetują się z końcem roku. | Months are counted from January and reset at year end. |
+| **In-card slotted sentences (REV5 — NEW; `{…}` = input slot)** | | |
+| `time.card.at.lead` | Uruchom o wskazanych godzinach: | Run at the listed times: |
+| `time.card.everyMinutes.head` | co {n} minut | every {n} minutes |
+| `time.card.everyMinutes.window` | od {from} do {to} | from {from} to {to} |
+| `time.card.everyHours.head` | co {n} godz. o {minute} min po pełnej godzinie | every {n} h, at {minute} min past the hour |
+| `time.card.everyHours.window` | od {from} do {to} | from {from} to {to} |
+| `day.card.everyNDays.head` | co {n} dni | every {n} days |
+| `day.card.everyNDays.window` | od {from} do {to} dnia miesiąca | from day {from} to day {to} |
+| `day.card.weekdays.lead` | W wybrane dni tygodnia: | On selected weekdays: |
+| `day.card.monthDays.lead` | W wybrane dni miesiąca: | On selected days of the month: |
+| `day.card.weekdayInMonth.head` | w {ordinal} {weekday} miesiąca | on the {ordinal} {weekday} of the month |
+| `month.card.everyNMonths.head` | co {n} miesięcy | every {n} months |
+| `month.card.everyNMonths.window` | od {from} do {to} | from {from} to {to} |
+| `month.card.months.lead` | W wybrane miesiące: | In selected months: |
+| **Fields / units** | | |
+| `field.minutesEvery` / `.hoursEvery` / `.daysEvery` / `.monthsEvery` | Co ile minut / godzin / dni / miesięcy | Every N minutes / hours / days / months |
+| `field.minute` / `.minuteHint` | Minuta / liczona od pełnej godziny | Minute / counted from the top of the hour |
+| `field.times` / `.addTime` / `.removeTime` *(REV5.2: `.removeTime` retired from the view — removal is the picker's built-in ✕; key kept for PL/EN parity)* | Godziny / Dodaj godzinę / Usuń godzinę | Times / Add time / Remove time |
+| `unit.min` / `.h` | min / godz. | min / h |
+| **Window** | | |
+| `window.toggle.time` *(REV5 reword)* | w wybranych godzinach | within set hours |
+| `window.toggle.hours` *(REV5 reword)* | w wybranych godzinach | within set hours |
+| `window.toggle.days` *(REV5 reword)* | w wybranych dniach miesiąca | within set month days |
+| `window.toggle.months` *(REV5 reword)* | w wybranych miesiącach | within set months |
+| `window.from` / `.to` | od / do | from / to |
+| `window.fromHour` / `.toHour` | Od godziny / Do godziny | From hour / To hour |
+| `window.fromDay` / `.toDay` | Od dnia / Do dnia | From day / To day |
+| `window.fromMonth` / `.toMonth` | Od miesiąca / Do miesiąca | From month / To month |
+| **Weekday / month names** | | |
+| `weekday.short.0`–`.6` | nd, pn, wt, śr, cz, pt, sb | Sun, Mon, Tue, Wed, Thu, Fri, Sat |
+| `weekday.long.0`–`.6` | niedziela … sobota | Sunday … Saturday |
+| `month.short.1`–`.12` | sty … gru | Jan … Dec |
+| `month.long.1`–`.12` | styczeń … grudzień | January … December |
+| **Preview strip** | | |
+| `preview.title` *(REV5: now the rail's `aria-label`, not a visible `<h4>`)* | Najbliższe uruchomienia | Upcoming runs |
+| `preview.loading` | Wczytywanie… | Loading… |
+| `preview.empty` | Ten harmonogram nigdy się nie uruchomi — wyjątki lub wybór dni wykluczają każdy termin. | This schedule will never run — exceptions or day choices rule out every time. |
+| `preview.unavailable` | Nie można teraz wczytać podglądu. | The preview can't be loaded right now. |
+| `preview.jumpTo` *(REV5.1: the compact anchor field's placeholder + `aria-label`, in the segment row)* | Skocz do daty | Jump to date |
+| `preview.previousTile` | poprzednie | previous |
+| `preview.tileAria` | {weekday}, {date}, {time} | {weekday}, {date}, {time} |
+| `preview.loadMore` | Wczytaj kolejne | Load more |
+| **AI modal** | | |
+| `assist.title` | Opisz harmonogram słowami | Describe the schedule in words |
+| `assist.subtitle` | Np. „w każdy ostatni piątek miesiąca o 15:00". | e.g. "every last Friday of the month at 15:00". |
+| `assist.placeholder` | Wpisz, jak często ma się uruchamiać… | Type how often it should run… |
+| `assist.inputLabel` | Opis harmonogramu | Schedule description |
+| `assist.run` | Zaproponuj | Suggest |
+| `assist.apply` | Zastosuj | Apply |
+| `assist.previewLabel` | Podgląd | Preview |
+| `assist.alternativeTag` | propozycja alternatywna | suggested alternative |
+| `assist.unsupportedTitle` | Czego nie udało się odwzorować: | What couldn't be mapped: |
+| `assist.throttled` | Za dużo prób. Odczekaj chwilę i spróbuj ponownie. | Too many attempts. Wait a moment and try again. |
+| `assist.failed` | Nie udało się przygotować propozycji. Spróbuj ponownie lub ustaw ręcznie. | Couldn't prepare a suggestion. Try again or set it manually. |
+| `assist.appliedToast` | Zastosowano harmonogram z propozycji AI. | Applied the AI-suggested schedule. |
+| **Exclusions** | | |
+| `exclusions.title` | Wyjątki | Exceptions |
+| `exclusions.hint` | Pomiń wybrane terminy bez zmiany reguły powyżej. | Skip selected times without changing the rule above. |
+| `exclusions.datesLabel` | Pomiń konkretne dni | Skip specific dates |
+| `exclusions.addDate` / `.removeDate` | Dodaj datę / Usuń datę | Add date / Remove date |
+| `exclusions.datesEmpty` | Brak pominiętych dni. | No skipped dates. |
+| `exclusions.datesMax` | Maksymalnie 50 dni. | Up to 50 dates. |
+| ~~`exclusions.weekdaysLabel`~~ *(SUPERSEDED REV5 — chips removed, `§4.5.7`)* | ~~Oprócz dni tygodnia~~ | ~~Except weekdays~~ |
+| ~~`exclusions.monthsLabel`~~ *(SUPERSEDED REV5 — chips removed, `§4.5.7`)* | ~~Oprócz miesięcy~~ | ~~Except months~~ |
+| **Timezone (SUPERSEDED REV5 — field removed from the builder, `§4.5.8`; the `tz` DATA stays in the model/wire, these STRINGS are no longer rendered)** | | |
+| ~~`tz.label` / `.hint` / `.utc`~~ | ~~Strefa czasowa / Puste = UTC / UTC~~ | ~~Timezone / Empty = UTC / UTC~~ |
+| ~~`tz.dstNote`~~ | ~~Uwaga na zmianę czasu: nieistniejące godziny przesuwają się, powtórzone mogą uruchomić się dwukrotnie.~~ | ~~Mind clock changes: non-existent times shift forward, repeated times can run twice.~~ |
+| **Validation** | | |
+| `validation.timeRequired` / `.timeFormat` / `.timeDuplicate` / `.timesMax` | Podaj godzinę / Nieprawidłowa godzina / Godzina się powtarza / Maksymalnie 6 godzin | Enter a time / Invalid time / Duplicate time / Up to 6 times |
+| `validation.pickAtLeastOne` | Wybierz co najmniej jeden | Pick at least one |
+| `validation.windowOrder` | „Od" musi być wcześniejsze niż „do" | "From" must be earlier than "to" |
+| `validation.number` / `.min` / `.max` | Podaj liczbę / Min. {min} / Maks. {max} | Enter a number / Min {min} / Max {max} |
+| `validation.lastWorkingDayNeedsAt` | Ta reguła wymaga określonych godzin. | This rule requires set times. |
+| **describe.* (grammar templates + cased names)** | | |
+| `describe.daily` | Codziennie o {t} | Daily at {t} |
+| `describe.at` | O {times} | At {times} |
+| `describe.everyMinutes` / `.everyMinutesWindow` | Co {n} minut / …między {from} a {to} | Every {n} minutes / …between {from} and {to} |
+| `describe.everyHours` / `.everyHoursMinute` / `.everyHoursWindow` | Co {n} godzin / (o :{mm}) / …między {from}:00 a {to}:00 | Every {n} hours / (at :{mm}) / …between {from}:00 and {to}:00 |
+| `describe.everyNDays` / `.everyNDaysWindow` | co {n} dni / …od {from}. do {to}. dnia miesiąca | every {n} days / …from the {from} to the {to} of the month |
+| `describe.weekdays` / `.workdays` / `.weekend` | w {days} / w dni robocze / w weekendy | on {days} / on workdays / on weekends |
+| `describe.monthDays` | {days} dnia miesiąca | on the {days} of the month |
+| `describe.lastDay` / `.lastWorkingDay` | ostatniego dnia miesiąca / ostatniego dnia roboczego miesiąca | on the last day / on the last working day of the month |
+| `describe.nthWeekday` / `.lastWeekday` | w {ordinal}. {weekdayAcc} miesiąca / w {lastWeekdayClause} miesiąca | on the {ord} {weekday} / on the last {weekday} of the month |
+| `describe.everyNMonths` / `.everyNMonthsWindow` | co {n} {miesiące\|miesięcy} / …od {from} do {to} | every {n} months / …from {from} to {to} |
+| `describe.months` | w {months} | in {months} |
+| `describe.exclusionClause` / `.exclusionSep` | — z wyjątkami: {list} / "; " | — except: {list} / "; " |
+| `describe.exclusionWeekdays` / `.exclusionMonths` / `.exclusionDates` | {days} / {months} / {n, plural: 1{1 wybrany dzień} few{# wybrane dni} other{# wybranych dni}} | {days} / {months} / {n} selected date(s) |
+| `describe.tzClause` | " ({tz})" | " ({tz})" |
+| `describe.listSep` / `.listLast` | ", " / {init} i {last} | ", " / {init} and {last} |
+| `describe.monthIn.1`–`.12` (locative) | styczniu … grudniu | (EN reuses `month.long`) |
+| `describe.monthGen.1`–`.12` (genitive) | stycznia … grudnia | (EN reuses `month.long`) |
+| `describe.weekdayPlural.0`–`.6` (acc. pl.) | niedziele, poniedziałki, wtorki, środy, czwartki, piątki, soboty | (EN reuses `weekday.long` + plural) |
+| `describe.weekdayAcc.0`–`.6` (acc. sg.) | niedzielę, poniedziałek, wtorek, środę, czwartek, piątek, sobotę | (EN reuses `weekday.long`) |
+| `describe.lastWeekdayClause.0`–`.6` | ostatnią niedzielę, ostatni poniedziałek, ostatni wtorek, ostatnią środę, ostatni czwartek, ostatni piątek, ostatnią sobotę | the last {weekday} |
+
+> **Zero cron/RRULE jargon** anywhere in the copy — no "cron", "BYDAY", "modulo",
+> "expression". **REV5:** with the tz field removed (`§4.5.8`), a user now types NO
+> technical string at all — the raw IANA tz name is never surfaced for input, only ever
+> shown (in plain language) in the conditional "({tz})" clause for a foreign zone.
+
+#### 4.5.13 Accessibility
+
+- **Tabs** (`Tabs` primitive): `role=tablist`/`tab`/`tabpanel`, roving tabindex, ←/→
+  move + Home/End, `aria-selected`, `aria-controls` — inherited; pass `ariaLabel`.
+- **Option cards (`WorkflowScheduleOptionCards`, REV5):** the CARD HEADERS form one
+  `role=radiogroup` (`aria-label` = the axis) — each header a `role=radio` +
+  `aria-checked`, roving tabindex, arrow-key select (↑/↓ and ←/→) + Home/End; the
+  selected card's INPUT BODY is a `role=group` region OUTSIDE the radio button (a radio
+  must not wrap interactive controls), reached by **Tab from the selected header**. Only
+  the selected card has a body, so the tab path is unambiguous. Disabled headers (the
+  time cards under `last_working_day`) keep an explanation visible, never a bare gray-out
+  (`reference-links.md` "disabled buttons").
+- **Chip grids** (weekdays, month-days, months — REV5: exclusion weekday/month grids
+  removed, `§4.5.7`): each chip a real `Button` with `aria-pressed`, grouped in a
+  `role=group` with an `aria-label`; selection is border+tint+aria, never color alone.
+- **Preview tiles:** each an element with an `aria-label` (`preview.tileAria`) so the
+  full instant is announced; the "previous" tile adds `preview.previousTile` to its
+  label; the rail is keyboard-scrollable and the lazy sentinel doesn't trap focus.
+- **AI modal:** `Modal` focus-trap + Esc/scrim close + title/description ids
+  (inherited); focus lands in the `Textarea` on open; `.run` `:loading` keeps a stable
+  width; `Zastosuj` disabled-state is announced. Model text is inert plain text.
+- **Every control labelled** via `FormField`/`aria-label`; helper/error text wired
+  through `aria-describedby`; `focus-visible` rings come from the primitives. No
+  state/tone by color alone — icon + text throughout.
+
+#### 4.5.14 Responsive / mobile (REV5)
+
+> **REV5 supersede marker.** Updated for the compact segment, the option cards, and
+> the in-sentence window.
+
+- **Header segment (`§4.5.2`):** the top row wraps on mobile — the sentence takes the
+  full width, then the action cluster (the jump-to-date field + "Zaplanuj z AI", the latter
+  icon-only) wraps to a right-aligned second line; the compact tile rail scrolls
+  horizontally below. Still ONE framed segment.
+- **Tabs** never wrap — they scroll horizontally with edge fades (primitive default).
+- **Option cards:** stack **one per row** (full width) at every width so the in-sentence
+  body reads as a sentence; on `next-sm+` the SHORT no-input cards may pack two-up, but a
+  card with a body always spans full width.
+- **In-sentence window (`§4.5.6`):** the "od {from} do {to}" fragment wraps within the
+  card sentence line (`flex-wrap`) on the narrowest widths while staying one group.
+- **Chip grids wrap** (`flex-wrap`) inside their card body; the month-days grid keeps
+  small calendar-like tap targets and wraps naturally; weekday/month chips wrap.
+- **Preview strip:** native horizontal scroll (touch-friendly); compact tiles are
+  fixed-width `shrink-0`; the "jump to date" trigger is in the segment row (an icon +
+  `Popover`), NOT a stacked field above the rail (REV4 behavior removed).
+- **AI modal** is `size="lg"` capped at `85dvh` with an internally-scrolling body and a
+  pinned footer (primitive) — the composer + proposal never push `Zastosuj` off-screen.
+
+#### 4.5.15 Component & helper inventory (REV5 delta on the shipped REV4 files)
+
+> **REV5 supersede marker.** The REV4 files below already EXIST and shipped. This is a
+> DELTA table: the "Kind" column is what REV5 does to each. ONE new component
+> (`WorkflowScheduleOptionCards.vue`); the rest are targeted MODIFYs. No file is deleted.
+
+| File | REV5 kind | What REV5 changes |
+| --- | --- | --- |
+| `WorkflowScheduleOptionCards.vue` | **CREATE** | The radio-group of selection cards (`§4.5.5`): a `role=radiogroup` of card headers (`role=radio`, arrow-key select, roving tabindex) each with an OPTIONAL expanding body region OUTSIDE the button; `v-model` the sub-mode; a per-option `#body-<value>` scoped slot the panels fill; unselected cards show title only; disabled cards keep a visible explanation; Tab from the selected header enters that card's body. Owns the card chrome + radio a11y + the focus model, NOT axis logic. May host the `{slot}`-split renderer for in-sentence templates (or that lives in `workflowSchedule.ts`). |
+| `WorkflowScheduleBuilder.vue` | MODIFY | Own the single `Surface bg="muted" border radius="lg"` **header segment** wrapping the summary row + preview rail (`§4.5.2`); own the shared `anchor` for the jump-to-date; **remove the tz `FormField`** and the **exclusions weekday/month chip groups** (`§4.5.7`/`§4.5.8`); the Exceptions `Accordion` body = dates only. Still exposes `isValid`/`validationErrors`. |
+| `WorkflowScheduleSummary.vue` | MODIFY | Drop its own `Surface bg="muted"` band + the `h-9` bubble; render as the segment's TOP ROW (`§4.5.3`): inline icon + sentence + the compact "Skocz do daty" `DateTimePicker` field (REV5.1) + the "Zaplanuj z AI" button (icon-only on mobile). |
+| `WorkflowSchedulePreviewStrip.vue` | MODIFY | COMPACT two-line tiles (`w-[7rem]`, weekday+date on line 1, time on line 2; previous tile = dashed + leading glyph, "poprzednie" in `aria-label` only); drop the visible `<h4>` heading → rail region `aria-label = preview.title`; the jump-to-date trigger moves to the segment row (accept the `anchor` as a prop/`v-model` from the host); render inside the segment frame (`§4.5.4`). Paging/edge-fades/states unchanged. |
+| `WorkflowScheduleTimePanel.vue` | MODIFY | Render its 3 sub-modes via `WorkflowScheduleOptionCards` (not `SegmentedControl`); move the `at` list / `every_*` controls into per-option `#body` slots woven into slotted sentences (`§4.5.5a`); keep the `last_working_day` lock + auto-reset; window inline (`§4.5.6`). |
+| `WorkflowScheduleDayPanel.vue` | MODIFY | Same via option-cards, 7 cards; ordinal + weekday `Select`s woven into "w {ordinal} {weekday} miesiąca"; `last_working_day` note moves into the SELECTED body (`§4.5.5b`). |
+| `WorkflowScheduleMonthPanel.vue` | MODIFY | Same via option-cards, 3 cards; `every_n_months` head + inline month-range window (`§4.5.5c`). |
+| `WorkflowScheduleWindowField.vue` | MODIFY | Render INLINE (`§4.5.6`, REV5.2): a bare `Switch` (aria-label = `window.toggle.*`, no visible text) + the ALWAYS-visible "od {from} do {to}" fragment on the SAME wrapping line as the head sentence; the switch flips the pair's `disabled` (exposed as a `{ disabled }` slot prop), it never hides the fragment — not a `pl-next-6` stacked block. |
+| `WorkflowScheduleAssistModal.vue` | MODIFY (light) | UNCHANGED except its compact in-modal preview inherits the REV5 compact two-line tiles (`§4.5.9`). |
+| `workflowSchedule.ts` | MODIFY | `emptyScheduleDraft.tz` SEEDS the resolved browser zone (fallback `''`) — the "nowe = strefa przeglądarki" behavior (`§4.5.8`); `describeSchedule` gains optional `activeTz` + the conditional tz clause (`§4.5.10`). KEEP the weekday/month exclusion validators + their clause rendering (the model/wire still supports them). `configToDraft`/`draftToConfig` UNCHANGED. May host the `{slot}`-split template helper. Update its Vitest spec for the seed + tz-clause. |
+| `app/stores/workflows.ts` | UNCHANGED | `schedulePreview`/`scheduleAssist` unchanged; the config it forwards still MAY carry `exclusions.weekdays/months` (backend support retained; the FE just stops authoring them). |
+
+> The two add-on fields and other §8 inventory are UNCHANGED. Still no new UI
+> **primitive** — the schedule components compose `Tabs`, `TimePicker`, `DatePicker`,
+> `DateTimePicker`, `NumberInput`, `Select`, `Checkbox`, `Accordion`, `Surface`,
+> `Modal`, `Popover` (REV5, for jump-to-date), `Button`, `Alert`, `Skeleton`, `Badge`,
+> `Icon`. `WorkflowScheduleOptionCards.vue` is a LOCAL workflows component, NOT a
+> promoted primitive; `SegmentedControl` is no longer used by the schedule panels but is
+> UNTOUCHED for its other consumers. This inventory supersedes the schedule rows of
+> §8.3/§8.4; the non-schedule rows there stand.
 
 ### 4.6 Steps editor — `WorkflowStepListEditor.vue` + `WorkflowStepCard.vue` (REWRITTEN for 5.1)
 
@@ -992,48 +1757,14 @@ workflows.trigger.*          [CHANGED] <type>.label/.short for ONLY
                              anonymous.any/.onlyAnonymous/.onlyNonAnonymous,
                              summary.*        [REMOVED] task_created/task_status_changed/
                              approval_finished labels + outcome.* + taskStatus.*
-workflows.schedule.*         [REWRITTEN — schedule rebuild, REVISION 3]
-                             utc, loading, loadError, retry, emptyTitle/.emptyDescription,
-                             quickPickLabel, moreLabel, familyPlaceholder,
-                             tzLabel, tzHint, and, advancedToggle, simpleToggle,
-                             simpleUnavailable,
-                             mode.simpleLabel,
-                             intent.minutes/.hours/.daily/.weekly/.monthly,
-                             simple.minutesLabel/.minutesUnit/.hoursIntervalLabel/
-                             .hoursUnit/.hoursMinuteLabel/.dailyLabel/.weeklyDaysLabel/
-                             .weeklyTimeLabel/.monthlyModeLabel/.monthlyOnDay/
-                             .monthlyLastDay/.monthlyDayLabel/.monthlyTimeLabel,
-                             section.repeat/.daysAndDates/.times/.exclusions/.preview,
-                             tier.common/.intervals/.calendar/.other,
-                             family.<16 families — 4 NEW: every_n_months,
-                             nth_weekday_of_month, last_weekday_of_month,
-                             last_working_day_of_month>,
-                             param.n/.minute/.time/.first_hour/.second_hour/
-                             .weekday/.weekdays/.ordinal/.day/.first_day/.second_day/.month,
-                             ordinal.1-5, weekday.0-6, weekdayShort.0-6, month.1-12,
-                             times.heading/.add/.remove/.empty/.selfPaced,
-                             exclusions.monthsLabel/.weekdaysLabel/.datesLabel/.addDate/
-                             .removeDate/.datesEmpty/.hint,
-                             validation.required/.number/.min/.max/.lt/
-                             .weekdayListRequired/.weekdayListDuplicate/.weekdayListRange/
-                             .timesRequired/.timesMax/.timesFormat/.timesDuplicate/
-                             .exclusionsMonths/.exclusionsMonthsMax/.exclusionsWeekdays/
-                             .exclusionsWeekdaysMax/.exclusionsDatesDuplicate/
-                             .exclusionsDatesMax/.empty,
-                             help.dayMayskip/.switchToLastDay/.leapDay/.hourModulo/
-                             .fifthWeekday/.everyNMonths/.lastWorkingDay/.dstNote,
-                             describe.timeClause/.exclusionClause/.exclusionSeparator/
-                             .<16 per-family sentence templates>/.unknown,
-                             preview.heading/.loading/.unavailable/.approximate/
-                             .empty/.summaryLabel,
-                             assist.open/.prompt/.placeholder/.inputLabel/.run/
-                             .unsupportedTitle/.alternativePreviewTitle/.useAlternative/
-                             .throttled/.failed/.appliedNote
-                             [REMOVED — REV-2-only shape] a scalar-only `weekday`
-                             family param row (weekly now uses `weekdays`, see param.*
-                             above; the scalar `weekday` key is STILL used by
-                             `nth_weekday_of_month`/`last_weekday_of_month`, so the key
-                             itself was not removed — only weekly's usage of it changed)
+workflows.schedule.*         [REWRITTEN — v2 compositional descriptor, REVISION 4]
+                             the REV3 family/tier/simple-mode key sketch that used to be
+                             transcribed here is RETIRED along with the family model
+                             itself (ADR-0012). The authoritative REV4 key inventory
+                             (tabsAria, tab.*, time.*, day.*, month.*, field.*, unit.*,
+                             window.*, weekday.*/month.* names, preview.*, assist.*,
+                             validation.*, describe.* — PL + EN side by side) lives in
+                             §4.5.12; read it there, not here.
 workflows.condition.*        [REWRITTEN]
                              operator.<18 tokens>, addCondition, removeCondition,
                              fieldPlaceholder, valuePlaceholder, betweenFrom/.betweenTo,
@@ -1214,17 +1945,21 @@ read identically in both themes. State/origin badges = tone token + icon + label
 | `pages/workflows/WorkflowEditorDrawer.vue` | Host the rebuilt sections; catalog fetch-per-form + cache; conditions clear-on-form-change; assist wiring; 422 map per §4.10. |
 | the `__tests__/*` for the rebuilt files | Re-point at the new contracts (editor model, trigger fields, target picker, run-now errors). |
 
-### 8.4 B7 CREATE (new for 5.1; schedule files rebuilt again in REVISION 3)
+### 8.4 B7 CREATE (new for 5.1; schedule files rebuilt again in REVISION 3, then again in REVISION 4)
+
+> **The REV3 schedule rows below are superseded by §4.5.15** (`WorkflowScheduleBuilder.vue`,
+> `WorkflowScheduleAssist.vue`, and `workflowSchedule.ts`'s REV3 descriptions, plus the
+> REV3 store-methods row's `fetchScheduleFamilies()`/`schedulePreview(config, count)`
+> shape) — removed here; see §4.5.15 for the current REV4 component inventory and
+> §4.5.9/§4.5.4 for the current AI-modal/preview contracts. The non-schedule rows below
+> (the two add-on fields, `workflowVariables.ts`) are UNCHANGED and stand.
 
 | New file | Path | Responsibility |
 | --- | --- | --- |
-| `WorkflowScheduleBuilder.vue` | `pages/workflows/` | [REBUILT, REVISION 3] The simple/advanced two-mode, descriptor-driven family picker (16 families) + per-param controls + `times`/`exclusions` editors + `lt`/bounds validation + semantic helper text + the live preview card (debounced `POST schedule-preview`). See §4.5. |
-| `WorkflowScheduleAssist.vue` | `pages/workflows/` | [REBUILT, REVISION 3] The AI natural-language composer + the four response states (apply/alternative/infeasible/throttle); state (b) now previews the alternative (sentence + note + next 4 runs) before apply. Prefills the builder, never submits. |
 | `ValueOrVariableField.vue` | `pages/workflows/` | Literal control OR a catalog-variable picker (type-filtered), emitting `{kind:…}`; used for priority (and any enum value-or-variable). |
 | `DateOrVariableField.vue` | `pages/workflows/` | `DatePicker` OR a date-typed variable picker, emitting `{kind:…}`; used for deadline + report windows. |
 | `workflowVariables.ts` | `pages/workflows/` | Catalog→editor adapter: `toEditorVariables` (system/field/position-scoped step outputs, KEY-substituted, editor-primitive typed), `resolveVariableType`, `variablesOfType` (for the add-on filters). |
-| `workflowSchedule.ts` | `pages/workflows/` | [REBUILT, REVISION 3] Pure schedule helpers: descriptor lookup (16 families), `lt`/bounds validators (incl. `weekday_list`/`times`/`exclusions`), `isSimpleRepresentable`, `intentForFamily`, `SIMPLE_INTENT_FAMILIES`, `describeSchedule(config, t)` (signature widened from `(family, params, tz)` to take the full `ScheduleConfig` + the exclusion/time clauses), `configToDraft`/`draftToConfig`, `occurrenceFormatter`/`formatOccurrence` (shared preview-row formatting). |
-| store methods on `app/stores/workflows.ts` | `app/stores/` | `fetchScheduleFamilies()` (cached), `fetchWorkflowCatalog(formId)` (cached per form), `scheduleAssist(prompt, tz)`, and [NEW, REVISION 3] `schedulePreview(config, count)` — calls `POST /workflows/meta/schedule-preview`; used by both the builder's live preview and the assist's alternative preview. |
+| store method `fetchWorkflowCatalog(formId)` on `app/stores/workflows.ts` | `app/stores/` | Cached per form; unrelated to the schedule rebuild. The schedule-specific store methods (`scheduleAssist`, `schedulePreview`) are documented in §4.5.15, not here. |
 
 > No new UI **primitive** is required — the two add-on fields and the schedule
 > components compose existing `ui/` controls (the times/exclusions editors reuse

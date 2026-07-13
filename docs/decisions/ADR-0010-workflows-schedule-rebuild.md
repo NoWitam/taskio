@@ -267,6 +267,13 @@ frontend's `WorkflowScheduleBuilder.vue` and `WorkflowScheduleAssist.vue` both c
 
 ### 7. Frontend: simple/advanced progressive-disclosure modes as a curated layer OVER the descriptors, not a parallel model
 
+> **Superseded by ADR-0012.** The family-based descriptor this section's two-mode frontend was
+> built over was itself retired by ADR-0012 (a compositional `{ time, day?, month? }` axis model
+> replaces the family enumeration). The simple/advanced split described below no longer exists —
+> the rebuilt frontend is a single three-tab builder (Czas / Dzień / Miesiąc) over the three axes,
+> and the AI assist moved from an inline panel to a reviewed modal (never auto-applying). The
+> rationale below is kept for historical record; it is no longer the current design.
+
 **Decision:** `WorkflowScheduleBuilder.vue` was rebuilt with a SIMPLE mode (five curated intents —
 Minutes/Hours/Daily/Weekly/Monthly — each mapping onto one or two of the 16 families with a
 reduced control set) and an ADVANCED mode (four sections — Repeat/Days & dates/Times/Exclusions —
