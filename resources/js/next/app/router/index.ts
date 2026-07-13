@@ -8,6 +8,7 @@
 // /login when already signed in.
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { sectionRedirect } from './sectionRedirect';
 
 const routes: RouteRecordRaw[] = [
   {
@@ -137,10 +138,39 @@ const routes: RouteRecordRaw[] = [
             meta: { requiresAuth: true, titleKey: 'nav.bots' },
           },
           {
+            // Detail sections are CHILD ROUTES sharing one component (the view
+            // derives the section from the route name). The record itself has NO
+            // component, so the children render in the module layout's
+            // <RouterView>. The bare path keeps the legacy `next.bots.detail`
+            // name: named pushes land on the default section, and old
+            // `?section=` deep links redirect with every other query key intact.
             path: ':id',
-            name: 'next.bots.detail',
-            component: () => import('../../pages/bots/BotDetailView.vue'),
-            meta: { requiresAuth: true, titleKey: 'nav.bots' },
+            children: [
+              {
+                path: '',
+                name: 'next.bots.detail',
+                redirect: (to) =>
+                  sectionRedirect(to, 'next.bots.detail.', ['inbox', 'activity', 'config'], 'inbox'),
+              },
+              {
+                path: 'inbox',
+                name: 'next.bots.detail.inbox',
+                component: () => import('../../pages/bots/BotDetailView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.bots' },
+              },
+              {
+                path: 'activity',
+                name: 'next.bots.detail.activity',
+                component: () => import('../../pages/bots/BotDetailView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.bots' },
+              },
+              {
+                path: 'config',
+                name: 'next.bots.detail.config',
+                component: () => import('../../pages/bots/BotDetailView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.bots' },
+              },
+            ],
           },
         ],
       },
@@ -159,10 +189,35 @@ const routes: RouteRecordRaw[] = [
             meta: { requiresAuth: true, titleKey: 'nav.workflows' },
           },
           {
+            // Detail sections are CHILD ROUTES of the detail SHELL (the shell
+            // owns the fetch + action bar and renders the section through its
+            // own <RouterView> — Runs needs its own lifecycle). The bare path
+            // keeps the legacy `next.workflows.detail` name: named pushes land
+            // on the default section, and old `?section=` deep links redirect
+            // with every other query key (run, run_detail, state, …) intact.
             path: ':id',
-            name: 'next.workflows.detail',
             component: () => import('../../pages/workflows/WorkflowDetailView.vue'),
             meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+            children: [
+              {
+                path: '',
+                name: 'next.workflows.detail',
+                redirect: (to) =>
+                  sectionRedirect(to, 'next.workflows.detail.', ['overview', 'runs'], 'overview'),
+              },
+              {
+                path: 'overview',
+                name: 'next.workflows.detail.overview',
+                component: () => import('../../pages/workflows/WorkflowOverviewView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+              },
+              {
+                path: 'runs',
+                name: 'next.workflows.detail.runs',
+                component: () => import('../../pages/workflows/WorkflowRunsSection.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+              },
+            ],
           },
         ],
       },

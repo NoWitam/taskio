@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// ApprovalsModuleLayout — the Approvals module shell (next): a LEFT inner sub-nav
-// + a content area that renders the module's pages (Queue + Pipelines). It HOSTS
+// ApprovalsModuleLayout — the Approvals module shell (next): the shared
+// ModuleAside (≥ next-lg) + ModuleTabs (below) section nav around a content
+// area that renders the module's pages (Queue + Pipelines). It HOSTS
 // two query-driven DRAWERS, the same pattern as the Forms module layout:
 //   • the pipeline builder (`?pipeline=new` · `?pipeline=<id>`), and
 //   • the approval review drawer (`?review=<processId>` — Batch 2).
@@ -11,8 +12,8 @@
 // Queue is the primary daily surface, so it leads the sub-nav.
 import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import Surface from '../../ui/layout/Surface.vue';
-import Icon, { type IconName } from '../../ui/primitives/Icon.vue';
+import ModuleAside, { type ModuleNavItem } from '../../ui/layout/ModuleAside.vue';
+import ModuleTabs from '../../ui/layout/ModuleTabs.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import PipelineBuilderDrawer from './PipelineBuilderDrawer.vue';
 import ApprovalReviewDrawer from './ApprovalReviewDrawer.vue';
@@ -25,20 +26,16 @@ const router = useRouter();
 const { t } = useI18n();
 const queueStore = useApprovalQueueStore();
 
-interface SubNavItem {
-  key: string;
-  label: string;
-  icon: IconName;
-  to: { name: string };
-}
-const subNav = computed<SubNavItem[]>(() => [
+// Approvals has NO resource-scoped pages — the aside is just the module block +
+// its two pages (no resource section / placeholder).
+const moduleItems = computed<ModuleNavItem[]>(() => [
   // Queue is the primary daily surface — it leads the sub-nav.
   { key: 'queue', label: t('approvals.module.queue'), icon: 'inbox', to: { name: 'next.approvals.queue' } },
   { key: 'pipelines', label: t('approvals.module.pipelines'), icon: 'git-branch', to: { name: 'next.approvals.pipelines' } },
 ]);
 
-function isActive(name?: string): boolean {
-  return !!name && route.name === name;
+function isItemActive(item: ModuleNavItem): boolean {
+  return route.name === (item.to as { name?: string } | undefined)?.name;
 }
 
 // Warm the nav-badge count on mount (Batch 3 renders the badge UI; cheap to fetch
@@ -94,50 +91,18 @@ function onReviewClosed(): void {
 
 <template>
   <div class="flex min-h-0 flex-1 gap-next-4">
-    <!-- Inner sub-navigation (hidden on narrow screens; content stays usable). -->
-    <Surface
-      as="aside"
-      bg="card"
-      border
-      elevation="sm"
-      radius="lg"
-      class="hidden w-64 shrink-0 min-h-0 flex-col overflow-y-auto next-lg:flex"
-    >
-      <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
-        <span
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
-          aria-hidden="true"
-        >
-          <Icon name="check-circle" class="text-next-lg" />
-        </span>
-        <div class="min-w-0">
-          <h2 class="truncate text-next-sm font-next-semibold text-next-fg">
-            {{ t('approvals.title') }}
-          </h2>
-          <p class="mt-next-0_5 text-next-xs text-next-muted-foreground">
-            {{ t('approvals.module.selectHint') }}
-          </p>
-        </div>
-      </div>
+    <!-- Section nav (≥ next-lg): module block + Queue / Pipelines. -->
+    <ModuleAside
+      module-icon="check-circle"
+      :module-title="t('approvals.title')"
+      :module-hint="t('approvals.module.selectHint')"
+      :module-items="moduleItems"
+      :active-match="isItemActive"
+    />
 
-      <nav class="flex flex-col gap-next-0_5 p-next-2">
-        <RouterLink
-          v-for="item in subNav"
-          :key="item.key"
-          :to="item.to"
-          class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
-          :class="isActive(item.to.name)
-            ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
-            : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
-        >
-          <Icon :name="item.icon" class="shrink-0" />
-          {{ item.label }}
-        </RouterLink>
-      </nav>
-    </Surface>
-
-    <!-- Content: the list (or a future sub-view). -->
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+    <!-- Content: the small-screen section tabs + the list (or a future sub-view). -->
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-next-4 overflow-y-auto">
+      <ModuleTabs :items="moduleItems" :active-match="isItemActive" />
       <RouterView />
     </div>
 

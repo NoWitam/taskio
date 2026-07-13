@@ -19,6 +19,7 @@ import Icon from '../../ui/primitives/Icon.vue';
 import Spinner from '../../ui/primitives/Spinner.vue';
 import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
+import { resolvePipelineIcon } from '../../ui/forms/pipelineIcon';
 import { useI18n } from '../../app/i18n';
 import type { ApprovalPipelineListItem } from './types';
 
@@ -91,7 +92,8 @@ function onOpen(): void {
         aria-hidden="true"
       >
         <Spinner v-if="opening" size="sm" tone="muted" decorative />
-        <Icon v-else name="git-branch" class="text-next-lg" />
+        <!-- The pipeline's OWN icon (legacy IconEnum → next glyph; git-branch fallback). -->
+        <Icon v-else :name="resolvePipelineIcon(pipeline.icon)" class="text-next-lg" />
       </span>
     </template>
 

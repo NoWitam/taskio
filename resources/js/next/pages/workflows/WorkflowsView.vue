@@ -411,11 +411,6 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <!-- Persistent module-description Alert (never dismisses). -->
-    <Alert variant="info" size="sm">
-      {{ t('workflows.list.moduleDescription') }}
-    </Alert>
-
     <FilterBar
       v-model:search="search"
       :search-placeholder="t('workflows.filters.search')"

@@ -16,6 +16,7 @@ import Icon from '../../ui/primitives/Icon.vue';
 import Spinner from '../../ui/primitives/Spinner.vue';
 import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
+import { resolveFormIcon } from '../../ui/forms/formIcon';
 import { useI18n } from '../../app/i18n';
 import type { FormSummary } from './types';
 
@@ -126,7 +127,8 @@ function onOpen(): void {
         aria-hidden="true"
       >
         <Spinner v-if="opening" size="sm" tone="muted" decorative />
-        <Icon v-else name="file-text" class="text-next-lg" />
+        <!-- The form's OWN icon (legacy IconEnum → next glyph; file-text fallback). -->
+        <Icon v-else :name="resolveFormIcon(form.icon)" class="text-next-lg" />
       </span>
     </template>
 

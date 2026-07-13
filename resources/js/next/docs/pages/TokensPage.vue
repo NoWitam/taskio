@@ -169,7 +169,8 @@ onMounted(() => {
     </div>
 
     <header class="flex flex-col gap-next-2">
-      <h1 class="text-next-3xl">Design tokens</h1>
+      <!-- Explicit weight: Tailwind preflight resets h1 to font-weight 400. -->
+      <h1 class="text-next-3xl font-next-semibold">Design tokens</h1>
       <p class="text-next-base text-next-muted-foreground">
         Resolved live from <code class="font-next-mono text-next-sm">resources/css/next.css</code>.
         Every value below is read from a CSS custom property at runtime, so this

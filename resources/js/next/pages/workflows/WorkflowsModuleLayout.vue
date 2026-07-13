@@ -1,22 +1,24 @@
 <script setup lang="ts">
 // WorkflowsModuleLayout — the Workflows (automation) module shell (next, Etap 5):
-// a LEFT inner sub-nav + a content area that renders the module's pages (the list
-// + the per-workflow detail). It HOSTS the query-driven overlays as query keys so
-// a row action and a detail action share one host and they survive navigation:
+// the shared two-level ModuleAside (≥ next-lg) + ModuleTabs (below) around a
+// content area that renders the module's pages (the list + the per-workflow
+// detail). It HOSTS the query-driven overlays as query keys so a row action and
+// a detail action share one host and they survive navigation:
 //   • `?workflow=new` / `?workflow=<id>` — the editor DRAWER (Batch 6b),
 //   • `?run=<id>`                        — the run-now MODAL (Batch 6c).
-// Each overlay key is preserved across filter changes + section navigation so a
-// row action and a detail action share one host and survive navigation.
+// Each overlay key is preserved across filter changes + section navigation.
 //
-// Mirrors `BotsModuleLayout.vue` one-to-one: on the list the aside shows the module
-// header + a single "All workflows" item; after opening a workflow it shows
-// back-to-list + the entity info block + a section sub-nav (Overview / Runs) driven
-// by `?section=`. The layout watches the route id and prefetches the detail so the
-// aside can render identity immediately.
-import { computed, watch } from 'vue';
+// Mirrors `BotsModuleLayout.vue` one-to-one: the aside carries the module block
+// (+ "All workflows") and the workflow RESOURCE section — a pick-a-workflow
+// placeholder linking to the list, or the selected workflow's identity (icon +
+// name + StatusBadge + description) above the section nav (Overview / Runs)
+// once a `next.workflows.detail.*` child route is active. The page's PageHeader
+// describes the PAGE — identity lives here. The layout watches the route id and
+// prefetches the detail so the identity block can render immediately.
+import { computed, onBeforeUnmount, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import Surface from '../../ui/layout/Surface.vue';
-import Icon, { type IconName } from '../../ui/primitives/Icon.vue';
+import ModuleAside, { type ModuleNavItem, type ModuleResource } from '../../ui/layout/ModuleAside.vue';
+import ModuleTabs from '../../ui/layout/ModuleTabs.vue';
 import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import WorkflowEditorDrawer from './WorkflowEditorDrawer.vue';
@@ -24,6 +26,8 @@ import TargetPickerModal from './TargetPickerModal.vue';
 import { workflowStatusMap } from './workflowStatus';
 import { useWorkflowsStore } from '../../app/stores/workflows';
 import { useI18n } from '../../app/i18n';
+import { setPageContextLabel } from '../../app/lib/pageContext';
+import type { IconName } from '../../ui/primitives/icons';
 import type { WorkflowDetail } from './types';
 
 const route = useRoute();
@@ -32,33 +36,26 @@ const { t } = useI18n();
 const store = useWorkflowsStore();
 const statusMap = computed(() => workflowStatusMap(t));
 
-interface SubNavItem {
-  key: string;
-  label: string;
-  icon: IconName;
-  to: { name: string };
-}
-const subNav = computed<SubNavItem[]>(() => [
-  { key: 'list', label: t('workflows.module.allWorkflows'), icon: 'list-checks', to: { name: 'next.workflows' } },
-]);
-
-function isActive(name?: string): boolean {
-  return !!name && route.name === name;
-}
-
-// --- Detail sidebar (the info block + section sub-nav for an open workflow) ---
+// --- Section nav (route-name driven) ---------------------------------------
+// A workflow is open on any `next.workflows.detail*` route (the bare redirect
+// record + the section children), so prefix-match the route NAME.
 const workflowId = computed(() =>
-  route.name === 'next.workflows.detail' && route.params.id ? String(route.params.id) : null,
+  String(route.name ?? '').startsWith('next.workflows.detail') && route.params.id
+    ? String(route.params.id)
+    : null,
 );
+// The active section is the child route name's suffix (default: overview).
+const currentSection = computed(() => {
+  const name = String(route.name ?? '');
+  const prefix = 'next.workflows.detail.';
+  return name.startsWith(prefix) ? name.slice(prefix.length) : 'overview';
+});
+
 const activeWorkflow = computed(() =>
   workflowId.value && store.detail?.id === workflowId.value ? store.detail : null,
 );
-const currentSection = computed(() => {
-  const s = route.query.section;
-  return (Array.isArray(s) ? s[0] : s) || 'overview';
-});
 
-// Ensure the open workflow is loaded so the aside can render its identity.
+// Ensure the open workflow is loaded so the aside identity block can render.
 watch(
   workflowId,
   (id) => {
@@ -67,19 +64,54 @@ watch(
   { immediate: true },
 );
 
-interface DetailNavItem {
-  key: string;
-  label: string;
-  icon: IconName;
-  section: string;
-}
-const detailNav = computed<DetailNavItem[]>(() => [
-  { key: 'overview', label: t('workflows.detail.tabOverview'), icon: 'layout-dashboard', section: 'overview' },
-  { key: 'runs', label: t('workflows.detail.tabRuns'), icon: 'clock', section: 'runs' },
-]);
+// The open workflow's name feeds the Navbar breadcrumb (Batch 2 consumes it).
+// Clear in onBeforeUnmount (synchronous, runs BEFORE the incoming layout's
+// setup) — onUnmounted is post-flush and would wipe the label the next module
+// layout just set for its cached detail.
+watch(
+  () => (workflowId.value && store.detail?.id === workflowId.value ? store.detail.name : null),
+  (name) => setPageContextLabel(name),
+  { immediate: true },
+);
+onBeforeUnmount(() => setPageContextLabel(null));
+
 function sectionLink(section: string) {
-  return { name: 'next.workflows.detail', params: { id: workflowId.value ?? '' }, query: { ...route.query, section } };
+  // Preserve the query (overlay keys, run filters) but never a legacy `section`
+  // key — the child route name carries the section now.
+  const query = { ...route.query };
+  delete query.section;
+  return { name: 'next.workflows.detail.' + section, params: { id: workflowId.value ?? '' }, query };
 }
+
+const moduleItems = computed<ModuleNavItem[]>(() => [
+  { key: 'list', label: t('workflows.module.allWorkflows'), icon: 'list-checks', to: { name: 'next.workflows' } },
+]);
+const resourceItems = computed<ModuleNavItem[]>(() => [
+  { key: 'overview', label: t('workflows.detail.tabOverview'), icon: 'layout-dashboard', to: sectionLink('overview') },
+  { key: 'runs', label: t('workflows.detail.tabRuns'), icon: 'clock', to: sectionLink('runs') },
+]);
+
+// The selected-workflow identity block ('…' while the deep-linked detail loads).
+const resource = computed<ModuleResource | null>(() =>
+  workflowId.value
+    ? {
+        icon: ((activeWorkflow.value?.icon as IconName) || 'workflow') as IconName,
+        name: activeWorkflow.value?.name ?? '…',
+        description: activeWorkflow.value?.description ?? null,
+      }
+    : null,
+);
+
+function isItemActive(item: ModuleNavItem): boolean {
+  if (item.key === 'list') return route.name === 'next.workflows';
+  return workflowId.value !== null && currentSection.value === item.key;
+}
+
+// Small screens show ONE tab row: the resource sections when a workflow is
+// open, otherwise the module pages.
+const tabItems = computed<ModuleNavItem[]>(() =>
+  workflowId.value ? resourceItems.value : moduleItems.value,
+);
 
 // --- Query-driven overlay HOSTS -------------------------------------------
 // `?workflow=` (editor drawer, 6b) and `?run=` (run-now modal, 6c). This slice
@@ -127,94 +159,41 @@ function onEditorSaved(_workflow: WorkflowDetail): void {
 
 <template>
   <div class="flex min-h-0 flex-1 gap-next-4">
-    <!-- Inner sub-navigation (hidden on narrow screens; content stays usable). -->
-    <Surface
-      as="aside"
-      bg="card"
-      border
-      elevation="sm"
-      radius="lg"
-      class="hidden w-64 shrink-0 min-h-0 flex-col overflow-y-auto next-lg:flex"
+    <!-- Two-level section nav (≥ next-lg): module block + workflow resource section. -->
+    <ModuleAside
+      module-icon="workflow"
+      :module-title="t('workflows.title')"
+      :module-hint="t('workflows.module.selectHint')"
+      :module-items="moduleItems"
+      :resource-items="resourceItems"
+      :resource="resource"
+      :resource-placeholder="{
+        icon: 'workflow',
+        label: t('workflows.module.placeholderLabel'),
+        hint: t('workflows.module.placeholderHint'),
+        to: { name: 'next.workflows' },
+      }"
+      :resource-back="{ label: t('workflows.module.allWorkflows'), to: { name: 'next.workflows' } }"
+      :resource-nav-label="t('workflows.module.resourceNav')"
+      :active-match="isItemActive"
     >
-      <!-- A workflow is OPEN: back-to-list + its info + section sub-nav. -->
-      <template v-if="workflowId">
-        <RouterLink
-          :to="{ name: 'next.workflows' }"
-          class="flex items-center gap-next-2 border-b border-next-border px-next-4 py-next-3 text-next-sm font-next-medium text-next-fg transition-colors hover:text-next-primary"
-        >
-          <Icon name="arrow-left" class="shrink-0" />
-          {{ t('workflows.module.allWorkflows') }}
-        </RouterLink>
-
-        <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
-          <span
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
-            aria-hidden="true"
-          >
-            <Icon :name="(activeWorkflow?.icon as IconName) || 'workflow'" class="text-next-lg" />
-          </span>
-          <div class="min-w-0">
-            <h3 class="truncate text-next-sm font-next-semibold text-next-fg">{{ activeWorkflow?.name ?? '…' }}</h3>
-            <StatusBadge
-              v-if="activeWorkflow"
-              :status="activeWorkflow.status"
-              :status-map="statusMap"
-              size="sm"
-              class="mt-next-1"
-            />
-          </div>
-        </div>
-
-        <nav class="flex flex-col gap-next-0_5 p-next-2">
-          <RouterLink
-            v-for="item in detailNav"
-            :key="item.key"
-            :to="sectionLink(item.section)"
-            class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
-            :class="currentSection === item.section
-              ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
-              : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
-          >
-            <Icon :name="item.icon" class="shrink-0" />
-            {{ item.label }}
-          </RouterLink>
-        </nav>
+      <template #resource-meta>
+        <StatusBadge
+          v-if="activeWorkflow"
+          :status="activeWorkflow.status"
+          :status-map="statusMap"
+          size="sm"
+        />
       </template>
+    </ModuleAside>
 
-      <!-- On the LIST: module header + "All workflows". -->
-      <template v-else>
-        <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
-          <span
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
-            aria-hidden="true"
-          >
-            <Icon name="workflow" class="text-next-lg" />
-          </span>
-          <div class="min-w-0">
-            <h2 class="truncate text-next-sm font-next-semibold text-next-fg">{{ t('workflows.title') }}</h2>
-            <p class="mt-next-0_5 text-next-xs text-next-muted-foreground">{{ t('workflows.module.selectHint') }}</p>
-          </div>
-        </div>
-
-        <nav class="flex flex-col gap-next-0_5 p-next-2">
-          <RouterLink
-            v-for="item in subNav"
-            :key="item.key"
-            :to="item.to"
-            class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
-            :class="isActive(item.to.name)
-              ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
-              : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
-          >
-            <Icon :name="item.icon" class="shrink-0" />
-            {{ item.label }}
-          </RouterLink>
-        </nav>
-      </template>
-    </Surface>
-
-    <!-- Content: the list (or the per-workflow detail). -->
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+    <!-- Content: the small-screen section tabs + the list (or the detail). -->
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-next-4 overflow-y-auto">
+      <ModuleTabs
+        :items="tabItems"
+        :active-match="isItemActive"
+        :aria-label="workflowId ? t('workflows.module.resourceNav') : undefined"
+      />
       <RouterView />
     </div>
 

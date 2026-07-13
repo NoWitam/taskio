@@ -5,7 +5,12 @@
 // light/dark theme toggle, and a content area that renders the selected story.
 // Empty sections show a "coming soon" hint so the intended structure is visible
 // before components land.
+//
+// The selected story is DEEP-LINKABLE via `?story=<id>` (D6): the URL hydrates
+// the selection on load (so a refresh / shared link keeps the page), selection
+// replaces the query (no history spam), and back/forward follow along.
 import { computed, ref, shallowRef, watch, onMounted, type Component } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import Icon from '../ui/primitives/Icon.vue';
 import LocaleSwitcher from '../ui/LocaleSwitcher.vue';
 import { useTheme, type ThemePreference } from '../app/lib/theme';
@@ -19,13 +24,33 @@ import {
 
 const { preference, isDark, setTheme } = useTheme();
 const { t } = useI18n();
+const route = useRoute();
+const router = useRouter();
 
 const sections = groupedStories();
 const navOpen = ref(false);
 
-// Selected story (default: first available).
-const activeId = ref<string>(stories.length ? storyId(stories[0]) : '');
+const str = (v: unknown): string => (Array.isArray(v) ? String(v[0] ?? '') : String(v ?? ''));
+
+/** The `?story=` selection when it names a real story, else the first available. */
+function storyFromQuery(): string {
+  const id = str(route.query.story);
+  if (id && stories.some((s) => storyId(s) === id)) return id;
+  return stories.length ? storyId(stories[0]) : '';
+}
+
+// Selected story (hydrated from the URL; default: first available).
+const activeId = ref<string>(storyFromQuery());
 const activeComponent = shallowRef<Component | null>(null);
+
+// Follow back/forward (and any external query change).
+watch(
+  () => route.query.story,
+  () => {
+    const id = storyFromQuery();
+    if (id !== activeId.value) activeId.value = id;
+  },
+);
 
 const activeStory = computed<StyleguideStory | undefined>(() =>
   stories.find((s) => storyId(s) === activeId.value),
@@ -41,6 +66,10 @@ async function loadStory(story: StyleguideStory): Promise<void> {
 function selectStory(story: StyleguideStory): void {
   activeId.value = storyId(story);
   navOpen.value = false;
+  // Keep the URL shareable; replace so browsing stories doesn't spam history.
+  if (str(route.query.story) !== activeId.value) {
+    void router.replace({ query: { ...route.query, story: activeId.value } });
+  }
 }
 
 watch(

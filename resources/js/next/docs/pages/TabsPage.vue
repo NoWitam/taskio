@@ -54,7 +54,7 @@ const slotRows: ApiRow[] = [
 <template>
   <StoryPage
     title="Tabs"
-    description="A tab list + panels. Underline (default) or pills variant; sizes sm/md; icons, badge counts, disabled tabs; the list scrolls horizontally (never wraps) with edge fades. Controlled or uncontrolled, automatic or manual activation, optional lazy panels."
+    description="A tab list + panels. Underline (default) or pills variant; sizes sm/md; icons, badge counts, disabled tabs; the list scrolls horizontally (never wraps) with edge fades. Controlled or uncontrolled, automatic or manual activation, optional lazy panels. With NO panel slot Tabs runs nav-only (no tabpanels / aria-controls) — the underline variant is the module section nav on small screens (see Layout › Module navigation)."
   >
     <template #a11y>
       <ul class="ml-next-4 list-disc space-y-next-1">

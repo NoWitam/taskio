@@ -1,23 +1,29 @@
 <script setup lang="ts">
-// BotsModuleLayout — the Bots (AI Character) module shell (next, Batch 1): a LEFT
-// inner sub-nav + a content area that renders the module's pages (the list + the
-// per-bot detail), and it HOSTS the query-driven editor DRAWER (`?bot=new` ·
-// `?bot=<id>`), the same pattern as the Approvals / Forms module layouts.
+// BotsModuleLayout — the Bots (AI Character) module shell (next): the shared
+// two-level ModuleAside (≥ next-lg) + ModuleTabs (below) around a content area
+// that renders the module's pages (the list + the per-bot detail), and it HOSTS
+// the query-driven editor DRAWER (`?bot=new` · `?bot=<id>`), the same pattern
+// as the Approvals / Forms module layouts.
 //
-// The list / detail sub-view stays mounted behind the drawer, and the query-sync
-// helpers PRESERVE the `?bot` overlay key so a filter change never closes the
-// editor. A single "Bots" sub-nav item is enough for now; the structure is ready
-// for future sub-views.
-import { computed, watch } from 'vue';
+// The aside carries the module block (+ "All bots") and the bot RESOURCE
+// section: a pick-a-bot placeholder linking to the list when nothing is open,
+// or the selected bot's identity (icon + name + StatusBadge + description)
+// above the section nav (Inbox / Activity / Configuration) once a
+// `next.bots.detail.*` child route is active. The page's PageHeader describes
+// the PAGE — identity lives here. The layout watches the route id and
+// prefetches the detail so the identity block can render immediately.
+import { computed, onBeforeUnmount, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import Surface from '../../ui/layout/Surface.vue';
-import Icon, { type IconName } from '../../ui/primitives/Icon.vue';
+import ModuleAside, { type ModuleNavItem, type ModuleResource } from '../../ui/layout/ModuleAside.vue';
+import ModuleTabs from '../../ui/layout/ModuleTabs.vue';
 import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import BotEditorDrawer from './BotEditorDrawer.vue';
 import { botStatusMap } from './botStatus';
 import { useBotsStore } from '../../app/stores/bots';
 import { useI18n } from '../../app/i18n';
+import { setPageContextLabel } from '../../app/lib/pageContext';
+import type { IconName } from '../../ui/primitives/icons';
 import type { BotDetail } from './types';
 
 const route = useRoute();
@@ -26,33 +32,24 @@ const { t } = useI18n();
 const store = useBotsStore();
 const statusMap = computed(() => botStatusMap(t));
 
-interface SubNavItem {
-  key: string;
-  label: string;
-  icon: IconName;
-  to: { name: string };
-}
-const subNav = computed<SubNavItem[]>(() => [
-  { key: 'list', label: t('bots.module.allBots'), icon: 'sparkles', to: { name: 'next.bots' } },
-]);
-
-function isActive(name?: string): boolean {
-  return !!name && route.name === name;
-}
-
-// --- Detail sidebar (the Forms-style in-module nav for an open bot) --------
-// When a bot is open, the aside shows back-to-list + the bot's info + a section
-// sub-nav (Inbox / Activity / Configuration) driven by `?section=`.
+// --- Section nav (route-name driven) ---------------------------------------
+// A bot is open on any `next.bots.detail*` route (the bare redirect record + the
+// section children), so prefix-match the route NAME.
 const botId = computed(() =>
-  route.name === 'next.bots.detail' && route.params.id ? String(route.params.id) : null,
+  String(route.name ?? '').startsWith('next.bots.detail') && route.params.id
+    ? String(route.params.id)
+    : null,
 );
-const activeBot = computed(() => (botId.value && store.detail?.id === botId.value ? store.detail : null));
+// The active section is the child route name's suffix (default: inbox).
 const currentSection = computed(() => {
-  const s = route.query.section;
-  return (Array.isArray(s) ? s[0] : s) || 'inbox';
+  const name = String(route.name ?? '');
+  const prefix = 'next.bots.detail.';
+  return name.startsWith(prefix) ? name.slice(prefix.length) : 'inbox';
 });
 
-// Ensure the open bot is loaded so the aside can render its identity (Forms pattern).
+const activeBot = computed(() => (botId.value && store.detail?.id === botId.value ? store.detail : null));
+
+// Ensure the open bot is loaded so the aside identity block can render.
 watch(
   botId,
   (id) => {
@@ -61,20 +58,53 @@ watch(
   { immediate: true },
 );
 
-interface DetailNavItem {
-  key: string;
-  label: string;
-  icon: IconName;
-  section: string;
-}
-const detailNav = computed<DetailNavItem[]>(() => [
-  { key: 'inbox', label: t('bots.detail.tabInbox'), icon: 'inbox', section: 'inbox' },
-  { key: 'activity', label: t('bots.detail.tabActivity'), icon: 'clock', section: 'activity' },
-  { key: 'config', label: t('bots.detail.tabConfig'), icon: 'settings', section: 'config' },
-]);
+// The open bot's name feeds the Navbar breadcrumb (Batch 2 consumes it).
+// Clear in onBeforeUnmount (synchronous, runs BEFORE the incoming layout's
+// setup) — onUnmounted is post-flush and would wipe the label the next module
+// layout just set for its cached detail.
+watch(
+  () => (botId.value && store.detail?.id === botId.value ? store.detail.name : null),
+  (name) => setPageContextLabel(name),
+  { immediate: true },
+);
+onBeforeUnmount(() => setPageContextLabel(null));
+
 function sectionLink(section: string) {
-  return { name: 'next.bots.detail', params: { id: botId.value ?? '' }, query: { ...route.query, section } };
+  // Preserve the query (overlay keys) but never a legacy `section` key — the
+  // child route name carries the section now.
+  const query = { ...route.query };
+  delete query.section;
+  return { name: 'next.bots.detail.' + section, params: { id: botId.value ?? '' }, query };
 }
+
+const moduleItems = computed<ModuleNavItem[]>(() => [
+  { key: 'list', label: t('bots.module.allBots'), icon: 'sparkles', to: { name: 'next.bots' } },
+]);
+const resourceItems = computed<ModuleNavItem[]>(() => [
+  { key: 'inbox', label: t('bots.detail.tabInbox'), icon: 'inbox', to: sectionLink('inbox') },
+  { key: 'activity', label: t('bots.detail.tabActivity'), icon: 'clock', to: sectionLink('activity') },
+  { key: 'config', label: t('bots.detail.tabConfig'), icon: 'settings', to: sectionLink('config') },
+]);
+
+// The selected-bot identity block ('…' while the deep-linked detail loads).
+const resource = computed<ModuleResource | null>(() =>
+  botId.value
+    ? {
+        icon: ((activeBot.value?.icon as IconName) || 'sparkles') as IconName,
+        name: activeBot.value?.name ?? '…',
+        description: activeBot.value?.description ?? null,
+      }
+    : null,
+);
+
+function isItemActive(item: ModuleNavItem): boolean {
+  if (item.key === 'list') return route.name === 'next.bots';
+  return botId.value !== null && currentSection.value === item.key;
+}
+
+// Small screens show ONE tab row: the resource sections when a bot is open,
+// otherwise the module pages.
+const tabItems = computed<ModuleNavItem[]>(() => (botId.value ? resourceItems.value : moduleItems.value));
 
 // --- Editor DRAWER (query-driven overlay) ---------------------------------
 // `?bot=new` → new-bot editor · `?bot=<id>` → edit editor.
@@ -105,94 +135,41 @@ function onEditorSaved(_bot: BotDetail): void {
 
 <template>
   <div class="flex min-h-0 flex-1 gap-next-4">
-    <!-- Inner sub-navigation (hidden on narrow screens; content stays usable). -->
-    <Surface
-      as="aside"
-      bg="card"
-      border
-      elevation="sm"
-      radius="lg"
-      class="hidden w-64 shrink-0 min-h-0 flex-col overflow-y-auto next-lg:flex"
+    <!-- Two-level section nav (≥ next-lg): module block + bot resource section. -->
+    <ModuleAside
+      module-icon="sparkles"
+      :module-title="t('bots.title')"
+      :module-hint="t('bots.module.selectHint')"
+      :module-items="moduleItems"
+      :resource-items="resourceItems"
+      :resource="resource"
+      :resource-placeholder="{
+        icon: 'sparkles',
+        label: t('bots.module.placeholderLabel'),
+        hint: t('bots.module.placeholderHint'),
+        to: { name: 'next.bots' },
+      }"
+      :resource-back="{ label: t('bots.module.allBots'), to: { name: 'next.bots' } }"
+      :resource-nav-label="t('bots.module.resourceNav')"
+      :active-match="isItemActive"
     >
-      <!-- A bot is OPEN: back-to-list + its info + section sub-nav (Forms pattern). -->
-      <template v-if="botId">
-        <RouterLink
-          :to="{ name: 'next.bots' }"
-          class="flex items-center gap-next-2 border-b border-next-border px-next-4 py-next-3 text-next-sm font-next-medium text-next-fg transition-colors hover:text-next-primary"
-        >
-          <Icon name="arrow-left" class="shrink-0" />
-          {{ t('bots.module.allBots') }}
-        </RouterLink>
-
-        <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
-          <span
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
-            aria-hidden="true"
-          >
-            <Icon :name="(activeBot?.icon as IconName) || 'sparkles'" class="text-next-lg" />
-          </span>
-          <div class="min-w-0">
-            <h3 class="truncate text-next-sm font-next-semibold text-next-fg">{{ activeBot?.name ?? '…' }}</h3>
-            <StatusBadge
-              v-if="activeBot"
-              :status="activeBot.status"
-              :status-map="statusMap"
-              size="sm"
-              class="mt-next-1"
-            />
-          </div>
-        </div>
-
-        <nav class="flex flex-col gap-next-0_5 p-next-2">
-          <RouterLink
-            v-for="item in detailNav"
-            :key="item.key"
-            :to="sectionLink(item.section)"
-            class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
-            :class="currentSection === item.section
-              ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
-              : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
-          >
-            <Icon :name="item.icon" class="shrink-0" />
-            {{ item.label }}
-          </RouterLink>
-        </nav>
+      <template #resource-meta>
+        <StatusBadge
+          v-if="activeBot"
+          :status="activeBot.status"
+          :status-map="statusMap"
+          size="sm"
+        />
       </template>
+    </ModuleAside>
 
-      <!-- On the LIST: module header + "All bots". -->
-      <template v-else>
-        <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
-          <span
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg bg-next-primary text-next-primary-foreground"
-            aria-hidden="true"
-          >
-            <Icon name="sparkles" class="text-next-lg" />
-          </span>
-          <div class="min-w-0">
-            <h2 class="truncate text-next-sm font-next-semibold text-next-fg">{{ t('bots.title') }}</h2>
-            <p class="mt-next-0_5 text-next-xs text-next-muted-foreground">{{ t('bots.module.selectHint') }}</p>
-          </div>
-        </div>
-
-        <nav class="flex flex-col gap-next-0_5 p-next-2">
-          <RouterLink
-            v-for="item in subNav"
-            :key="item.key"
-            :to="item.to"
-            class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
-            :class="isActive(item.to.name)
-              ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
-              : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
-          >
-            <Icon :name="item.icon" class="shrink-0" />
-            {{ item.label }}
-          </RouterLink>
-        </nav>
-      </template>
-    </Surface>
-
-    <!-- Content: the list (or the per-bot detail). -->
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+    <!-- Content: the small-screen section tabs + the list (or the per-bot detail). -->
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-next-4 overflow-y-auto">
+      <ModuleTabs
+        :items="tabItems"
+        :active-match="isItemActive"
+        :aria-label="botId ? t('bots.module.resourceNav') : undefined"
+      />
       <RouterView />
     </div>
 

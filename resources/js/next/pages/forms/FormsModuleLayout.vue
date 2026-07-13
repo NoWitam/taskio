@@ -1,22 +1,28 @@
 <script setup lang="ts">
-// FormsModuleLayout — the Forms module shell (next): a left inner sub-navigation
-// + a content area that renders the list or a form's sub-module.
+// FormsModuleLayout — the Forms module shell (next): the shared two-level
+// ModuleAside (≥ next-lg) + ModuleTabs (below) around a content area that
+// renders the list or a form's sub-module.
 //
-// Legacy-inspired: the sidebar always offers "All forms" (back to the list); when
-// a form is open (route has `:id`) it also shows the form's info + its sub-nav
-// (Preview · Submissions · Reports[soon]). The selected form is fetched ONCE here
-// and provided to the child views via FORM_MODULE_CTX so they don't re-fetch it.
-// The page never scrolls — the sidebar and the content scroll independently.
-import { computed, provide, ref, watch } from 'vue';
+// The aside carries the module block (+ "All forms") and the form RESOURCE
+// section: a pick-a-form placeholder linking to the list when nothing is open,
+// or the selected form's identity (icon + name + enabled/draft status +
+// description) above the sub-view nav (Preview · Submissions · Reports) once a
+// form is open (route has `:id`). The page's PageHeader describes the PAGE —
+// identity lives here. The selected form is fetched ONCE here and provided to
+// the child views via FORM_MODULE_CTX so they don't re-fetch it. The page never
+// scrolls — the sidebar and the content scroll independently.
+import { computed, onBeforeUnmount, provide, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import Surface from '../../ui/layout/Surface.vue';
+import ModuleAside, { type ModuleNavItem, type ModuleResource } from '../../ui/layout/ModuleAside.vue';
+import ModuleTabs from '../../ui/layout/ModuleTabs.vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import FormBuilderView from './builder/FormBuilderView.vue';
 import FormFillView from './FormFillView.vue';
 import { useFormsStore } from '../../app/stores/forms';
 import { useI18n } from '../../app/i18n';
-import { iconOf } from './builder/elements';
+import { setPageContextLabel } from '../../app/lib/pageContext';
+import { resolveFormIcon } from '../../ui/forms/formIcon';
 import { FORM_MODULE_CTX } from './formContext';
 import type { FormDetail } from './types';
 
@@ -53,26 +59,51 @@ watch(
   { immediate: true },
 );
 
-interface SubNavItem {
-  key: string;
-  label: string;
-  icon: 'eye' | 'inbox' | 'file-text';
-  to?: { name: string; params: { id: string } };
-  soon?: boolean;
-}
-const subNav = computed<SubNavItem[]>(() => {
+// The open form's name feeds the Navbar breadcrumb (Batch 2 consumes it).
+// Clear in onBeforeUnmount (synchronous, runs BEFORE the incoming layout's
+// setup) — onUnmounted is post-flush and would wipe the label the next module
+// layout just set for its cached detail.
+watch(
+  () => (formId.value ? form.value?.name ?? null : null),
+  (name) => setPageContextLabel(name),
+  { immediate: true },
+);
+onBeforeUnmount(() => setPageContextLabel(null));
+
+// --- Section nav (child-route driven) --------------------------------------
+const moduleItems = computed<ModuleNavItem[]>(() => [
+  { key: 'list', label: t('forms.module.allForms'), icon: 'file-text', to: { name: 'next.forms' } },
+]);
+const resourceItems = computed<ModuleNavItem[]>(() => {
   const id = formId.value;
-  if (!id) return [];
   return [
-    { key: 'preview', label: t('forms.preview'), icon: 'eye', to: { name: 'next.forms.preview', params: { id } } },
-    { key: 'submissions', label: t('forms.submissions.title'), icon: 'inbox', to: { name: 'next.forms.submissions', params: { id } } },
-    { key: 'reports', label: t('forms.module.reports'), icon: 'file-text', to: { name: 'next.forms.reports', params: { id } } },
+    { key: 'preview', label: t('forms.preview'), icon: 'eye', ...(id ? { to: { name: 'next.forms.preview', params: { id } } } : {}) },
+    { key: 'submissions', label: t('forms.submissions.title'), icon: 'inbox', ...(id ? { to: { name: 'next.forms.submissions', params: { id } } } : {}) },
+    { key: 'reports', label: t('forms.module.reports'), icon: 'file-text', ...(id ? { to: { name: 'next.forms.reports', params: { id } } } : {}) },
   ];
 });
 
-function isActive(name?: string): boolean {
-  return !!name && route.name === name;
+// The selected-form identity block ('…' while the deep-linked form loads). The
+// icon is the form's OWN (legacy IconEnum → next glyph; file-text fallback).
+const resource = computed<ModuleResource | null>(() =>
+  formId.value
+    ? {
+        icon: resolveFormIcon(form.value?.icon),
+        name: form.value?.name ?? '…',
+        description: form.value?.description ?? null,
+      }
+    : null,
+);
+
+function isItemActive(item: ModuleNavItem): boolean {
+  if (item.key === 'list') return route.name === 'next.forms';
+  const targetName = (item.to as { name?: string } | undefined)?.name;
+  return !!targetName && route.name === targetName;
 }
+
+// Small screens show ONE tab row: the sub-view sections when a form is open,
+// otherwise the module pages.
+const tabItems = computed<ModuleNavItem[]>(() => (formId.value ? resourceItems.value : moduleItems.value));
 
 // --- Create / edit / fill DRAWERS (query-driven overlays) -----------------
 // `?create=1` → new-form builder · `?edit=<id>` → edit builder · `?fill=<id>` →
@@ -114,77 +145,43 @@ function onFillSubmitted(): void {
 
 <template>
   <div class="flex min-h-0 flex-1 gap-next-4">
-    <!-- Inner sub-navigation (hidden on narrow screens; content stays usable). -->
-    <Surface
-      as="aside"
-      bg="card"
-      border
-      elevation="sm"
-      radius="lg"
-      class="hidden w-64 shrink-0 min-h-0 flex-col overflow-y-auto next-lg:flex"
+    <!-- Two-level section nav (≥ next-lg): module block + form resource section. -->
+    <ModuleAside
+      module-icon="file-text"
+      :module-title="t('forms.title')"
+      :module-hint="t('forms.module.selectHint')"
+      :module-items="moduleItems"
+      :resource-items="resourceItems"
+      :resource="resource"
+      :resource-placeholder="{
+        icon: 'file-text',
+        label: t('forms.module.placeholderLabel'),
+        hint: t('forms.module.placeholderHint'),
+        to: { name: 'next.forms' },
+      }"
+      :resource-back="{ label: t('forms.module.allForms'), to: { name: 'next.forms' } }"
+      :resource-nav-label="t('forms.module.resourceNav')"
+      :active-match="isItemActive"
     >
-      <!-- Selected form: back-to-list + info + sub-nav. -->
-      <template v-if="formId">
-        <RouterLink
-          :to="{ name: 'next.forms' }"
-          class="flex items-center gap-next-2 border-b border-next-border px-next-4 py-next-3 text-next-sm font-next-medium text-next-fg transition-colors hover:text-next-primary"
+      <template #resource-meta>
+        <!-- Enabled/draft status line (StatusBadge-free — mirrors the list card). -->
+        <span
+          v-if="form"
+          class="inline-flex items-center gap-next-1 text-next-xs text-next-muted-foreground"
         >
-          <Icon name="arrow-left" class="shrink-0" />
-          {{ t('forms.module.allForms') }}
-        </RouterLink>
-
-        <div class="flex items-start gap-next-3 border-b border-next-border p-next-4">
-          <span
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-next-lg"
-            :class="form?.is_enabled ? 'bg-next-primary text-next-primary-foreground' : 'bg-next-muted text-next-muted-foreground'"
-            aria-hidden="true"
-          >
-            <Icon :name="form ? iconOf('section') : 'file-text'" class="text-next-lg" />
-          </span>
-          <div class="min-w-0">
-            <h3 class="truncate text-next-sm font-next-semibold text-next-fg">
-              {{ form?.name ?? '…' }}
-            </h3>
-            <span class="mt-next-1 inline-flex items-center gap-next-1 text-next-xs text-next-muted-foreground">
-              <Icon :name="form?.is_enabled ? 'check-circle' : 'file-text'" class="text-next-sm" />
-              {{ form?.is_enabled ? t('forms.status.enabled') : t('forms.status.draft') }}
-            </span>
-          </div>
-        </div>
-
-        <nav class="flex flex-col gap-next-0_5 p-next-2">
-          <template v-for="item in subNav" :key="item.key">
-            <RouterLink
-              v-if="item.to && !item.soon"
-              :to="item.to"
-              class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm transition-colors"
-              :class="isActive(item.to.name)
-                ? 'bg-next-primary-subtle text-next-primary-subtle-foreground font-next-medium'
-                : 'text-next-fg hover:bg-next-accent hover:text-next-accent-foreground'"
-            >
-              <Icon :name="item.icon" class="shrink-0" />
-              {{ item.label }}
-            </RouterLink>
-            <span
-              v-else
-              class="flex items-center gap-next-2 rounded-next-md px-next-3 py-next-2 text-next-sm text-next-muted-foreground/60"
-            >
-              <Icon :name="item.icon" class="shrink-0" />
-              <span class="flex-1">{{ item.label }}</span>
-              <span class="text-next-2xs uppercase tracking-next-wide">{{ t('nav.comingSoon') }}</span>
-            </span>
-          </template>
-        </nav>
+          <Icon :name="form.is_enabled ? 'check-circle' : 'file-text'" class="text-next-sm" />
+          {{ form.is_enabled ? t('forms.status.enabled') : t('forms.status.draft') }}
+        </span>
       </template>
+    </ModuleAside>
 
-      <!-- No form selected (on the list). -->
-      <p v-else class="p-next-4 text-next-xs text-next-muted-foreground">
-        {{ t('forms.module.selectHint') }}
-      </p>
-    </Surface>
-
-    <!-- Content: the list, or the open form's sub-view. -->
-    <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+    <!-- Content: the small-screen section tabs + the list, or the open form's sub-view. -->
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-next-4 overflow-y-auto">
+      <ModuleTabs
+        :items="tabItems"
+        :active-match="isItemActive"
+        :aria-label="formId ? t('forms.module.resourceNav') : undefined"
+      />
       <RouterView />
     </div>
 

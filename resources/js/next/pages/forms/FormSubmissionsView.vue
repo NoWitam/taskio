@@ -18,6 +18,7 @@
 import { computed, inject, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import FilterBar, { type ActiveFilter } from '../../ui/patterns/FilterBar.vue';
+import PageHeader from '../../ui/patterns/PageHeader.vue';
 import FilterTabBar from '../../ui/patterns/FilterTabBar.vue';
 import SaveViewModal, { type SaveViewSubmit } from '../../ui/patterns/SaveViewModal.vue';
 import ConfirmDialog from '../../ui/overlay/ConfirmDialog.vue';
@@ -482,14 +483,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-next-5">
-    <div class="flex flex-wrap items-center justify-between gap-next-3">
-      <div class="min-w-0">
-        <h1 class="truncate text-next-xl font-next-semibold text-next-fg">{{ t('forms.submissions.title') }}</h1>
-        <p class="text-next-sm text-next-muted-foreground">{{ t('forms.submissions.subtitle') }}</p>
-      </div>
-      <Button v-if="form?.can_be_filled" leading-icon="plus" @click="fill">{{ t('forms.submissions.new') }}</Button>
-    </div>
+  <div class="flex flex-col gap-next-6">
+    <!-- Sub-view header (uniform scale app-wide): the h1 is the SECTION label —
+         the form's identity lives in the module aside's selected block. -->
+    <PageHeader
+      icon="inbox"
+      :title="t('forms.submissions.title')"
+      :description="t('forms.submissions.subtitle')"
+    >
+      <template #actions>
+        <Button v-if="form?.can_be_filled" leading-icon="plus" @click="fill">{{ t('forms.submissions.new') }}</Button>
+      </template>
+    </PageHeader>
 
     <FilterBar
       v-model:search="search"

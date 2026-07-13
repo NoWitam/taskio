@@ -3,9 +3,16 @@
 //
 // Wraps every authed page with AppShell: a Sidebar (brand + nav, with the IA for
 // not-yet-built modules shown as disabled "coming soon" rows) and a Navbar (mobile
-// menu button, page title, and trailing language switcher + theme toggle + a user
-// menu with an optional workspace switcher and Sign out). The page renders through
-// <router-view>.
+// menu button, a breadcrumb trail, and trailing language switcher + theme toggle +
+// a user menu with an optional workspace switcher and Sign out). The page renders
+// through <router-view>.
+//
+// The Navbar renders a BREADCRUMB, not an h1 (D5): the page itself owns its
+// single h1 (PageHeader). The trail is the module title (from route.meta.titleKey,
+// linked to the module root when an entity is open) plus the open entity's name
+// from pageContextLabel — a plain reactive ref the module layouts feed, so this
+// shell stays free of feature-store imports (it touches only auth + approvalQueue,
+// deliberately).
 //
 // All labels are translated; the active nav item is driven by the router and marked
 // with aria-current via SidebarItem. The mobile drawer / focus trap / scrim are
@@ -27,12 +34,14 @@ import Button from '../ui/primitives/Button.vue';
 import Avatar from '../ui/primitives/Avatar.vue';
 import Badge from '../ui/primitives/Badge.vue';
 import LocaleSwitcher from '../ui/LocaleSwitcher.vue';
+import Breadcrumbs, { type BreadcrumbItem } from '../ui/navigation/Breadcrumbs.vue';
 import DropdownMenu from '../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../ui/overlay/DropdownMenuItem.vue';
 import DropdownMenuLabel from '../ui/overlay/DropdownMenuLabel.vue';
 import DropdownMenuSeparator from '../ui/overlay/DropdownMenuSeparator.vue';
 import type { IconName } from '../ui/primitives/icons';
 import { isPathActive } from '../app/router/isPathActive';
+import { pageContextLabel } from '../app/lib/pageContext';
 
 const route = useRoute();
 const router = useRouter();
@@ -82,6 +91,19 @@ const upcomingNav: NavLink[] = [
 const pageTitle = computed(() => {
   const titleKey = route.meta.titleKey as string | undefined;
   return titleKey ? t(titleKey) : t('app.name', 'Taskio');
+});
+
+// Navbar breadcrumb trail (D5): the module title, plus the open entity's name
+// (from pageContextLabel, fed by the module layouts) as the current crumb. With
+// an entity open the module crumb links back to the module root (looked up from
+// the sidebar nav by the shared titleKey); without one the module title is the
+// current — and only — crumb.
+const breadcrumbs = computed<BreadcrumbItem[]>(() => {
+  const context = pageContextLabel.value;
+  if (!context) return [{ label: pageTitle.value }];
+  const titleKey = route.meta.titleKey as string | undefined;
+  const moduleTo = primaryNav.find((item) => item.labelKey === titleKey)?.to;
+  return [{ label: pageTitle.value, to: moduleTo }, { label: context }];
 });
 
 const hasMultipleWorkspaces = computed(() => auth.workspaces.length > 1);
@@ -195,7 +217,8 @@ async function onLogout(): Promise<void> {
             :aria-expanded="drawerOpen"
             @click="openDrawer"
           />
-          <h1 class="truncate text-next-lg font-next-semibold">{{ pageTitle }}</h1>
+          <!-- Breadcrumb, NOT an h1 (D5) — the page owns its single h1 (PageHeader). -->
+          <Breadcrumbs :items="breadcrumbs" :aria-label="t('nav.breadcrumbs', 'Breadcrumbs')" />
         </template>
 
         <template #trailing>

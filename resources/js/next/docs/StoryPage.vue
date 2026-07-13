@@ -11,7 +11,8 @@ defineProps<{
 <template>
   <article class="flex max-w-5xl flex-col gap-next-8">
     <header class="flex flex-col gap-next-2">
-      <h1 class="text-next-3xl">{{ title }}</h1>
+      <!-- Explicit weight: Tailwind preflight resets h1 to font-weight 400. -->
+      <h1 class="text-next-3xl font-next-semibold">{{ title }}</h1>
       <p v-if="description" class="max-w-3xl text-next-base text-next-muted-foreground">
         {{ description }}
       </p>

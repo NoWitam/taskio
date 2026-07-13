@@ -1,11 +1,15 @@
 <script setup lang="ts">
 // Navbar — the sticky top bar used by AppShell.
 //
-// Two slots: `#leading` (mobile menu button + page title / breadcrumbs) and
+// Two slots: `#leading` (mobile menu button + the breadcrumb trail) and
 // `#trailing` (actions, theme toggle, avatar/menu). It is a <header> with
 // `role="banner"` semantics provided by the element, sticks to the top using the
 // `--z-next-sticky` token, and carries a hairline + subtle shadow so content
 // scrolling under it stays separated.
+//
+// The navbar must NOT host an h1 (D5): every routed page owns its single h1
+// through PageHeader — the `#leading` slot carries breadcrumb CONTEXT, not the
+// page title heading.
 //
 // The mobile menu button is intentionally NOT baked in here — AppShell injects
 // it into `#leading` so the drawer state stays owned by the shell.

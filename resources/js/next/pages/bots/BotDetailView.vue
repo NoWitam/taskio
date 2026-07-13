@@ -1,9 +1,13 @@
 <script setup lang="ts">
-// BotDetailView — the read-only detail page for one bot (`/bots/:id`, Batch 1).
+// BotDetailView — the read-only detail page for one bot (`/bots/:id/<section>`;
+// one component shared by the inbox / activity / config child routes).
 //
 // A sub-view of BotsModuleLayout. Reads the bot from the store's detail cache when
 // the user arrived via a card prefetch; on a DEEP LINK (no cache) it fetches by id
-// and shows skeletons / an error state. Renders the bot's MODULE PREVIEWS read-only:
+// and shows skeletons / an error state. The PageHeader h1 names the active
+// SECTION's purpose (uniform header scale app-wide); the bot's identity (icon +
+// name + status) lives in the module aside's selected block. Renders the bot's
+// MODULE PREVIEWS read-only:
 //   • Text module — persona + style + dictionary / phrases / prohibitions chips,
 //   • Task-execution — enabled flag, knowledge source, tools (or a "not configured"
 //     note),
@@ -18,7 +22,8 @@ import Skeleton from '../../ui/data/Skeleton.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Badge from '../../ui/primitives/Badge.vue';
 import Button from '../../ui/primitives/Button.vue';
-import Icon from '../../ui/primitives/Icon.vue';
+import Icon, { type IconName } from '../../ui/primitives/Icon.vue';
+import PageHeader from '../../ui/patterns/PageHeader.vue';
 import BotActionTimeline from './BotActionTimeline.vue';
 import BotInbox from './BotInbox.vue';
 import { toolIcon, toolLabel, isKnownTool } from './botToolMeta';
@@ -34,11 +39,23 @@ const toast = useToast();
 
 const botId = computed(() => String(route.params.id));
 
-// The active detail section, chosen from the module sidebar (`?section=`).
+// The active detail section, derived from the child ROUTE NAME
+// (`next.bots.detail.<section>` — one shared component across the siblings; the
+// module sidebar links the sections).
 const section = computed(() => {
-  const s = route.query.section;
-  return (Array.isArray(s) ? s[0] : s) || 'inbox';
+  const name = String(route.name ?? '');
+  const prefix = 'next.bots.detail.';
+  return name.startsWith(prefix) ? name.slice(prefix.length) : 'inbox';
 });
+
+// PageHeader content per section: the h1 names the PAGE's purpose (the bot's
+// identity lives in the module aside's selected block).
+const SECTION_META: Record<string, { icon: IconName; titleKey: string; descriptionKey: string }> = {
+  inbox: { icon: 'inbox', titleKey: 'bots.detail.tabInbox', descriptionKey: 'bots.detail.sectionDescriptions.inbox' },
+  activity: { icon: 'clock', titleKey: 'bots.detail.tabActivity', descriptionKey: 'bots.detail.sectionDescriptions.activity' },
+  config: { icon: 'settings', titleKey: 'bots.detail.tabConfig', descriptionKey: 'bots.detail.sectionDescriptions.config' },
+};
+const sectionMeta = computed(() => SECTION_META[section.value] ?? SECTION_META.inbox);
 
 // The cached detail (when it matches the route id), else null until fetched.
 // Inference flows from `store.detail` (Pinia widens the `null`-literal visual/
@@ -149,28 +166,33 @@ function onBack(): void {
     </div>
 
     <template v-else-if="bot">
-      <!-- Slim action bar — the bot's identity + section nav live in the module
-           sidebar (Forms-style); the content keeps only the bot's actions. -->
-      <div class="flex flex-wrap items-center justify-end gap-next-2">
-        <Button variant="ghost" leading-icon="arrow-left" @click="onBack">
-          {{ t('bots.detail.back') }}
-        </Button>
-        <Button
-          v-if="canEdit"
-          :variant="isActive ? 'outline' : 'primary'"
-          :leading-icon="isActive ? 'circle' : 'check-circle'"
-          :loading="togglingStatus"
-          :disabled="togglingStatus"
-          @click="onToggleStatus"
-        >
-          {{ isActive ? t('bots.statusAction.deactivate') : t('bots.statusAction.activate') }}
-        </Button>
-        <Button v-if="canEdit" leading-icon="pencil" @click="onEdit">
-          {{ t('bots.actions.edit') }}
-        </Button>
-      </div>
+      <!-- Page header: the h1 names the SECTION's purpose (uniform size across
+           the app); the bot's identity lives in the module aside's selected
+           block. Back-navigation lives in the aside/breadcrumb, so the actions
+           carry only the bot's own operations. -->
+      <PageHeader
+        :title="t(sectionMeta.titleKey)"
+        :icon="sectionMeta.icon"
+        :description="t(sectionMeta.descriptionKey)"
+      >
+        <template #actions>
+          <Button
+            v-if="canEdit"
+            :variant="isActive ? 'outline' : 'primary'"
+            :leading-icon="isActive ? 'circle' : 'check-circle'"
+            :loading="togglingStatus"
+            :disabled="togglingStatus"
+            @click="onToggleStatus"
+          >
+            {{ isActive ? t('bots.statusAction.deactivate') : t('bots.statusAction.activate') }}
+          </Button>
+          <Button v-if="canEdit" leading-icon="pencil" @click="onEdit">
+            {{ t('bots.actions.edit') }}
+          </Button>
+        </template>
+      </PageHeader>
 
-      <!-- The active SECTION (chosen from the module sidebar via ?section=). -->
+      <!-- The active SECTION (the child route name; linked from the module sidebar). -->
       <BotInbox v-if="section === 'inbox'" :bot-id="bot.id" />
       <BotActionTimeline v-else-if="section === 'activity'" :bot-id="bot.id" />
       <template v-else>

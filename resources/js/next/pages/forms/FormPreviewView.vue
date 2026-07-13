@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router';
 import Button from '../../ui/primitives/Button.vue';
 import Surface from '../../ui/layout/Surface.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
+import PageHeader from '../../ui/patterns/PageHeader.vue';
 import FormViewer from './FormViewer.vue';
 import { FORM_MODULE_CTX } from './formContext';
 import { useI18n } from '../../app/i18n';
@@ -31,18 +32,19 @@ function edit(): void {
 </script>
 
 <template>
-  <div class="flex flex-col gap-next-5">
-    <div class="flex flex-wrap items-center justify-between gap-next-3">
-      <h1 class="text-next-xl font-next-semibold text-next-fg">{{ t('forms.preview') }}</h1>
-      <div class="flex items-center gap-next-2">
+  <div class="flex flex-col gap-next-6">
+    <!-- Sub-view header (uniform scale app-wide): the h1 is the SECTION label —
+         the form's identity lives in the module aside's selected block. -->
+    <PageHeader icon="eye" :title="t('forms.preview')">
+      <template #actions>
         <Button v-if="form?.can_be_edited" variant="outline" leading-icon="pencil" @click="edit">
           {{ t('forms.actions.edit') }}
         </Button>
         <Button v-if="form?.can_be_filled" leading-icon="check-circle" @click="fill">
           {{ t('forms.actions.fill') }}
         </Button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <Surface bg="card" border elevation="sm" radius="lg" class="flex flex-col gap-next-5 p-next-6">
       <div v-if="loading" class="flex flex-col gap-next-4">

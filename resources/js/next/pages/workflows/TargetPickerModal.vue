@@ -108,10 +108,10 @@ async function onConfirm(): Promise<void> {
     const value = targetKind.value === 'none' ? undefined : targetId.value.trim() || undefined;
     await store.run(workflow.value.id, value);
     toast.success(t('workflows.run.toasts.started'));
-    // Refetch the runs list when the Runs section is the active detail section so
-    // the new run appears immediately (§6.3). The runs filters live in the URL
+    // Refetch the runs list when the Runs child route is the active detail section
+    // so the new run appears immediately (§6.3). The runs filters live in the URL
     // (state / origin), so honor them on the refetch instead of clobbering them.
-    if (str(route.query.section) === 'runs' && runsStore.workflowId === workflow.value.id) {
+    if (route.name === 'next.workflows.detail.runs' && runsStore.workflowId === workflow.value.id) {
       const filters: WorkflowRunFilters = {};
       const state = str(route.query.state);
       const origin = str(route.query.origin);

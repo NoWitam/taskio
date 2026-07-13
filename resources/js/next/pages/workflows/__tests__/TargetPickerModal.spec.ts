@@ -33,8 +33,10 @@ vi.mock('../../../app/stores/workflows', () => ({
 }));
 
 const fetchRuns = vi.fn();
+// Mutable so the runs-refetch shortcut tests can point the store at the workflow.
+const runsStoreMock = { workflowId: null as string | null, fetchRuns };
 vi.mock('../../../app/stores/workflowRuns', () => ({
-  useWorkflowRunsStore: () => ({ workflowId: null, fetchRuns }),
+  useWorkflowRunsStore: () => runsStoreMock,
 }));
 
 const toastSuccess = vi.fn();
@@ -43,10 +45,20 @@ vi.mock('../../../app/composables/useToast', () => ({
   useToast: () => ({ success: toastSuccess, danger: toastDanger, info: vi.fn(), warning: vi.fn() }),
 }));
 
-// The modal reads `route.query` only for the runs-refetch shortcut; a static empty
-// query is enough for every case here.
+// The modal reads the route only for the runs-refetch shortcut: the NAME decides
+// whether the Runs child route is active (Batch 3 — no more `?section=`), and the
+// query carries the state/origin filters to honor on the refetch.
+const routeName = ref<string | undefined>(undefined);
+const routeQuery = ref<Record<string, unknown>>({});
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: {} }),
+  useRoute: () => ({
+    get name() {
+      return routeName.value;
+    },
+    get query() {
+      return routeQuery.value;
+    },
+  }),
 }));
 
 function makeWorkflow(overrides: Partial<WorkflowDetail> = {}): WorkflowDetail {
@@ -97,6 +109,9 @@ function confirmButton(): HTMLButtonElement {
 beforeEach(() => {
   installBrowserMocks();
   detailRef.value = null;
+  routeName.value = undefined;
+  routeQuery.value = {};
+  runsStoreMock.workflowId = null;
   run.mockReset();
   fetchWorkflow.mockReset();
   fetchRuns.mockReset();
@@ -220,5 +235,39 @@ describe('TargetPickerModal — 422 mapping, both bag keys (§6.3)', () => {
 
     expect(panel().textContent).toContain(en.workflows.run.errors.capReached);
     expect(toastDanger).toHaveBeenCalledWith(en.workflows.run.errors.capReached);
+  });
+});
+
+describe('TargetPickerModal — runs refetch on the Runs child route (§6.3 / Batch 3)', () => {
+  it('refetches the runs list (honoring the URL filters) when the Runs route is active', async () => {
+    routeName.value = 'next.workflows.detail.runs';
+    routeQuery.value = { state: 'failed', origin: 'manual' };
+    runsStoreMock.workflowId = 'wf-1';
+    run.mockResolvedValue({ id: 'run-1' });
+    mountModal(makeWorkflow({ trigger_type: 'schedule' }));
+    await flushPromises();
+
+    confirmButton().click();
+    await flushPromises();
+
+    expect(fetchRuns).toHaveBeenCalledWith(
+      'wf-1',
+      { state: 'failed', origin: 'manual' },
+      { reset: true },
+    );
+  });
+
+  it('does NOT refetch when another detail section is active', async () => {
+    routeName.value = 'next.workflows.detail.overview';
+    runsStoreMock.workflowId = 'wf-1';
+    run.mockResolvedValue({ id: 'run-1' });
+    mountModal(makeWorkflow({ trigger_type: 'schedule' }));
+    await flushPromises();
+
+    confirmButton().click();
+    await flushPromises();
+
+    expect(run).toHaveBeenCalled();
+    expect(fetchRuns).not.toHaveBeenCalled();
   });
 });

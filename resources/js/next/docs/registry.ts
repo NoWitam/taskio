@@ -129,6 +129,11 @@ export const stories: StyleguideStory[] = [
     component: () => import('./pages/AppShellPage.vue'),
   },
   {
+    section: 'Layout',
+    name: 'Module navigation',
+    component: () => import('./pages/ModuleNavPage.vue'),
+  },
+  {
     section: 'Forms',
     name: 'FormField',
     component: () => import('./pages/FormFieldPage.vue'),

@@ -7,6 +7,11 @@
 // `#panel="{ value }"` slot (or per-value `#panel-<value>` slots). Optional lazy
 // mounting only mounts a panel once it has been activated.
 //
+// NAV-ONLY use (no panel slot at all — e.g. ModuleTabs, where the "panel" is the
+// routed page below): the tabpanel elements and the tabs' `aria-controls` are
+// omitted entirely, so no empty-but-focusable tabpanel lands in the a11y tree
+// and the root's gap adds no dead space under the tab row.
+//
 // Variants: `underline` (default — a moving underline under the active tab) and
 // `pills` (segmented filled chips in a tinted track). Sizes `sm` / `md`.
 //
@@ -17,7 +22,7 @@
 // tab is a tab stop); ←/→ move, Home/End jump (skipping disabled); `aria-selected`,
 // `aria-controls` / `aria-labelledby`. `activation="automatic"` (default) selects
 // on arrow-move; `activation="manual"` only moves focus (Enter/Space selects).
-import { computed, nextTick, onMounted, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onMounted, onBeforeUnmount, ref, shallowRef, useSlots, watch } from 'vue';
 import Icon, { type IconName } from '../primitives/Icon.vue';
 import Badge from '../primitives/Badge.vue';
 
@@ -66,6 +71,13 @@ const props = withDefaults(
 
 // Controlled when a parent binds v-model; otherwise self-managed.
 const model = defineModel<T | null>({ default: null });
+
+// NAV-ONLY detection: with no panel slot of any kind, skip the tabpanel
+// elements (and the tabs' aria-controls) entirely.
+const slots = useSlots();
+const hasPanels = computed(
+  () => !!slots.panel || props.items.some((item) => !!slots[`panel-${item.value}`]),
+);
 
 const baseId = `next-tabs-${Math.random().toString(36).slice(2, 8)}`;
 const tabId = (value: string) => `${baseId}-tab-${value}`;
@@ -262,7 +274,7 @@ function badgeVariant(item: TabItem<T>): 'primary' | 'neutral' {
           type="button"
           role="tab"
           :id="tabId(item.value)"
-          :aria-controls="panelId(item.value)"
+          :aria-controls="hasPanels ? panelId(item.value) : undefined"
           :aria-selected="item.value === active"
           :aria-disabled="item.disabled || undefined"
           :tabindex="item.value === active ? 0 : -1"
@@ -307,10 +319,11 @@ function badgeVariant(item: TabItem<T>): 'primary' | 'neutral' {
     </div>
 
     <!-- Panels. Only the active panel is shown; lazy mode keeps unmounted panels
-         out of the DOM until first activated. -->
+         out of the DOM until first activated. Skipped entirely in nav-only use
+         (no panel slots) — see the docblock. -->
     <template v-for="item in items" :key="`panel-${item.value}`">
       <div
-        v-if="!lazy || mounted.has(item.value)"
+        v-if="hasPanels && (!lazy || mounted.has(item.value))"
         v-show="item.value === active"
         role="tabpanel"
         :id="panelId(item.value)"

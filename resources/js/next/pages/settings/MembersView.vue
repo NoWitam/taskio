@@ -211,7 +211,9 @@ const invitationsEmpty = computed(
 </script>
 
 <template>
-  <Container size="lg" as="main">
+  <!-- flush: the app shell already provides the page gutter (and the main
+       landmark) — a padded nested <main> would double both. -->
+  <Container size="lg" flush>
     <Stack direction="vertical" gap="6">
       <PageHeader
         :title="t('members.title')"
