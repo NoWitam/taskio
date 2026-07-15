@@ -23,13 +23,11 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  * Authorization: viewing runs is `view` on the parent workflow — runs are workspace-visible
  * read-only monitoring, so any member who can see the workflow can see its runs.
  *
- * TENANCY CAVEAT: route-model binding (SubstituteBindings) runs BEFORE ResolveWorkspace
- * (tenancy is appended to the `api` group in bootstrap/app.php), so during binding the
- * WorkspaceScope is INERT and a {workflow}/{run} from another workspace DOES bind. `retry`
- * closes this with a scoped existence re-check in RetryWorkflowRunRequest; `show`/run-now
- * currently rely only on the nested-ownership (workflow_id) check and share the module-wide
- * cross-workspace-binding gap tracked for a root fix (move tenancy before binding / scoped
- * route resolvers). Do NOT trust a bound model here to already be workspace-scoped.
+ * TENANCY: route-model binding is now workspace-scoped — ResolveWorkspace runs BEFORE
+ * SubstituteBindings (bootstrap/app.php priority reorder), so a {workflow}/{run} from
+ * another workspace 404s at bind. The nested-ownership `$run->workflow_id === $workflow->id`
+ * check in show() is a SEPARATE concern (a same-workspace run of a DIFFERENT workflow
+ * leaking through this nested URL) and MUST stay — the workspace reorder does not cover it.
  */
 class WorkflowRunController extends Controller
 {

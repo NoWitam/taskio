@@ -15,12 +15,11 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  * (any workspace member may run — a retry is a user-initiated re-execution, like run-now).
  *
  * Two isolation guards, both a 404 (the run "does not exist" under this parent):
- *   - CROSS-TENANT: route-model binding runs BEFORE ResolveWorkspace in this app
- *     (SubstituteBindings precedes the appended tenancy middleware), so the bound {workflow}/
- *     {run} are NOT workspace-scoped — the documented cross-workspace binding risk. By the time
- *     this request authorizes the tenant context IS set, so we re-check the run's existence
- *     through the now-active WorkspaceScope: a run from another workspace 404s instead of being
- *     retried cross-tenant. (This mutation hardens the gap run-now/show still carry — see report.)
+ *   - CROSS-TENANT: route-model binding is now workspace-scoped app-wide (ResolveWorkspace runs
+ *     BEFORE SubstituteBindings — bootstrap/app.php priority reorder), so a {workflow}/{run} from
+ *     another workspace already 404s at bind. The scoped ->exists() re-check below is kept as
+ *     cheap belt-and-suspenders — the only in-code defense should the middleware priority ever
+ *     regress — NOT because binding is unscoped.
  *   - FOREIGN-WORKFLOW: {run} is bound independently of {workflow}, so a run of a DIFFERENT
  *     workflow in the SAME workspace would otherwise leak through this URL. The nested-ownership
  *     check here 404s it — same guard WorkflowRunController@show applies inline.
@@ -42,8 +41,10 @@ class RetryWorkflowRunRequest extends FormRequest
             throw new NotFoundHttpException;
         }
 
-        // Cross-tenant 404: re-resolve the run through the active WorkspaceScope (binding was
-        // unscoped — see the class docblock). A run outside the active workspace does not exist here.
+        // Cross-tenant 404 (belt-and-suspenders): binding is now workspace-scoped, so a foreign
+        // run already 404s before this point (see the class docblock). Re-resolve through the
+        // active WorkspaceScope anyway — the sole in-code defense should the middleware priority
+        // ever regress. A run outside the active workspace does not exist here.
         if (!WorkflowRun::query()->whereKey($run->getKey())->exists()) {
             throw new NotFoundHttpException;
         }

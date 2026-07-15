@@ -11,9 +11,13 @@ use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Resolves the active workspace from the X-Workspace-Id header and validates
- * that the authenticated user is a member. Runs on the api group; when the user
- * is not yet resolved (e.g. before a route's auth:sanctum), it no-ops so
- * token-authenticated endpoints handle the header themselves.
+ * that the authenticated user is a member. Registered on the api group but
+ * REORDERED (bootstrap/app.php `prependToPriorityList`) to run right BEFORE
+ * SubstituteBindings — and, in the stock priority list, still after Authenticate
+ * — so the workspace is active DURING route-model binding (tenant-scoped binds;
+ * a foreign {model} id 404s at bind, not in the controller). When no user is
+ * resolved (a public route without auth:sanctum), it no-ops so the scope stays
+ * inert. That ordering invariant is pinned by a test.
  */
 class ResolveWorkspace
 {
@@ -26,12 +30,12 @@ class ResolveWorkspace
     {
         $workspaceId = $request->header('X-Workspace-Id');
 
-        // LOAD-BEARING ORDERING (do not move below TenantContext::set): resolving the
-        // user here forces Sanctum's token-morph (PersonalAccessToken -> User) to run
-        // while the workspace is NOT yet active, so the User WorkspaceMemberScope is
-        // still inert. If the token user were resolved AFTER set(), the scope would
-        // hide the just-authenticated user from their own token morph and silently
-        // break auth on every request.
+        // LOAD-BEARING ORDERING (do not move below TenantContext::set): the User↔token
+        // morph MUST happen while no workspace is active, so the User WorkspaceMemberScope
+        // stays inert (else the scope hides the just-authenticated user from their own
+        // token morph and silently breaks auth). With the reorder this is doubly safe: the
+        // morph already ran upstream in Authenticate:sanctum (earlier in the priority list);
+        // this $request->user() is the resolved user, and set() below is still after it.
         $user = $request->user();
 
         if ($workspaceId && $user) {

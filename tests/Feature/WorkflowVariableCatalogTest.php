@@ -31,11 +31,21 @@ class WorkflowVariableCatalogTest extends TestCase
         return $workspace;
     }
 
-    /** A form covering every element→type mapping incl. sections, grids, and a repeater. */
-    private function richForm(User $owner): Form
+    /**
+     * A form covering every element→type mapping incl. sections, grids, and a repeater.
+     *
+     * When a $workspace is given the form is stamped with its id so the workspace-scoped
+     * route-model binding (ResolveWorkspace runs before SubstituteBindings) resolves it under
+     * that active workspace — the HTTP endpoint tests send `X-Workspace-Id: $workspace->id` and
+     * would otherwise 404 at bind. The service-level tests query the service directly (no active
+     * workspace) and pass no workspace, mirroring the `form($owner, $workspace)` helper in
+     * WorkflowStepValuePipelineValidationTest.
+     */
+    private function richForm(User $owner, ?Workspace $workspace = null): Form
     {
         return Form::factory()->enabled()->create([
             'creator_id' => $owner->id,
+            'workspace_id' => $workspace?->id,
             'content' => [
                 ['id' => 'full_name', 'type' => 'short_text', 'config' => ['label' => 'Full name']],
                 ['id' => 'age', 'type' => 'number', 'config' => ['label' => 'Age', 'step' => 1]],
@@ -220,7 +230,7 @@ class WorkflowVariableCatalogTest extends TestCase
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
-        $form = $this->richForm($owner);
+        $form = $this->richForm($owner, $workspace);
 
         $response = $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
             ->getJson("/api/forms/{$form->id}/workflow-catalog")
@@ -252,7 +262,7 @@ class WorkflowVariableCatalogTest extends TestCase
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
-        $form = $this->richForm($owner);
+        $form = $this->richForm($owner, $workspace);
 
         $response = $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
             ->getJson("/api/forms/{$form->id}/workflow-catalog")
@@ -266,7 +276,7 @@ class WorkflowVariableCatalogTest extends TestCase
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
-        $form = $this->richForm($owner);
+        $form = $this->richForm($owner, $workspace);
 
         $response = $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
             ->getJson("/api/forms/{$form->id}/workflow-catalog")
@@ -330,15 +340,14 @@ class WorkflowVariableCatalogTest extends TestCase
     public function test_authorization_is_gated_by_form_policy_view(): void
     {
         // The endpoint authorizes via FormPolicy::view (mirroring the Forms module endpoints).
-        // FormPolicy::view currently gates only "is authenticated", and the {form} binding is
-        // resolved BEFORE ResolveWorkspace sets the tenant (SubstituteBindings runs first), so
-        // the binding is NOT workspace-scoped — a documented, pre-existing app behavior this
-        // batch does not change. An authenticated member of the active workspace therefore
-        // reaches the catalog; the real tenant gate for the REQUEST is ResolveWorkspace, which
-        // 403s a non-member (covered above).
+        // FormPolicy::view gates only "is authenticated"; the workspace gate is upstream. Since
+        // the security reorder, ResolveWorkspace runs BEFORE SubstituteBindings, so the {form}
+        // binding is now workspace-scoped: a member of the active workspace reaches a SAME-
+        // workspace form's catalog (200), while a foreign form 404s at bind (see
+        // CrossWorkspaceBindingTest) and a non-member 403s at ResolveWorkspace (covered above).
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
-        $form = $this->richForm($owner);
+        $form = $this->richForm($owner, $workspace);
 
         $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
             ->getJson("/api/forms/{$form->id}/workflow-catalog")
