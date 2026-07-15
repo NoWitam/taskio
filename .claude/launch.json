@@ -1,10 +1,10 @@
 {
   "version": "0.0.1",
-  "autoPort": false,
+  "autoPort": true,
   "configurations": [
     {
       "name": "taskio",
-      "port": 8099,
+      "port": 8123,
       "runtimeExecutable": "cmd.exe",
       "runtimeArgs": [
         "/c",

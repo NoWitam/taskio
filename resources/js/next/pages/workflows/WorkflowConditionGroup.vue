@@ -167,14 +167,14 @@ function chipSentence(condition: DraftCondition): string {
               <span v-if="step.value" class="text-next-sm font-next-medium text-next-primary">{{ step.value }}</span>
             </template>
           </button>
-          <button
-            type="button"
-            class="shrink-0 rounded-next-sm p-next-1 text-next-muted-foreground transition-colors duration-[var(--duration-next-fast)] hover:text-next-danger"
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            leading-icon="x"
+            class="shrink-0 text-next-muted-foreground hover:text-next-danger"
             :aria-label="t('workflows.condition.removeCondition')"
             @click="ctx.removeNode(child.uid)"
-          >
-            <Icon name="x" />
-          </button>
+          />
         </div>
 
         <!-- Nested GROUP (recursion). -->

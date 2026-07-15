@@ -23,7 +23,6 @@ import SaveViewModal, { type SaveViewSubmit } from '../../ui/patterns/SaveViewMo
 import ConfirmDialog from '../../ui/overlay/ConfirmDialog.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Button from '../../ui/primitives/Button.vue';
-import Icon from '../../ui/primitives/Icon.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
 import Select, { type SelectOption } from '../../ui/forms/Select.vue';
@@ -518,12 +517,21 @@ onUnmounted(() => store.resetAll());
           </li>
         </ul>
 
-        <div
-          v-if="store.loadingMore"
-          class="flex justify-center py-next-2 text-next-muted-foreground"
-        >
-          <Icon name="loader" class="animate-spin" aria-hidden="true" />
-        </div>
+        <!-- Appending: a few row-shaped skeletons (never a spinner). -->
+        <ul v-if="store.loadingMore" class="flex flex-col gap-next-2" aria-hidden="true">
+          <li
+            v-for="n in 3"
+            :key="`more-sk-${n}`"
+            class="flex flex-col gap-next-2 rounded-next-md border border-next-border p-next-3"
+          >
+            <Skeleton variant="text" width="40%" />
+            <div class="flex items-center gap-next-2">
+              <Skeleton variant="rect" width="5rem" height="1.25rem" radius="full" />
+              <Skeleton variant="rect" width="6rem" height="1.25rem" radius="full" />
+            </div>
+            <Skeleton variant="text" width="55%" />
+          </li>
+        </ul>
 
         <!-- Inline "load more" error with retry (keeps the loaded list visible). -->
         <Alert v-if="store.loadMoreErrored && items.length > 0" variant="danger" size="sm">

@@ -330,12 +330,20 @@ function onRetried(newRun: WorkflowRun): void {
           class="h-px w-full"
           aria-hidden="true"
         />
-        <div
-          v-if="store.loadingMore"
-          class="flex justify-center py-next-2 text-next-muted-foreground"
-        >
-          <Icon name="loader" class="animate-spin" aria-hidden="true" />
-        </div>
+        <!-- Appending: a few row-shaped skeletons (never a spinner). -->
+        <ul v-if="store.loadingMore" class="flex flex-col gap-next-2" aria-hidden="true">
+          <li
+            v-for="n in 3"
+            :key="`more-sk-${n}`"
+            class="flex flex-col gap-next-2 rounded-next-md border border-next-border p-next-3"
+          >
+            <div class="flex items-center gap-next-2">
+              <Skeleton variant="rect" width="5rem" height="1.25rem" radius="full" />
+              <Skeleton variant="rect" width="4rem" height="1.25rem" radius="full" />
+            </div>
+            <Skeleton variant="text" width="55%" />
+          </li>
+        </ul>
         <div v-else-if="store.loadMoreErrored" class="flex justify-center py-next-2">
           <Button size="sm" variant="ghost" leading-icon="rotate-ccw" @click="store.retryLoadMore(props.workflowId, filters)">
             {{ t('workflows.errors.retry') }}
