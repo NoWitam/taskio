@@ -1143,4 +1143,84 @@ class WorkflowCrudTest extends TestCase
         $this->assertArrayNotHasKey('family', $schedule);
         $this->assertArrayNotHasKey('params', $schedule);
     }
+
+    // ---- trashed listing (Active / Deleted tabs) -----------------------------
+
+    public function test_index_excludes_trashed_workflows_by_default(): void
+    {
+        $user = User::factory()->create();
+        $live = Workflow::factory()->create(['creator_id' => $user->id]);
+        $trashed = Workflow::factory()->create(['creator_id' => $user->id]);
+        $trashed->delete();
+
+        $ids = collect(
+            $this->actingAs($user)->getJson('/api/workflows')->assertOk()->json('data')
+        )->pluck('id');
+
+        $this->assertTrue($ids->contains($live->id), 'a live workflow shows in the default list');
+        $this->assertFalse($ids->contains($trashed->id), 'a trashed workflow is hidden from the default list');
+    }
+
+    public function test_index_trashed_returns_only_trashed_workflows(): void
+    {
+        $user = User::factory()->create();
+        $live = Workflow::factory()->create(['creator_id' => $user->id]);
+        $trashed = Workflow::factory()->create(['creator_id' => $user->id]);
+        $trashed->delete();
+
+        $ids = collect(
+            $this->actingAs($user)->getJson('/api/workflows?trashed=1')->assertOk()->json('data')
+        )->pluck('id');
+
+        $this->assertTrue($ids->contains($trashed->id), 'the Deleted tab lists the trashed workflow');
+        $this->assertFalse($ids->contains($live->id), 'the Deleted tab excludes live workflows');
+    }
+
+    public function test_trashed_index_stays_workspace_scoped(): void
+    {
+        $user = User::factory()->create();
+        $workspaceA = $this->workspaceFor($user);
+        $workspaceB = $this->workspaceFor($user);
+
+        $ownTrashed = Workflow::factory()->create(['creator_id' => $user->id, 'workspace_id' => $workspaceA->id]);
+        $ownTrashed->delete();
+
+        $foreignTrashed = Workflow::factory()->create(['creator_id' => $user->id, 'workspace_id' => $workspaceB->id]);
+        $foreignTrashed->delete();
+
+        // onlyTrashed() drops only the SoftDeletes scope; WorkspaceScope still isolates workspace A.
+        $ids = collect(
+            $this->actingAs($user)->withHeader('X-Workspace-Id', $workspaceA->id)
+                ->getJson('/api/workflows?trashed=1')->assertOk()->json('data')
+        )->pluck('id');
+
+        $this->assertTrue($ids->contains($ownTrashed->id), 'the active workspace trashed workflow is listed');
+        $this->assertFalse($ids->contains($foreignTrashed->id), 'a foreign workspace trashed workflow must not leak');
+    }
+
+    public function test_restored_workflow_reappears_in_the_default_list(): void
+    {
+        $user = User::factory()->create();
+        $workflow = Workflow::factory()->create(['creator_id' => $user->id]);
+        $workflow->delete();
+
+        // Gone from the default list while trashed.
+        $before = collect(
+            $this->actingAs($user)->getJson('/api/workflows')->assertOk()->json('data')
+        )->pluck('id');
+        $this->assertFalse($before->contains($workflow->id));
+
+        $this->actingAs($user)->postJson("/api/workflows/{$workflow->id}/restore")->assertOk();
+
+        // Back in the default list, out of the Deleted tab.
+        $after = collect(
+            $this->actingAs($user)->getJson('/api/workflows')->assertOk()->json('data')
+        )->pluck('id');
+        $this->assertTrue($after->contains($workflow->id), 'a restored workflow returns to the default list');
+
+        $trashed = collect(
+            $this->actingAs($user)->getJson('/api/workflows?trashed=1')->assertOk()->json('data')
+        )->pluck('id');
+        $this->assertFalse($trashed->contains($workflow->id), 'a restored workflow leaves the Deleted tab');
+    }
 }

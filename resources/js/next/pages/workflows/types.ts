@@ -606,6 +606,12 @@ export interface WorkflowDetail {
 export interface WorkflowFilters {
   search?: string;
   status?: WorkflowStatus;
+  /**
+   * Bucket toggle (the Active/Deleted tabs): truthy → ONLY soft-deleted workflows;
+   * absent/falsy → the active list (default). Serialized as `trashed=1` (omit-or-1),
+   * mirroring the forms list's trashed flag. Composes with `search`/`status`.
+   */
+  trashed?: boolean;
 }
 
 /** Cursor-paginated list envelope. Meta carries cursor fields ONLY (no `total`). */

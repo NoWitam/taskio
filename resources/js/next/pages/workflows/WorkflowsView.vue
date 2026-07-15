@@ -20,6 +20,7 @@ import FilterBar, { type ActiveFilter } from '../../ui/patterns/FilterBar.vue';
 import FilterTabBar from '../../ui/patterns/FilterTabBar.vue';
 import SaveViewModal, { type SaveViewSubmit } from '../../ui/patterns/SaveViewModal.vue';
 import ConfirmDialog from '../../ui/overlay/ConfirmDialog.vue';
+import Tabs, { type TabItem } from '../../ui/navigation/Tabs.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Button from '../../ui/primitives/Button.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
@@ -49,6 +50,17 @@ const filterTabsStore = useFilterTabsStore();
 // Saved-views context for the Workflows list (any string ≤64; backend-agnostic).
 const SAVED_VIEWS_CONTEXT = 'workflows';
 
+// --- Tab (bucket): Active vs Deleted — NEVER part of a saved-view snapshot ---
+// The bucket is a TAB (like the Forms list), not a FilterBar filter; it drives the
+// `trashed` query param.
+type WorkflowsTab = 'active' | 'trash';
+const tab = ref<WorkflowsTab>('active');
+const isTrashed = computed(() => tab.value === 'trash');
+const tabItems = computed<TabItem<WorkflowsTab>[]>(() => [
+  { value: 'active', label: t('workflows.tabs.active'), icon: 'workflow' },
+  { value: 'trash', label: t('workflows.tabs.trash'), icon: 'trash' },
+]);
+
 // --- Filter state (owned here) -------------------------------------------
 const search = ref('');
 // '' is the "All" sentinel (no status filter).
@@ -63,6 +75,7 @@ const statusOptions = computed<SelectOption[]>(() => [
 const filters = computed<WorkflowFilters>(() => ({
   search: search.value || undefined,
   status: status.value || undefined,
+  trashed: isTrashed.value ? true : undefined,
 }));
 
 const hasActiveFilters = computed(() => !!search.value || !!status.value);
@@ -274,10 +287,11 @@ function refetch(): void {
   store.fetchWorkflows(filters.value, { reset: true });
 }
 
-// Search typing is debounced; a status change refetches immediately.
+// Search typing is debounced; a status change or a tab (bucket) switch refetches
+// immediately.
 const debouncedRefetch = useDebounce(refetch, 400);
 watch(search, () => debouncedRefetch());
-watch(status, () => refetch());
+watch([status, tab], () => refetch());
 
 // --- Infinite scroll (page-scroll → observe the viewport) -----------------
 const { sentinelRef } = useInfiniteScroll({
@@ -302,6 +316,7 @@ function hydrateFromQuery(): void {
   const q = route.query;
   const str = (v: unknown): string => (Array.isArray(v) ? String(v[0] ?? '') : String(v ?? ''));
   search.value = str(q.search);
+  tab.value = str(q.tab) === 'trash' ? 'trash' : 'active';
   const s = str(q.status);
   status.value = s === 'active' || s === 'inactive' ? s : '';
   hydrating = false;
@@ -317,11 +332,12 @@ function syncQuery(): void {
   const r = route.query.run;
   if (r != null && r !== '') query.run = Array.isArray(r) ? String(r[0]) : String(r);
   if (search.value) query.search = search.value;
+  if (isTrashed.value) query.tab = 'trash';
   if (status.value) query.status = status.value;
   void router.replace({ query });
 }
 
-watch([search, status], () => syncQuery());
+watch([search, status, tab], () => syncQuery());
 
 // --- Create / edit (the editor DRAWER, owned by the module layout) --------
 function onNewWorkflow(): void {
@@ -365,6 +381,19 @@ async function onDelete(workflow: WorkflowListItem): Promise<void> {
   try {
     await store.deleteWorkflow(workflow.id);
     toast.success(t('workflows.toasts.deleted'));
+  } catch {
+    toast.danger(t('workflows.toasts.actionError'));
+  }
+}
+
+// --- Restore (Deleted tab; reuses the tested store action) ----------------
+async function onRestore(workflow: WorkflowListItem): Promise<void> {
+  try {
+    await store.restoreWorkflow(workflow.id);
+    // restoreWorkflow reconciles the ACTIVE list; on the Deleted tab the restored
+    // workflow has left the bucket, so drop its row here.
+    if (isTrashed.value) store.removeFromList(workflow.id);
+    toast.success(t('workflows.toasts.restored'));
   } catch {
     toast.danger(t('workflows.toasts.actionError'));
   }
@@ -453,87 +482,112 @@ onMounted(() => {
       </div>
     </FilterBar>
 
-    <div class="flex flex-col gap-next-4">
-      <!-- Error (initial load failed) with retry. -->
-      <EmptyState
-        v-if="store.errored && items.length === 0"
-        variant="error"
-        :title="t('workflows.errors.title')"
-        :description="t('workflows.errors.description')"
-      >
-        <template #action>
-          <Button variant="outline" size="sm" leading-icon="rotate-ccw" @click="refetch">
-            {{ t('workflows.errors.retry') }}
-          </Button>
-        </template>
-      </EmptyState>
+    <!-- Active / Deleted tabs (like the Forms list). The grid renders in the active
+         panel; only the active panel's content is mounted (v-if). The FilterBar +
+         Saved Views toolbar above stay shared across both buckets. -->
+    <Tabs v-model="tab" :items="tabItems" variant="pills" :aria-label="t('workflows.tabs.label')">
+      <template #panel="{ value }">
+        <div v-if="value === tab" class="flex flex-col gap-next-4">
+          <Alert v-if="isTrashed" variant="info" size="sm" :title="t('workflows.trashInfo.title')">
+            {{ t('workflows.trashInfo.body') }}
+          </Alert>
 
-      <!-- Initial loading: several card-shaped skeletons (never a spinner). -->
-      <div
-        v-else-if="initialLoading"
-        class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2 next-xl:grid-cols-3"
-      >
-        <EntityCard v-for="n in skeletonKeys" :key="`sk-${n}`" loading />
-      </div>
+          <!-- Error (initial load failed) with retry. -->
+          <EmptyState
+            v-if="store.errored && items.length === 0"
+            variant="error"
+            :title="t('workflows.errors.title')"
+            :description="t('workflows.errors.description')"
+          >
+            <template #action>
+              <Button variant="outline" size="sm" leading-icon="rotate-ccw" @click="refetch">
+                {{ t('workflows.errors.retry') }}
+              </Button>
+            </template>
+          </EmptyState>
 
-      <!-- Empty: filtered "no results" vs first-run copy. -->
-      <EmptyState
-        v-else-if="isEmpty"
-        :variant="hasActiveFilters ? 'search' : 'default'"
-        icon="workflow"
-        :title="hasActiveFilters ? t('workflows.empty.searchTitle') : t('workflows.empty.title')"
-        :description="hasActiveFilters ? t('workflows.empty.searchDescription') : t('workflows.empty.description')"
-      >
-        <template v-if="!hasActiveFilters" #action>
-          <Button size="sm" leading-icon="plus" @click="onNewWorkflow">
-            {{ t('workflows.empty.action') }}
-          </Button>
-        </template>
-      </EmptyState>
+          <!-- Initial loading: several card-shaped skeletons (never a spinner). -->
+          <div
+            v-else-if="initialLoading"
+            class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2 next-xl:grid-cols-3"
+          >
+            <EntityCard v-for="n in skeletonKeys" :key="`sk-${n}`" loading />
+          </div>
 
-      <!-- Success: the grid + (when appending) trailing skeletons + sentinel. -->
-      <template v-else>
-        <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2 next-xl:grid-cols-3">
-          <WorkflowCard
-            v-for="workflow in items"
-            :key="workflow.id"
-            :workflow="workflow"
-            :opening="opening === workflow.id"
-            @open="onOpen"
-            @run="onRun"
-            @edit="onEdit"
-            @delete="onDelete"
-            @toggle-status="onToggleStatus"
-          />
+          <!-- Empty: filtered "no results" vs first-run / empty-trash copy. -->
+          <EmptyState
+            v-else-if="isEmpty"
+            :variant="hasActiveFilters ? 'search' : 'default'"
+            :icon="isTrashed ? 'trash' : 'workflow'"
+            :title="
+              hasActiveFilters
+                ? t('workflows.empty.searchTitle')
+                : isTrashed
+                  ? t('workflows.empty.trashTitle')
+                  : t('workflows.empty.title')
+            "
+            :description="
+              hasActiveFilters
+                ? t('workflows.empty.searchDescription')
+                : isTrashed
+                  ? t('workflows.empty.trashDescription')
+                  : t('workflows.empty.description')
+            "
+          >
+            <template v-if="!hasActiveFilters && !isTrashed" #action>
+              <Button size="sm" leading-icon="plus" @click="onNewWorkflow">
+                {{ t('workflows.empty.action') }}
+              </Button>
+            </template>
+          </EmptyState>
 
-          <template v-if="store.loadingMore">
-            <EntityCard v-for="n in 3" :key="`more-${n}`" loading />
+          <!-- Success: the grid + (when appending) trailing skeletons + sentinel. -->
+          <template v-else>
+            <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2 next-xl:grid-cols-3">
+              <WorkflowCard
+                v-for="workflow in items"
+                :key="workflow.id"
+                :workflow="workflow"
+                :trashed="isTrashed"
+                :opening="opening === workflow.id"
+                @open="onOpen"
+                @run="onRun"
+                @edit="onEdit"
+                @delete="onDelete"
+                @toggle-status="onToggleStatus"
+                @restore="onRestore"
+              />
+
+              <template v-if="store.loadingMore">
+                <EntityCard v-for="n in 3" :key="`more-${n}`" loading />
+              </template>
+            </div>
+
+            <!-- Inline "load more" error with retry (keeps the loaded grid visible). -->
+            <Alert
+              v-if="store.loadMoreErrored && items.length > 0"
+              variant="danger"
+              size="sm"
+            >
+              <div class="flex items-center justify-between gap-next-2">
+                <span>{{ t('workflows.errors.description') }}</span>
+                <Button variant="ghost" size="xs" leading-icon="rotate-ccw" @click="store.retryLoadMore(filters)">
+                  {{ t('workflows.errors.retry') }}
+                </Button>
+              </div>
+            </Alert>
+
+            <!-- Infinite-scroll sentinel. -->
+            <div
+              v-if="store.hasMore && !store.errored && !store.loadMoreErrored"
+              ref="sentinelRef"
+              aria-hidden="true"
+              class="h-px w-full"
+            />
           </template>
         </div>
-
-        <!-- Inline "load more" error with retry (keeps the loaded grid visible). -->
-        <Alert
-          v-if="store.loadMoreErrored && items.length > 0"
-          variant="danger"
-          size="sm"
-        >
-          <div class="flex items-center justify-between gap-next-2">
-            <span>{{ t('workflows.errors.description') }}</span>
-            <Button variant="ghost" size="xs" leading-icon="rotate-ccw" @click="store.retryLoadMore(filters)">
-              {{ t('workflows.errors.retry') }}
-            </Button>
-          </div>
-        </Alert>
-
-        <!-- Infinite-scroll sentinel. -->
-        <div
-          v-if="store.hasMore && !store.errored && !store.loadMoreErrored"
-          ref="sentinelRef"
-          aria-hidden="true"
-          class="h-px w-full"
-        />
       </template>
-    </div>
+    </Tabs>
 
     <!-- Saved view: create / edit modal. -->
     <SaveViewModal

@@ -2053,6 +2053,15 @@ export const en = {
     title: 'Workflows',
     subtitle: 'Automate your process: a trigger fires, conditions are checked, then ordered steps run.',
     newWorkflow: 'New workflow',
+    tabs: {
+      label: 'Workflow list',
+      active: 'Active',
+      trash: 'Deleted',
+    },
+    trashInfo: {
+      title: 'Trash',
+      body: 'Deleted workflows can be restored here.',
+    },
     module: {
       allWorkflows: 'All workflows',
       allRuns: 'All runs',
@@ -2064,6 +2073,7 @@ export const en = {
     status: {
       active: 'Active',
       inactive: 'Inactive',
+      deleted: 'Deleted',
     },
     statusAction: {
       activated: 'Workflow activated',
@@ -2097,10 +2107,12 @@ export const en = {
       delete: 'Delete',
       activate: 'Activate',
       deactivate: 'Deactivate',
+      restore: 'Restore',
       runDisabled: 'You can’t run this workflow',
       editDisabledOwner: 'Only the creator can edit this workflow',
       deleteDisabledOwner: 'Only the creator can delete this workflow',
       statusDisabledOwner: 'Only the creator can change this workflow’s status',
+      restoreDisabledOwner: 'Only the creator can restore this workflow',
     },
     empty: {
       title: 'No workflows yet',
@@ -2108,6 +2120,8 @@ export const en = {
       action: 'New workflow',
       searchTitle: 'No workflows match your filters',
       searchDescription: 'Try a different search or clear the filters.',
+      trashTitle: 'Trash is empty',
+      trashDescription: 'Deleted workflows will appear here.',
     },
     errors: {
       title: 'Couldn’t load workflows',

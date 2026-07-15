@@ -299,6 +299,31 @@ class WorkflowScheduleSweepTest extends TestCase
         $this->assertNull($workflow->next_due_at, 'deactivation clears the schedule');
     }
 
+    public function test_restoring_an_active_schedule_workflow_re_arms_past_now(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        // An ACTIVE schedule workflow soft-deleted with a stale PAST next_due_at (frozen while deleted
+        // and invisible to the sweep). Without re-arming, restore would leave the past slot in place and
+        // the very next sweep would fire it immediately (then backlog-fire further past slots).
+        $stale = now()->subDays(3);
+        $workflow = $this->scheduledWorkflow($owner, nextDueAt: $stale, status: WorkflowStatus::ACTIVE);
+        $workflow->delete();
+
+        $this->postJson("/api/workflows/{$workflow->id}/restore")->assertOk();
+
+        $workflow->refresh();
+        $this->assertNull($workflow->deleted_at, 'the workflow is restored');
+        // Re-armed from now: the next fire is strictly in the future, never the stale past slot.
+        $this->assertNotNull($workflow->next_due_at);
+        $this->assertTrue($workflow->next_due_at->greaterThan(now()), 'restore re-arms past now');
+
+        // A sweep right after restore therefore fires NOTHING — the stale immediate-fire is gone.
+        $this->sweep();
+        $this->assertCount(0, $this->runsFor($workflow), 'a freshly restored schedule workflow does not fire immediately');
+    }
+
     public function test_updating_cadence_while_active_re_arms_next_due_at(): void
     {
         $owner = User::factory()->create();

@@ -94,6 +94,26 @@ describe('next workflows store', () => {
     expect(Object.fromEntries(serializeFilters({}))).toEqual({});
   });
 
+  it('serializeFilters: serializes the trashed bucket flag as 1 and omits it when falsy', () => {
+    expect(Object.fromEntries(serializeFilters({ trashed: true }))).toEqual({ trashed: '1' });
+    // Composes with the other server filters.
+    expect(
+      Object.fromEntries(serializeFilters({ search: 'x', status: 'active', trashed: true })),
+    ).toEqual({ search: 'x', status: 'active', trashed: '1' });
+    // Falsy → omitted entirely (the active bucket carries no trashed param).
+    expect(Object.fromEntries(serializeFilters({ trashed: false }))).toEqual({});
+    expect(Object.fromEntries(serializeFilters({}))).toEqual({});
+  });
+
+  it('fetchWorkflows sends trashed=1 for the Deleted bucket', async () => {
+    const store = useWorkflowsStore();
+    apiMock.get.mockResolvedValueOnce({ data: [], meta: { next_cursor: null } });
+
+    await store.fetchWorkflows({ trashed: true });
+
+    expect(lastGetParams()).toEqual({ trashed: '1' });
+  });
+
   it('fetchWorkflows sends search + status and tracks cursor/hasMore (no total)', async () => {
     const store = useWorkflowsStore();
     apiMock.get.mockResolvedValueOnce({

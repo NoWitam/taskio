@@ -7,8 +7,10 @@
 // a write so the UI updates without a full refetch. Mirrors `stores/bots.ts`.
 //
 // Backend contract (VERIFIED — do NOT invent fields):
-//   GET    /workflows?search=&status=&cursor=  (cursorPaginate(8), created_at desc)
+//   GET    /workflows?search=&status=&trashed=&cursor=  (cursorPaginate(8), created_at desc)
 //     → { data: WorkflowListItem[], meta: { next_cursor } }   NO `total`.
+//     `trashed=1` returns ONLY soft-deleted workflows (the Deleted tab); absent =
+//     the active list (default). Composes with `search`/`status`.
 //   GET    /workflows/{id}          → { data: WorkflowDetail }
 //   POST   /workflows               → { data: WorkflowDetail }     (201)
 //   PUT    /workflows/{id}          → { data: WorkflowDetail }      (200)
@@ -75,8 +77,8 @@ interface FetchOptions {
 
 /**
  * Serialize the page's filter object into URLSearchParams. Server filters are
- * `search` (name/description) and `status`; undefined / null / '' are skipped.
- * (cursor is added by the caller.)
+ * `search` (name/description), `status`, and the `trashed` bucket flag; undefined /
+ * null / '' are skipped. (cursor is added by the caller.)
  */
 export function serializeFilters(filters: WorkflowFilters): URLSearchParams {
   const params = new URLSearchParams();
@@ -85,6 +87,11 @@ export function serializeFilters(filters: WorkflowFilters): URLSearchParams {
   }
   if (filters.status != null && filters.status !== ('' as WorkflowStatus)) {
     params.append('status', String(filters.status));
+  }
+  // Bucket toggle: truthy → the Deleted tab (ONLY soft-deleted rows). Omit-or-`1`,
+  // mirroring the forms store's trashed flag.
+  if (filters.trashed) {
+    params.append('trashed', '1');
   }
   return params;
 }

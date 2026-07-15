@@ -23,6 +23,13 @@ class WorkflowService
                 filled($request->get('status')),
                 fn ($query) => $query->where('status', $request->get('status'))
             )
+            // trashed=1 lists ONLY soft-deleted workflows (the Deleted tab); the default excludes them
+            // via the SoftDeletes global scope. onlyTrashed() drops only that scope, so WorkspaceScope
+            // still isolates the active workspace — a foreign workspace's trashed rows never leak.
+            ->when(
+                $request->boolean('trashed'),
+                fn ($query) => $query->onlyTrashed()
+            )
             ->orderBy('created_at', 'desc')
             ->cursorPaginate(8);
     }
@@ -78,9 +85,18 @@ class WorkflowService
 
     public function restore(Workflow $workflow): Workflow
     {
-        $workflow->restore();
+        return DB::transaction(function () use ($workflow) {
+            // Re-arm BEFORE restoring so a single write persists both deleted_at=null and a fresh
+            // next_due_at. While soft-deleted the row is invisible to the sweep (SoftDeletes scope), so
+            // an ACTIVE schedule workflow's next_due_at goes stale in the past; without re-arming, the
+            // first sweep after restore would fire it immediately (and backlog-fire further past slots).
+            // arm() recomputes the next fire for an ACTIVE schedule workflow from now() and nulls it for
+            // every other case (mirrors the create/update/status write paths).
+            $this->schedule->arm($workflow);
+            $workflow->restore();
 
-        return $workflow;
+            return $workflow;
+        });
     }
 
     /**

@@ -25,11 +25,14 @@ import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
 import { workflowStatusMap } from './workflowStatus';
 import { triggerIcon, triggerShort } from './workflowMeta';
 import { useI18n } from '../../app/i18n';
+import type { StatusMap } from '../../ui/data/StatusBadge.vue';
 import type { IconName } from '../../ui/primitives/icons';
 import type { WorkflowListItem } from './types';
 
 const props = defineProps<{
   workflow: WorkflowListItem;
+  /** Rendered in the Deleted tab → swaps the kebab actions for restore only. */
+  trashed?: boolean;
   /** This card is fetching its workflow detail before opening the detail view. */
   opening?: boolean;
 }>();
@@ -41,11 +44,28 @@ const emit = defineEmits<{
   (e: 'delete', workflow: WorkflowListItem): void;
   /** Toggle the workflow's status (Activate ⇄ Deactivate); parent calls the store. */
   (e: 'toggle-status', workflow: WorkflowListItem): void;
+  /** Restore a soft-deleted workflow (Deleted tab); parent calls the store. */
+  (e: 'restore', workflow: WorkflowListItem): void;
 }>();
 
 const { t } = useI18n();
 
 const statusMap = computed(() => workflowStatusMap(t));
+
+// In the Deleted tab the card shows a single "Deleted" badge instead of the live
+// active/inactive status (a trashed workflow's stored status would read misleadingly).
+const cardStatus = computed<string>(() => (props.trashed ? 'deleted' : props.workflow.status));
+const cardStatusMap = computed<StatusMap>(() =>
+  props.trashed
+    ? { deleted: { label: t('workflows.status.deleted'), variant: 'neutral', tone: 'subtle', icon: 'trash' } }
+    : statusMap.value,
+);
+
+// Whole-card accessible name: an active card names the open action; a Deleted card
+// has none (only the kebab acts, the card itself is inert).
+const actionLabel = computed<string | undefined>(() =>
+  props.trashed ? undefined : t('workflows.card.open', '', { name: props.workflow.name }),
+);
 
 // The list row carries only `is_owner`; the precise capability flags live on the
 // detail resource. Gate the row's actions on ownership (the backend still enforces
@@ -65,6 +85,9 @@ const editDisabledReason = computed<string | undefined>(() =>
 const deleteDisabledReason = computed<string | undefined>(() =>
   canManage.value ? undefined : t('workflows.actions.deleteDisabledOwner'),
 );
+const restoreDisabledReason = computed<string | undefined>(() =>
+  canManage.value ? undefined : t('workflows.actions.restoreDisabledOwner'),
+);
 
 // Human-readable "next run" for schedule triggers (only shown when both hold).
 const showNextDue = computed(
@@ -77,7 +100,10 @@ const nextDueText = computed(() => {
   return Number.isNaN(d.getTime()) ? raw : d.toLocaleString();
 });
 
+// The whole (non-trashed) card opens the detail view. A Deleted card has no detail
+// target, so it stays inert — only the kebab's Restore acts.
 function onOpen(): void {
+  if (props.trashed) return;
   emit('open', props.workflow);
 }
 </script>
@@ -86,10 +112,10 @@ function onOpen(): void {
   <EntityCard
     :title="workflow.name"
     :subtitle="workflow.description ?? t('workflows.card.noDescription')"
-    :disabled="opening"
-    :status="workflow.status"
-    :status-map="statusMap"
-    :action-label="t('workflows.card.open', '', { name: workflow.name })"
+    :disabled="trashed || opening"
+    :status="cardStatus"
+    :status-map="cardStatusMap"
+    :action-label="actionLabel"
     @click="onOpen"
   >
     <template #leading>
@@ -102,8 +128,9 @@ function onOpen(): void {
       </span>
     </template>
 
-    <!-- Run / Activate·Deactivate / Edit / Delete, gated by ownership. Disabled
-         items stay visible with an explanatory label so the reason is clear. -->
+    <!-- Deleted tab: Restore only (workflows have no permanent-delete endpoint).
+         Active tab: Run / Activate·Deactivate / Edit / Delete, gated by ownership.
+         Disabled items stay visible with an explanatory label so the reason is clear. -->
     <template #actions>
       <DropdownMenu placement="bottom-end" :aria-label="t('workflows.actions.menu')">
         <template #trigger="{ props: triggerProps }">
@@ -116,39 +143,53 @@ function onOpen(): void {
           />
         </template>
 
+        <!-- Deleted tab: restore only. -->
         <DropdownMenuItem
-          icon="arrow-right"
+          v-if="trashed"
+          icon="rotate-ccw"
           :disabled="!canManage"
-          :label="runDisabledReason ?? t('workflows.actions.run')"
-          @select="canManage && emit('run', workflow)"
+          :label="restoreDisabledReason ?? t('workflows.actions.restore')"
+          @select="canManage && emit('restore', workflow)"
         >
-          {{ t('workflows.actions.run') }}
+          {{ t('workflows.actions.restore') }}
         </DropdownMenuItem>
-        <DropdownMenuItem
-          :icon="isActive ? 'circle' : 'check-circle'"
-          :disabled="!canManage"
-          :label="statusDisabledReason ?? (isActive ? t('workflows.actions.deactivate') : t('workflows.actions.activate'))"
-          @select="canManage && emit('toggle-status', workflow)"
-        >
-          {{ isActive ? t('workflows.actions.deactivate') : t('workflows.actions.activate') }}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          icon="pencil"
-          :disabled="!canManage"
-          :label="editDisabledReason ?? t('workflows.actions.edit')"
-          @select="canManage && emit('edit', workflow)"
-        >
-          {{ t('workflows.actions.edit') }}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          icon="trash"
-          destructive
-          :disabled="!canManage"
-          :label="deleteDisabledReason ?? t('workflows.actions.delete')"
-          @select="canManage && emit('delete', workflow)"
-        >
-          {{ t('workflows.actions.delete') }}
-        </DropdownMenuItem>
+
+        <!-- Active tab: run / status / edit / delete, each gated by ownership. -->
+        <template v-else>
+          <DropdownMenuItem
+            icon="arrow-right"
+            :disabled="!canManage"
+            :label="runDisabledReason ?? t('workflows.actions.run')"
+            @select="canManage && emit('run', workflow)"
+          >
+            {{ t('workflows.actions.run') }}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            :icon="isActive ? 'circle' : 'check-circle'"
+            :disabled="!canManage"
+            :label="statusDisabledReason ?? (isActive ? t('workflows.actions.deactivate') : t('workflows.actions.activate'))"
+            @select="canManage && emit('toggle-status', workflow)"
+          >
+            {{ isActive ? t('workflows.actions.deactivate') : t('workflows.actions.activate') }}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            icon="pencil"
+            :disabled="!canManage"
+            :label="editDisabledReason ?? t('workflows.actions.edit')"
+            @select="canManage && emit('edit', workflow)"
+          >
+            {{ t('workflows.actions.edit') }}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            icon="trash"
+            destructive
+            :disabled="!canManage"
+            :label="deleteDisabledReason ?? t('workflows.actions.delete')"
+            @select="canManage && emit('delete', workflow)"
+          >
+            {{ t('workflows.actions.delete') }}
+          </DropdownMenuItem>
+        </template>
       </DropdownMenu>
     </template>
 

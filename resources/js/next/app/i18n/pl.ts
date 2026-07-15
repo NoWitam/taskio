@@ -2020,6 +2020,15 @@ export const pl: MessageSchema = {
     title: 'Przepływy',
     subtitle: 'Zautomatyzuj swój proces: uruchamia się wyzwalacz, sprawdzane są warunki, a następnie wykonują się kolejne kroki.',
     newWorkflow: 'Nowy przepływ',
+    tabs: {
+      label: 'Lista przepływów',
+      active: 'Aktywne',
+      trash: 'Usunięte',
+    },
+    trashInfo: {
+      title: 'Kosz',
+      body: 'Usunięte przepływy możesz tutaj przywrócić.',
+    },
     module: {
       allWorkflows: 'Wszystkie przepływy',
       allRuns: 'Wszystkie uruchomienia',
@@ -2031,6 +2040,7 @@ export const pl: MessageSchema = {
     status: {
       active: 'Aktywny',
       inactive: 'Nieaktywny',
+      deleted: 'Usunięty',
     },
     statusAction: {
       activated: 'Przepływ aktywowany',
@@ -2064,10 +2074,12 @@ export const pl: MessageSchema = {
       delete: 'Usuń',
       activate: 'Aktywuj',
       deactivate: 'Dezaktywuj',
+      restore: 'Przywróć',
       runDisabled: 'Nie możesz uruchomić tego przepływu',
       editDisabledOwner: 'Tylko twórca może edytować ten przepływ',
       deleteDisabledOwner: 'Tylko twórca może usunąć ten przepływ',
       statusDisabledOwner: 'Tylko twórca może zmienić status tego przepływu',
+      restoreDisabledOwner: 'Tylko twórca może przywrócić ten przepływ',
     },
     empty: {
       title: 'Brak przepływów',
@@ -2075,6 +2087,8 @@ export const pl: MessageSchema = {
       action: 'Nowy przepływ',
       searchTitle: 'Żaden przepływ nie pasuje do filtrów',
       searchDescription: 'Spróbuj innego wyszukiwania lub wyczyść filtry.',
+      trashTitle: 'Kosz jest pusty',
+      trashDescription: 'Usunięte przepływy pojawią się tutaj.',
     },
     errors: {
       title: 'Nie udało się wczytać przepływów',
