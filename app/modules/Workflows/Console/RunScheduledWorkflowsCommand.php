@@ -16,6 +16,7 @@ use App\Modules\Workspaces\Services\TenantManager;
 use App\Tenancy\TenantContext;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Schedule forward-sweep (scheduled every minute). Fires `schedule`-type workflows whose
@@ -64,9 +65,18 @@ class RunScheduledWorkflowsCommand extends Command
         $ownWorkspaces = Workspace::query()->where('db_mode', WorkspaceDbMode::Own)->get();
 
         foreach ($ownWorkspaces as $workspace) {
-            $context->set($workspace);
-            $tenants->configure($workspace);
-            $this->sweep($schedule, $dispatcher, $runManager, $payloads, $counts);
+            // One broken tenant (unreachable DB, bad connection config) must not stop the
+            // sweep for every workspace after it: log and continue.
+            try {
+                $context->set($workspace);
+                $tenants->configure($workspace);
+                $this->sweep($schedule, $dispatcher, $runManager, $payloads, $counts);
+            } catch (Throwable $e) {
+                Log::error('Scheduled sweep failed for workspace; continuing with remaining workspaces.', [
+                    'workspace_id' => $workspace->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         $context->clear();
@@ -105,7 +115,16 @@ class RunScheduledWorkflowsCommand extends Command
             ->get();
 
         foreach ($due as $workflow) {
-            $this->fireIfClaimed($workflow, $schedule, $dispatcher, $runManager, $payloads, $counts);
+            // One corrupt workflow (e.g. an uncompilable stored schedule) must not block
+            // every other due workflow on this connection: log and continue.
+            try {
+                $this->fireIfClaimed($workflow, $schedule, $dispatcher, $runManager, $payloads, $counts);
+            } catch (Throwable $e) {
+                Log::error('Scheduled sweep failed for workflow; continuing with remaining due workflows.', [
+                    'workflow_id' => $workflow->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
     }
 
@@ -125,9 +144,16 @@ class RunScheduledWorkflowsCommand extends Command
             ->get();
 
         foreach ($orphans as $workflow) {
-            $schedule->arm($workflow);
-            $workflow->save();
-            $counts['armed']++;
+            try {
+                $schedule->arm($workflow);
+                $workflow->save();
+                $counts['armed']++;
+            } catch (Throwable $e) {
+                Log::error('Scheduled sweep failed to arm workflow; continuing with remaining workflows.', [
+                    'workflow_id' => $workflow->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
     }
 

@@ -8,6 +8,8 @@ use App\Modules\Workspaces\Models\Workspace;
 use App\Modules\Workspaces\Services\TenantManager;
 use App\Tenancy\TenantContext;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Stale-claim reaper (scheduled). Releases workflow runs stranded in `running` — a worker
@@ -40,9 +42,18 @@ class ReapStaleWorkflowRunsCommand extends Command
         $ownWorkspaces = Workspace::query()->where('db_mode', WorkspaceDbMode::Own)->get();
 
         foreach ($ownWorkspaces as $workspace) {
-            $context->set($workspace);
-            $tenants->configure($workspace);
-            $total += $runManager->reapStaleRuns();
+            // One broken tenant (unreachable DB, bad connection config) must not stop the
+            // sweep for every workspace after it: log and continue.
+            try {
+                $context->set($workspace);
+                $tenants->configure($workspace);
+                $total += $runManager->reapStaleRuns();
+            } catch (Throwable $e) {
+                Log::error('Stale workflow run reaper failed for workspace; continuing with remaining workspaces.', [
+                    'workspace_id' => $workspace->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         $context->clear();
