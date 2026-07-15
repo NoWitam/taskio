@@ -1,86 +1,139 @@
 // @vitest-environment happy-dom
-// WorkflowConditionsEditor.spec — the typed, schema-driven conditions builder
-// (§4.8). Asserts (1) the FORM-GATED disabled state (no form ⇒ the needsForm Alert +
-// a disabled Add button, no rows), (2) the operator Select is scoped to the selected
-// field's type allow-list, and (3) a boolean-typed condition renders NO value input.
-// Fields come from the catalog prop; the emitted model is the typed
-// WorkflowCondition[]. Mirrors the PipelineSelect.spec teleport/option conventions.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+// WorkflowConditionsEditor.spec — the B3 condition TREE builder (rebuilt).
+//
+// Asserts the FORM GATE (no form ⇒ needsForm Alert, no tree), the recursive render
+// (an AND group with two chips + a nested OR group), the logic toggle emit, "Add
+// condition" opening the Modal (over a catalog that carries `operations`), removing a
+// chip, and the depth-limit disabling the deepest "Add group".
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
+import { setLocale } from '../../../app/i18n';
 import WorkflowConditionsEditor from '../WorkflowConditionsEditor.vue';
+import { standardOperationsCatalog } from '../../../ui/editor/extensions/standardOperations';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
-import type { CatalogField, WorkflowCondition } from '../types';
+import type { CatalogField, WorkflowCatalog } from '../types';
+import type { DraftCondition, DraftConditionGroup } from '../workflowConditions';
+import type { VariablePipelineStep } from '../../../ui/editor/extensions/types';
 
 const FIELDS: CatalogField[] = [
   { path: 'fields.status', field_id: 'status', label: 'Status', type: 'enum', enumOptions: ['open', 'done'], operators: ['is', 'is_not', 'in'] },
-  { path: 'fields.count', field_id: 'count', label: 'Count', type: 'number', operators: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'] },
-  { path: 'fields.agreed', field_id: 'agreed', label: 'Agreed', type: 'boolean', operators: ['is_true', 'is_false'] },
+  { path: 'fields.count', field_id: 'count', label: 'Count', type: 'number', operators: ['eq', 'gt'] },
 ];
 
-describe('WorkflowConditionsEditor', () => {
+// A catalog that carries the operation DESCRIPTORS (mapped from the FE standard
+// catalog) — proves the editor runs on catalog.operations, not a hardcoded list.
+const OPERATIONS = standardOperationsCatalog().map((op) => ({
+  id: op.id,
+  input: op.inputTypes[0],
+  output: op.outputType,
+  args: (op.args ?? []).map((a) => ({ id: a.id, type: a.type, mapType: a.mapType })),
+}));
+const CATALOG: WorkflowCatalog = { variables: [], fields: FIELDS, operations: OPERATIONS };
+
+function condition(uid: string, source: string, sourceType: CatalogField['type'], op: string, args: Record<string, unknown>): DraftCondition {
+  const step: VariablePipelineStep = { stepId: `s-${uid}`, operationId: op, args: args as VariablePipelineStep['args'], outputType: 'boolean' };
+  return { uid, kind: 'condition', source, sourceType, pipeline: [step] };
+}
+
+/** An AND root with two conditions + a nested OR group holding one condition. */
+function sampleTree(): DraftConditionGroup {
+  return {
+    uid: 'g-root',
+    kind: 'group',
+    logic: 'and',
+    children: [
+      condition('c1', 'fields.status', 'enum', 'enum_is', { value: 'open' }),
+      condition('c2', 'fields.count', 'number', 'num_gt', { value: 3 }),
+      {
+        uid: 'g-sub',
+        kind: 'group',
+        logic: 'or',
+        children: [condition('c3', 'fields.status', 'enum', 'enum_is', { value: 'done' })],
+      },
+    ],
+  };
+}
+
+function mountEditor(modelValue: DraftConditionGroup, formSelected = true) {
+  return mount(WorkflowConditionsEditor, {
+    attachTo: document.body,
+    props: { modelValue, catalog: CATALOG, formSelected },
+  });
+}
+
+describe('WorkflowConditionsEditor (tree)', () => {
+  beforeAll(() => setLocale('en'));
   beforeEach(() => installBrowserMocks());
   afterEach(() => restoreBrowserMocks());
 
-  it('renders the form-gated disabled state when no form is selected', () => {
-    const wrapper = mount(WorkflowConditionsEditor, {
-      props: { formSelected: false, fields: null, modelValue: [] },
-    });
-
-    // The needsForm Alert is shown and the Add button is disabled; no rows.
+  it('renders the form-gated state when no form is selected (Alert, no tree)', () => {
+    const wrapper = mountEditor({ uid: 'g', kind: 'group', logic: 'and', children: [] }, false);
     expect(wrapper.text()).toContain('Pick a form to add conditions on its fields.');
-    const addBtn = wrapper.get('button');
-    expect(addBtn.attributes('disabled')).toBeDefined();
-    expect(wrapper.findAll('li').length).toBe(0);
-
+    expect(wrapper.find('[role="group"]').exists()).toBe(false);
     wrapper.unmount();
   });
 
-  it('adds a well-typed row seeded from the first field on Add', async () => {
-    const wrapper = mount(WorkflowConditionsEditor, {
-      props: { formSelected: true, fields: FIELDS, modelValue: [] },
-    });
-
-    await wrapper.get('button').trigger('click'); // Add condition
-    const emitted = wrapper.emitted('update:modelValue');
-    const rows = emitted?.[emitted.length - 1]?.[0] as WorkflowCondition[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual({ field: 'fields.status', field_type: 'enum', operator: 'is', value: undefined });
-
+  it('renders the tree: an AND group with two chips + a nested OR group', () => {
+    const wrapper = mountEditor(sampleTree());
+    // Two group cards (root + nested), the two field labels, and the nested OR.
+    expect(wrapper.findAll('[role="group"]').length).toBe(2);
+    expect(wrapper.text()).toContain('Status');
+    expect(wrapper.text()).toContain('Count');
+    // Three condition chips → three "Edit condition" buttons.
+    const chips = wrapper.findAll('button').filter((b) => (b.attributes('aria-label') ?? '').startsWith('Edit condition:'));
+    expect(chips.length).toBe(3);
     wrapper.unmount();
   });
 
-  it('scopes the operator Select to the selected field type allow-list', async () => {
-    // A number-typed condition should offer exactly the number operators.
-    const model: WorkflowCondition[] = [{ field: 'fields.count', field_type: 'number', operator: 'gt', value: null }];
-    const wrapper = mount(WorkflowConditionsEditor, {
-      attachTo: document.body,
-      props: { formSelected: true, fields: FIELDS, modelValue: model },
-    });
+  it('toggling the ROOT group logic emits the updated tree', async () => {
+    const wrapper = mountEditor(sampleTree());
+    const radiogroups = wrapper.findAll('[role="radiogroup"]');
+    const rootAny = radiogroups[0].findAll('[role="radio"]').find((r) => r.text().includes('Any'));
+    await rootAny!.trigger('click');
+    const emitted = wrapper.emitted('update:modelValue') ?? [];
+    const last = emitted[emitted.length - 1]?.[0] as DraftConditionGroup;
+    expect(last.logic).toBe('or');
+    wrapper.unmount();
+  });
+
+  it('"Add condition" opens the condition Modal', async () => {
+    const wrapper = mountEditor(sampleTree());
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes('Add condition'));
+    await addBtn!.trigger('click');
     await nextTick();
-
-    // Open the operator Select (the 2nd combobox in the row: field, operator, value).
-    const comboboxes = wrapper.findAll('[role="combobox"]');
-    await comboboxes[1].trigger('click');
-    await nextTick();
-
-    const options = Array.from(document.body.querySelectorAll('[role="option"]')).map((o) => o.textContent?.trim());
-    expect(options).toEqual(['equals', 'is not', 'greater than', 'at least', 'less than', 'at most']);
-
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(dialog?.textContent).toContain('Add condition');
     wrapper.unmount();
   });
 
-  it('renders NO value input for a boolean condition', () => {
-    const model: WorkflowCondition[] = [{ field: 'fields.agreed', field_type: 'boolean', operator: 'is_true' }];
-    const wrapper = mount(WorkflowConditionsEditor, {
-      props: { formSelected: true, fields: FIELDS, modelValue: model },
-    });
+  it('removing a chip emits the tree without that condition', async () => {
+    const wrapper = mountEditor(sampleTree());
+    const removeBtn = wrapper.findAll('button').find((b) => b.attributes('aria-label') === 'Remove condition');
+    await removeBtn!.trigger('click');
+    const emitted = wrapper.emitted('update:modelValue') ?? [];
+    const last = emitted[emitted.length - 1]?.[0] as DraftConditionGroup;
+    // c1 removed → the root keeps c2 + the nested group.
+    expect(last.children).toHaveLength(2);
+    expect(last.children.some((c) => c.uid === 'c1')).toBe(false);
+    wrapper.unmount();
+  });
 
-    // The value FormField shows the boolean note, not an input/combobox.
-    expect(wrapper.text()).toContain('No value needed for this operator.');
-    // Only field + operator comboboxes exist (no value control).
-    expect(wrapper.findAll('[role="combobox"]').length).toBe(2);
+  it('the depth limit disables the deepest "Add group"', () => {
+    // A chain nested to depth 5 (root = 1).
+    const g5: DraftConditionGroup = { uid: 'g5', kind: 'group', logic: 'and', children: [] };
+    const g4: DraftConditionGroup = { uid: 'g4', kind: 'group', logic: 'and', children: [g5] };
+    const g3: DraftConditionGroup = { uid: 'g3', kind: 'group', logic: 'and', children: [g4] };
+    const g2: DraftConditionGroup = { uid: 'g2', kind: 'group', logic: 'and', children: [g3] };
+    const g1: DraftConditionGroup = { uid: 'g1', kind: 'group', logic: 'and', children: [g2] };
 
+    const wrapper = mountEditor(g1);
+    const addGroupButtons = wrapper.findAll('button').filter((b) => b.text().includes('Add group'));
+    expect(addGroupButtons.length).toBe(5);
+    const disabled = addGroupButtons.filter((b) => b.attributes('disabled') !== undefined);
+    // Only the depth-5 group can no longer nest.
+    expect(disabled.length).toBe(1);
     wrapper.unmount();
   });
 });

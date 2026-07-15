@@ -98,6 +98,30 @@ class WorkflowCrudTest extends TestCase
             ->assertJsonValidationErrors(['steps.0.key', 'steps.1.key']);
     }
 
+    public function test_step_key_must_use_a_safe_charset(): void
+    {
+        // REGRESSION (reviewer S1): the key is substituted into `steps.<key>.<output>` dotted paths
+        // read via Arr::get, so a dot/space would silently break every reference. A non-FE caller
+        // must be rejected on write, not fail silently at run time.
+        $user = User::factory()->create();
+
+        foreach (['my.key', 'my key', 'kebab-key'] as $badKey) {
+            $this->actingAs($user)
+                ->postJson('/api/workflows', $this->validPayload([
+                    'steps' => [['type' => 'create_task', 'key' => $badKey, 'config' => ['title' => 'A']]],
+                ]))
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['steps.0.key']);
+        }
+
+        // A safe key still passes.
+        $this->actingAs($user)
+            ->postJson('/api/workflows', $this->validPayload([
+                'steps' => [['type' => 'create_task', 'key' => 'my_key_1', 'config' => ['title' => 'A']]],
+            ]))
+            ->assertCreated();
+    }
+
     public function test_invalid_step_type_is_rejected(): void
     {
         $user = User::factory()->create();

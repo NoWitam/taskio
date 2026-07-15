@@ -4,12 +4,19 @@
 // Built on EntityCard: the submitter (creator name, or "Anonymous"), the created
 // date, an approved/pending status badge (icon + text, never color-only), and the
 // source. Clicking opens the submission detail. All strings via i18n.
+//
+// `selectable` mode (additive, non-breaking): when true the WHOLE card becomes a
+// pick affordance — clicking still emits `select(submission)` (EntityCard renders
+// the stretched action as a real, keyboard-activatable button with role/tabindex),
+// but the kebab/action menu is suppressed. Default (false) = today's behavior.
 import { computed } from 'vue';
 import EntityCard, { type EntityMetaItem } from '../../ui/patterns/EntityCard.vue';
 import StatusBadge, { type StatusDescriptor } from '../../ui/data/StatusBadge.vue';
 import Button from '../../ui/primitives/Button.vue';
 import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
+import CreatorBadge from '../../ui/patterns/CreatorBadge.vue';
+import { creatorLabel } from '../../ui/patterns/creator';
 import { useI18n } from '../../app/i18n';
 import type { FormSubmission } from './types';
 
@@ -17,6 +24,11 @@ const props = defineProps<{
   submission: FormSubmission;
   /** Rendered in the Deleted tab → swaps delete for restore / permanent delete. */
   trashed?: boolean;
+  /**
+   * Selection mode: the whole card is a pick affordance and the kebab is hidden.
+   * `@select` still carries the full submission; the parent resolves its id.
+   */
+  selectable?: boolean;
 }>();
 const emit = defineEmits<{
   (e: 'select', submission: FormSubmission): void;
@@ -27,7 +39,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
-const title = computed(() => props.submission.creator?.name ?? t('forms.submissions.anonymous'));
+// The submitter identity — a user/bot name, an "Automatyzacja: X" automation label,
+// or the "Anonymous" fallback for a null creator (an anonymous submission).
+const title = computed(() =>
+  creatorLabel(props.submission.creator, t, t('forms.submissions.anonymous')),
+);
 
 const badge = computed<StatusDescriptor>(() =>
   props.submission.is_approved
@@ -56,15 +72,13 @@ const meta = computed<EntityMetaItem[]>(() => [
 <template>
   <EntityCard :title="title" :meta="meta" @click="emit('select', submission)">
     <template #leading>
-      <span class="flex h-9 w-9 items-center justify-center rounded-next-full bg-next-muted text-next-muted-foreground" aria-hidden="true">
-        <span class="text-next-sm font-next-semibold">{{ title.slice(0, 1).toUpperCase() }}</span>
-      </span>
+      <CreatorBadge :creator="submission.creator" glyph-only size="sm" />
     </template>
     <template #status>
       <StatusBadge :status="submission.is_approved ? 'approved' : 'pending'" :label="badge.label" :status-map="{ [submission.is_approved ? 'approved' : 'pending']: badge }" size="sm" />
     </template>
 
-    <template #actions>
+    <template v-if="!selectable" #actions>
       <DropdownMenu placement="bottom-end" :aria-label="t('forms.submissions.actions.menu')">
         <template #trigger="{ props: triggerProps }">
           <Button v-bind="triggerProps" variant="ghost" size="icon-sm" leading-icon="more-vertical" :aria-label="t('forms.submissions.actions.menu')" />

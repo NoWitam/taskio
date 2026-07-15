@@ -25,6 +25,20 @@ import type {
   WorkflowStepType,
 } from './types';
 
+/**
+ * The client-side ceiling on steps (mirrors the backend `steps` max:50 rule). The add
+ * affordance disables at this count so the user never trips a 422 (§4.6).
+ */
+export const MAX_STEPS = 50;
+
+/** The step key charset — path-safe (a dot/space would break `steps.<key>.<name>` refs). */
+export const STEP_KEY_RE = /^[A-Za-z0-9_]+$/;
+
+/** Strip every character a step key may not contain (used to NORMALIZE typed input). */
+export function sanitizeStepKey(value: string): string {
+  return value.replace(/[^A-Za-z0-9_]/g, '');
+}
+
 /** One local step draft. `uid` is a stable local key so reorder remounts cleanly. */
 export interface StepDraft {
   uid: string;
@@ -186,7 +200,9 @@ function trimmedOrOmit(value: unknown): string | undefined {
 /**
  * A value-or-variable union passed through UNTOUCHED, or undefined when empty.
  * A `{kind:'literal', value:null}` (the add-on's cleared state) collapses to
- * undefined so it is omitted; a real literal or variable ref is emitted verbatim.
+ * undefined so it is omitted; a real literal or variable ref is emitted verbatim. The
+ * variable arm's OPTIONAL operations `pipeline` (SF1) rides through untouched when
+ * non-empty; a stray EMPTY pipeline array is dropped so an identity ref stays lean.
  */
 function unionOrOmit(value: unknown): WorkflowFieldValue | undefined {
   if (value == null) return undefined;
@@ -198,7 +214,12 @@ function unionOrOmit(value: unknown): WorkflowFieldValue | undefined {
       if (v == null || v === '') return undefined;
       return union;
     }
-    return union; // a variable ref — always meaningful
+    // A variable ref — always meaningful. Strip an empty pipeline so an identity ref
+    // never emits `pipeline: []` (which the backend treats as identity anyway).
+    if (Array.isArray(union.pipeline) && union.pipeline.length === 0) {
+      return { kind: 'variable', ref: union.ref };
+    }
+    return union;
   }
   // A bare scalar in a structured slot is a literal the backend accepts as-is.
   if (value === '') return undefined;

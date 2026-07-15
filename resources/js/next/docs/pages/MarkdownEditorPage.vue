@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import MarkdownEditor from '../../ui/editor/MarkdownEditor.vue';
 import MarkdownViewer from '../../ui/editor/MarkdownViewer.vue';
 import FormField from '../../ui/forms/FormField.vue';
@@ -48,8 +48,10 @@ import type {
   AiTextFeatureConfig,
   VariableDefinition,
   VariableFeatureConfig,
-  VariableOperationDefinition,
+  VariablePrimitive,
 } from '../../ui/editor/extensions/types';
+import { standardOperationsCatalog } from '../../ui/editor/extensions/standardOperations';
+import { getVariableIconLabel } from '../../ui/editor/extensions/operationHelpers';
 
 // Mock mention source with deliberate latency so the SKELETON rows are visible.
 const MOCK_USERS: MentionItem[] = [
@@ -73,46 +75,53 @@ const DEMO_VARIABLES: VariableDefinition[] = [
   { id: 'order_total', name: 'Order total', type: 'number' },
   { id: 'item_count', name: 'Item count', type: 'number' },
   { id: 'is_vip', name: 'Is VIP', type: 'boolean' },
+  // Extended vocabulary: enum/multi carry their OPTIONS (they feed the
+  // sourceOption/sourceOptions comparison args); date uses ISO YYYY-MM-DD.
+  { id: 'delivery_date', name: 'Delivery date', type: 'date' },
+  {
+    id: 'priority',
+    name: 'Priority',
+    type: 'enum',
+    options: [
+      { label: 'Low', value: 'low' },
+      { label: 'Medium', value: 'medium' },
+      { label: 'High', value: 'high' },
+    ],
+  },
+  {
+    id: 'channels',
+    name: 'Channels',
+    type: 'multi',
+    options: [
+      { label: 'E-mail', value: 'email' },
+      { label: 'SMS', value: 'sms' },
+      { label: 'Push', value: 'push' },
+    ],
+  },
 ];
-const DEMO_OPERATIONS: VariableOperationDefinition[] = [
-  { id: 'uppercase', label: 'Uppercase', inputTypes: ['text'], outputType: 'text' },
-  { id: 'length', label: 'Length', inputTypes: ['text'], outputType: 'number' },
-  {
-    id: 'contains',
-    label: 'Contains',
-    inputTypes: ['text'],
-    outputType: 'boolean',
-    args: [{ id: 'needle', label: 'Text', type: 'text', placeholder: 'e.g. urgent' }],
-  },
-  { id: 'isEmpty', label: 'Is empty', inputTypes: ['text'], outputType: 'boolean' },
-  {
-    id: 'greaterThan',
-    label: 'Greater than',
-    inputTypes: ['number'],
-    outputType: 'boolean',
-    args: [{ id: 'value', label: 'Value', type: 'number', defaultValue: 0 }],
-  },
-  {
-    id: 'equals',
-    label: 'Equals',
-    inputTypes: ['number'],
-    outputType: 'boolean',
-    args: [{ id: 'value', label: 'Value', type: 'number', defaultValue: 0 }],
-  },
-  {
-    id: 'add',
-    label: 'Add',
-    inputTypes: ['number'],
-    outputType: 'number',
-    args: [{ id: 'value', label: 'Value', type: 'number', defaultValue: 1 }],
-  },
-  { id: 'negate', label: 'Negate', inputTypes: ['boolean'], outputType: 'boolean' },
-];
-const DEMO_VARIABLE_CONFIG: VariableFeatureConfig = {
+// The FULL standard catalog (66 ops, shared with the app) — computed so labels
+// follow the active locale.
+const DEMO_VARIABLE_CONFIG = computed<VariableFeatureConfig>(() => ({
   variables: DEMO_VARIABLES,
-  operationsCatalog: DEMO_OPERATIONS,
+  operationsCatalog: standardOperationsCatalog(),
   trigger: '{',
-};
+}));
+
+// --- The operations reference (rendered from the LIVE catalog, never drifts) --
+const OPS_TYPE_ORDER: VariablePrimitive[] = ['text', 'number', 'boolean', 'date', 'enum', 'multi'];
+const opsReference = computed(() =>
+  OPS_TYPE_ORDER.map((type) => ({
+    type,
+    heading: getVariableIconLabel(type),
+    rows: standardOperationsCatalog()
+      .filter((op) => op.inputTypes.includes(type))
+      .map<ApiRow>((op) => ({
+        name: op.label,
+        type: getVariableIconLabel(op.outputType),
+        description: (op.args ?? []).map((a) => `${a.label} (${a.type})`).join(', ') || '—',
+      })),
+  })),
+);
 const DEMO_AI_CONFIG: AiTextFeatureConfig = {
   personas: [
     { id: 'friendly', label: 'Friendly' },
@@ -186,7 +195,7 @@ const propRows: ApiRow[] = [
   { name: 'ariaInvalid / success / dirty', type: 'boolean', default: 'false', description: 'Force the field state line standalone (FormField sets these).' },
   { name: 'extensions', type: 'AnyExtension[]', default: '—', description: 'Raw Tiptap extensions merged after the core schema (escape hatch).' },
   { name: 'mentions', type: '{ fetch: (q) => Promise<MentionItem[]> }', default: '—', description: 'PART 2: enable @-mentions with an async source. Triggered by typing @.' },
-  { name: 'variables', type: '{ variables: VariableDefinition[]; operationsCatalog: VariableOperationDefinition[]; trigger? }', default: '—', description: 'PART 2: enable template variables. Inserted via a trigger (default {); click a chip to build its operations pipeline in a Modal.' },
+  { name: 'variables', type: '{ variables: VariableDefinition[]; operationsCatalog: VariableOperationDefinition[]; trigger? }', default: '—', description: 'PART 2: enable template variables. Inserted via a trigger (default {); click a chip to build its operations pipeline in a Modal. Six value types (text/number/boolean/date/enum/multi); enum/multi definitions carry options, consumed by sourceOption/sourceOptions operation args.' },
   { name: 'ifBlocks', type: 'boolean | { maxElseIf?; maxDepth? }', default: 'false', description: 'PART 2: enable conditional if-blocks (inline-editable branches + boolean conditions). maxDepth defaults to 3.' },
   { name: 'aiText', type: 'boolean | { personas?; labelsEnabled?; labelsCatalog? }', default: 'false', description: 'PART 2: enable AI-text chips + the sparkles toolbar button (persona + nested-editor prompt + labels).' },
   { name: 'id / describedById / ariaLabel', type: 'string', default: '—', description: 'Standalone wiring; provided automatically inside a FormField.' },
@@ -325,13 +334,24 @@ const eventRows: ApiRow[] = [
 
     <StorySection
       title="PART 2 — Variables (trigger + operations pipeline)"
-      description="Type { to open the variable picker (caret-anchored listbox with type icons), pick a predefined variable, then click the chip to open its Modal and build an operations pipeline — watch the result type change as you add ops. Result type drives the chip icon. Serializes byte-compatibly (pipeline included)."
+      description="Type { to open the variable picker (caret-anchored listbox with type icons), pick a predefined variable, then click the chip to open its Modal and build an operations pipeline — watch the result type change as you add ops. Result type drives the chip icon. SIX value types: text / number / boolean plus the extended date (calendar, ISO YYYY-MM-DD), enum (list — a select field's options) and multi (list-checks — a multi-select's options). Enum/multi definitions carry their options; comparison args of kind sourceOption / sourceOptions pick FROM those options (try Priority → Is, or Channels → Includes; Delivery date → Between opens DatePickers). Serializes byte-compatibly (pipeline included)."
     >
       <div class="grid gap-next-4 next-lg:grid-cols-2">
         <MarkdownEditor v-model="variableDoc" :variables="DEMO_VARIABLE_CONFIG" />
         <div>
           <p class="mb-next-1 text-next-xs font-next-semibold text-next-muted-foreground">Serialized markdown</p>
           <pre class="max-h-60 overflow-auto rounded-next-md border border-next-border bg-next-muted p-next-3 font-next-mono text-next-2xs whitespace-pre-wrap">{{ variableDoc }}</pre>
+        </div>
+      </div>
+    </StorySection>
+
+    <StorySection
+      title="Standard operations catalog (66 ops)"
+      description="The canonical, i18n-labelled catalog every pipeline surface shares (standardOperations.ts). Grouped by INPUT type; each op lists its arguments and the OUTPUT type it hands to the next step. Every type can terminate in a boolean, so any variable can become a condition. Ids are the stable wire vocabulary the backend condition engine implements."
+    >
+      <div class="flex flex-col gap-next-6">
+        <div v-for="group in opsReference" :key="group.type">
+          <ApiTable :title="group.heading" type-header="Result" :rows="group.rows" />
         </div>
       </div>
     </StorySection>

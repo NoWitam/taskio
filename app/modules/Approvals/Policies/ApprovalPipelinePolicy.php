@@ -4,9 +4,12 @@ namespace App\Modules\Approvals\Policies;
 
 use App\Models\User;
 use App\Modules\Approvals\Models\ApprovalPipeline;
+use App\Policies\Concerns\ChecksRecordOwnership;
 
 class ApprovalPipelinePolicy
 {
+    use ChecksRecordOwnership;
+
     public function viewAny(?User $user): bool
     {
         return true;
@@ -24,11 +27,11 @@ class ApprovalPipelinePolicy
 
     public function update(?User $user, ApprovalPipeline $pipeline): bool
     {
-        return $pipeline->creator_id === $user?->id && $pipeline->canBeEdited();
+        return $this->ownsOrManagesSystemRecord($pipeline, $user) && $pipeline->canBeEdited();
     }
 
     public function delete(?User $user, ApprovalPipeline $pipeline): bool
     {
-        return $pipeline->creator_id === $user?->id && $pipeline->canBeDeleted();
+        return $this->ownsOrManagesSystemRecord($pipeline, $user) && $pipeline->canBeDeleted();
     }
 }

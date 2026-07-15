@@ -187,6 +187,25 @@ class WorkflowVariableCatalogTest extends TestCase
         $this->assertSame(WorkflowVariableType::TEXT->value, $byPath['steps.create_form_report.report_id']['type']);
     }
 
+    // ---- Service: ai personas (SB2) ------------------------------------------
+
+    public function test_for_form_includes_the_label_less_ai_persona_catalog(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $catalog = app(WorkflowVariableCatalogService::class)->forForm($this->richForm($owner));
+
+        $this->assertArrayHasKey('ai_personas', $catalog);
+        $ids = array_column($catalog['ai_personas'], 'id');
+        $this->assertSame(['neutral', 'friendly', 'formal', 'concise'], $ids);
+
+        // Descriptors are label-less (the FE localizes) — only an `id` per persona.
+        foreach ($catalog['ai_personas'] as $persona) {
+            $this->assertSame(['id'], array_keys($persona));
+        }
+    }
+
     // ---- Endpoint ------------------------------------------------------------
 
     public function test_guest_is_unauthenticated(): void
@@ -227,6 +246,71 @@ class WorkflowVariableCatalogTest extends TestCase
         foreach ($response->json('data.variables') as $variable) {
             $this->assertArrayNotHasKey('field_id', $variable);
         }
+    }
+
+    public function test_endpoint_exposes_the_ai_persona_catalog(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->richForm($owner);
+
+        $response = $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson("/api/forms/{$form->id}/workflow-catalog")
+            ->assertOk()
+            ->assertJsonStructure(['data' => ['ai_personas' => ['*' => ['id']]]]);
+
+        $this->assertContains('neutral', collect($response->json('data.ai_personas'))->pluck('id')->all());
+    }
+
+    public function test_catalog_exposes_the_full_operation_catalog(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->richForm($owner);
+
+        $response = $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson("/api/forms/{$form->id}/workflow-catalog")
+            ->assertOk()
+            ->assertJsonStructure([
+                'data' => [
+                    'operations' => [
+                        '*' => ['id', 'input', 'output', 'args'],
+                    ],
+                ],
+            ]);
+
+        // All 68 label-less operation descriptors are present (the FE resolves labels via i18n).
+        $operations = collect($response->json('data.operations'));
+        $this->assertCount(68, $operations);
+
+        // Spot-check a sourceMap op: enum_to_date maps each enum option to a date.
+        $enumToDate = $operations->firstWhere('id', 'enum_to_date');
+        $this->assertSame('enum', $enumToDate['input']);
+        $this->assertSame('date', $enumToDate['output']);
+        $this->assertSame([['id' => 'mapping', 'type' => 'sourceMap', 'mapType' => 'date']], $enumToDate['args']);
+
+        // Spot-check the choice terminals. enum_to_choice is a sourceMap with an ENUM mapType (the target
+        // option set is injected per-field, so it is NOT in the static descriptor).
+        $enumToChoice = $operations->firstWhere('id', 'enum_to_choice');
+        $this->assertSame('enum', $enumToChoice['input']);
+        $this->assertSame('enum', $enumToChoice['output']);
+        $this->assertSame([['id' => 'mapping', 'type' => 'sourceMap', 'mapType' => 'enum']], $enumToChoice['args']);
+
+        // match_to_choice carries a choiceRules list + a choiceFallback (no mapType — target-driven).
+        $matchToChoice = $operations->firstWhere('id', 'match_to_choice');
+        $this->assertSame('text', $matchToChoice['input']);
+        $this->assertSame('enum', $matchToChoice['output']);
+        $this->assertSame([
+            ['id' => 'rules', 'type' => 'choiceRules'],
+            ['id' => 'fallback', 'type' => 'choiceFallback'],
+        ], $matchToChoice['args']);
+
+        // Spot-check a nullary predicate carries no args, and a literal-arg op carries its descriptor.
+        $this->assertSame([], $operations->firstWhere('id', 'text_is_empty')['args']);
+        $this->assertSame(
+            [['id' => 'value', 'type' => 'number']],
+            $operations->firstWhere('id', 'num_gt')['args'],
+        );
     }
 
     public function test_non_member_of_the_active_workspace_is_forbidden(): void

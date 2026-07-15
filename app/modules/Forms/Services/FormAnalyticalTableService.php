@@ -3,7 +3,6 @@
 namespace App\Modules\Forms\Services;
 
 use App\Modules\Forms\Models\Form;
-use App\Modules\Forms\Models\FormContentVersion;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Forms\Traits\InteractsWithFormSchema;
 use Illuminate\Support\Facades\DB;
@@ -95,16 +94,19 @@ class FormAnalyticalTableService
         $fieldPaths = $this->extractFieldPaths($form->getJsonSchema());
         $jsonColumns = $this->buildJsonSelectColumns($fieldPaths);
 
-        $selectColumns = "
+        // creator_name is the HUMAN creator only: the users join is gated on creator_type='user'
+        // so a workflow_run / bot creator (a system submission) resolves to NULL rather than a
+        // wrong name or an accidental id collision. creator_id still carries the raw morph id.
+        $selectColumns = '
             fs.id as submission_id,
             fs.submittable_type as source,
             fs.creator_id,
             u.name as creator_name,
             fs.approved_at as created_at,
             fs.form_content_version_id
-        ";
+        ';
 
-        $insertColumns = "submission_id, source, creator_id, creator_name, created_at, form_content_version_id";
+        $insertColumns = 'submission_id, source, creator_id, creator_name, created_at, form_content_version_id';
 
         if (!empty($jsonColumns['select'])) {
             $selectColumns .= ",\n    " . implode(",\n    ", $jsonColumns['select']);
@@ -115,10 +117,10 @@ class FormAnalyticalTableService
             INSERT INTO {$tableName} ({$insertColumns})
             SELECT 
                 {$selectColumns}
-            FROM 
+            FROM
                 form_submissions fs
-            LEFT JOIN users u ON u.id = fs.creator_id
-            WHERE 
+            LEFT JOIN users u ON u.id = fs.creator_id AND fs.creator_type = 'user'
+            WHERE
                 fs.id = ?
             ON CONFLICT (submission_id) DO NOTHING
         ";
@@ -142,7 +144,7 @@ class FormAnalyticalTableService
         return [
             'content_version' => $form->content_version,
             'form_content_version_id' => $latestVersion?->id,
-            'field_paths' => collect($fieldPaths)->map(fn($p) => [
+            'field_paths' => collect($fieldPaths)->map(fn ($p) => [
                 'path' => $p['path'],
                 'type' => $p['type'],
             ])->all(),
@@ -199,12 +201,12 @@ class FormAnalyticalTableService
                     $query->where('fs.form_content_version_id', '!=', $latestVersion->id)
                         ->orWhereNull('fs.form_content_version_id');
                 })
-                ->selectRaw("
+                ->selectRaw('
                     COALESCE(fcv.version, 0) as version,
                     COUNT(*) as submissions_count,
                     MIN(fs.approved_at) as period_from,
                     MAX(fs.approved_at) as period_to
-                ")
+                ')
                 ->groupByRaw('COALESCE(fcv.version, 0)')
                 ->orderBy('period_from')
                 ->get();
@@ -241,12 +243,13 @@ class FormAnalyticalTableService
 
             if ($pathInfo['type'] === 'repeater') {
                 $columns[] = "{$columnName} JSONB";
+
                 continue;
             }
 
             $type = $this->detectFieldType($pathInfo['type']);
 
-            $sqlType = match($type) {
+            $sqlType = match ($type) {
                 'number' => 'DECIMAL(20,6)',
                 'boolean' => 'BOOLEAN',
                 'date' => 'TIMESTAMP',
@@ -282,13 +285,14 @@ class FormAnalyticalTableService
             if ($pathInfo['type'] === 'repeater') {
                 $jsonPath = $this->buildJsonbExpression($path, asText: false);
                 $select[] = "{$jsonPath} as {$columnName}";
+
                 continue;
             }
 
             $type = $this->detectFieldType($pathInfo['type']);
             $jsonPath = $this->buildJsonbExpression($path, asText: true);
 
-            $castExpr = match($type) {
+            $castExpr = match ($type) {
                 'number' => "NULLIF({$jsonPath}, '')::DECIMAL(20,6)",
                 'boolean' => "NULLIF({$jsonPath}, '')::BOOLEAN",
                 'date' => "NULLIF({$jsonPath}, '')::TIMESTAMP",
@@ -303,13 +307,13 @@ class FormAnalyticalTableService
 
     /**
      * Build a PostgreSQL JSONB extraction expression for a dotted field path.
-     * 
+     *
      * Examples:
      *   "name" → fs.data->>'name' (text) or fs.data->'name' (jsonb)
      *   "section.field" → fs.data->'section'->>'field' (text) or fs.data->'section'->'field' (jsonb)
      *
-     * @param string $path Dotted field path
-     * @param bool $asText Whether to extract as text (->>') or JSONB (->)
+     * @param  string  $path  Dotted field path
+     * @param  bool  $asText  Whether to extract as text (->>') or JSONB (->)
      */
     private function buildJsonbExpression(string $path, bool $asText = true): string
     {

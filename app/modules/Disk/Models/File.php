@@ -17,6 +17,8 @@ class File extends AbstractModel
 
     protected const CREATOR_ID_COLUMN = 'uploader_id';
 
+    protected const CREATOR_TYPE_COLUMN = 'uploader_type';
+
     protected $table = 'files';
 
     protected $fillable = [

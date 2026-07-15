@@ -43,12 +43,21 @@ function run(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   };
 }
 
-/** Parse the query string of the last `api.get` call into a plain object. */
-function lastGetParams(): Record<string, string> {
+/** The URLSearchParams of the last `api.get` call (use `.getAll` for array params). */
+function lastGetSearchParams(): URLSearchParams {
   const calls = apiMock.get.mock.calls;
   const url = calls[calls.length - 1]?.[0] as string;
   const qs = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
-  return Object.fromEntries(new URLSearchParams(qs));
+  return new URLSearchParams(qs);
+}
+
+/**
+ * Parse the query string of the last `api.get` call into a plain object. NOTE
+ * duplicate (array) keys collapse to the LAST value — use `lastGetSearchParams`
+ * for array params.
+ */
+function lastGetParams(): Record<string, string> {
+  return Object.fromEntries(lastGetSearchParams());
 }
 
 /** The path (before any query) of the last `api.get` call. */
@@ -64,31 +73,79 @@ describe('next workflow runs store', () => {
     vi.clearAllMocks();
   });
 
-  it('serializeRunFilters: includes non-empty state + origin, skips empty/undefined', () => {
-    expect(Object.fromEntries(serializeRunFilters({ state: 'failed', origin: 'manual' }))).toEqual({
-      state: 'failed',
-      origin: 'manual',
+  it('serializeRunFilters: emits repeated array params (incl. workflow_id[]) + scalars, skips empty/undefined', () => {
+    const p = serializeRunFilters({
+      state: ['failed', 'running'],
+      origin: ['manual'],
+      trigger_type: ['schedule'],
+      workflow_id: ['wf-9', 'wf-10'],
+      date_from: '2026-01-01',
+      date_to: '2026-01-31',
+      date_preset: 'this_month',
     });
-    expect(Object.fromEntries(serializeRunFilters({}))).toEqual({});
-    expect(Object.fromEntries(serializeRunFilters({ state: '' as never }))).toEqual({});
+    expect(p.getAll('state[]')).toEqual(['failed', 'running']);
+    expect(p.getAll('origin[]')).toEqual(['manual']);
+    expect(p.getAll('trigger_type[]')).toEqual(['schedule']);
+    expect(p.getAll('workflow_id[]')).toEqual(['wf-9', 'wf-10']);
+    expect(p.get('date_from')).toBe('2026-01-01');
+    expect(p.get('date_to')).toBe('2026-01-31');
+    expect(p.get('date_preset')).toBe('this_month');
+
+    expect([...serializeRunFilters({})]).toEqual([]);
+    // Empty entries within an array are skipped.
+    expect([...serializeRunFilters({ state: ['', undefined as never] })]).toEqual([]);
   });
 
-  it('fetchRuns sends state + origin, scopes to the workflow, and tracks cursor/hasMore (no total)', async () => {
+  it('serializeRunFilters: tolerates a LEGACY single scalar for state/origin/workflow_id', () => {
+    // An older saved view / deep link `?state=failed` (a bare string, not an array).
+    const p = serializeRunFilters({
+      state: 'failed' as unknown as string[],
+      origin: 'manual' as unknown as string[],
+      workflow_id: 'wf-9' as unknown as string[],
+    });
+    expect(p.getAll('state[]')).toEqual(['failed']);
+    expect(p.getAll('origin[]')).toEqual(['manual']);
+    expect(p.getAll('workflow_id[]')).toEqual(['wf-9']);
+  });
+
+  it('fetchRuns sends state[] + origin[] arrays, scopes to the workflow, tracks cursor/hasMore (no total)', async () => {
     const store = useWorkflowRunsStore();
     apiMock.get.mockResolvedValueOnce({
       data: [run({ id: 'a' }), run({ id: 'b' })],
       meta: { next_cursor: 'cur2' },
     });
 
-    await store.fetchRuns('w1', { state: 'completed', origin: 'manual' });
+    await store.fetchRuns('w1', { state: ['completed'], origin: ['manual'] });
 
     expect(lastGetPath()).toBe('/workflows/w1/runs');
-    expect(lastGetParams()).toEqual({ state: 'completed', origin: 'manual' });
+    const params = lastGetSearchParams();
+    expect(params.getAll('state[]')).toEqual(['completed']);
+    expect(params.getAll('origin[]')).toEqual(['manual']);
     expect(store.items.map((r) => r.id)).toEqual(['a', 'b']);
     expect(store.cursor).toBe('cur2');
     expect(store.hasMore).toBe(true);
     expect(store.workflowId).toBe('w1');
+    expect(store.scope).toBe('workflow');
     expect((store as unknown as Record<string, unknown>).total).toBeUndefined();
+  });
+
+  it('fetchRuns GLOBAL scope hits /workflows/runs, sends workflow_id + dates, workflowId stays null', async () => {
+    const store = useWorkflowRunsStore();
+    apiMock.get.mockResolvedValueOnce({
+      data: [run({ id: 'g', workflow: { id: 'wf-3', name: 'Nightly', icon: null, status: 'active', trigger_type: 'schedule' } })],
+      meta: { next_cursor: null },
+    });
+
+    await store.fetchRuns(null, { workflow_id: ['wf-3'], date_from: '2026-02-01', date_to: '2026-02-28' }, { scope: 'global' });
+
+    expect(lastGetPath()).toBe('/workflows/runs');
+    const params = lastGetSearchParams();
+    expect(params.getAll('workflow_id[]')).toEqual(['wf-3']);
+    expect(params.get('date_from')).toBe('2026-02-01');
+    expect(params.get('date_to')).toBe('2026-02-28');
+    expect(store.workflowId).toBeNull();
+    expect(store.scope).toBe('global');
+    expect(store.items[0].workflow?.name).toBe('Nightly');
   });
 
   it('a filter change resets the list + cursor + workflowId', async () => {
@@ -97,10 +154,10 @@ describe('next workflow runs store', () => {
     await store.fetchRuns('w1', {});
 
     apiMock.get.mockResolvedValueOnce({ data: [run({ id: 'z' })], meta: { next_cursor: null } });
-    await store.fetchRuns('w1', { state: 'failed' });
+    await store.fetchRuns('w1', { state: ['failed'] });
 
     expect(store.items.map((r) => r.id)).toEqual(['z']);
-    expect(lastGetParams()).toEqual({ state: 'failed' });
+    expect(lastGetSearchParams().getAll('state[]')).toEqual(['failed']);
     expect(store.hasMore).toBe(false);
   });
 
@@ -148,10 +205,10 @@ describe('next workflow runs store', () => {
         resolveFirst = res;
       }),
     );
-    const first = store.fetchRuns('w1', { state: 'pending' });
+    const first = store.fetchRuns('w1', { state: ['pending'] });
 
     apiMock.get.mockResolvedValueOnce({ data: [run({ id: 'new' })], meta: { next_cursor: null } });
-    await store.fetchRuns('w1', { state: 'completed' });
+    await store.fetchRuns('w1', { state: ['completed'] });
 
     resolveFirst({ data: [run({ id: 'stale' })], meta: { next_cursor: null } });
     await first;

@@ -3,10 +3,13 @@
 // VariablePanel and the IF condition editor). These need no DOM.
 import { describe, it, expect } from 'vitest';
 import {
+  buildDefaultArgs,
   computeInputType,
-  resolveType,
-  operationsForType,
   createPipelineStep,
+  getArgumentIconName,
+  getVariableIconName,
+  operationsForType,
+  resolveType,
 } from '../extensions/operationHelpers';
 import type {
   VariableOperationDefinition,
@@ -69,5 +72,68 @@ describe('variable pipeline type flow', () => {
     expect(resolveType(CATALOG, 'number', [step('greaterThan', 'boolean')])).toBe('boolean');
     // boolean variable, empty pipeline → boolean → VALID directly.
     expect(resolveType(CATALOG, 'boolean', [])).toBe('boolean');
+  });
+});
+
+// --- The EXTENDED type vocabulary (date / enum / multi) -----------------------
+// New primitives flow through the SAME helpers; enum/multi comparisons take their
+// choices from the SOURCE variable via the sourceOption(s) arg kinds.
+const EXTENDED_CATALOG: VariableOperationDefinition[] = [
+  {
+    id: 'enum_is',
+    label: 'Is',
+    inputTypes: ['enum'],
+    outputType: 'boolean',
+    args: [{ id: 'value', label: 'Value', type: 'sourceOption' }],
+  },
+  {
+    id: 'multi_includes',
+    label: 'Includes any of',
+    inputTypes: ['multi'],
+    outputType: 'boolean',
+    args: [{ id: 'values', label: 'Values', type: 'sourceOptions' }],
+  },
+  {
+    id: 'date_between',
+    label: 'Between',
+    inputTypes: ['date'],
+    outputType: 'boolean',
+    args: [
+      { id: 'from', label: 'From', type: 'date' },
+      { id: 'to', label: 'To', type: 'date' },
+    ],
+  },
+];
+
+describe('variable pipeline — extended primitives (date/enum/multi)', () => {
+  it('the type flow accepts the new primitives end to end', () => {
+    expect(resolveType(EXTENDED_CATALOG, 'enum', [])).toBe('enum');
+    expect(resolveType(EXTENDED_CATALOG, 'enum', [step('enum_is', 'boolean')])).toBe('boolean');
+    expect(resolveType(EXTENDED_CATALOG, 'multi', [step('multi_includes', 'boolean')])).toBe('boolean');
+    expect(resolveType(EXTENDED_CATALOG, 'date', [step('date_between', 'boolean')])).toBe('boolean');
+  });
+
+  it('operationsForType filters per new primitive', () => {
+    expect(operationsForType(EXTENDED_CATALOG, 'enum').map((o) => o.id)).toEqual(['enum_is']);
+    expect(operationsForType(EXTENDED_CATALOG, 'multi').map((o) => o.id)).toEqual(['multi_includes']);
+    expect(operationsForType(EXTENDED_CATALOG, 'date').map((o) => o.id)).toEqual(['date_between']);
+    expect(operationsForType(EXTENDED_CATALOG, 'text')).toEqual([]);
+  });
+
+  it('buildDefaultArgs seeds sourceOptions as an EMPTY ARRAY and date as an empty string', () => {
+    const includes = EXTENDED_CATALOG.find((o) => o.id === 'multi_includes')!;
+    expect(buildDefaultArgs(includes.args)).toEqual({ values: [] });
+
+    const between = EXTENDED_CATALOG.find((o) => o.id === 'date_between')!;
+    expect(buildDefaultArgs(between.args)).toEqual({ from: '', to: '' });
+  });
+
+  it('the icon maps cover the new primitives + arg kinds (never the fallback glyph)', () => {
+    expect(getVariableIconName('date')).toBe('calendar');
+    expect(getVariableIconName('enum')).toBe('list');
+    expect(getVariableIconName('multi')).toBe('list-checks');
+    expect(getArgumentIconName('date')).toBe('calendar');
+    expect(getArgumentIconName('sourceOption')).toBe('list');
+    expect(getArgumentIconName('sourceOptions')).toBe('list-checks');
   });
 });

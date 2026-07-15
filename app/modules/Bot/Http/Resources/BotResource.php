@@ -2,7 +2,7 @@
 
 namespace App\Modules\Bot\Http\Resources;
 
-use App\Modules\Users\Http\Resources\UserResource;
+use App\Http\Resources\CreatorResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -38,10 +38,10 @@ class BotResource extends JsonResource
             'visual' => $this->visual,
             'audio' => $this->audio,
 
-            'creator' => UserResource::make($this->whenLoaded('creator')),
+            'creator' => CreatorResource::make($this->whenLoaded('creator')),
 
             // Capability flags (mirrors the Approvals convention).
-            'is_owner' => $this->creator_id === $request->user()?->id,
+            'is_owner' => $this->isOwnedBy($request->user()),
             'can_execute_tasks' => $this->canExecuteTasks(),
             'can_be_edited' => $request->user()?->can('update', $this->resource) ?? false,
             'can_be_deleted' => $request->user()?->can('delete', $this->resource) ?? false,

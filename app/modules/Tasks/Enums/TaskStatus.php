@@ -69,7 +69,7 @@ enum TaskStatus: string
 
         // Trash (delete path): creator-only. Evaluated before the archived guard.
         if ($newStatus === self::TRASH) {
-            return $task->creator_id === $user?->id;
+            return $task->isOwnedBy($user);
         }
 
         if ($task->archived_at != null) {
@@ -85,11 +85,11 @@ enum TaskStatus: string
         // Archive is a separate lifecycle (not part of the manual transition tree):
         // only a DONE task can be archived, and only by its creator.
         if ($newStatus === self::ARCHIVE) {
-            return $task->status === self::DONE && $task->creator_id === $user?->id;
+            return $task->status === self::DONE && $task->isOwnedBy($user);
         }
 
         $isAssignee = $task->assigned_id === $user?->id;
-        $isCreator = $task->creator_id === $user?->id;
+        $isCreator = $task->isOwnedBy($user);
 
         return match ([$task->status, $newStatus]) {
             [self::TO_DO, self::IN_PROGRESS] => $isAssignee,

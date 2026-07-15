@@ -58,28 +58,25 @@ const mode = computed<TimeSubmode>({
   },
 });
 
-// --- `at` — the editable 1..6 TimePicker list --------------------------------
+// --- `at` — a DRAFT picker + "add" (one fused group) + removable time chips ---
+// REV5.2 (user): the picker no longer IS the list — it is a draft entry field fused
+// with the add button; the times render as compact chips on the SAME wrapping line.
 const atTimes = computed<string[]>(() => (model.value.mode === 'at' ? model.value.at : []));
-function setAt(i: number, value: string | null): void {
-  if (model.value.mode !== 'at') return;
-  const at = [...model.value.at];
-  at[i] = value ?? '';
-  model.value = { mode: 'at', at };
-}
+const newAtTime = ref<string | null>(null);
+const atFull = computed(() => atTimes.value.length >= L.atTimesMax);
+/** Add is possible for a filled, non-duplicate draft while under the cap. */
+const canAddAt = computed(
+  () => !!newAtTime.value && !atFull.value && !atTimes.value.includes(newAtTime.value),
+);
 function addAt(): void {
-  if (model.value.mode !== 'at' || model.value.at.length >= L.atTimesMax) return;
-  model.value = { mode: 'at', at: [...model.value.at, '12:00'] };
+  if (model.value.mode !== 'at' || !canAddAt.value || !newAtTime.value) return;
+  model.value = { mode: 'at', at: [...model.value.at, newAtTime.value] };
+  newAtTime.value = null;
 }
-function removeAt(i: number): void {
+/** The LAST time is not removable (the axis requires ≥1) — its chip hides the ✕. */
+function removeAt(time: string): void {
   if (model.value.mode !== 'at' || model.value.at.length <= 1) return;
-  model.value = { mode: 'at', at: model.value.at.filter((_, j) => j !== i) };
-}
-/** A `at` picker emits null/'' when its INNER ✕ clears it (or the text is emptied): that
- *  removes the row. With a single time the picker is not clearable, so `removeAt` no-ops
- *  and the last time can't be deleted. A concrete time just updates that slot. */
-function onAtInput(i: number, value: string | null): void {
-  if (value == null || value === '') removeAt(i);
-  else setAt(i, value);
+  model.value = { mode: 'at', at: model.value.at.filter((t) => t !== time) };
 }
 
 // --- numeric fields (finite-or-null so a cleared field reads empty + invalid) --
@@ -148,33 +145,56 @@ const hoursWindowTo = computed(() =>
       :options="modeOptions"
       :aria-label="t('workflows.schedule.tab.time')"
     >
-      <!-- at — ONE horizontal wrapping flow (REV5): lead + every TimePicker + "Add time".
-           REV5.1: the ✕ lives INSIDE each field (the picker's own `clearable`); clearing a
-           time removes that row (null ⇒ removeAt). With a single time the picker is not
-           clearable, so the last time can't be removed. The error breaks to its own row.
-           The field is w-44 so "09:00" is not truncated once the inner ✕ + clock share the
-           trailing zone. -->
+      <!-- at — ONE horizontal wrapping flow (REV5.2): lead + a FUSED draft-picker+"Add
+           time" group (a muted well so the pair reads as one control) + the added times
+           as compact removable chips on the SAME line. The last chip hides its ✕ (the
+           axis requires at least one time). The error breaks to its own row. -->
       <template #body-at>
         <div class="flex flex-wrap items-center gap-next-2">
           <p class="text-next-sm text-next-fg">{{ t('workflows.schedule.time.card.at.lead') }}</p>
-          <TimePicker
-            v-for="(time, i) in atTimes"
-            :key="i"
-            :model-value="time"
-            :clearable="atTimes.length > 1"
-            class="w-44 shrink-0 basis-44"
-            :aria-label="`${t('workflows.schedule.field.times')} ${i + 1}`"
-            @update:model-value="onAtInput(i, $event)"
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            leading-icon="plus"
-            :disabled="atTimes.length >= L.atTimesMax"
-            @click="addAt"
+
+          <!-- The fused entry group: draft picker + add. The picker sits in a FIXED-WIDTH
+               wrapper: Popover-based fields drop the class attr (multi-root inheritAttrs:
+               false) and their inline-flex trigger sizes to the input's intrinsic width,
+               so the wrapper + a forced w-full on the trigger chain is what actually
+               constrains the field. shrink-0 on the well keeps the group from being
+               squeezed by the wrapping row (which made siblings overlap). -->
+          <div class="inline-flex shrink-0 items-center gap-next-1 rounded-next-lg border border-next-border bg-next-muted p-next-1">
+            <div class="w-40 shrink-0 [&>div]:w-full">
+              <TimePicker
+                v-model="newAtTime"
+                :clearable="false"
+                :disabled="atFull"
+                :aria-label="t('workflows.schedule.field.times')"
+                @keydown.enter.prevent="addAt"
+              />
+            </div>
+            <Button variant="ghost" size="sm" leading-icon="plus" :disabled="!canAddAt" @click="addAt">
+              {{ t('workflows.schedule.field.addTime') }}
+            </Button>
+          </div>
+
+          <!-- The added times, inline on the same wrapping line. -->
+          <span
+            v-for="time in atTimes"
+            :key="time"
+            class="inline-flex items-center gap-next-1 rounded-next-md border border-next-border bg-next-card py-next-0_5 pl-next-2 text-next-sm"
+            :class="atTimes.length > 1 ? 'pr-next-1' : 'pr-next-2'"
           >
-            {{ t('workflows.schedule.field.addTime') }}
-          </Button>
+            <span class="font-next-mono tabular-nums text-next-fg">{{ time }}</span>
+            <Button
+              v-if="atTimes.length > 1"
+              variant="ghost"
+              size="icon-xs"
+              leading-icon="x"
+              :aria-label="`${t('workflows.schedule.field.removeTime')} ${time}`"
+              @click="removeAt(time)"
+            />
+          </span>
+
+          <span v-if="atFull" class="text-next-xs text-next-muted-foreground">
+            {{ t('workflows.schedule.validation.timesMax', undefined, { max: L.atTimesMax }) }}
+          </span>
           <p v-if="errors.at" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.at }}</p>
         </div>
       </template>
@@ -201,24 +221,26 @@ const hoursWindowTo = computed(() =>
             @toggle="toggleMinutesWindow"
           >
             <template #from="{ disabled }">
-              <TimePicker
-                :model-value="minutesWindowFrom"
-                :clearable="false"
-                :disabled="disabled"
-                class="w-36 shrink-0 basis-36"
-                :aria-label="t('workflows.schedule.window.from')"
-                @update:model-value="setMinutesWindow('from', $event)"
-              />
+              <div class="w-40 shrink-0 [&>div]:w-full">
+                <TimePicker
+                  :model-value="minutesWindowFrom"
+                  :clearable="false"
+                  :disabled="disabled"
+                  :aria-label="t('workflows.schedule.window.from')"
+                  @update:model-value="setMinutesWindow('from', $event)"
+                />
+              </div>
             </template>
             <template #to="{ disabled }">
-              <TimePicker
-                :model-value="minutesWindowTo"
-                :clearable="false"
-                :disabled="disabled"
-                class="w-36 shrink-0 basis-36"
-                :aria-label="t('workflows.schedule.window.to')"
-                @update:model-value="setMinutesWindow('to', $event)"
-              />
+              <div class="w-40 shrink-0 [&>div]:w-full">
+                <TimePicker
+                  :model-value="minutesWindowTo"
+                  :clearable="false"
+                  :disabled="disabled"
+                  :aria-label="t('workflows.schedule.window.to')"
+                  @update:model-value="setMinutesWindow('to', $event)"
+                />
+              </div>
             </template>
           </WorkflowScheduleWindowField>
           <p v-if="errors.n" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.n }}</p>

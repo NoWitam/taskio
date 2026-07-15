@@ -17,6 +17,7 @@ import Spinner from '../../ui/primitives/Spinner.vue';
 import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
 import { resolveFormIcon } from '../../ui/forms/formIcon';
+import { creatorIcon, creatorLabel } from '../../ui/patterns/creator';
 import { useI18n } from '../../app/i18n';
 import type { FormSummary } from './types';
 
@@ -42,6 +43,12 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+
+// Whole-card accessible name: the active list card names the open action; a trashed
+// card has none (only the kebab acts).
+const actionLabel = computed<string | undefined>(() =>
+  !props.trashed ? t('forms.card.open', '', { name: props.form.name }) : undefined,
+);
 
 // Status badges. Each is icon + text (color is never the sole signal). The
 // primary state (deleted / enabled / draft) always shows; an index state shows
@@ -85,8 +92,8 @@ const meta = computed<EntityMetaItem[]>(() => {
   const out: EntityMetaItem[] = [
     { icon: 'inbox', label: t('forms.card.submissions'), value: props.form.submissions_count ?? 0 },
   ];
-  if (props.form.creator?.name) {
-    out.push({ icon: 'user', label: props.form.creator.name });
+  if (props.form.creator) {
+    out.push({ icon: creatorIcon(props.form.creator), label: creatorLabel(props.form.creator, t) });
   }
   if (props.form.created_at) {
     out.push({ icon: 'calendar', label: formatDate(props.form.created_at) });
@@ -118,7 +125,7 @@ function onOpen(): void {
     :title="form.name"
     :subtitle="form.description ?? t('forms.card.noDescription')"
     :disabled="trashed || opening"
-    :action-label="!trashed ? t('forms.card.open', '', { name: form.name }) : undefined"
+    :action-label="actionLabel"
     @click="onOpen"
   >
     <template #leading>

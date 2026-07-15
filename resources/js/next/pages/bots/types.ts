@@ -15,8 +15,15 @@
 // The Bot Inbox (Batch 7) rows are TaskListResource shapes + an `inbox_state`.
 // Reuse the verified Tasks list-row type (cross-page import within `next` is fine).
 import type { TaskListItem } from '../tasks/types';
+// The polymorphic `creator` union (user | workflow_run | bot) is shared across
+// every resource that emits it — imported, never redefined.
+import type { Creator } from '../../ui/patterns/creator';
 
-/** A user as returned by UserResource (the bot `creator`). */
+/**
+ * A user as returned by UserResource. Retained for reference; the bot `creator`
+ * relation is now the polymorphic `Creator` union (Phase 3) — a bot is created by
+ * a user in practice, but it's typed as the union for safety.
+ */
 export interface BotUser {
   id: string | number;
   name: string;
@@ -130,8 +137,8 @@ export interface BotDetail {
   // --- 5. Knowledge module — { enabled, entries: [{title, content}] }. ---
   knowledge: BotKnowledge;
   // --- Meta / capability flags ---
-  /** `whenLoaded('creator')`. */
-  creator?: BotUser | null;
+  /** `whenLoaded('creator')` — polymorphic (Phase 3): user | workflow_run | bot | null. */
+  creator?: Creator | null;
   is_owner: boolean;
   can_execute_tasks: boolean;
   can_be_edited: boolean;

@@ -71,11 +71,11 @@ const botResourceRows: ApiRow[] = [
   { name: 'knowledge',        type: '{ enabled, entries: {title,content}[] }', description: '(B6) NOT a bare array — see the Knowledge module section.' },
   { name: 'visual',           type: 'null',                      description: 'Placeholder. Read-only; no logic yet.' },
   { name: 'audio',            type: 'null',                      description: '(B6) Renamed from voice (column rename). Placeholder, read-only.' },
-  { name: 'creator',          type: 'UserResource',              description: '' },
-  { name: 'is_owner',         type: 'boolean',                   description: 'True when auth user is the creator.' },
+  { name: 'creator',          type: 'Creator | null',            description: 'Discriminated union: user | workflow_run (automation) | bot. A Bot is only ever created by an authenticated human today, so in practice this is always the user shape. See creator.ts / docs/backend/creator-attribution.md.' },
+  { name: 'is_owner',         type: 'boolean',                   description: 'True only for a HUMAN creator match (isOwnedBy) — presentational. Gate actions on can_be_edited/can_be_deleted, not this.' },
   { name: 'can_execute_tasks', type: 'boolean',                  description: 'True when status=active AND task_execution.enabled=true.' },
-  { name: 'can_be_edited',    type: 'boolean',                   description: 'Auth user may call PUT.' },
-  { name: 'can_be_deleted',   type: 'boolean',                   description: 'Auth user may call DELETE.' },
+  { name: 'can_be_edited',    type: 'boolean',                   description: 'Auth user may call PUT — the owner, or (a system bot only) the workspace-owner fallback.' },
+  { name: 'can_be_deleted',   type: 'boolean',                   description: 'Auth user may call DELETE — same rule as can_be_edited.' },
   { name: 'created_at',       type: 'string (ISO 8601)',         description: '' },
   { name: 'updated_at',       type: 'string (ISO 8601)',         description: '' },
 ];
@@ -89,7 +89,7 @@ const botListResourceRows: ApiRow[] = [
   { name: 'icon',                   type: 'string | null', description: '(B6)' },
   { name: 'has_text_module',        type: 'boolean',      description: 'Always true (persona is required on create).' },
   { name: 'task_execution_enabled', type: 'boolean',      description: 'Shorthand for task_execution.enabled.' },
-  { name: 'is_owner',               type: 'boolean',      description: 'True when auth user is the creator.' },
+  { name: 'is_owner',               type: 'boolean',      description: 'True only for a HUMAN creator match (isOwnedBy), via the hot-path ownerUserId() — no creator eager-load on the list.' },
   { name: 'created_at',             type: 'string (ISO 8601)', description: '' },
 ];
 
@@ -139,7 +139,7 @@ const interactionToolRows: ApiRow[] = [
 const registryToolRows: ApiRow[] = [
   { name: 'fetch_url',         type: 'Always available.',                              description: 'Fetch a public page, return plain text. SSRF-guarded (canonicalize → resolve → pin).' },
   { name: 'web_search',        type: "Available only when AI_SEARCH_API_KEY is set.",   description: 'Brave Search by default; top results (title/url/snippet).' },
-  { name: 'generate_file',     type: 'Always available.',                              description: 'Creates a real task attachment (txt/md/csv/json). uploader attributed to the task creator (documented compromise).' },
+  { name: 'generate_file',     type: 'Always available.',                              description: "Creates a real task attachment (txt/md/csv/json). uploader_id copies the task's own creator_id (documented compromise); uploader_type is left to default to 'user' — see the Security section for the edge case on a system (run-created) task." },
   { name: 'read_attachments',  type: 'Always available.',                              description: "List or read the CURRENT task's own text attachments only." },
 ];
 
@@ -208,7 +208,9 @@ const approverTypeRows: ApiRow[] = [
           <strong>interactive participant</strong> — not a one-shot runner: it reads full task
           context, acts through tools across possibly many turns, can ask a human a question and
           wait for a reply, and resumes automatically. Bots are owned by the user who created
-          them; only the creator can edit, delete, or restore.
+          them; only the creator can edit, delete, or restore (a workspace-owner fallback exists
+          for a system, non-human-created bot, though a Bot is only ever created by an
+          authenticated human today — see <code class="font-next-mono">docs/backend/creator-attribution.md</code>).
         </p>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
@@ -243,13 +245,16 @@ const approverTypeRows: ApiRow[] = [
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
             <p class="mb-next-1 font-next-semibold text-next-fg">Capability flags</p>
             <ul class="flex flex-col gap-next-1 text-next-xs text-next-muted-foreground">
-              <li><code class="font-next-mono">is_owner</code> — creator_id === auth user (UI gating for edit/delete).</li>
+              <li><code class="font-next-mono">is_owner</code> — HUMAN creator match only (isOwnedBy). Presentational — never gate an action on it alone.</li>
               <li><code class="font-next-mono">can_execute_tasks</code> — status=active AND task_execution.enabled=true.</li>
-              <li><code class="font-next-mono">can_be_edited</code> / <code class="font-next-mono">can_be_deleted</code> — server-authoritative via BotPolicy.</li>
+              <li><code class="font-next-mono">can_be_edited</code> / <code class="font-next-mono">can_be_deleted</code> — server-authoritative via BotPolicy (owner, or the workspace-owner fallback for a system bot).</li>
             </ul>
             <p class="mt-next-2 text-next-xs text-next-muted-foreground">
               Pattern mirrors <code class="font-next-mono">ApprovalPipelineListItem</code>.
-              UI should never invent authorization — always read these flags from the resource.
+              UI should never invent authorization — always read these flags from the resource,
+              and gate on <code class="font-next-mono">can_be_edited</code>/<code class="font-next-mono">can_be_deleted</code>,
+              never on <code class="font-next-mono">is_owner</code>. See
+              <code class="font-next-mono">docs/backend/creator-attribution.md</code>.
             </p>
           </div>
         </div>
@@ -329,7 +334,8 @@ const approverTypeRows: ApiRow[] = [
         <p class="text-next-xs text-next-muted-foreground">
           <strong>Restore:</strong> <code class="font-next-mono">POST /bots/{id}/restore</code> has no body.
           <code class="font-next-mono">PUT</code> shares all the same validation rules as <code class="font-next-mono">POST</code>;
-          authorization target is the existing bot (creator-only).
+          authorization target is the existing bot (the creator, or the workspace-owner fallback
+          for a system bot — see Capability flags above).
         </p>
         <ApiTable title="BotListResource (index)" :rows="botListResourceRows" />
         <ApiTable title="BotResource (show / store / update / restore)" :rows="botResourceRows" />
@@ -556,8 +562,15 @@ const approverTypeRows: ApiRow[] = [
             <p class="text-next-xs text-next-muted-foreground">
               A real Disk <code class="font-next-mono">File</code> row, attached to the task like
               any human upload. <code class="font-next-mono">uploader_id</code> is NOT NULL and a
-              bot has no user row, so the uploader is attributed to the task's (human) creator —
-              a deliberate stopgap, not a bug.
+              bot has no user row, so the uploader copies the task's own
+              <code class="font-next-mono">creator_id</code> — a deliberate stopgap, not a bug.
+              <strong>Known edge case:</strong> <code class="font-next-mono">uploader_type</code> is
+              left to default to <code class="font-next-mono">'user'</code>; if the task itself is a
+              system (run-created) record, the copied id is actually a
+              <code class="font-next-mono">WorkflowRun</code>/<code class="font-next-mono">Bot</code> uuid,
+              so the file's <code class="font-next-mono">creator</code> resolves to
+              <code class="font-next-mono">null</code> instead of a meaningful attribution — see
+              <code class="font-next-mono">docs/backend/creator-attribution.md</code> → "Known gaps."
             </p>
           </div>
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">

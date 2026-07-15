@@ -26,6 +26,7 @@
 // becomes the button's `aria-label`.
 import { computed, nextTick, ref } from 'vue';
 import Icon, { type IconName } from '../primitives/Icon.vue';
+import { useI18n } from '../../app/i18n';
 
 export interface SegmentOption<V extends string = string> {
   value: V;
@@ -55,8 +56,9 @@ const props = withDefaults(
      */
     allowNone?: boolean;
     /**
-     * Render the cards in a CSS grid with this many columns. Without it the cards
-     * wrap in a flex row (equal height; `equalWidth` → flex-1 so they share width).
+     * Render the cards in a CSS grid with this many columns. `columns=1` stacks the
+     * cards VERTICALLY (top→bottom, full width). Without it the cards wrap in a
+     * flex row (equal height; `equalWidth` → flex-1 so they share width).
      */
     columns?: number;
     /**
@@ -64,6 +66,15 @@ const props = withDefaults(
      * its value in the array (array order follows `options`).
      */
     multiple?: boolean;
+    /**
+     * MULTI-SELECT only: prepend a "Select all" card that toggles every ENABLED
+     * option at once. Its checkbox is tri-state: checked (all), `aria-checked=mixed`
+     * with a minus glyph (some), empty (none). Values of DISABLED options already in
+     * the model are preserved either way.
+     */
+    selectAll?: boolean;
+    /** Override the "Select all" card's label (defaults to the i18n `segmented.selectAll`). */
+    selectAllLabel?: string;
     /** Accessible label for the whole group (recommended). */
     ariaLabel?: string;
   }>(),
@@ -74,12 +85,15 @@ const props = withDefaults(
     disabled: false,
     allowNone: false,
     multiple: false,
+    selectAll: false,
   },
 );
 
 // The model is a single value (`T | null`) in default mode and a `T[]` in
 // `multiple` mode. Runtime branching keeps a single defineModel for both shapes.
 const model = defineModel<T | null | T[]>({ default: null });
+
+const { t } = useI18n();
 
 const groupId = `next-seg-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -160,6 +174,11 @@ const focusedValue = ref<T | null>(null);
 
 function onKeydown(event: KeyboardEvent): void {
   if (props.disabled) return;
+  // The "Select all" card is a plain button OUTSIDE the roving pattern — let its
+  // native Space/Enter activation through (arrows still move into the options).
+  if ((event.target as HTMLElement | null)?.dataset?.segSelectAll !== undefined && (event.key === ' ' || event.key === 'Enter')) {
+    return;
+  }
   switch (event.key) {
     case 'ArrowRight':
     case 'ArrowDown':
@@ -204,8 +223,32 @@ function onOptionFocus(value: T): void {
   focusedValue.value = value;
 }
 
+// --- "Select all" (multi-select only) ----------------------------------------
+const showSelectAll = computed(() => props.multiple && props.selectAll && enabled.value.length > 0);
+const allSelected = computed(
+  () => enabled.value.length > 0 && enabled.value.every((o) => selectedArray.value.includes(o.value)),
+);
+const someSelected = computed(() => enabled.value.some((o) => selectedArray.value.includes(o.value)));
+const selectAllChecked = computed<'true' | 'false' | 'mixed'>(() =>
+  allSelected.value ? 'true' : someSelected.value ? 'mixed' : 'false',
+);
+const selectAllText = computed(() => props.selectAllLabel ?? t('segmented.selectAll', 'Select all'));
+
+/** Toggle every ENABLED option; values of disabled options in the model are preserved. */
+function toggleAll(): void {
+  if (props.disabled || !props.multiple) return;
+  const keepDisabled = selectedArray.value.filter(
+    (v) => props.options.find((o) => o.value === v)?.disabled,
+  );
+  const next = allSelected.value
+    ? keepDisabled
+    : props.options.filter((o) => !o.disabled || keepDisabled.includes(o.value)).map((o) => o.value);
+  model.value = next as T[];
+}
+
 // --- Layout -----------------------------------------------------------------
-const isGrid = computed(() => (props.columns ?? 0) > 1);
+// `columns=1` is a deliberate VERTICAL stack (top→bottom cards, full width).
+const isGrid = computed(() => (props.columns ?? 0) >= 1);
 
 // --- Roles + tab stop -------------------------------------------------------
 const groupRole = computed(() => (props.multiple ? 'group' : 'radiogroup'));
@@ -262,6 +305,46 @@ const INDICATOR_SIZE: Record<SegmentedSize, string> = {
     :style="isGrid && columns ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined"
     @keydown="onKeydown"
   >
+    <!-- "Select all" (multi only): a leading tri-state card toggling every enabled
+         option. A regular tab stop OUTSIDE the roving-arrow pattern; the dashed
+         border keeps it visually distinct from the actual options. -->
+    <button
+      v-if="showSelectAll"
+      type="button"
+      role="checkbox"
+      data-seg-select-all
+      :aria-checked="selectAllChecked"
+      :aria-disabled="disabled ? 'true' : undefined"
+      :tabindex="disabled ? -1 : 0"
+      :disabled="disabled"
+      class="next-segmented__select-all flex items-start rounded-next-lg border border-dashed bg-next-card text-left outline-none transition-colors duration-[var(--duration-next-fast)] focus-visible:ring-2 focus-visible:ring-next-ring"
+      :class="[
+        CARD_PADDING[size],
+        CARD_INNER[size],
+        !isGrid ? [equalWidth ? 'flex-1' : '', 'min-w-0'] : 'min-w-0',
+        disabled ? 'cursor-not-allowed' : 'cursor-pointer',
+        allSelected
+          ? 'border-next-primary bg-next-primary-subtle font-next-medium text-next-fg'
+          : 'border-next-border text-next-fg hover:border-next-primary/50',
+      ]"
+      @click="toggleAll"
+    >
+      <span
+        aria-hidden="true"
+        class="mt-px flex shrink-0 items-center justify-center rounded-next-xs border transition-colors"
+        :class="[
+          INDICATOR_SIZE[size],
+          selectAllChecked !== 'false'
+            ? 'border-next-primary bg-next-primary text-next-primary-foreground'
+            : 'border-next-input bg-next-card',
+        ]"
+      >
+        <Icon v-if="selectAllChecked === 'true'" name="check" :stroke-width="3" class="text-next-xs" />
+        <Icon v-else-if="selectAllChecked === 'mixed'" name="minus" :stroke-width="3" class="text-next-xs" />
+      </span>
+      <span class="min-w-0 truncate">{{ selectAllText }}</span>
+    </button>
+
     <button
       v-for="opt in options"
       :key="opt.value"

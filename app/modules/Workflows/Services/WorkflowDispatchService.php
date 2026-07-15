@@ -22,8 +22,9 @@ use Illuminate\Support\Facades\Log;
  *      $type an event passes in, so they are structurally excluded.
  *   2. TARGETING — the inline form_submitted match on the payload (form_id / source / anonymous).
  *      No extra queries: form.id, source and form.is_anonymous are already in the snapshot.
- *   3. CONDITIONS (WorkflowConditionEvaluator) — the {field, operator, value} gate, evaluated
- *      over the same payload (so dotted paths like `fields.<id>` work naturally).
+ *   3. CONDITIONS (WorkflowConditionEngine) — the optional gate, evaluated over the same payload
+ *      (so dotted paths like `fields.<id>` work naturally). The engine handles BOTH shapes: the
+ *      legacy flat clause list (delegated to WorkflowConditionEvaluator) and the new logic tree.
  *   4. loop/cost gates — depth (re-trigger chain), per-workflow monthly cap, workspace hard
  *      cap. An event that trips a gate is skipped SILENTLY (Log::info), never surfaced.
  *   5. WorkflowRunManager::start() — creates the pending run and defers its job.
@@ -40,7 +41,7 @@ class WorkflowDispatchService
 {
     public function __construct(
         private WorkflowRunManager $runManager,
-        private WorkflowConditionEvaluator $conditions,
+        private WorkflowConditionEngine $conditions,
         private WorkflowRunContext $runContext,
     ) {}
 

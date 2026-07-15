@@ -19,6 +19,8 @@ import Select from '../../forms/Select.vue';
 import TextInput from '../../forms/TextInput.vue';
 import NumberInput from '../../forms/NumberInput.vue';
 import Switch from '../../forms/Switch.vue';
+import DatePicker from '../../forms/DatePicker.vue';
+import SegmentedControl from '../../forms/SegmentedControl.vue';
 import DropdownMenu from '../../overlay/DropdownMenu.vue';
 import {
   buildDefaultArgs,
@@ -27,12 +29,15 @@ import {
   getArgumentIconName,
   getVariableIconLabel,
   getVariableIconName,
+  isChoiceProducingOp,
   operationsForType,
   resolveType,
 } from './operationHelpers';
 import { useI18n } from '../../../app/i18n';
 import type {
+  ChoiceRule,
   VariableOperationDefinition,
+  VariableOption,
   VariablePipelineStep,
   VariablePrimitive,
 } from './types';
@@ -42,6 +47,27 @@ const props = defineProps<{
   baseType: VariablePrimitive;
   /** Operations catalog (all available transforms). */
   catalog: VariableOperationDefinition[];
+  /**
+   * The SOURCE variable's selectable options (enum/multi sources) — they feed the
+   * `sourceOption` / `sourceOptions` operation args, whose choices depend on the
+   * picked variable rather than the operation definition.
+   */
+  sourceOptions?: VariableOption[];
+  /**
+   * The DESTINATION field's selectable options (a "choice"/enum value-or-variable
+   * field, e.g. task priority). They feed the CHOICE-producing arg kinds
+   * (`sourceMap` with `mapType:'enum'`, `choiceRules`, `choiceFallback`), whose
+   * choices come from the destination field rather than the source variable. When
+   * empty (the default) the choice-producing operations are NOT offered — so they
+   * never appear in the conditions editor or the markdown variable builder.
+   */
+  targetOptions?: VariableOption[];
+  /**
+   * Optional cap on the number of pipeline steps. When set and reached, the
+   * "add operation" trigger is disabled (mirrors the host's backend limit — the
+   * workflow condition builder passes 10). Undefined = no limit (default).
+   */
+  maxSteps?: number;
 }>();
 
 const pipeline = defineModel<VariablePipelineStep[]>({ default: () => [] });
@@ -54,8 +80,24 @@ const resultType = computed<VariablePrimitive>(() =>
 const nextInputType = computed<VariablePrimitive>(() =>
   computeInputType(props.catalog, props.baseType, pipeline.value, pipeline.value.length),
 );
+
+/**
+ * Drop the CHOICE-producing operations unless a `targetOptions` destination set
+ * exists — they target a specific option set that only a "choice" value-or-variable
+ * field provides. This is the ONE gate that keeps them out of the conditions editor
+ * and the markdown variable builder (both pass no `targetOptions`).
+ */
+function offerable(ops: VariableOperationDefinition[]): VariableOperationDefinition[] {
+  if ((props.targetOptions ?? []).length) return ops;
+  return ops.filter((op) => !isChoiceProducingOp(op));
+}
+
 const addableOperations = computed(() =>
-  operationsForType(props.catalog, nextInputType.value),
+  offerable(operationsForType(props.catalog, nextInputType.value)),
+);
+/** True once the pipeline reached the host's step cap (disables the add trigger). */
+const atMaxSteps = computed(
+  () => props.maxSteps != null && pipeline.value.length >= props.maxSteps,
 );
 
 defineExpose({ resultType });
@@ -65,7 +107,7 @@ function stepInputType(stepIndex: number): VariablePrimitive {
 }
 
 function operationOptionsForStep(stepIndex: number) {
-  return operationsForType(props.catalog, stepInputType(stepIndex)).map((op) => ({
+  return offerable(operationsForType(props.catalog, stepInputType(stepIndex))).map((op) => ({
     value: op.id,
     label: op.label,
   }));
@@ -101,6 +143,11 @@ function opArgs(step: VariablePipelineStep) {
 function stepOutputType(step: VariablePipelineStep): VariablePrimitive {
   return findOp(step.operationId)?.outputType ?? step.outputType;
 }
+/** The source option whose VALUE matches, for label echo (sourceOption/sourceOptions). */
+function sourceOptionLabel(value: string): string {
+  return (props.sourceOptions ?? []).find((o) => o.value === value)?.label ?? value;
+}
+
 function formatArgValue(step: VariablePipelineStep, argId: string): string {
   const arg = opArgs(step).find((a) => a.id === argId);
   const raw = step.args[argId];
@@ -111,6 +158,28 @@ function formatArgValue(step: VariablePipelineStep, argId: string): string {
     const opt = (arg.options ?? []).find((o) => o.value === String(raw));
     return opt?.label ?? (raw === '' || raw == null ? '—' : String(raw));
   }
+  if (arg?.type === 'sourceOption') {
+    return raw === '' || raw == null ? '—' : sourceOptionLabel(String(raw));
+  }
+  if (arg?.type === 'sourceOptions') {
+    const values = Array.isArray(raw) ? (raw as string[]) : [];
+    return values.length ? values.map(sourceOptionLabel).join(', ') : '—';
+  }
+  if (arg?.type === 'sourceMap') {
+    const map = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, string | number>) : {};
+    const total = (props.sourceOptions ?? []).length;
+    const done = Object.values(map).filter((v) => v !== '' && v != null).length;
+    return t('editor.pipeline.mappedCount', 'Mapped {done}/{total}', { done, total });
+  }
+  if (arg?.type === 'choiceRules') {
+    const rules = Array.isArray(raw) ? (raw as ChoiceRule[]) : [];
+    return t('editor.pipeline.rulesCount', '{count} rules', { count: rules.length });
+  }
+  if (arg?.type === 'choiceFallback') {
+    return raw === '' || raw == null ? '—' : targetOptionLabel(String(raw));
+  }
+  if (Array.isArray(raw)) return raw.length ? raw.join(', ') : '—';
+  if (raw && typeof raw === 'object') return '—';
   return raw === '' || raw == null ? '—' : String(raw);
 }
 
@@ -124,10 +193,79 @@ function updateOperation(stepId: string, opId: string): void {
   );
 }
 
-function updateArg(stepId: string, argId: string, value: string | number | boolean): void {
+function updateArg(
+  stepId: string,
+  argId: string,
+  value: string | number | boolean | string[] | Record<string, string | number> | ChoiceRule[],
+): void {
   pipeline.value = pipeline.value.map((s) =>
     s.stepId === stepId ? { ...s, args: { ...s.args, [argId]: value } } : s,
   );
+}
+
+/** A `sourceMap` arg's current record (defensive). */
+function sourceMapValue(step: VariablePipelineStep, argId: string): Record<string, string | number> {
+  const raw = step.args[argId];
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, string | number>) : {};
+}
+
+/** Set ONE option's mapped target value inside a `sourceMap` arg. */
+function setMapEntry(step: VariablePipelineStep, argId: string, option: string, value: string | number | null): void {
+  const next = { ...sourceMapValue(step, argId) };
+  if (value === '' || value == null) delete next[option];
+  else next[option] = value;
+  updateArg(step.stepId, argId, next);
+}
+
+/** The source options mapped to Select / selection-card options. */
+const sourceSelectOptions = computed(() =>
+  (props.sourceOptions ?? []).map((o) => ({ value: o.value, label: o.label })),
+);
+
+/** A `sourceOptions` arg's current value as a string[] (defensive). */
+function sourceOptionsValue(step: VariablePipelineStep, argId: string): string[] {
+  const raw = step.args[argId];
+  return Array.isArray(raw) && raw.every((v) => typeof v === 'string') ? (raw as string[]) : [];
+}
+
+// --- Target (destination) options — CHOICE-producing args --------------------
+/** The destination options mapped to Select options (choiceRules/Fallback + enum map). */
+const targetSelectOptions = computed(() =>
+  (props.targetOptions ?? []).map((o) => ({ value: o.value, label: o.label })),
+);
+
+/** The target option whose VALUE matches, for the chip label echo. */
+function targetOptionLabel(value: string): string {
+  return (props.targetOptions ?? []).find((o) => o.value === value)?.label ?? value;
+}
+
+/** A `choiceRules` arg's current value as a ChoiceRule[] (defensive). */
+function choiceRulesValue(step: VariablePipelineStep, argId: string): ChoiceRule[] {
+  const raw = step.args[argId];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is ChoiceRule => !!r && typeof r === 'object' && 'when' in r && 'then' in r);
+}
+
+/** Append an empty rule row to a `choiceRules` arg. */
+function addChoiceRule(step: VariablePipelineStep, argId: string): void {
+  updateArg(step.stepId, argId, [...choiceRulesValue(step, argId), { when: '', then: '' }]);
+}
+
+/** Remove the rule row at `index` from a `choiceRules` arg. */
+function removeChoiceRule(step: VariablePipelineStep, argId: string, index: number): void {
+  updateArg(step.stepId, argId, choiceRulesValue(step, argId).filter((_, i) => i !== index));
+}
+
+/** Patch ONE field of the rule row at `index` inside a `choiceRules` arg. */
+function setChoiceRule(
+  step: VariablePipelineStep,
+  argId: string,
+  index: number,
+  key: keyof ChoiceRule,
+  value: string,
+): void {
+  const next = choiceRulesValue(step, argId).map((rule, i) => (i === index ? { ...rule, [key]: value } : rule));
+  updateArg(step.stepId, argId, next);
 }
 </script>
 
@@ -144,7 +282,8 @@ function updateArg(stepId: string, argId: string, value: string | number | boole
             variant="secondary"
             type="button"
             leading-icon="plus"
-            :disabled="!addableOperations.length"
+            :disabled="!addableOperations.length || atMaxSteps"
+            :title="atMaxSteps ? t('editor.pipeline.maxSteps', 'You reached the maximum number of operations.') : undefined"
             v-bind="triggerProps"
           >
             {{ t('editor.pipeline.addOperation', 'Add operation') }}
@@ -176,6 +315,8 @@ function updateArg(stepId: string, argId: string, value: string | number | boole
                 <span class="min-w-0">
                   <span class="block truncate text-next-sm font-next-medium text-next-fg">{{ op.label }}</span>
                   <span class="block text-next-2xs text-next-muted-foreground">{{ getVariableIconLabel(op.outputType) }}</span>
+                  <!-- Disambiguating description (e.g. "To number" vs "Length"). -->
+                  <span v-if="op.description" class="block text-next-2xs text-next-muted-foreground">{{ op.description }}</span>
                 </span>
                 <span class="text-next-primary" :title="getVariableIconLabel(op.outputType)">
                   <Icon :name="getVariableIconName(op.outputType)" />
@@ -258,6 +399,139 @@ function updateArg(stepId: string, argId: string, value: string | number | boole
                 :model-value="String(step.args[arg.id] ?? '')"
                 :options="(arg.options || []).map((o) => ({ value: o.value, label: o.label }))"
                 :placeholder="arg.placeholder"
+                :aria-label="arg.label"
+                @update:model-value="(v) => updateArg(step.stepId, arg.id, (v as string) ?? '')"
+              />
+              <!-- date — a DatePicker in a fixed-width wrapper (Popover-based fields drop
+                   the class attr; the trigger chain needs the forced w-full). -->
+              <div v-else-if="arg.type === 'date'" class="w-44 [&>div]:w-full">
+                <DatePicker
+                  :model-value="typeof step.args[arg.id] === 'string' && step.args[arg.id] !== '' ? String(step.args[arg.id]) : null"
+                  :aria-label="arg.label"
+                  @update:model-value="(v: string | null) => updateArg(step.stepId, arg.id, v ?? '')"
+                />
+              </div>
+              <!-- sourceOption — ONE value picked from the SOURCE variable's options. -->
+              <Select
+                v-else-if="arg.type === 'sourceOption'"
+                :model-value="String(step.args[arg.id] ?? '')"
+                :options="sourceSelectOptions"
+                :placeholder="arg.placeholder"
+                :aria-label="arg.label"
+                @update:model-value="(v) => updateArg(step.stepId, arg.id, (v as string) ?? '')"
+              />
+              <!-- sourceOptions — MANY values from the source options (selection cards). -->
+              <SegmentedControl
+                v-else-if="arg.type === 'sourceOptions'"
+                :model-value="sourceOptionsValue(step, arg.id)"
+                :options="sourceSelectOptions"
+                multiple
+                select-all
+                :columns="1"
+                size="sm"
+                :aria-label="arg.label"
+                @update:model-value="(v) => updateArg(step.stepId, arg.id, (v as string[]) ?? [])"
+              />
+              <!-- sourceMap — ONE typed target value PER source option (option → value). -->
+              <div
+                v-else-if="arg.type === 'sourceMap'"
+                class="flex flex-col gap-next-2 rounded-next-md border border-next-border bg-next-muted p-next-2"
+              >
+                <div
+                  v-for="option in sourceOptions ?? []"
+                  :key="option.value"
+                  class="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1.4fr)] items-center gap-next-2"
+                >
+                  <span class="truncate text-next-sm text-next-fg" :title="option.label">{{ option.label }}</span>
+                  <Icon name="arrow-right" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
+                  <!-- enum — the mapped TARGET is one of the DESTINATION field's choices. -->
+                  <Select
+                    v-if="arg.mapType === 'enum'"
+                    :model-value="String(sourceMapValue(step, arg.id)[option.value] ?? '')"
+                    :options="targetSelectOptions"
+                    :placeholder="t('editor.pipeline.selectChoice', 'Select a choice')"
+                    :aria-label="`${arg.label}: ${option.label}`"
+                    @update:model-value="(v) => setMapEntry(step, arg.id, option.value, (v as string) ?? '')"
+                  />
+                  <NumberInput
+                    v-else-if="arg.mapType === 'number'"
+                    :model-value="sourceMapValue(step, arg.id)[option.value] == null || sourceMapValue(step, arg.id)[option.value] === '' ? null : Number(sourceMapValue(step, arg.id)[option.value])"
+                    :aria-label="`${arg.label}: ${option.label}`"
+                    @update:model-value="(v: number | null) => setMapEntry(step, arg.id, option.value, v)"
+                  />
+                  <div v-else-if="arg.mapType === 'date'" class="[&>div]:w-full">
+                    <DatePicker
+                      :model-value="typeof sourceMapValue(step, arg.id)[option.value] === 'string' && sourceMapValue(step, arg.id)[option.value] !== '' ? String(sourceMapValue(step, arg.id)[option.value]) : null"
+                      :aria-label="`${arg.label}: ${option.label}`"
+                      @update:model-value="(v: string | null) => setMapEntry(step, arg.id, option.value, v)"
+                    />
+                  </div>
+                  <TextInput
+                    v-else
+                    :model-value="String(sourceMapValue(step, arg.id)[option.value] ?? '')"
+                    :aria-label="`${arg.label}: ${option.label}`"
+                    @update:model-value="(v: string) => setMapEntry(step, arg.id, option.value, v)"
+                  />
+                </div>
+                <p v-if="!(sourceOptions ?? []).length" class="text-next-xs text-next-muted-foreground">
+                  {{ t('editor.pipeline.noSourceOptions', 'This variable has no options to map.') }}
+                </p>
+              </div>
+              <!-- choiceRules — a repeatable list of when (text) → then (target choice) rows. -->
+              <div
+                v-else-if="arg.type === 'choiceRules'"
+                class="flex flex-col gap-next-2 rounded-next-md border border-next-border bg-next-muted p-next-2"
+              >
+                <div
+                  v-for="(rule, ruleIndex) in choiceRulesValue(step, arg.id)"
+                  :key="ruleIndex"
+                  class="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1.4fr)_auto] items-center gap-next-2"
+                >
+                  <TextInput
+                    :model-value="rule.when"
+                    :placeholder="t('editor.pipeline.choiceWhen', 'When text is…')"
+                    :aria-label="t('editor.pipeline.choiceWhenLabel', 'Rule {index}: when', { index: ruleIndex + 1 })"
+                    @update:model-value="(v: string) => setChoiceRule(step, arg.id, ruleIndex, 'when', v)"
+                  />
+                  <Icon name="arrow-right" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
+                  <Select
+                    :model-value="rule.then"
+                    :options="targetSelectOptions"
+                    :placeholder="t('editor.pipeline.selectChoice', 'Select a choice')"
+                    :aria-label="t('editor.pipeline.choiceThenLabel', 'Rule {index}: then', { index: ruleIndex + 1 })"
+                    @update:model-value="(v) => setChoiceRule(step, arg.id, ruleIndex, 'then', (v as string) ?? '')"
+                  />
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    type="button"
+                    :aria-label="t('editor.pipeline.removeRule', 'Remove rule')"
+                    @click="removeChoiceRule(step, arg.id, ruleIndex)"
+                  >
+                    <Icon name="x" />
+                  </Button>
+                </div>
+                <div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    type="button"
+                    leading-icon="plus"
+                    @click="addChoiceRule(step, arg.id)"
+                  >
+                    {{ t('editor.pipeline.addRule', 'Add rule') }}
+                  </Button>
+                </div>
+                <p class="text-next-xs text-next-muted-foreground">
+                  {{ t('editor.pipeline.choiceRulesHint', 'Unmatched text uses the fallback choice.') }}
+                </p>
+              </div>
+              <!-- choiceFallback — a single required DESTINATION choice. -->
+              <Select
+                v-else-if="arg.type === 'choiceFallback'"
+                :model-value="String(step.args[arg.id] ?? '')"
+                :options="targetSelectOptions"
+                :placeholder="t('editor.pipeline.selectChoice', 'Select a choice')"
                 :aria-label="arg.label"
                 @update:model-value="(v) => updateArg(step.stepId, arg.id, (v as string) ?? '')"
               />

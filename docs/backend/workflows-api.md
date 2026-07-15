@@ -14,6 +14,33 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > hold. This document describes IMPLEMENTED behavior only; anything not yet built is marked
 > **PLANNED**.
 >
+> **Runtime operations, if-blocks, and AI text in step fields (SB1/SB2, this revision) —
+> ADDITIVE, not breaking.** A step's text fields (`create_task.description`,
+> `create_form_report.guidelines`) and value-or-variable fields
+> (`create_task.priority`/`.deadline`, `create_form_report.submissions_from`/`.submissions_to`)
+> now execute variable-operation PIPELINES, conditional `if-block`s, and `@[ai-text]`
+> AI-generated text at RUN time — see "Runtime operations, if-blocks, and AI text" below. This
+> REVERSES ADR-0009 §2's "an operations pipeline is explicitly deferred" — see
+> **ADR-0013-workflows-step-operations-conditionals-ai-text.md** for the reasoning. Nothing about
+> the wire shape existing consumers relied on changed (an old workflow with identity-only
+> directives / pipeline-less value-or-variable fields keeps behaving exactly as before); every new
+> capability is opt-in content authored through the frontend editor.
+>
+> **Choice-coercion for value pipelines (this revision) — the operation catalog grows 66→68;
+> tightens (not breaks) the value-or-variable WRITE validator for a "choice" field.** Two new
+> operations, `enum_to_choice` and `match_to_choice`, let a value-or-variable pipeline map an
+> arbitrary source variable into a DESTINATION field's own fixed option set — e.g. mapping a
+> form's free-text `category` answer onto `create_task.priority`'s
+> `urgent|high|medium|low`. `WorkflowOperation::producesChoice()` marks these two ops as CHOICE
+> terminals; a pipeline targeting a choice field (currently only `priority`) must now be
+> non-empty and END in one — a bare identity ref or a pipeline ending in a non-choice op (e.g.
+> `enum_to_text`) is **REJECTED** at write time (previously accepted under the "enum or text"
+> terminal rule). This is a validator-only tightening: a workflow SAVED before this change keeps
+> running unchanged (the runtime coercion path was never affected), but re-saving a step whose
+> `priority` pipeline does not end in a choice op now 422s. See
+> **ADR-0014-workflows-choice-coercion.md** for the full design record and
+> "Runtime operations, if-blocks, and AI text" → "Choice fields" below for the wire contract.
+>
 > **Schedule model v2 (this revision) — BREAKING, supersedes the 12/16-family model.** The
 > family-based vocabulary (`WorkflowScheduleFamily`, previously 16 members) described in earlier
 > revisions of this document is RETIRED. `trigger_config.schedule` is now a COMPOSITIONAL
@@ -29,6 +56,41 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > the design decisions (ADR-0012 supersedes ADR-0010 §7's frontend two-mode decision) and the
 > Schedule section below for the full v2 contract — the family table that used to live there is
 > gone.
+>
+> **Polymorphic `creator` (this revision) — CORRECTS previously-documented behavior, not a wire
+> change.** `WorkflowRun`'s creator, and every record a step creates (`create_task`,
+> `create_form_report`), now attribute correctly and are never left null — see the "Creator
+> attribution" note in the `create_form_report` section, the corrected "Origin" note under
+> Trigger dispatch pipeline, and the Capability flags table below. Full cross-module reference:
+> `docs/backend/creator-attribution.md` and **ADR-0015-polymorphic-creator-ownership.md**.
+>
+> **Runs monitoring — a GLOBAL cross-workflow feed + a schedule run's `schedule_descriptor` (this
+> revision) — ADDITIVE, no breaking change.** A new `GET /workflows/runs` endpoint lists every run
+> in the active workspace regardless of which workflow started it, sharing its filter contract
+> (`state[]`/`origin[]`/`trigger_type[]`, `date_from`/`date_to`/`date_preset`) with the existing
+> `GET /workflows/{workflow}/runs` via one `IndexWorkflowRunsRequest` — plus a global-only
+> `workflow_id` scope. Every list filter is now an ARRAY (a legacy single-scalar deep-link such as
+> `?state=completed` is still tolerated, coerced to a one-element array) and an unrecognised enum
+> member is silently dropped rather than 422'd (unchanged from the original runs index, just
+> formalized here). `WorkflowRunResource` additionally carries a `workflow` block on INDEX rows
+> (global feed only, `whenLoaded`) and a `schedule_descriptor` on SHOW for a `schedule`-origin run
+> (the parent workflow's v2 schedule block, upgraded through `LegacyScheduleUpgrader`) — see the
+> Runs endpoints below and **ADR-0016-workflows-global-runs-and-schedule-reason.md** for the design
+> record. The human-readable "why did this fire" sentence itself is computed on the FRONTEND
+> (`describeOccurrence` in `resources/js/next/pages/workflows/workflowSchedule.ts`), the same
+> FE-owns-the-grammar split ADR-0012 established for the schedule sentence — the backend exposes
+> data, never prose.
+>
+> **Retry a FAILED run (this revision) — a new mutating endpoint, ADDITIVE, no breaking change.**
+> `POST /workflows/{workflow}/runs/{run}/retry` re-executes a terminal `failed` run. The engine has
+> **no mid-run resume** (`WorkflowStepRunner` always executes from the first step), so a "retry"
+> STARTS A NEW run for the same workflow, reusing `{run}`'s stored `trigger_payload` (the
+> `form_submitted` form/submission snapshot, or the schedule's `scheduled_at`) — the original failed
+> row is never mutated. Authorization mirrors run-now exactly (`WorkflowPolicy::run`, any workspace
+> member); the new run is `manual`-origin, attributed to the acting user, `pending`, depth 0,
+> `origin_run_id` null. **Returns 201 Created**, not the 202 run-now returns — see the endpoint
+> section below for the full contrast. A non-`failed` run 422s under the `run` key; the same
+> run-budget cap run-now enforces 422s under `workflow`.
 
 ---
 
@@ -144,7 +206,7 @@ carry `status` at all, and `WorkflowService::create()` hardcodes `WorkflowStatus
 | `conditions.*.value`          | required-if-present (unless value-less) | shape depends on the operator — see the Conditions section |
 | `steps`                        | yes                      | array, min 1, max 50                                               |
 | `steps.*.type`                  | yes                      | `create_task` \| `create_form_report`                             |
-| `steps.*.key`                    | yes                      | string, max 100, **distinct across the whole array** (used for `{{steps.<key>.*}}`) |
+| `steps.*.key`                    | yes                      | string, max 100, **distinct across the whole array**, `[A-Za-z0-9_]+` only (letters/digits/underscore — see below) — used for `{{steps.<key>.*}}` |
 | `steps.*.config`                 | no                       | object; shape depends on `steps.*.type` (see the Steps section)   |
 
 `status` is NOT in this table — it is not an accepted create field. `PUT` (update) uses the
@@ -165,7 +227,7 @@ foreign segment — e.g. a `schedule.*` block on a `form_submitted` trigger fail
 | 422  | `name`                               | Required, max 255.                                          |
 | 422  | `trigger_type`                       | Required; must be `form_submitted` or `schedule`.            |
 | 422  | `steps`                              | Missing / empty / more than 50.                              |
-| 422  | `steps.*.key`                        | Duplicate key across the step list.                          |
+| 422  | `steps.*.key`                        | Duplicate key across the step list, OR a character outside `[A-Za-z0-9_]` (reviewer fix — a key is substituted into `steps.<key>.<output>` dotted paths and read via `Arr::get`, so a dot/space would silently break every reference to the step; the frontend mirrors this with a `sanitizeStepKey` guard that strips invalid characters as they are typed). |
 | 422  | `steps.*.type`                       | Unknown step type.                                           |
 | 422  | `steps.<i>.config.<key>`             | A key not allowed for that step's own type.                  |
 | 422  | `trigger_config.<key>`               | A key that does not belong to this trigger type's config (cross-type rejection). |
@@ -308,6 +370,11 @@ A manual run's payload is built by the **same** `WorkflowTriggerPayloadFactory` 
 uses, so `{{trigger.*}}` / directive references resolve identically regardless of how the run
 started — a test-run proves what a real trigger would do.
 
+**vs. retry** (`POST /workflows/{workflow}/runs/{run}/retry`, below): run-now builds a FRESH
+payload from a caller-supplied `target_id` and returns **202 Accepted**; retry reuses an existing
+FAILED run's already-stored `trigger_payload` (no `target_id`, no body at all) and returns **201
+Created**. Both share the same authorization and the same run-budget cap.
+
 ---
 
 ### GET /api/workflows/{workflow}/runs
@@ -316,17 +383,26 @@ Read-only monitoring: a workflow's runs, cursor-paginated (15/page), newest firs
 (`created_at DESC`, `id DESC` tiebreak — UUIDv7 ids are monotonic, so this keeps pagination
 stable across a boundary where several runs share a timestamp). Authorization: `view` on the
 parent workflow (any workspace member — runs are workspace-visible read-only monitoring).
+Validation + filtering are shared with the global feed below via ONE `IndexWorkflowRunsRequest` +
+`WorkflowRunService` — see that endpoint for the full filter reference; this endpoint additionally
+hard-scopes to `{workflow}` (a `workflow_id` query param, if sent, is simply ignored here — the
+URL already pins the workflow).
 
-**Query**
+**Query** (all optional, all AND-combined)
 
-| Param    | Required | Notes                                                                 |
-|----------|----------|--------------------------------------------------------------------------|
-| `state`  | no       | one of `WorkflowRunState`. An unrecognised value is **silently ignored** (no filter, no error) — mirrors the Bot inbox `state` filter. |
-| `origin` | no       | one of `WorkflowRunOrigin`. Same silent-ignore behavior.               |
-| `cursor` | no       | cursor from `meta.next_cursor`.                                        |
+| Param             | Notes                                                                 |
+|-------------------|------------------------------------------------------------------------|
+| `state[]`         | subset of `WorkflowRunState`. Also accepts a single legacy scalar (`?state=completed`), coerced to a one-element array. An unrecognised member is **silently dropped** (no filter, no error) — mirrors the Bot inbox `state` filter. |
+| `origin[]`        | subset of `WorkflowRunOrigin`. Same array/legacy-scalar/tolerant-drop rules as `state[]`. |
+| `trigger_type[]`  | subset of `WorkflowTriggerType`. Same array/legacy-scalar/tolerant-drop rules. |
+| `date_from` / `date_to` | a date range on `created_at`, via the shared `scopeFilterByDate` every next list screen already emits. |
+| `date_preset`     | `today \| this_week \| last_week \| this_month` — a shortcut inherited from the same scope. |
+| `cursor`          | cursor from `meta.next_cursor`.                                        |
 
 **Response** `200 OK` — list shape carries `steps_count` (via `withCount`) but **excludes**
-`trigger_payload` and `steps` (potentially large; detail-only):
+`trigger_payload` and `steps` (potentially large; detail-only). The per-workflow index does NOT
+eager-load the `workflow` relation (the caller already has the workflow context from the URL), so
+rows here carry no `workflow` block — that is a global-feed-only addition, see below:
 
 ```json
 {
@@ -353,6 +429,63 @@ parent workflow (any workspace member — runs are workspace-visible read-only m
 ```
 
 **Errors**: `403` not a member, `404` unknown workflow.
+
+---
+
+### GET /api/workflows/runs
+
+The GLOBAL runs feed: every run in the active workspace, regardless of which workflow started it
+— cursor-paginated (15/page), newest first, same ordering/tiebreak as the per-workflow index.
+Declared BEFORE the `workflows/{workflow}` apiResource route so the static `runs` segment always
+wins the match. Authorization: `viewAny` on `Workflow` (`$user !== null` — any authenticated
+workspace member; cross-workspace isolation is enforced upstream by `ResolveWorkspace` +
+`WorkspaceScope`, not by this policy check). Backed by `WorkflowRunController::global()` →
+`WorkflowRunService::runsGlobal()`.
+
+**Query** — the same `state[]` / `origin[]` / `trigger_type[]` / `date_from` / `date_to` /
+`date_preset` / `cursor` params as the per-workflow index above, **plus**:
+
+| Param         | Notes                                                                     |
+|---------------|----------------------------------------------------------------------------|
+| `workflow_id` | nullable uuid. Honored **only** by this global feed — scopes the feed to one workflow (an alternative entry point to the per-workflow index, e.g. from a saved view). Not validated against tenant scope explicitly; a foreign-workspace id simply matches nothing (`WorkspaceScope` already isolates the base query). |
+
+**Response** `200 OK` — the SAME row shape as the per-workflow index, with one addition: each row
+carries a `workflow` block (`id`, `name`, `icon`, `status`, `trigger_type`) — the parent workflow
+is eager-loaded (`with('workflow')`) specifically for this feed, since the caller has no other way
+to know which workflow a row belongs to:
+
+```json
+{
+  "data": [
+    {
+      "id": "c1c2c3c4-...",
+      "state": "completed",
+      "state_label": "Zakończony",
+      "state_tone": "success",
+      "origin": "event",
+      "trigger_type": "form_submitted",
+      "depth": 0,
+      "origin_run_id": null,
+      "error": null,
+      "started_at": "2026-07-09T10:00:00.000000Z",
+      "finished_at": "2026-07-09T10:00:01.000000Z",
+      "created_at": "2026-07-09T10:00:00.000000Z",
+      "duration_seconds": 1,
+      "steps_count": 2,
+      "workflow": {
+        "id": "b1b2c3d4-...",
+        "name": "Escalate urgent tickets",
+        "icon": "workflow",
+        "status": "active",
+        "trigger_type": "form_submitted"
+      }
+    }
+  ],
+  "meta": { "next_cursor": "string | null" }
+}
+```
+
+**Errors**: `403` not an authenticated workspace member.
 
 ---
 
@@ -413,7 +546,107 @@ the same workspace) is requested under this workflow's URL — otherwise it woul
 }
 ```
 
+**`schedule_descriptor` — SCHEDULE runs only.** When the run's `trigger_type` is `schedule`, the
+response additionally carries `schedule_descriptor`: the parent workflow's `trigger_config.schedule`
+block, upgraded to the v2 shape (`{ time, day?, month?, exclusions?, tz? }`, same shim
+`WorkflowResource` uses — see the Schedule section) via `LegacyScheduleUpgrader`. Absent
+(`null`/omitted key) for a `form_submitted` run, or for a schedule run whose workflow carries no
+schedule block. This is DATA only — the backend does not compute a "why did this run fire" sentence;
+the frontend derives that itself (`describeOccurrence`) from `schedule_descriptor` plus the run's own
+`trigger_payload.scheduled_at`:
+
+```json
+{
+  "data": {
+    "id": "f1f2f3f4-...",
+    "state": "completed",
+    "state_tone": "success",
+    "origin": "schedule",
+    "trigger_type": "schedule",
+    "trigger_payload": { "scheduled_at": "2026-07-09T08:00:00.000000Z" },
+    "schedule_descriptor": {
+      "time": { "mode": "at", "at": ["08:00"] },
+      "day": { "mode": "weekdays", "weekdays": [1, 3, 5] },
+      "tz": "Europe/Warsaw"
+    }
+  }
+}
+```
+
 **Errors**: `403` not a member, `404` unknown run, or a run belonging to a different workflow.
+
+---
+
+### POST /api/workflows/{workflow}/runs/{run}/retry
+
+Retry a **FAILED** run: starts a **NEW** run for `{workflow}`, reusing `{run}`'s stored
+`trigger_payload`. The engine has **no mid-run resume** — `WorkflowStepRunner` always executes
+from the first step — so this is not a resume, it is a fresh run over the same trigger context
+(the `form_submitted` form/submission snapshot, or the schedule's `scheduled_at`). The original
+failed run is never mutated — it stays `failed` and a second retry of it is still allowed. Route
+name `workflows.runs.retry`. Authorization: same as run-now, any workspace member
+(`WorkflowPolicy::run` — not creator-gated).
+
+**Nested-ownership + cross-tenant guards** (both a 404, same as `GET .../runs/{run}` above, and
+enforced in `RetryWorkflowRunRequest::authorize()` before the terminal-state check ever runs):
+`{run}` must belong to `{workflow}` (a run of a DIFFERENT workflow in the same workspace 404s),
+and `{run}` must belong to the ACTIVE workspace (route-model binding runs BEFORE
+`ResolveWorkspace`, so the request re-checks the run through the now-active `WorkspaceScope` — a
+cross-workspace run 404s rather than leaking a 403 that would confirm it exists elsewhere).
+
+**Body**: none (empty `POST`).
+
+**Response** `201 Created` — `WorkflowRunResource`, the SAME stable-core shape run-now returns (no
+`steps`/`trigger_payload` — neither is loaded for this shape), but describing the **NEW** run, not
+the retried one:
+
+```json
+{
+  "data": {
+    "id": "g1g2g3g4-...",
+    "state": "pending",
+    "state_label": "Oczekuje",
+    "state_tone": "neutral",
+    "origin": "manual",
+    "trigger_type": "form_submitted",
+    "depth": 0,
+    "origin_run_id": null,
+    "error": null,
+    "started_at": null,
+    "finished_at": null,
+    "created_at": "2026-07-15T10:05:00.000000Z",
+    "duration_seconds": null
+  }
+}
+```
+
+The new run is always `origin: "manual"` and `creator` = the acting user (`creator_type: "user"`)
+regardless of what started the original failed run (`event`/`schedule`/`manual`) — a retry is a
+user-initiated action, like run-now. `depth` is always `0` and `origin_run_id` is always `null`:
+retrying does not extend the original run's re-trigger chain, it starts a new top-level one.
+
+**Errors**
+
+| Code | Key         | When                                                                                          |
+|------|-------------|------------------------------------------------------------------------------------------------|
+| 401  | —           | Guest (unauthenticated).                                                                       |
+| 403  | —           | Authenticated but not a member of the workflow's workspace.                                     |
+| 404  | —           | `{run}` missing, belongs to a DIFFERENT workflow than `{workflow}` (foreign-workflow), or belongs to a DIFFERENT workspace (cross-tenant) — all three collapse to "does not exist under this parent", same as `GET .../runs/{run}`. |
+| 422  | `run`       | `{run}` is not in the terminal `failed` state — `pending`/`running`/`waiting`/`completed`/`cancelled` are all rejected (a completed run is not "with an error"). |
+| 422  | `workflow`  | The run-budget cap is already reached — the SAME per-workflow monthly soft cap + workspace-wide hard cap `POST .../run` enforces. |
+
+```json
+// not a failed run
+{ "message": "...", "errors": { "run": ["Ponowić można tylko uruchomienie zakończone błędem."] } }
+
+// cap reached
+{ "message": "...", "errors": { "workflow": ["Ten workflow osiągnął limit uruchomień na ten miesiąc. Uruchomienie zostało zablokowane."] } }
+```
+
+**vs. `POST /workflows/{workflow}/run` (run-now, above)** — same authorization and the same
+run-budget cap, but retry returns **201 Created** (a fresh run over the FAILED run's already-stored
+`trigger_payload`, no request body) where run-now returns **202 Accepted** (a fresh run over a
+caller-supplied `target_id`).
 
 ---
 
@@ -687,14 +920,24 @@ Bot/Approvals — the frontend must never invent authorization, only read these:
 
 | Flag                | Source                                                    |
 |-----------------------|----------------------------------------------------------------|
-| `is_owner`             | `creator_id === auth user id`.                              |
-| `can_be_edited`        | `WorkflowPolicy::update` (creator-only).                    |
-| `can_be_deleted`       | `WorkflowPolicy::delete` (creator-only).                    |
-| `can_change_status`    | `WorkflowPolicy::changeStatus` (creator-only).               |
+| `is_owner`             | `isOwnedBy(auth user)` — TRUE only for a HUMAN creator match; a run/bot-created (system) workflow is `false` even for the workspace owner. See `docs/backend/creator-attribution.md`. |
+| `can_be_edited`        | `WorkflowPolicy::update` — the creator, OR (system workflow only) the workspace owner fallback. |
+| `can_be_deleted`       | `WorkflowPolicy::delete` — same fallback rule as `can_be_edited`.                    |
+| `can_change_status`    | `WorkflowPolicy::changeStatus` — same fallback rule as `can_be_edited`.               |
 | `can_run`               | `WorkflowPolicy::run` (any workspace member).                |
 
-`WorkflowListResource` carries only `is_owner` (lean list shape) plus `step_count` (derived:
-`count(steps ?? [])`) and `next_due_at`.
+**A `Workflow` is created only through the authenticated `POST /workflows` surface** (no engine
+step creates a `Workflow`), so its creator is always human in practice today — the fallback row
+above documents the general Policy behavior, not an observed divergence for this resource.
+
+`WorkflowResource` also carries `creator` — the polymorphic discriminated union (`user | workflow_run
+| bot | null`), eager-loaded on every detail response (`GET/POST/PUT/{id}/restore`). See
+`docs/backend/creator-attribution.md` for the full shape and worked examples;
+`resources/js/next/ui/patterns/creator.ts` / `CreatorBadge.vue` render it on the frontend.
+
+`WorkflowListResource` carries only `is_owner` (lean list shape, via the hot-path `ownerUserId()` —
+no `creator` eager-load, no `User` load) plus `step_count` (derived: `count(steps ?? [])`) and
+`next_due_at`.
 
 ---
 
@@ -855,26 +1098,57 @@ exact byte shape the editor's `encodeVariableDirective` produces:
 @[variable]("{\"v\":1,\"data\":{\"id\":\"trigger.fields.status\",\"name\":\"Status\",\"type\":\"text\",\"locked\":false}}")
 ```
 
-The directive is **IDENTITY-ONLY**: `data.id` (the full path) is the ONLY key the resolver
-reads. **The directive carries NO extra type field beyond the editor's own primitive
-(`data.type` is the editor's rendering primitive, text/number/boolean — NOT the workflow type).**
-A variable's REAL workflow type (`text|number|boolean|date|enum|multi`) is recovered from the
-CATALOG by `path`, never trusted from the directive payload. `pipeline` content inside the
-directive (if any) is ignored — MVP references are identity-only.
+The directive's identity lookup (`data.id`) is always honored. **SB1 adds RUNTIME pipeline
+execution**: when `data.pipeline` is a non-empty list of `{operationId|op, args}` steps (the next
+editor's pipeline-editor format), `WorkflowVariableResolver` runs it through the shared
+`WorkflowOperationExecutor` and STRINGIFIES the typed result into the surrounding text; an EMPTY
+(or absent) pipeline keeps the original identity-only behavior unchanged, WITH one reviewer fix:
+a STANDALONE identity chip that IS the whole field (no pipeline) now always STRINGIFIES its
+looked-up value before it reaches the field — a bare non-text variable (a multi-select, a number,
+a boolean) resolving into e.g. `create_task.title` becomes its text representation, never the raw
+array/scalar that would otherwise reach the title's non-empty-string check and hard-fail the run
+with a misleading "requires a title". **The directive still
+carries NO extra type field beyond the editor's own primitive** (`data.type` is the editor's
+rendering primitive, text/number/boolean — NOT the workflow type, and NOT trusted as the
+pipeline's base type either). The pipeline's REAL base type is recovered, in order: (1) the run's
+TYPE MAP by path (`WorkflowVariableCatalogService::runtimeTypeMap()`), (2) failing that, the
+pipeline's first operation's declared input type (the editor authored the pipeline against the
+real type), (3) failing that, `text`. See "Runtime operations, if-blocks, and AI text" below for
+the full pipeline/if-block/ai-text contract, including the fail-closed doctrine.
+
+```
+@[variable]("{\"v\":1,\"data\":{\"id\":\"trigger.fields.due_date\",\"name\":\"Due date\",\"type\":\"text\",\"locked\":false,\"pipeline\":[{\"operationId\":\"date_add_days\",\"stepId\":\"s1\",\"args\":{\"value\":3},\"outputType\":\"date\"}]}}")
+```
+
+resolves to the field's `due_date` value plus 3 days, stringified `Y-m-d` (a `date`-typed
+terminal renders `Y-m-d`; every other terminal type renders through the same stringify rules the
+identity embed already used — numbers naturally, booleans as `true`/`false`).
 
 **2. NON-TEXT (structured) fields** (`create_task.priority`, `.deadline`;
-`create_form_report.submissions_from`, `.submissions_to`) carry the **`{kind}` union**:
+`create_form_report.submissions_from`, `.submissions_to`) carry the **`{kind}` union** — SB1 adds
+an OPTIONAL `pipeline` to the `variable` arm:
 
 ```json
 { "kind": "literal", "value": "high" }
 { "kind": "variable", "ref": { "source": "trigger", "path": "trigger.fields.priority", "type": "enum" } }
+{ "kind": "variable", "ref": { "source": "trigger", "path": "trigger.fields.category", "type": "enum" }, "pipeline": [{ "op": "enum_to_choice", "args": { "mapping": { "blog": "high", "news": "low" } } }] }
+{ "kind": "variable", "ref": { "source": "trigger", "path": "trigger.fields.headline", "type": "text" }, "pipeline": [{ "op": "match_to_choice", "args": { "rules": [{ "when": "BREAKING", "then": "urgent" }], "fallback": "medium" } }] }
 ```
 
 `resolveValueOrVariable()` handles this: a `literal` resolves (and type-coerces) its `value`
-directly; a `variable` looks up `ref.path` in the run context then coerces the result to the
-field's EXPECTED type (the step declares what type it needs — e.g. `priority` coerces to
-`WorkflowVariableType::ENUM`, `deadline` to `DATE`). A bare scalar in a structured slot (no
-`kind` wrapper) is tolerantly treated as a literal.
+directly; a `variable` WITHOUT a `pipeline` (or an empty one) looks up `ref.path` in the run
+context then coerces the result to the field's EXPECTED type, unchanged from before SB1 (e.g.
+`priority` coerces to `WorkflowVariableType::ENUM`, `deadline` to `DATE`). A `variable` WITH a
+non-empty `pipeline` instead runs it through `WorkflowOperationExecutor` **from `ref.type`**
+(never the field's expected type — the pipeline's own declared base) and coerces the TYPED RESULT
+to the field's expected type. A pipeline FAILURE coerces to `null` — the exact same soft default
+an unresolved ref already produced, so a bad pipeline degrades exactly like a bad reference (the
+field's own soft doctrine still applies: `priority` defaults to `medium`, `deadline` to `null`). A
+bare scalar in a structured slot (no `kind` wrapper) is tolerantly treated as a literal, unchanged.
+**Unlike the markdown directive's pipeline, THIS pipeline IS write-validated** — see "Write-time
+validation" below, and "Choice fields" further down for `priority`'s stricter, CHOICE-only
+terminal contract (`enum_to_choice` / `match_to_choice` — the runtime coercion above is unchanged,
+only the write validator is stricter).
 
 ### Coercion table (`WorkflowVariableResolver::coerce`)
 
@@ -885,6 +1159,8 @@ field's EXPECTED type (the step declares what type it needs — e.g. `priority` 
 | `boolean`             | `filter_var(..., FILTER_VALIDATE_BOOLEAN)`.                          |
 | `multi`                 | array passthrough; a scalar is wrapped in a 1-element array.        |
 | `enum` / `text`           | scalar cast to string; a non-scalar (array) → `null`.                |
+
+---
 
 ### The resolver's whitelist (exfiltration-safe)
 
@@ -904,6 +1180,237 @@ working during the 5.1 migration; it is NOT a second expression language, just t
 whitelisted `Arr::get` lookup under different bracket syntax. New editor-authored content uses
 the directive/union shapes; the flat grammar is not the primary authoring path going forward.
 
+**Reviewer fix — an embedded directive's resolved value is MASKED before the flat pass runs**, so
+it can never be re-scanned as a second flat token. Without this, a form value that itself
+happens to contain literal `{{...}}` bytes (typed by an end user, not authored by the workflow)
+would be substituted in by the directive pass and then ACCIDENTALLY matched again by the flat-token
+pass right after — a second-order "injection" purely by coincidence of content. Each resolved
+embedded directive is stashed behind a NUL-delimited placeholder (form values can never contain a
+NUL byte — Postgres rejects it — so a value can never forge one) and restored only AFTER the flat
+pass has already run. This mirrors the same masking `@[ai-text]`'s generated output already uses
+(see "Runtime operations, if-blocks, and AI text" → §c above) — applied here to every directive's
+looked-up value, not just AI-generated text.
+
+---
+
+## Runtime operations, if-blocks, and AI text (SB1 / SB2)
+
+Before this revision both serializations above only ever did identity lookup + coercion. SB1
+extends the runtime resolver (`WorkflowVariableResolver`) with three additional capabilities, and
+SB2 adds a fourth (AI text generation). All four share ONE property: **they never throw** — every
+failure mode collapses to a fail-closed default (`''` for a text-field directive/if-block/ai-text
+result, the field's own soft coercion for a value-or-variable pipeline — see the coercion table
+above), so a bad configuration degrades a field's CONTENT, never the whole run (except where a
+field's own hard-fail doctrine already applied, e.g. a blank `create_task.title` — see the Steps
+section's hard/soft table, unchanged).
+
+**Where each is enabled** (a frontend/editor decision, not a backend restriction — the resolver
+itself would execute any of these in any text field): all four text fields —
+`create_task.title`/`.description` and `create_form_report.name`/`.guidelines` — offer directive
+pipelines, if-blocks, AND `@[ai-text]`. This is a FE-only change (SF3.6 in
+`docs/next/workflows-uxui-spec.md` §4.6.3): `title`/`name` originally rendered as toolbar-less,
+single-line editors offering pipelines only, but now render as ordinary multi-line editors with
+the full toolbar, carrying the same capability `description`/`guidelines` always had. See the
+Steps section for the field-by-field config table.
+
+### a. Directive pipelines (`@[variable]` in text fields)
+
+Covered above under "Two serializations" — a non-empty `data.pipeline` on the markdown directive
+transforms the resolved value through `WorkflowOperationExecutor` and stringifies the typed
+result into the surrounding text.
+
+### b. Conditional `if-block`s in text fields
+
+A markdown field may contain a FENCED `if-block` container — the exact byte format the next
+editor's markdown serializer produces (see `resources/js/next/ui/editor/README.md` for the
+authoring/encoding side, which this runtime mirrors byte-for-byte):
+
+```text
+```if-block {"id":"if_1","v":1}
+[[IF {"id":"b1","condition":{"variableId":"trigger.fields.priority","pipeline":[{"op":"enum_is","args":{"value":"urgent"}}]}}]]
+This is urgent — @[variable]("...")!
+[[ELSE_IF {"id":"b2","condition":{"variableId":"trigger.fields.priority","pipeline":[{"op":"enum_is","args":{"value":"high"}}]}}]]
+High priority.
+[[ELSE {"id":"b3"}]]
+Standard priority.
+```
+```
+
+`WorkflowVariableResolver::resolveString` scans for `` ```if-block `` fences and, for each one,
+evaluates every branch's `condition.variableId` + `condition.pipeline` IN ORDER — `IF`, then each
+`ELSE_IF`, falling to `ELSE`, or to `''` when nothing matches — and replaces the WHOLE fence with
+the winning branch's body, resolved RECURSIVELY (a branch body may itself carry nested
+directives, nested if-blocks, or an `@[ai-text]`). A condition reads `variableId` off the run
+context, recovers its REAL base type the same way a directive pipeline does (type map by path,
+else the pipeline's first-op input type, else falling to `boolean`), runs it through
+`WorkflowOperationExecutor`, and requires a `true` **boolean** terminal. Nesting is capped at
+depth **6** (`IF_BLOCK_MAX_DEPTH` — a margin over the editor's own default `maxDepth: 3`) — beyond
+the cap a block resolves to `''`. A missing/non-reference `variableId`, an unparseable condition,
+or ANY executor failure is fail-closed to `false` (never surfaced as an error) — a misconfigured
+condition simply falls through to `ELSE` (or to `''` with no `ELSE`).
+
+### c. `@[ai-text]` — AI-generated text (SB2)
+
+A markdown field may contain an `@[ai-text]("<json>")` directive — `<json>` (after `\"`→`"`
+un-escaping) is `{"v":1,"data":{id, personaId, prompt, labels}}`; `labels` is accepted on the wire
+but NOT consumed by the runtime (an editor-only concern). At RUN time:
+
+1. `data.prompt` (markdown that may itself contain a nested `@[variable]`, if-block, or another
+   `@[ai-text]` directive) is resolved through the SAME resolver / run context / type map FIRST —
+   so form values, step outputs, and conditional branches land in the prompt BEFORE it reaches the
+   model. Nested `@[ai-text]` is depth-capped at **3** (`AI_TEXT_MAX_DEPTH`) — beyond the cap
+   resolves to `''` with NO further AI call spent.
+2. The resolved prompt + `WorkflowAiPersona::fromNullable(personaId)` (defaults to `neutral` for
+   a null/unknown id) are handed to `WorkflowAiTextService::generate()`, which runs the tool-less
+   `WorkflowAiTextAgent` (provider/model from `config('ai')`; NO tools, NO structured-output
+   schema — plain text only, read from `$response->text`) and trims + length-caps the result.
+3. The generated string REPLACES the directive span verbatim — it is never re-interpreted as a
+   reference/directive itself (every `@[ai-text]` span is masked to an inert placeholder before
+   the variable/flat-token passes run, then restored with the generated text afterward).
+
+**Fail-closed, budgeted, length-capped — never an exception:**
+
+| Failure mode | Result |
+|---|---|
+| Blank prompt after resolution | `''` — no AI call spent. |
+| Per-run call budget exhausted (`config('workflows.ai_text_max_calls_per_run')`, default 10) | `''` — logged, no call. |
+| Provider/transport failure (missing key, timeout, any exception) | `''` — logged, never thrown. |
+| Generated text longer than `config('workflows.ai_text_max_chars')` (default 2000) | truncated (multibyte-safe) to the cap. |
+
+The call BUDGET is scoped to ONE run — `WorkflowAiTextService` is resolved fresh alongside the
+resolver for each `WorkflowRunJob` (never bound as a container singleton), so its call counter
+naturally resets every run; it bounds how much a SINGLE run can fan out into AI spend,
+independent of the run-budget cost caps below (`max_runs_per_month` etc.), which meter the NUMBER
+of runs, not AI calls within one.
+
+**Personas — a closed set of TONES, not the bot system.** `WorkflowAiPersona`: `neutral`
+(default) | `friendly` | `formal` | `concise` — each folds a short English style instruction into
+the agent's system prompt (steering TONE only; the agent is always told to write in the language
+of the resolved prompt, so the English tone line never forces English output). This is
+DELIBERATELY NOT the Bot/Character system — see ADR-0013 for the alternatives considered and why
+a bot-as-persona idea was left for a possible future, not built now.
+
+**Prompt-injection posture (accepted, bounded risk).** The resolved prompt embeds values taken
+from user-submitted forms (untrusted input). `WorkflowAiTextAgent`'s instructions frame
+EVERYTHING in the prompt as DATA to write about, never as commands, and explicitly tell the model
+to ignore any embedded command/role-play/rule-change attempt. The blast radius stays narrow even
+if that framing is defeated: the agent has NO tools, its output lands only in a task/report text
+field inside the SAME workspace the run belongs to, it is length-capped, and it can reference only
+the whitelisted `trigger`/`steps` context (the same exfiltration-safe whitelist every other
+directive already relies on — see below). This is a documented, ACCEPTED risk, not eliminated.
+
+`GET /forms/{form}/workflow-catalog` now also returns `ai_personas` — the label-less persona
+catalog the ai-text editor's persona picker consumes (the FE localizes via
+`workflows.aiPersona.<id>`):
+
+```json
+{
+  "data": {
+    "variables": [...],
+    "fields": [...],
+    "operations": [...],
+    "ai_personas": [{ "id": "neutral" }, { "id": "friendly" }, { "id": "formal" }, { "id": "concise" }]
+  }
+}
+```
+
+(`operations` — the 68-op catalog `WorkflowOperation::catalog()` the directive/value pipelines
+above run on (66 at the time SB1/SB2 shipped `ai_personas` as its sibling key; now 68 after the
+`enum_to_choice`/`match_to_choice` addition — see "Choice fields" below).)
+
+### d. Write-time validation — runtime-only vs. validated
+
+There is NO PHP markdown parser in this codebase, so a text field's directive pipeline / if-block
+/ ai-text content is **NOT validated at write time** — `StoreWorkflowRequest` only checks that
+`title`/`name` (etc.) are non-empty strings, never parses their markdown content. Every failure
+mode described above is therefore a RUNTIME concern only, always fail-closed — an author can save
+a step whose description contains a malformed if-block or a pipeline that will fail at every run;
+the workflow saves, and the field simply resolves emptier than intended at run time.
+
+**The value-or-variable pipeline is the one exception.** Because it lives in a structured
+(non-markdown) field, `StoreWorkflowRequest` (via
+`WorkflowConditionTreeValidator::validateValuePipeline()`) DOES type-flow-validate it on save —
+walking the pipeline from the ref's declared type through each op to a required TERMINAL type per
+field:
+
+| Field | Allowed pipeline terminal(s) |
+|---|---|
+| `create_task.priority` | **CHOICE** — must END in a choice-producing op (`enum_to_choice` / `match_to_choice`); see "Choice fields" below. |
+| `create_task.deadline` | `date` |
+| `create_form_report.submissions_from` / `.submissions_to` | `date` |
+
+A wrong terminal, an unknown op, a type mismatch mid-pipeline, or a bad arg (an out-of-catalog
+`sourceOption`/`sourceMap` key, a non-Y-m-d literal date, a foreign arg key, …) is a `422` under
+`steps.<i>.config.<field>.pipeline.<m>.op` / `.args.<key>` / `.args.<key>.<index>` — the SAME
+indexed-key convention a condition pipeline already uses (`WorkflowConditionTreeValidator` is the
+ONE place both pipelines' arg/type rules live), so the frontend maps every message to the
+offending pipeline step. The reference catalog this validates against (`ref.type` +
+`sourceOption`/`sourceMap` option membership) is `WorkflowVariableCatalogService::referenceIndex()`
+— built ONLY when some step actually carries a value-or-variable pipeline, so the common
+(pipeline-less) create/update path pays no extra cost.
+
+### e. Choice fields — `targetOptions` + the `producesChoice()` terminal rule
+
+A **choice field** is a value-or-variable field whose destination is not just a workflow TYPE but
+one of a small, FIXED set of option VALUES — today, exactly `create_task.priority`
+(`TaskPriority::ids()` = `urgent|high|medium|low`). Two operations exist to map an arbitrary
+source value into such a set:
+
+| Op | Input → output | Args | Runtime semantics |
+|---|---|---|---|
+| `enum_to_choice` | `enum` → `enum` (choice) | `mapping` — a `sourceMap` arg (`mapType: enum`): each SOURCE option value → one DESTINATION option value. | Looks the source option up in `mapping`; an UNMAPPED source option fails closed (same as every other `enum_to_*` op). |
+| `match_to_choice` | `text` → `enum` (choice) | `rules` — a `choiceRules` list of `{when, then}` (first match wins); `fallback` — a REQUIRED `choiceFallback` (used when no rule matches, keeping the op total). | Compares the text value against each rule's `when` in order; the first equal match's `then` wins, else `fallback`. A missing/blank `fallback` fails closed. |
+
+`WorkflowOperation::producesChoice()` is `true` for exactly these two ops (and only these two) —
+callers check this method at the TERMINAL-op position rather than hardcoding op ids, so a future
+choice-producing op is picked up automatically. Any NON-text source (number/boolean/date/multi)
+reaches `match_to_choice` the same way it reaches any other text-only op: through the existing
+`*_to_text` op first (e.g. `date_to_text` → `match_to_choice`).
+
+**The destination option set is injected PER-FIELD, not part of the static op descriptor.**
+`enum_to_choice`'s `mapping` arg and `match_to_choice`'s `rules`/`fallback` args are declared with
+NO fixed option list (`WorkflowOperationArgType::CHOICE_RULES` / `CHOICE_FALLBACK`, and a
+`sourceMap` arg whose `mapType` is `enum`) — the actual allowed VALUES
+(`$targetOptions`, e.g. `TaskPriority::ids()`) are threaded into
+`WorkflowConditionTreeValidator::validateValuePipeline()` by the caller
+(`StoreWorkflowRequest::validateCreateTaskConfig()`) for the ONE field that needs them today. This
+keeps the 68-op catalog itself generic (an op descriptor never hardcodes "priority") while still
+letting the write validator enforce that every mapped/ruled value is a real option of the
+DESTINATION field.
+
+**Write contract for a choice field.** A value-or-variable field whose destination is a choice
+field:
+
+- a **literal** must still be a plain member of the field's own enum (e.g. a literal `priority`
+  must be a valid `TaskPriority`) — unchanged from before this batch;
+- a **variable** MUST carry a NON-EMPTY pipeline that ENDS in a `producesChoice()` op, and every
+  mapped/ruled target value in that pipeline must be `⊆` the field's option set. A bare/identity
+  variable ref (no pipeline) or a pipeline whose terminal is NOT a choice op (e.g. `enum_to_text`,
+  which used to be accepted under the old "enum or text" terminal rule) is now **REJECTED** —
+  `422` under `steps.<i>.config.priority.pipeline` (no pipeline) or
+  `.pipeline.<m>.op` (wrong terminal) or `.pipeline.<m>.args.mapping.<key>` /
+  `.args.rules.<i>.then` / `.args.fallback` (an out-of-set target value).
+
+```json
+{ "op": "enum_to_choice", "args": { "mapping": { "blog": "high", "news": "low" } } }
+{ "op": "match_to_choice", "args": { "rules": [{ "when": "BREAKING", "then": "urgent" }], "fallback": "medium" } }
+```
+
+`deadline` / `submissions_from` / `submissions_to` are plain `date` fields — they never carry
+`targetOptions` (the date terminal is not a choice), so their existing "enum or text vs. date"
+distinction is untouched by this section.
+
+**This is a validator-only tightening, not a runtime behavior change.** `WorkflowVariableResolver`
+never calls `producesChoice()` — at RUN time a `priority` pipeline still just executes and coerces
+its result to `WorkflowVariableType::ENUM` exactly as before (a result outside `TaskPriority`
+soft-defaults to `medium`, same as an unresolved/unknown value always has). A workflow SAVED
+before this change keeps firing and keeps producing the same task priority it always did; only
+attempting to RE-SAVE a step whose `priority` pipeline does not end in a choice op now fails with
+a `422` where it previously passed. See `docs/decisions/ADR-0014-workflows-choice-coercion.md` for
+the full rationale (why a generic `enum` type + injected `targetOptions` + a `producesChoice()`
+terminal rule, instead of a new branded "choice" type in the closed
+`WorkflowVariableType`/`WorkflowOperationArgType` sets).
+
 ---
 
 ## Steps
@@ -917,6 +1424,16 @@ step's output is merged into `context.steps.<key>` so LATER steps can reference 
 around the whole run): a workflow whose first step created a task and whose second step failed
 leaves the task in place, and the run timeline shows exactly where it stopped.
 
+**Runtime capability per field (SB1/SB2 — see "Runtime operations, if-blocks, and AI text"
+above).** All four text fields — `title` / `name` / `description` / `guidelines` — resolve
+DIRECTIVE PIPELINES, `if-block`s, AND `@[ai-text]` identically (the resolver treats every text
+field the same; which of these an author can actually insert is purely a frontend editor
+decision — see the "Where each is enabled" note above and `docs/next/workflows-uxui-spec.md`
+§4.6.3 SF3.6, which now offers the full toolbar on `title`/`name` too). `priority` /
+`deadline` / `submissions_from` / `submissions_to` (the `{kind}` union fields) resolve an
+OPTIONAL, WRITE-VALIDATED pipeline on their `variable` arm (type-flowed to the field's own
+accepted terminal — see the Write-time validation subsection above).
+
 ### `create_task`
 
 Creates a task through `TaskService::create()` (so label-attach and bot-dispatch side effects
@@ -925,7 +1442,7 @@ the create-task form (attachments excluded):
 
 | Config field             | Required | Type            | Failure mode                                                             |
 |----------------------------|----------|-------------------|--------------------------------------------------------------------------|
-| `title`                      | **yes**  | resolved string     | **HARD** — blank after resolution fails the WHOLE step (`RuntimeException`; run stops here). |
+| `title`                      | **yes**  | resolved string     | **HARD** — blank after resolution fails the WHOLE step (`RuntimeException`; run stops here). Clamped to 255 chars (the `tasks.title` column width) AFTER resolution — see the note below. |
 | `description`                 | no       | resolved string       | n/a — absent/blank → `null`.                                             |
 | `priority`                     | no       | `{kind}` union, ENUM   | **SOFT** — unresolved/unknown → defaults to `medium`.                    |
 | `deadline`                       | no       | `{kind}` union, DATE     | **SOFT** — unresolved/unparseable/blank → `null`.                        |
@@ -935,6 +1452,14 @@ the create-task form (attachments excluded):
 | `approval_pipeline_id`                   | no       | literal uuid              | optional, same as above.                                                 |
 
 **Output**: `{ task_id, title }`.
+
+**Reviewer fix — the resolved title is clamped to the column width, not just checked non-empty.**
+`title` is unbounded at write time (the raw config may contain a directive/pipeline/`@[ai-text]`
+whose RESOLVED length is unknowable before it actually runs), so `CreateTaskStep` clamps the
+resolved string to 255 chars (`mb_substr`, multibyte-safe) AFTER resolution, right before the
+non-empty check — without this, a long composed value (a verbose AI-generated sentence, a wide
+pipeline concatenation) could overflow the `tasks.title` column and fail the step with a raw SQL
+error instead of a clean, expected outcome.
 
 **Hard vs. soft failure table** (the exact behavior a stale/bad reference produces):
 
@@ -959,7 +1484,7 @@ analysis/report completion (matching the interactive manual create-report behavi
 | Config field           | Required | Type                      | Notes                                                                 |
 |--------------------------|----------|------------------------------|----------------------------------------------------------------------|
 | `form_id`                  | **yes**  | literal uuid                   | tenant-scoped (`Form::find`, `WorkspaceScope` applies). A missing/foreign/disabled form **HARD-FAILS** the step. |
-| `name`                       | **yes**  | resolved string                  | **HARD** — blank after resolution fails the step.                    |
+| `name`                       | **yes**  | resolved string                  | **HARD** — blank after resolution fails the step. Clamped to 255 chars (the `form_reports.name` column width) after resolution, same reviewer fix as `create_task.title` above. |
 | `guidelines`                   | no       | resolved string                    | absent/blank → `null`.                                                 |
 | `sources`                        | no       | literal subset of `['task','form']`  | absent/empty → `[]` (no source filter — every source analysed).       |
 | `submissions_from`                 | no       | `{kind}` union, DATE                   | **defaults from the STEP, not a request** — the form's `enabled_at` date, or today if `enabled_at` is null. |
@@ -979,10 +1504,16 @@ toward the report), **NOT** the same vocabulary as the trigger's `source.in` (`[
 the SUBMITTABLE-morph vocabulary) — the two `task`/`form`-ish enums look similar but answer
 different questions; do not conflate them.
 
-Creator attribution: `FormReport` uses `HasCreator`, which stamps `auth()->id()` on save. An
-EVENT run fires inside the triggering user's authenticated request and a MANUAL run inside the
-acting user's — so the report's creator is that user in both cases. A SCHEDULE run has no
-authenticated user, so `creator_id` is `null` (existing `HasCreator` semantic, unchanged here).
+**Creator attribution (corrected — see ADR-0015).** `FormReport` uses the polymorphic `HasCreator`.
+Because this step runs INSIDE a live `WorkflowRunContext` (`WorkflowStepRunner` publishes the
+executing run around the whole step loop), the report is attributed to the **run itself** —
+`creator_type='workflow_run', creator_id=run->id` — for EVERY origin (event, schedule, AND manual),
+whether or not an HTTP user happens to be authenticated in that process. `creator_id` is never
+`null` for a step-created report. The task created by `CreateTaskStep` is attributed the same way.
+This SUPERSEDES the previous text on this page, which described `FormReport` inheriting
+`auth()->id()` (null for a schedule run) — that was the actual crash `HasCreator`'s polymorphic
+stamping was built to fix (a `NOT NULL creator_id` column, `auth()->id()` always null inside a
+queued job). See `docs/backend/creator-attribution.md` for the full stamping-precedence contract.
 
 ---
 
@@ -1099,11 +1630,18 @@ no risk of the job running before the run row exists.
 | `manual`         | `WorkflowManualRunService` / `dispatchManual()`.                    |
 
 `origin` is the **authoritative** signal for how a run began — **not** `creator_id`.
-`HasCreator`'s saving hook stamps `auth()->id()` on every save whenever it is unset, so an
-EVENT run fired inside an authenticated HTTP request ends up carrying that user as
-`creator_id` even though nobody "manually" ran it. A schedule sweep run started outside a
-request (real cron) records `creator_id = null`. Only a MANUAL run explicitly, deliberately
-carries the acting user's id. **Read `origin`, never infer engine-vs-manual from `creator_id`.**
+`WorkflowRunManager::start()` stamps the run row's OWN `creator_id`/`creator_type` EXPLICITLY
+(bypassing `HasCreator`'s generic `saving`-hook inference, so a child re-trigger run is never
+accidentally stamped onto its parent's `WorkflowRunContext`): the acting user for a MANUAL run,
+or — for an engine-started run (event/schedule) — the WORKFLOW'S OWN AUTHOR
+(`creator_id => $creatorId ?? $workflow->creator_id`, `creator_type => 'user'` always). **`creator_id`
+is therefore never `null` on ANY run**, including a schedule-sweep run started outside a request
+(real cron) — this corrects the previously-documented behavior on this page (the old `HasCreator`
+fallback to `auth()->id()` did leave a schedule run's `creator_id` null; that gap is closed — see
+ADR-0015 §5). Regardless: **read `origin`, never infer engine-vs-manual from `creator_id`** — an
+EVENT run fired inside an authenticated HTTP request still carries the workflow's author (which
+may or may not be the same person triggering the event) as `creator_id`, not "whoever caused the
+event."
 
 ---
 
@@ -1154,6 +1692,8 @@ in as the cost proxy.
 | `run_timeout`               | `WORKFLOWS_RUN_TIMEOUT`               | 900 (s) | Stale-claim reaper threshold — see Run lifecycle below.                 |
 | `max_depth`                  | `WORKFLOWS_MAX_DEPTH`                 | 3       | Re-trigger depth guard — see above.                                     |
 | `assist_rate_per_minute`       | `WORKFLOWS_ASSIST_RATE_PER_MINUTE`      | 5       | AI schedule-assist per-user throttle — a SEPARATE meter, not counted against the run budget. |
+| `ai_text_max_calls_per_run`      | `WORKFLOWS_AI_TEXT_MAX_CALLS_PER_RUN`     | 10      | `@[ai-text]` calls allowed within ONE run (SB2) — a PER-RUN budget, not per-workflow/month. Occurrences beyond the cap resolve to `''`, no call spent. |
+| `ai_text_max_chars`               | `WORKFLOWS_AI_TEXT_MAX_CHARS`               | 2000    | Length cap applied to each generated `@[ai-text]` string (SB2), multibyte-safe truncation. The target field's own DB limit still applies on top. |
 
 **Either run cap being reached refuses a new run** (`WorkflowDispatchService::capReached()`,
 shared by the event pipeline, the schedule sweep, and the manual endpoint's 422 check — one
@@ -1526,10 +2066,11 @@ These are documented, reviewed trade-offs — not a TODO list.
   accepted pattern (matches the existing Bot reaper commands) — hardening (isolating per-tenant
   failures so one bad connection doesn't starve the others) is queued as future work, not done
   in this batch.
-- **`creator_id` is non-null on event runs fired inside an authenticated request** even though
-  the run is engine-authored, not user-initiated — this is expected `HasCreator` behavior, not
-  a bug. `origin` is the authoritative signal for how a run began; never infer engine-vs-manual
-  from `creator_id` (see the Origin section above).
+- **`creator_id` is non-null on EVERY run, including engine-authored (event/schedule) ones** —
+  `WorkflowRunManager::start()` explicitly inherits the workflow's own author for an engine run,
+  never leaving it null. This is expected, intentional behavior (see ADR-0015 §5 and the Origin
+  section above), not a bug: `origin` remains the authoritative signal for how a run began; never
+  infer engine-vs-manual from `creator_id`.
 - **The pre-existing `ResolveWorkspace`-after-`SubstituteBindings` middleware ordering** means
   route-model-binding for `{workflow}` / `{run}` resolves BEFORE the tenant/workspace context is
   set (`bootstrap/app.php` appends `ResolveWorkspace` to the `api` group, which already runs
@@ -1549,7 +2090,9 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Workflows/Models/Workflow.php`, `WorkflowRun.php`, `WorkflowRunStep.php`
 - `app/modules/Workflows/Services/WorkflowService.php` — definition CRUD
 - `app/modules/Workflows/Services/WorkflowDispatchService.php` — the event/manual dispatch seam
-- `app/modules/Workflows/Services/WorkflowManualRunService.php` — manual-run target resolution + 422s
+- `app/modules/Workflows/Services/WorkflowManualRunService.php` — manual-run target resolution + 422s; also owns `retry()` (terminal-FAILED guard + the shared run-budget cap)
+- `app/modules/Workflows/Http/Requests/RetryWorkflowRunRequest.php` — retry's authorization + nested-ownership/cross-tenant 404 guards
+- `app/modules/Workflows/Http/Controllers/WorkflowRunController.php` — `index`/`global`/`show`/`retry` (run monitoring + retry)
 - `app/modules/Workflows/Services/WorkflowRunManager.php` — claim / release / reaper / cap counters
 - `app/modules/Workflows/Services/WorkflowRunContext.php` — in-process current-run holder (loop-depth seam)
 - `app/modules/Workflows/Services/WorkflowStepRunner.php` — executes a claimed run's steps
@@ -1583,6 +2126,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `tests/Feature/WorkflowReferenceContractTest.php` — pins the `{{trigger.*}}` payload paths for `form_submitted`/`schedule` (updated for the 5.1 trigger set)
 - `tests/Feature/WorkflowRunEngineTest.php`
 - `tests/Feature/WorkflowRunReadTest.php`
+- `tests/Feature/WorkflowRunRetryTest.php` — the retry endpoint (new-run wiring, terminal-state 422, budget-cap 422, foreign-workflow/missing/cross-tenant 404s, guest 401, non-member 403)
 - `tests/Feature/WorkflowScheduleSweepTest.php`
 - `tests/Feature/WorkflowScheduleAssistTest.php` — v2 examples incl. the legacy-proposal read-shim case
 - `tests/Feature/WorkflowSchedulePreviewTest.php` — the preview endpoint (empty/`anchor`/prev-or-at semantics, `approximate` always false, checkEmpty-off behavior)
@@ -1610,9 +2154,12 @@ These are documented, reviewed trade-offs — not a TODO list.
   exists yet.
 - **Bot-authored submission tracking**: `source` cannot express "a bot filled this form in" —
   see the Accepted residual risks section. Needs a new column, not just morph-derived logic.
-- **Operations pipeline for the typed variable system**: the current resolver supports identity
-  lookup + type coercion only — no computed operations (string concatenation, date formatting,
-  arithmetic) on a resolved variable. Deliberately deferred — see ADR-0009 §2.
+- ~~Operations pipeline for the typed variable system~~ — **DONE (SB1/SB2, ADR-0013), no longer
+  deferred.** A directive and a value-or-variable reference now both transform their resolved
+  value through the shared 68-op `WorkflowOperationExecutor` at run time (string ops, date
+  arithmetic, arithmetic, per-option mapping, and — since ADR-0014 — mapping into a destination
+  field's fixed choice set); ADR-0009 §2's "deferred" consequence is explicitly reversed. Kept
+  struck through so a reader of an older snapshot of this doc understands the change.
 - **Per-tenant error isolation in the sweep commands**: see the accepted-risk note above.
 - **Public holiday awareness**: `day.special:last_working_day` (and every other axis/mode) has NO
   concept of a public holiday calendar — a computed "last working day" or any other fire date

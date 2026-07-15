@@ -16,22 +16,40 @@ import DatePicker from '../../ui/forms/DatePicker.vue';
 import ValueOrVariableField from './ValueOrVariableField.vue';
 import { useI18n } from '../../app/i18n';
 import type { CatalogVariable, WorkflowFieldValue } from './types';
+import type { VariableOperationDefinition } from '../../ui/editor/extensions/types';
+
+/** Date fields accept a pipeline that MUST terminate on `date` (§4.9). */
+const DATE_RESULT_TYPES = ['date'] as const;
 
 withDefaults(
   defineProps<{
     /** The date-typed catalog variables (host filters via `variablesOfType(..,'date')`). */
     variables: CatalogVariable[];
+    /** The merged operations catalog for the variable-mode pipeline (empty ⇒ no pipeline). */
+    operationsCatalog?: VariableOperationDefinition[];
     /** aria-label for the variable-mode picker. */
     pickerLabel?: string;
     /** aria-label / placeholder for the literal DatePicker. */
     dateLabel?: string;
     datePlaceholder?: string;
+    /**
+     * Forwarded to ValueOrVariableField: when the host already shows a server/validation
+     * error for this field, suppress the inner field's inline type-error line (finding 4).
+     */
+    externalErrorPresent?: boolean;
     disabled?: boolean;
   }>(),
-  { disabled: false },
+  { operationsCatalog: () => [], externalErrorPresent: false, disabled: false },
 );
 
 const model = defineModel<WorkflowFieldValue<string> | null>({ default: null });
+
+/**
+ * Re-emitted from the inner ValueOrVariableField: `{expected}` when the picked date
+ * variable's saved pipeline does not terminate on `date`, else `null`. The host routes
+ * this into its per-field error channel (same contract as the value field).
+ */
+const emit = defineEmits<{ 'update:typeError': [null | { expected: string }] }>();
 
 const { t } = useI18n();
 </script>
@@ -40,8 +58,12 @@ const { t } = useI18n();
   <ValueOrVariableField
     v-model="model"
     :variables="variables"
+    :operations-catalog="operationsCatalog"
+    :result-types="[...DATE_RESULT_TYPES]"
+    :external-error-present="externalErrorPresent"
     :picker-label="pickerLabel ?? t('workflows.field.pickVariable')"
     :disabled="disabled"
+    @update:type-error="(p) => emit('update:typeError', p)"
   >
     <template #default="{ value, setValue, disabled: slotDisabled }">
       <!-- Literal mode: an ISO-day DatePicker. Its `null` model maps to the union's

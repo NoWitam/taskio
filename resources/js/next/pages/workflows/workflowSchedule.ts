@@ -767,6 +767,164 @@ export function formatOccurrenceParts(
   return { weekday: f.weekday.format(d), date: f.date.format(d), time: f.time.format(d) };
 }
 
+// ── describeOccurrence (run-detail "reason", §5.4 B6) ─────────────────────────
+// A schedule run records only the matched fire instant (`trigger.scheduled_at`) — a
+// raw timestamp. This NAMES that occurrence semantically ("1. czwartek o 14:00 w
+// lipcu" / "the 1st Thursday at 14:00 in July"), reusing the same cased-name grammar
+// as `describeSchedule`, so the run drawer explains WHY the run fired, not just when.
+
+const RD = 'workflows.runs.detail.reason.';
+const EN_WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** The concrete calendar parts of an instant, resolved in a given IANA zone. */
+interface ZonedParts {
+  year: number;
+  month: number;
+  day: number;
+  /** 0=Sunday..6=Saturday, matching the schedule weekday convention. */
+  weekday: number;
+}
+
+/** Resolve an instant's y/m/d + numeric weekday IN a zone (invalid zone → UTC). */
+function zonedParts(iso: string, tz: string | null | undefined): ZonedParts {
+  const d = new Date(iso);
+  const options: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'short',
+  };
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', { ...options, timeZone: safeZone(tz) }).formatToParts(d);
+  } catch {
+    parts = new Intl.DateTimeFormat('en-US', { ...options, timeZone: 'UTC' }).formatToParts(d);
+  }
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
+  return {
+    year: Number(get('year')),
+    month: Number(get('month')),
+    day: Number(get('day')),
+    weekday: EN_WEEKDAY_SHORT.indexOf(get('weekday')),
+  };
+}
+
+/** Which occurrence of its weekday a day-of-month is (1st..5th). */
+function ordinalInMonth(dayOfMonth: number): number {
+  return Math.ceil(dayOfMonth / 7);
+}
+
+/** The Tier-A fallback: the fire instant formatted (long weekday + date + time) in tz. */
+function occurrenceTimestamp(iso: string, tz: string | null | undefined, t: Translate): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso ?? '');
+  const tag = occurrenceLocaleTag(langOf(t));
+  const options: Intl.DateTimeFormatOptions = {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  };
+  try {
+    return new Intl.DateTimeFormat(tag, { ...options, timeZone: safeZone(tz) }).format(d);
+  } catch {
+    return new Intl.DateTimeFormat(tag, { ...options, timeZone: 'UTC' }).format(d);
+  }
+}
+
+/**
+ * The semantic clause for a matched occurrence, or `null` when the descriptor can't be
+ * cleanly named (⇒ the caller falls back to a Tier-A timestamp). Not-cleanly-nameable:
+ * exclusions present (exclusion-shifted), an interval TIME rule, an interval DAY rule
+ * (every_n_days), or a non-`nth_weekday`/`special` DAY rule combined with a restricted
+ * MONTH axis (compound multi-axis). A month-anchored DAY rule (nth_weekday / last_* )
+ * stays nameable regardless of the month axis — the month is intrinsic to its clause.
+ */
+function occurrenceClause(iso: string, draft: ScheduleDraft, t: Translate): string | null {
+  const ex = draft.exclusions;
+  if (ex.months.length || ex.weekdays.length || ex.dates.length) return null;
+  if (draft.time.mode !== 'at') return null;
+
+  const tz = draft.tz;
+  const time = formatOccurrenceParts(iso, occurrencePartsFormatter(langOf(t), tz)).time;
+  const zp = zonedParts(iso, tz);
+  const monthRestricted = draft.month.mode !== 'every_month';
+  const day = draft.day;
+
+  switch (day.mode) {
+    case 'every_day':
+      return monthRestricted ? null : t(RD + 'daily', undefined, { time });
+    case 'weekdays':
+      return monthRestricted
+        ? null
+        : t(RD + 'weekday', undefined, { weekday: weekdayLong(zp.weekday, t), time });
+    case 'month_days':
+      return monthRestricted
+        ? null
+        : t(RD + 'monthDay', undefined, { day: ordinalDay(zp.day, t), time });
+    case 'every_n_days':
+      return null;
+    case 'special': {
+      const s = day.special;
+      switch (s.kind) {
+        case 'nth_weekday':
+          return t(RD + 'nthWeekday', undefined, {
+            ordinal: ordinalInline(ordinalInMonth(zp.day), t),
+            weekday: weekdayLong(zp.weekday, t),
+            time,
+            month: monthLocative(zp.month, t),
+          });
+        case 'last_working_day':
+          return t(RD + 'lastWorkingDay', undefined, { time });
+        case 'last_day':
+          return t(RD + 'lastDay', undefined, { time });
+        case 'last_weekday':
+          return t(RD + 'lastWeekday', undefined, { weekday: weekdayLong(zp.weekday, t), time });
+      }
+    }
+  }
+}
+
+/**
+ * NAME a schedule run's matched occurrence (§5.4 B6). Given the matched fire instant
+ * (`trigger.scheduled_at`) and the run's `schedule_descriptor` (the v2 wire block, incl.
+ * `tz`), returns a semantic sentence ("1. czwartek o 14:00 w lipcu") computed IN the
+ * schedule's zone. Falls back to a Tier-A timestamp ("czwartek, 3 lip 14:00", formatted
+ * in the schedule tz) for descriptors it can't cleanly name (compound multi-axis,
+ * exclusion-shifted) or when the descriptor is unavailable. NEVER returns blank.
+ */
+export function describeOccurrence(
+  scheduledAtIso: string,
+  descriptor: WorkflowScheduleConfig | null | undefined,
+  t: Translate,
+): string {
+  if (Number.isNaN(new Date(scheduledAtIso).getTime())) return String(scheduledAtIso ?? '');
+  if (!descriptor) return occurrenceTimestamp(scheduledAtIso, '', t);
+  const draft = configToDraft(descriptor);
+  return occurrenceClause(scheduledAtIso, draft, t) ?? occurrenceTimestamp(scheduledAtIso, draft.tz, t);
+}
+
+/**
+ * Format a schedule run's matched fire instant as a readable single-line date/time
+ * (long weekday + short date + HH:mm) IN the schedule's own zone — the human companion
+ * to `describeOccurrence`'s semantic "reason" line. Reuses the SAME Tier-A timestamp
+ * formatter `describeOccurrence` falls back to, so when the reason IS semantic the two
+ * lines read in the same zone, and when the reason itself falls back to a timestamp the
+ * caller can compare the two strings and drop the duplicate. An unparseable instant
+ * returns the raw string; NEVER blank.
+ */
+export function formatScheduledAt(
+  scheduledAtIso: string,
+  descriptor: WorkflowScheduleConfig | null | undefined,
+  t: Translate,
+): string {
+  const tz = descriptor ? configToDraft(descriptor).tz || null : null;
+  return occurrenceTimestamp(scheduledAtIso, tz, t);
+}
+
 /** The shared single-line Intl options (weekday + date + time) — the AI-modal preview. */
 function occurrenceFormatOptions(timeZone: string): Intl.DateTimeFormatOptions {
   return { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone };

@@ -50,6 +50,9 @@ use Throwable;
  */
 class CreateTaskStep implements WorkflowStep
 {
+    /** The `tasks.title` column width — resolved titles are clamped to it (see requireString). */
+    private const TITLE_MAX = 255;
+
     public function __construct(
         private TaskService $tasks,
         private WorkflowVariableResolver $resolver,
@@ -70,7 +73,7 @@ class CreateTaskStep implements WorkflowStep
 
     public function run(array $config, WorkflowRun $run, array $context): array
     {
-        $title = $this->requireString($config, 'title');
+        $title = $this->requireString($config, 'title', self::TITLE_MAX);
 
         [$assigneeType, $assigneeId] = $this->resolveAssignee($config);
 
@@ -98,7 +101,7 @@ class CreateTaskStep implements WorkflowStep
      * whole config), so a variable that produced nothing arrives as ''. A blank title is a
      * hard failure — the runner records the step failed and stops the run.
      */
-    private function requireString(array $config, string $key): string
+    private function requireString(array $config, string $key, ?int $max = null): string
     {
         $value = $config[$key] ?? null;
 
@@ -106,7 +109,10 @@ class CreateTaskStep implements WorkflowStep
             throw new RuntimeException("create_task step requires a non-empty `{$key}`.");
         }
 
-        return $value;
+        // Clamp to the destination column so a long RESOLVED value (a verbose variable /
+        // operation-pipeline / ai-text result) can never overflow the DB and fail the run with a
+        // raw SQL error — the pre-resolution config length is unknowable at write time.
+        return $max !== null ? mb_substr($value, 0, $max) : $value;
     }
 
     /**

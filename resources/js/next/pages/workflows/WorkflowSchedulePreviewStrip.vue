@@ -16,14 +16,11 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import Surface from '../../ui/layout/Surface.vue';
 import Icon from '../../ui/primitives/Icon.vue';
-import Button from '../../ui/primitives/Button.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
-import Spinner from '../../ui/primitives/Spinner.vue';
 import { useI18n } from '../../app/i18n';
 import { useWorkflowsStore } from '../../app/stores/workflows';
 import { useDebounce } from '../../app/composables/useDebounce';
-import { useInfiniteScroll } from '../../app/composables/useInfiniteScroll';
 import {
   occurrencePartsFormatter,
   formatOccurrenceParts,
@@ -123,6 +120,7 @@ async function loadFirst(): Promise<void> {
     empty.value = res.empty;
     // A full page suggests there may be more; empty / a short page ends paging.
     hasMore.value = !res.empty && res.occurrences.length >= PAGE;
+    void ensureFilled();
   } catch {
     if (my !== resetToken) return;
     // Quiet + non-blocking: the summary sentence stays and the schedule is savable.
@@ -150,12 +148,29 @@ async function loadMore(): Promise<void> {
     const fresh = res.occurrences.filter((o) => new Date(o).getTime() > lastMs);
     occurrences.value = [...occurrences.value, ...fresh];
     hasMore.value = fresh.length > 0;
+    void ensureFilled();
   } catch {
     if (my !== resetToken) return;
     hasMore.value = false; // stop paging, keep what we have (non-blocking)
   } finally {
     if (my === resetToken) loadingMore.value = false;
     void nextTick(updateEdges);
+  }
+}
+
+/**
+ * Keep loading pages until the rail OVERFLOWS (or paging ends). Without a load-more
+ * button the sentinel is the only paging driver, but IntersectionObserver only fires on
+ * VISIBILITY TRANSITIONS — a sentinel that stays in view on a wide rail never re-fires,
+ * which would strand paging at one page. The `clientWidth > 0` guard skips environments
+ * with no real layout (jsdom/happy-dom in specs).
+ */
+async function ensureFilled(): Promise<void> {
+  await nextTick();
+  const el = railRef.value;
+  if (!el || el.clientWidth === 0) return;
+  if (hasMore.value && !loading.value && !loadingMore.value && !empty.value && !errored.value && el.scrollWidth <= el.clientWidth) {
+    void loadMore();
   }
 }
 
@@ -184,14 +199,18 @@ watch(
   { deep: true, immediate: true },
 );
 
-// --- Lazy paging sentinel ----------------------------------------------------
+// --- Lazy paging (scroll-edge driven) -----------------------------------------
+// Deliberately NOT IntersectionObserver-based: a horizontal rail owns its scroll
+// events anyway (edge fades), and IO callbacks are suspended in backgrounded /
+// embedded renderers — the rail's own scroll position is always trustworthy.
 const railRef = ref<HTMLElement | null>(null);
-const { sentinelRef } = useInfiniteScroll({
-  onLoadMore: () => void loadMore(),
-  canLoadMore: () => !props.disabled && hasMore.value && !loading.value && !loadingMore.value && !empty.value && !errored.value,
-  root: railRef,
-  rootMargin: '0px 200px',
-});
+const LOAD_AHEAD_PX = 200;
+
+function maybeLoadMore(): void {
+  const el = railRef.value;
+  if (!el) return;
+  if (el.scrollLeft + el.clientWidth >= el.scrollWidth - LOAD_AHEAD_PX) void loadMore();
+}
 
 // --- Edge fades (shown only while scrollable that way) -----------------------
 const canScrollLeft = ref(false);
@@ -203,6 +222,23 @@ function updateEdges(): void {
   canScrollRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
 }
 watch(occurrences, () => void nextTick(updateEdges));
+
+/** Scroll: refresh the edge fades AND drive the lazy paging (near the right edge). */
+function onScroll(): void {
+  updateEdges();
+  maybeLoadMore();
+}
+
+/** Translate a vertical mouse wheel into horizontal rail scrolling (the rail is the
+ *  only horizontal region under the cursor, so the gesture is unambiguous). Native
+ *  horizontal gestures (trackpads, shift+wheel) pass through untouched. */
+function onWheel(event: WheelEvent): void {
+  const el = railRef.value;
+  if (!el || el.scrollWidth <= el.clientWidth) return;
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+  event.preventDefault();
+  el.scrollLeft += event.deltaY;
+}
 </script>
 
 <template>
@@ -231,11 +267,15 @@ watch(occurrences, () => void nextTick(updateEdges));
 
     <!-- Success: the horizontally-scrolled COMPACT tile rail. -->
     <div v-else class="relative">
+      <!-- Visible scrollbar (signals scrollability alongside the edge fades) + vertical
+           wheel → horizontal scroll. Paging is scroll-driven ONLY (the sentinel below);
+           in-flight pages render as trailing skeleton tiles. -->
       <ul
         ref="railRef"
-        class="scrollbar-none flex gap-next-2 overflow-x-auto scroll-smooth pb-next-1"
+        class="flex gap-next-2 overflow-x-auto pb-next-2"
         :aria-label="t('workflows.schedule.preview.title')"
-        @scroll="updateEdges"
+        @scroll="onScroll"
+        @wheel="onWheel"
       >
         <li v-for="tile in tiles" :key="tile.iso">
           <Surface
@@ -243,12 +283,14 @@ watch(occurrences, () => void nextTick(updateEdges));
             border
             radius="md"
             :class="[
-              'flex w-[7rem] shrink-0 flex-col gap-next-0_5 p-next-2',
+              'flex min-w-[7rem] shrink-0 flex-col gap-next-0_5 whitespace-nowrap p-next-2',
               tile.previous ? 'border-dashed bg-next-muted text-next-muted-foreground' : '',
             ]"
             :aria-label="tileAria(tile)"
           >
-            <!-- Line 1: weekday + date (the previous tile leads with a rotate-ccw glyph). -->
+            <!-- Line 1: weekday + date (the previous tile leads with a rotate-ccw glyph).
+                 whitespace-nowrap keeps every tile ONE height — a long weekday must widen
+                 the tile, never wrap it taller. -->
             <span class="flex items-center gap-next-1">
               <Icon
                 v-if="tile.previous"
@@ -264,20 +306,12 @@ watch(occurrences, () => void nextTick(updateEdges));
           </Surface>
         </li>
 
-        <!-- Trailing spinner tile while a page is in flight. -->
-        <li v-if="loadingMore" aria-hidden="true">
-          <div class="flex h-[3.25rem] w-[7rem] shrink-0 items-center justify-center rounded-next-md border border-next-border">
-            <Spinner size="sm" />
-          </div>
-        </li>
-
-        <!-- Keyboard/a11y paging fallback + the auto-load sentinel. -->
-        <li v-if="hasMore && !loadingMore" class="flex items-center">
-          <Button variant="ghost" size="sm" trailing-icon="chevron-right" @click="loadMore">
-            {{ t('workflows.schedule.preview.loadMore') }}
-          </Button>
-        </li>
-        <li ref="sentinelRef" aria-hidden="true" class="w-px shrink-0" />
+        <!-- Trailing skeleton tiles while the next page loads on scroll. -->
+        <template v-if="loadingMore">
+          <li v-for="n in 3" :key="`sk-${n}`" aria-hidden="true" class="shrink-0">
+            <Skeleton variant="rect" width="7rem" height="3.25rem" radius="md" />
+          </li>
+        </template>
       </ul>
 
       <!-- Edge fades over the MUTED segment frame — positioned siblings paint above the
@@ -295,15 +329,3 @@ watch(occurrences, () => void nextTick(updateEdges));
     </div>
   </div>
 </template>
-
-<style scoped>
-/* Hide the horizontal scrollbar (the edge fades signal scrollability) — mirrors the
-   Tabs primitive's rail. */
-.scrollbar-none {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-.scrollbar-none::-webkit-scrollbar {
-  display: none;
-}
-</style>

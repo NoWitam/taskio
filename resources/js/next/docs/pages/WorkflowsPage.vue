@@ -4,10 +4,16 @@
 // system), the schedule builder (a compositional time/day/month descriptor +
 // exclusions + live preview) + AI schedule-assist, run lifecycle, manual/test
 // runs, cost limits, and monitoring. Documents the IMPLEMENTED behavior of
-// app/modules/Workflows/ AFTER the Etap 5.1 re-scope (B1-B7) AND the schedule
+// app/modules/Workflows/ AFTER the Etap 5.1 re-scope (B1-B7), the schedule
 // descriptor v2 rebuild (ADR-0012, which supersedes the earlier 12/16-family
-// model from ADR-0009 §3 / ADR-0010) — not planned behavior. Deferred/planned
-// items are called out explicitly (see the last section).
+// model from ADR-0009 §3 / ADR-0010), the SB1/SB2 runtime step-operations
+// batch (variable-operation pipelines, conditional if-blocks, and @[ai-text]
+// AI-generated text executing at run time in a step's fields — ADR-0013, which
+// reverses ADR-0009 §2's "pipeline deferred" stance), AND the choice-coercion
+// batch (two new choice-producing ops, enum_to_choice/match_to_choice, letting a
+// priority value-or-variable pipeline map into TaskPriority::ids() — ADR-0014,
+// 66→68 ops) — not planned behavior. Deferred/planned items are called out
+// explicitly (see the last section).
 //
 // Sections:
 //   1. Module overview & concepts (the 5.1 re-scope)
@@ -41,8 +47,9 @@ const workflowEndpointRows: ApiRow[] = [
   { name: 'POST /workflows/{id}/restore',  type: '—',                        description: 'Restore a soft-deleted workflow. Creator-only.' },
   { name: 'PATCH /workflows/{id}/status',  type: "{ status: 'active'|'inactive' }", description: 'The ONLY path that mutates status. Creator-only.' },
   { name: 'POST /workflows/{id}/run',      type: '{ target_id? }',           description: 'Manual run — any member, works on INACTIVE workflows too (test-run). Returns 202.' },
-  { name: 'GET /workflows/{id}/runs',      type: '?state=&origin=&cursor=',  description: 'Run monitoring list. Cursor-paginated, 15/page. Any workspace member.' },
-  { name: 'GET /workflows/{id}/runs/{run}', type: '—',                       description: 'One run + its full step timeline. 404 if {run} belongs to a different workflow.' },
+  { name: 'GET /workflows/{id}/runs',      type: '?state[]=&origin[]=&trigger_type[]=&date_from=&date_to=&date_preset=&cursor=',  description: 'Run monitoring list, scoped to this workflow. Cursor-paginated, 15/page. Any workspace member.' },
+  { name: 'GET /workflows/{id}/runs/{run}', type: '—',                       description: 'One run + its full step timeline. Schedule runs also carry schedule_descriptor. 404 if {run} belongs to a different workflow.' },
+  { name: 'GET /workflows/runs',           type: '?state[]=&origin[]=&trigger_type[]=&workflow_id=&date_from=&date_to=&date_preset=&cursor=', description: 'GLOBAL cross-workflow runs feed (any workspace member, viewAny). Same shape as the per-workflow list, plus a workflow block per row and an optional workflow_id scope.' },
   { name: 'POST /workflows/meta/schedule-preview', type: '{ schedule, count?, anchor? }', description: 'Live preview: projects the next N (1-12, default 6) fire instants of a draft schedule, optionally centred on an anchor instant. The ONLY place occurrence dates are computed — the FE never re-implements cadence math.' },
   { name: 'GET /forms/{form}/workflow-catalog', type: '—',                   description: 'The TYPED variable catalog for a form_submitted workflow built on {form}. FormPolicy::view.' },
   { name: 'POST /workflows/schedule-assist', type: '{ prompt, tz? }',        description: 'AI natural-language → structured schedule config. 429 throttled per user.' },
@@ -73,8 +80,8 @@ const workflowResourceRows: ApiRow[] = [
   { name: 'steps',                 type: '{type,key,config}[]',       description: '' },
   { name: 'last_scheduled_run_at', type: 'string (ISO 8601) | null',  description: 'Stamped by the schedule sweep each time it fires this workflow.' },
   { name: 'next_due_at',           type: 'string (ISO 8601) | null',  description: 'Schedule workflows only; null unless ACTIVE + schedule-triggered.' },
-  { name: 'creator',               type: 'UserResource',              description: '' },
-  { name: 'is_owner',              type: 'boolean',                   description: 'True when auth user is the creator.' },
+  { name: 'creator',               type: "Creator | null",            description: "Discriminated union: user | workflow_run (automation) | bot. See CreatorBadge / creator.ts and docs/backend/creator-attribution.md." },
+  { name: 'is_owner',              type: 'boolean',                   description: 'True only for a HUMAN creator match (isOwnedBy) — presentational. Gate actions on can_be_edited/can_be_deleted, not this.' },
   { name: 'can_be_edited',         type: 'boolean',                   description: 'Creator-only.' },
   { name: 'can_be_deleted',        type: 'boolean',                   description: 'Creator-only.' },
   { name: 'can_change_status',     type: 'boolean',                   description: 'Creator-only.' },
@@ -125,6 +132,8 @@ const configRows: ApiRow[] = [
   { name: 'workflows.run_timeout',            type: 'WORKFLOWS_RUN_TIMEOUT',            description: 'Default 900s. Stale-claim reaper threshold.' },
   { name: 'workflows.max_depth',              type: 'WORKFLOWS_MAX_DEPTH',              description: 'Default 3. Re-trigger chain depth guard.' },
   { name: 'workflows.assist_rate_per_minute', type: 'WORKFLOWS_ASSIST_RATE_PER_MINUTE', description: 'Default 5. AI schedule-assist per-user throttle — a SEPARATE meter from the run budget.' },
+  { name: 'workflows.ai_text_max_calls_per_run', type: 'WORKFLOWS_AI_TEXT_MAX_CALLS_PER_RUN', description: 'Default 10. @[ai-text] calls allowed within ONE run — a PER-RUN budget (SB2). Beyond it: resolves to \'\', no call spent.' },
+  { name: 'workflows.ai_text_max_chars',         type: 'WORKFLOWS_AI_TEXT_MAX_CHARS',           description: 'Default 2000. Length cap on each generated @[ai-text] string (SB2), multibyte-safe truncation.' },
 ];
 
 // ── Manual-run 422 keys ─────────────────────────────────────────────────────
@@ -160,6 +169,14 @@ const scheduleMonthAxisRows: ApiRow[] = [
 // ── Schedule exclusions ──────────────────────────────────────────────────────
 const scheduleExtensionRows: ApiRow[] = [
   { name: 'schedule.exclusions', type: '{ months?, weekdays?, dates? }', description: 'A post-filter evaluated after a candidate fire time is computed: drops any candidate whose month/weekday/date matches. months max 11, weekdays max 6, dates max 50 — each list alone can never exclude every value of that dimension (a combination still can, which is rejected on save).' },
+];
+
+// ── AI-text personas (SB2) ───────────────────────────────────────────────────
+const aiPersonaRows: ApiRow[] = [
+  { name: 'neutral',  type: 'default', description: 'Clear, neutral, professional tone.' },
+  { name: 'friendly', type: '—',       description: 'Warm, approachable, conversational tone.' },
+  { name: 'formal',   type: '—',       description: 'Precise, businesslike, respectful tone.' },
+  { name: 'concise',  type: '—',       description: 'As short and direct as possible.' },
 ];
 
 // ── Schedule-assist envelope ─────────────────────────────────────────────────
@@ -249,13 +266,16 @@ WorkflowRun (one execution)
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
             <p class="mb-next-1 font-next-semibold text-next-fg">Capability flags</p>
             <ul class="flex flex-col gap-next-1 text-next-xs text-next-muted-foreground">
-              <li><code class="font-next-mono">is_owner</code> — creator_id === auth user (UI gating for edit/delete/status).</li>
-              <li><code class="font-next-mono">can_be_edited</code> / <code class="font-next-mono">can_be_deleted</code> / <code class="font-next-mono">can_change_status</code> — creator-only, server-authoritative.</li>
+              <li><code class="font-next-mono">is_owner</code> — HUMAN creator match only (isOwnedBy). Presentational, not authoritative — never gate an action on it alone.</li>
+              <li><code class="font-next-mono">can_be_edited</code> / <code class="font-next-mono">can_be_deleted</code> / <code class="font-next-mono">can_change_status</code> — the creator, OR (a system, run-created workflow only) the workspace-owner fallback. Server-authoritative — gate UI actions on THESE, not <code class="font-next-mono">is_owner</code>.</li>
               <li><code class="font-next-mono">can_run</code> — ANY workspace member (running is not creator-gated).</li>
             </ul>
             <p class="mt-next-2 text-next-xs text-next-muted-foreground">
               Pattern mirrors Bot/Approvals. The UI should never invent authorization — always
-              read these flags from the resource.
+              read these flags from the resource. See
+              <code class="font-next-mono">docs/backend/creator-attribution.md</code> for the full
+              ownership model (a workflow's creator is polymorphic — user | workflow_run | bot —
+              though a Workflow itself is only ever created by an authenticated human today).
             </p>
           </div>
         </div>
@@ -406,6 +426,75 @@ WorkflowRun (one execution)
           IDENTITY-ONLY. See ADR-0009 §2 for the full incident record.
         </Alert>
 
+        <Alert variant="info" size="sm">
+          <strong>Runtime operations, if-blocks, and AI text (SB1/SB2 — reverses ADR-0009 §2's
+          "pipeline deferred" stance for step fields; see ADR-0013).</strong> A directive's
+          <code class="font-next-mono">data.pipeline</code> (when non-empty) and a
+          <code class="font-next-mono">&#123;kind:'variable'&#125;</code> union's optional
+          <code class="font-next-mono">pipeline</code> now EXECUTE at run time through the shared
+          <code class="font-next-mono">WorkflowOperationExecutor</code> (the same 68-operation,
+          6-type engine the condition builder uses — 66 ops at SB1/SB2 time, +2 with the
+          choice-coercion batch, see ADR-0014) — transforming the resolved value before it
+          lands in the field. Every text field —
+          <code class="font-next-mono">title</code>/<code class="font-next-mono">description</code>
+          and <code class="font-next-mono">name</code>/<code class="font-next-mono">guidelines</code>
+          alike — supports fenced <code class="font-next-mono">if-block</code> conditionals (pick a
+          branch by a boolean pipeline, depth-capped at 6) and
+          <code class="font-next-mono">@[ai-text]</code> AI-generated text (a frontend-only change:
+          <code class="font-next-mono">title</code>/<code class="font-next-mono">name</code>
+          originally rendered as toolbar-less one-liners offering the pipeline only, and now render
+          as ordinary multi-line editors with the full toolbar — the backend resolver always treated
+          every text field identically). <strong>Everything is fail-closed —
+          never an exception:</strong> a bad pipeline/condition/AI call resolves to
+          <code class="font-next-mono">''</code> (or the field's own soft default), never breaks
+          the run — except a field's pre-existing HARD-fail doctrine (e.g. a blank
+          <code class="font-next-mono">title</code>) still applies.
+        </Alert>
+
+        <div class="grid grid-cols-1 gap-next-3 next-sm:grid-cols-2">
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">@[ai-text] — AI-generated text (SB2)</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              The (already resolved) prompt + a persona are sent to a TOOL-LESS agent
+              (<code class="font-next-mono">WorkflowAiTextAgent</code>, provider/model from
+              <code class="font-next-mono">config('ai')</code>). Budgeted PER RUN
+              (<code class="font-next-mono">ai_text_max_calls_per_run</code>, default 10 —
+              beyond it: <code class="font-next-mono">''</code>, no call spent) and length-capped
+              (<code class="font-next-mono">ai_text_max_chars</code>, default 2000). Nested
+              <code class="font-next-mono">@[ai-text]</code> is depth-capped at 3. Personas are a
+              CLOSED set of TONES — deliberately NOT the Bot/Character system (see ADR-0013 for
+              why a bot-as-persona idea was left for a possible future, not built now).
+            </p>
+          </div>
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">Prompt-injection posture (accepted, bounded)</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              The resolved prompt embeds untrusted form values; the agent's instructions frame
+              everything as DATA to write about, never as commands. The blast radius stays narrow
+              even if that framing is defeated: NO tools, output lands only in a task/report field
+              in the SAME workspace, length-capped, and can reference only the whitelisted
+              <code class="font-next-mono">trigger</code>/<code class="font-next-mono">steps</code>
+              context. A documented, ACCEPTED risk — not eliminated.
+            </p>
+          </div>
+        </div>
+
+        <ApiTable title="AI-text personas (label-less on the wire — GET .../workflow-catalog ai_personas)" :rows="aiPersonaRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong>Runtime-only vs. write-validated.</strong> There is NO PHP markdown parser in
+          this codebase, so a directive pipeline / if-block / <code class="font-next-mono">@[ai-text]</code>
+          inside <code class="font-next-mono">title</code>/<code class="font-next-mono">description</code>/
+          <code class="font-next-mono">name</code>/<code class="font-next-mono">guidelines</code>
+          is NOT validated on save — a malformed one simply resolves emptier than intended at run
+          time. The <code class="font-next-mono">&#123;kind:'variable'&#125;</code> union's
+          pipeline (<code class="font-next-mono">priority</code>, <code class="font-next-mono">deadline</code>,
+          <code class="font-next-mono">submissions_from</code>/<code class="font-next-mono">submissions_to</code>)
+          is the ONE exception — it IS write-validated (type-flowed from the ref's type to the
+          field's accepted terminal), a bad one is a <code class="font-next-mono">422</code> under
+          <code class="font-next-mono">steps.&lt;i&gt;.config.&lt;field&gt;.pipeline.&lt;m&gt;...</code>.
+        </Alert>
+
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-2 font-next-semibold text-next-fg">The resolver's whitelist (exfiltration-safe)</p>
           <ul class="flex list-disc flex-col gap-next-1 pl-next-5 text-next-xs text-next-muted-foreground">
@@ -434,6 +523,17 @@ WorkflowRun (one execution)
           bypasses business logic. <strong>First failure stops the run</strong> — steps commit
           independently, so a workflow whose first step created a task and whose second step
           failed leaves the task in place; the run timeline shows exactly where it stopped.
+        </p>
+        <p class="text-next-xs text-next-muted-foreground">
+          <code class="font-next-mono">title</code>/<code class="font-next-mono">description</code>/
+          <code class="font-next-mono">name</code>/<code class="font-next-mono">guidelines</code>
+          all resolve variable-operation pipelines, if-blocks, AND
+          <code class="font-next-mono">@[ai-text]</code> identically — see "Runtime operations,
+          if-blocks, and AI text" in the typed variable system section above.
+          <code class="font-next-mono">priority</code> is additionally a <strong>choice field</strong>:
+          its value-or-variable pipeline must END in a choice-producing op
+          (<code class="font-next-mono">enum_to_choice</code> / <code class="font-next-mono">match_to_choice</code>)
+          mapping into <code class="font-next-mono">TaskPriority::ids()</code> — see ADR-0014.
         </p>
         <ApiTable title="Step types" type-header="Config" :rows="stepTypeRows" />
 
@@ -707,10 +807,16 @@ WorkflowRun (one execution)
           <strong>Origin is authoritative — creator_id is not.</strong>
           <code class="font-next-mono">WorkflowRun.origin</code> (<code class="font-next-mono">event | schedule | manual</code>)
           records how a run actually began. <code class="font-next-mono">creator_id</code> is a
-          softer field: <code class="font-next-mono">HasCreator</code> stamps
-          <code class="font-next-mono">auth()->id()</code> on every save whenever unset, so an
-          EVENT run fired inside an authenticated request still carries that user as creator —
-          never infer engine-vs-manual from <code class="font-next-mono">creator_id</code>.
+          softer field, explicitly stamped by <code class="font-next-mono">WorkflowRunManager::start()</code>:
+          the acting user for a MANUAL run, or the WORKFLOW'S OWN AUTHOR for an engine-started
+          (event/schedule) run — so <code class="font-next-mono">creator_id</code> is never
+          <code class="font-next-mono">null</code>, even on a schedule-sweep run with no HTTP
+          request in play. Still: never infer engine-vs-manual from
+          <code class="font-next-mono">creator_id</code> — an EVENT run carries the workflow's
+          author, not necessarily whoever caused the triggering change. See
+          <code class="font-next-mono">docs/backend/creator-attribution.md</code> and
+          <strong>ADR-0015</strong> for the full polymorphic-creator model this run-attribution
+          rule is part of.
         </p>
       </div>
     </StorySection>
@@ -800,6 +906,84 @@ WHERE id = ? AND state = 'pending'</pre>
             output/error — so a failed run's timeline shows EXACTLY which step stopped it and why.
           </p>
         </div>
+
+        <Alert variant="info" size="sm">
+          <strong>GLOBAL cross-workflow feed — <code class="font-next-mono">GET /workflows/runs</code>
+          (ADR-0016).</strong> Every run in the workspace, regardless of which workflow started it —
+          the SAME <code class="font-next-mono">IndexWorkflowRunsRequest</code> + query builder as
+          the per-workflow list above, sharing its filters
+          (<code class="font-next-mono">state[]</code>/<code class="font-next-mono">origin[]</code>/
+          <code class="font-next-mono">trigger_type[]</code>/<code class="font-next-mono">date_from</code>/
+          <code class="font-next-mono">date_to</code>/<code class="font-next-mono">date_preset</code> —
+          every filter is now an ARRAY; a legacy single-value scalar such as
+          <code class="font-next-mono">?state=completed</code> still works, coerced to a one-element
+          array; an unrecognised enum member is silently dropped, never 422'd), plus a global-only
+          <code class="font-next-mono">workflow_id</code> scope. Rows additionally carry a
+          <code class="font-next-mono">workflow</code> block
+          (<code class="font-next-mono">id, name, icon, status, trigger_type</code>) — eager-loaded
+          ONLY on this feed (<code class="font-next-mono">whenLoaded</code>), since the per-workflow
+          list already has the workflow context from its URL. Authorization is
+          <code class="font-next-mono">viewAny</code> on <code class="font-next-mono">Workflow</code>
+          (any authenticated workspace member) rather than <code class="font-next-mono">view</code>
+          on one workflow. Frontend: the top-level "All runs" list
+          (<code class="font-next-mono">WorkflowRunsListView.vue</code>, module-nav item, route
+          <code class="font-next-mono">next.workflows.runs</code>) — the only next runs surface that
+          carries the mandatory <code class="font-next-mono">FilterBar</code> + Saved Views; the
+          per-workflow Runs SECTION keeps its detail-nested exemption.
+        </Alert>
+
+        <div class="grid grid-cols-1 gap-next-3 next-sm:grid-cols-2">
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">Schedule run "reason" (frontend-computed)</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              A SCHEDULE-origin run's detail additionally carries
+              <code class="font-next-mono">schedule_descriptor</code> — the parent workflow's v2
+              schedule block, upgraded via <code class="font-next-mono">LegacyScheduleUpgrader</code>.
+              This is DATA only; the human sentence ("pierwszy czwartek o 14:00 w lipcu") is computed
+              on the FRONTEND (<code class="font-next-mono">describeOccurrence</code> in
+              <code class="font-next-mono">workflowSchedule.ts</code>, reusing the schedule builder's
+              own clause grammar) from <code class="font-next-mono">schedule_descriptor</code> +
+              the run's <code class="font-next-mono">trigger_payload.scheduled_at</code> — the same
+              FE-owns-the-grammar split ADR-0012 established for the builder's summary sentence. Falls
+              back to a plain timestamp when the occurrence cannot be named semantically.
+            </p>
+          </div>
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">Form/submission run detail + diff</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              A <code class="font-next-mono">form_submitted</code> run's detail renders a Form card
+              (opens the form in a new tab) and a Submission card, which opens
+              <code class="font-next-mono">SubmissionPreviewDrawer</code>
+              (<code class="font-next-mono">pages/forms/</code>) in its new
+              <code class="font-next-mono">diff</code> mode: the run's frozen answer snapshot
+              (<code class="font-next-mono">trigger_payload.fields</code>) compared against the
+              submission's CURRENT answers (<code class="font-next-mono">GET
+              /api/form-submissions/{id}</code>), highlighting changed fields with the project-wide
+              <code class="font-next-mono">next-modified</code> token
+              (<code class="font-next-mono">Badge variant="modified"</code>,
+              <code class="font-next-mono">bg-next-modified-subtle</code>) — never color-only, always
+              paired with a "Changed" label/icon.
+            </p>
+          </div>
+        </div>
+
+        <p class="text-next-xs text-next-muted-foreground">
+          The origin/trigger-type pair collapses into ONE "source" badge on the run row and detail
+          header (an i18n-only relabel — the <code class="font-next-mono">event</code> wire value is
+          unchanged; it now reads "Wysłanie formularza"/"Form submission" instead of the generic
+          "Zdarzenie"/"Event"). The run-now flow's <code class="font-next-mono">form_submitted</code>
+          target moved from a raw submission-id <code class="font-next-mono">TextInput</code> to a
+          Pick (<code class="font-next-mono">SubmissionPickerDrawer</code>, a lean list scoped to the
+          trigger's bound form) / Create (<code class="font-next-mono">FormFillView</code> in a
+          drawer, producing a REAL submission) pair —
+          <code class="font-next-mono">SubmissionCard</code> gained a <code class="font-next-mono">selectable</code>
+          prop for this. The <code class="font-next-mono">POST /workflows/{id}/run
+          {target_id}</code> contract and its 422 bag (<code class="font-next-mono">target_id</code> /
+          <code class="font-next-mono">workflow</code>) are UNCHANGED — only how the id is obtained
+          changed. Full UX spec: <code class="font-next-mono">docs/next/workflows-uxui-spec.md</code>
+          §5/§6 (REVISION 6); design record:
+          <code class="font-next-mono">docs/decisions/ADR-0016-workflows-global-runs-and-schedule-reason.md</code>.
+        </p>
       </div>
     </StorySection>
 
@@ -895,7 +1079,7 @@ WHERE id = ? AND state = 'pending'</pre>
         </div>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <p class="mb-next-1 font-next-semibold text-next-fg">Variable add-ons — two, not three</p>
+          <p class="mb-next-1 font-next-semibold text-next-fg">Variable add-ons — two, not three; redesigned into a single in-field control + Modal (SF3.3-5)</p>
           <p class="text-next-xs text-next-muted-foreground">
             <code class="font-next-mono">ValueOrVariableField.vue</code> (generic literal-or-variable)
             and <code class="font-next-mono">DateOrVariableField.vue</code> (date-specific, needs
@@ -903,19 +1087,39 @@ WHERE id = ? AND state = 'pending'</pre>
             structured-field SHAPES that exist today, rather than one over-parameterized component.
             Both echo the editor's <code class="font-next-mono">VariableChip</code> look without
             importing it directly (different underlying data models — directive/ProseMirror state
-            vs. the <code class="font-next-mono">{kind}</code> union).
+            vs. the <code class="font-next-mono">{kind}</code> union). <strong>SF3.3-5</strong>
+            redesigned the field into a single bordered, input-like box: a compact
+            <code class="font-next-mono">pencil</code>/<code class="font-next-mono">braces</code>
+            two-icon toggle sits inside the box (replacing SF1's <code class="font-next-mono">SegmentedControl</code>),
+            a picked variable renders as a chip AS the field's value, and clicking the chip opens an
+            OPERATIONS MODAL (the shared <code class="font-next-mono">VariablePipelineEditor</code> +
+            a live "Returns …" gate + a Save blocked until the pipeline satisfies the field) instead
+            of expanding an inline editor under the field. <strong>SF3.2</strong> dropped the
+            picker's type pre-filter — every field now offers EVERY referenceable variable
+            (identifiers still stripped) and relies on the pipeline to coerce it, including mapping
+            into a fixed CHOICE set for <code class="font-next-mono">priority</code>
+            (<code class="font-next-mono">enum_to_choice</code>/<code class="font-next-mono">match_to_choice</code>,
+            ADR-0014). A field whose SAVED pipeline does not satisfy its contract shows a danger
+            skin + an "action required" chip pill + one inline helper line, and blocks the step
+            card/drawer's Save — derived from the saved config so it engages even while the step
+            card is collapsed (auto-expanding it on hydration, same as an existing 422 already did).
           </p>
         </div>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <p class="mb-next-1 font-next-semibold text-next-fg">Step editor: ordered list, no canvas</p>
+          <p class="mb-next-1 font-next-semibold text-next-fg">Step editor: ordered list, no canvas — collapsible cards + type-selection cards (SF2)</p>
           <p class="text-next-xs text-next-muted-foreground">
             The step model is strictly LINEAR (one ordered list, no branching, no parallel
             paths). The editor uses the SAME ▲▼ reorder pattern as the Approvals pipeline builder
             (<code class="font-next-mono">WorkflowStepListEditor.vue</code> /
             <code class="font-next-mono">WorkflowStepCard.vue</code>) rather than a visual
             node-and-edge canvas — unchanged from Etap-5 (ADR-0008 #14), just with 2 step types
-            instead of 4.
+            instead of 4. <strong>SF2:</strong> adding a step is now a grid of SELECTION CARDS (one
+            per type, matching the trigger-step's own card look) rather than a dropdown menu; every
+            step card is COLLAPSIBLE — a fresh workflow's single step starts open, an existing
+            multi-step workflow starts fully collapsed to one-line summaries (the step's
+            title/name with its variable chips stripped to their names), and any card carrying a
+            422/duplicate-key error auto-expands so a failed save always lands on the field to fix.
           </p>
         </div>
 
@@ -926,8 +1130,15 @@ WHERE id = ? AND state = 'pending'</pre>
           model, the wall-clock-grid semantics, the anchored live preview, the AI-modal-with-approval
           flow — and what it supersedes from the earlier family-based
           <code class="font-next-mono">docs/decisions/ADR-0010-workflows-schedule-rebuild.md</code>),
-          and <code class="font-next-mono">docs/next/workflows-uxui-spec.md</code> §4.5 (REVISION 4)
-          for the complete UX/UI specification these frontend decisions were drawn from.
+          <code class="font-next-mono">docs/decisions/ADR-0013-workflows-step-operations-conditionals-ai-text.md</code>
+          for the runtime operations/if-block/AI-text reasoning (and how it reverses ADR-0009 §2's
+          "pipeline deferred" stance), <code class="font-next-mono">docs/decisions/ADR-0014-workflows-choice-coercion.md</code>
+          for the choice-coercion design record (why a generic <code class="font-next-mono">enum</code>
+          type + per-field <code class="font-next-mono">targetOptions</code> + a
+          <code class="font-next-mono">producesChoice()</code> terminal rule, instead of a new
+          branded type), and <code class="font-next-mono">docs/next/workflows-uxui-spec.md</code>
+          §4.5 (REVISION 4), §4.6/§4.7/§4.9 (SB1/SB2/SF1/SF2/SF3 as-built updates) for the complete
+          UX/UI specification these frontend decisions were drawn from.
         </p>
       </div>
     </StorySection>
@@ -939,8 +1150,12 @@ WHERE id = ? AND state = 'pending'</pre>
           <li><strong>Bot-authored submission tracking</strong> — <code class="font-next-mono">source</code> cannot express "a bot filled this form in" (it only derives manual/task from the submittable morph). Would need a new column, not just morph-derived logic.</li>
           <li><strong>Wait-for-approval resume</strong> — <code class="font-next-mono">WorkflowRunState.WAITING</code> is declared but never produced. There is no longer a <code class="font-next-mono">start_approval</code> step at all in the 5.1 step set.</li>
           <li><strong>Manual run cancellation</strong> — <code class="font-next-mono">WorkflowRunState.CANCELLED</code> is declared but no cancel action exists.</li>
-          <li><strong>An operations pipeline for the typed variable system</strong> — no computed transformations (string concatenation, date formatting, arithmetic) on a resolved variable. Deliberately deferred (ADR-0009 §2).</li>
-          <li><strong>TaskSelect extraction</strong> — largely MOOT after the re-scope (the standalone <code class="font-next-mono">task_id</code> fields it would have served, on the removed <code class="font-next-mono">assign_bot</code>/<code class="font-next-mono">attach_form</code>/<code class="font-next-mono">start_approval</code> steps, no longer exist). The manual-run FormSubmission target picker still has the same raw-TextInput gap.</li>
+          <li><strong>~~An operations pipeline for the typed variable system~~ — DONE (SB1, ADR-0013), no longer deferred.</strong> A directive/value-or-variable reference now transforms its value through the shared 68-operation executor at run time (66 at SB1 time, +2 with the choice-coercion batch — ADR-0014); ADR-0009 §2's "deferred" consequence is explicitly reversed by ADR-0013.</li>
+          <li><strong>~~Mapping a value into a fixed destination option set (a task priority)~~ — DONE (ADR-0014), no longer deferred.</strong> <code class="font-next-mono">enum_to_choice</code> / <code class="font-next-mono">match_to_choice</code> let a <code class="font-next-mono">priority</code> value-or-variable pipeline map an arbitrary source into <code class="font-next-mono">TaskPriority::ids()</code>; the write validator now REQUIRES this for a choice field (a bare ref or a non-choice terminal like <code class="font-next-mono">enum_to_text</code> is rejected) — a validator-only tightening, runtime coercion is unchanged.</li>
+          <li><strong>Bot/Character as an AI-text persona</strong> — <code class="font-next-mono">@[ai-text]</code>'s personas are a small, fixed set of TONES (neutral/friendly/formal/concise), deliberately NOT the Bot/Character system. Letting an author pick "write like Bot X" is a plausible future extension, not built now (see ADR-0013 §4).</li>
+          <li><strong>Step-output stems are still a hand-written FE mirror</strong> — <code class="font-next-mono">workflowVariables.ts</code>'s <code class="font-next-mono">STEP_OUTPUTS</code> constant duplicates the backend's per-step-type output descriptors rather than reading them from the live catalog (the catalog's own <code class="font-next-mono">source:'steps'</code> entries are explicitly dropped). A backend output rename would silently desync from this mirror. Tracked, not fixed by this doc pass — see <code class="font-next-mono">docs/next/workflows-uxui-spec.md</code> §4.7.3.</li>
+          <li><strong>The condition TREE builder (groups of AND/OR + typed pipelines)</strong> — a separately-developed rebuild of the Conditions section (<code class="font-next-mono">WorkflowConditionEngine</code>, <code class="font-next-mono">WorkflowConditionModal.vue</code>/<code class="font-next-mono">WorkflowConditionGroup.vue</code>) shares the SAME operations executor this page's typed-variable-system section describes, but its own API/UX documentation (this page's "Typed conditions" section, still describing the legacy flat clause list) has not yet been updated to match — a known documentation gap, not part of this pass's scope.</li>
+          <li><strong>TaskSelect extraction</strong> — largely MOOT after the re-scope (the standalone <code class="font-next-mono">task_id</code> fields it would have served, on the removed <code class="font-next-mono">assign_bot</code>/<code class="font-next-mono">attach_form</code>/<code class="font-next-mono">start_approval</code> steps, no longer exist). <strong>~~The manual-run FormSubmission target picker had a raw-TextInput gap~~ — DONE.</strong> Replaced by a Pick (<code class="font-next-mono">SubmissionPickerDrawer</code>) / Create (<code class="font-next-mono">FormFillView</code> in a drawer) pair — see "Global runs feed + monitoring" above and ADR-0016.</li>
           <li><strong>Visual canvas builder</strong> — only warranted if the step model grows real branching/parallelism; the current linear model is well served by the ▲▼ list.</li>
           <li><strong>Per-tenant error isolation in the sweep commands</strong> — <code class="font-next-mono">workflows:run-scheduled</code> / <code class="font-next-mono">workflows:reap-stale-runs</code> have no per-tenant try/catch yet (consistent with the existing Bot reaper pattern; hardening queued separately).</li>
           <li><strong>Public holiday awareness</strong> — the "last working day" rule (and every other schedule rule) has no holiday-calendar concept; a fire date landing on a holiday still fires normally. Would need a real holiday-calendar data source.</li>

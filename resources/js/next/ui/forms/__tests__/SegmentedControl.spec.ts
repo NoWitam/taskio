@@ -164,3 +164,66 @@ describe('SegmentedControl — multiple (checkbox cards)', () => {
     wrapper.unmount();
   });
 });
+
+describe('SegmentedControl — selectAll + vertical stack', () => {
+  beforeEach(() => installBrowserMocks());
+  afterEach(() => restoreBrowserMocks());
+
+  const selectAllBtn = (w: ReturnType<typeof mount>) => w.find('[data-seg-select-all]');
+
+  it('selectAll renders a tri-state leading card: false → mixed → true', async () => {
+    const wrapper = mount(SegmentedControl, {
+      props: { options: VIEW, multiple: true, selectAll: true, modelValue: [] },
+    });
+    expect(selectAllBtn(wrapper).attributes('aria-checked')).toBe('false');
+
+    await wrapper.setProps({ modelValue: ['board'] });
+    expect(selectAllBtn(wrapper).attributes('aria-checked')).toBe('mixed');
+
+    await wrapper.setProps({ modelValue: ['list', 'board', 'calendar'] });
+    expect(selectAllBtn(wrapper).attributes('aria-checked')).toBe('true');
+  });
+
+  it('clicking select-all toggles between ALL enabled options and none', async () => {
+    const wrapper = mount(SegmentedControl, {
+      props: { options: VIEW, multiple: true, selectAll: true, modelValue: ['board'] },
+    });
+    // Some selected → click selects EVERYTHING (options order).
+    await selectAllBtn(wrapper).trigger('click');
+    expect(lastEmit(wrapper.emitted('update:modelValue'))).toEqual(['list', 'board', 'calendar']);
+
+    // All selected → click clears.
+    await wrapper.setProps({ modelValue: ['list', 'board', 'calendar'] });
+    await selectAllBtn(wrapper).trigger('click');
+    expect(lastEmit(wrapper.emitted('update:modelValue'))).toEqual([]);
+  });
+
+  it('select-all skips DISABLED options (never force-toggles them)', async () => {
+    const opts: SegmentOption[] = [
+      { value: 'a', label: 'A' },
+      { value: 'b', label: 'B', disabled: true },
+      { value: 'c', label: 'C' },
+    ];
+    const wrapper = mount(SegmentedControl, {
+      props: { options: opts, multiple: true, selectAll: true, modelValue: [] },
+    });
+    await selectAllBtn(wrapper).trigger('click');
+    expect(lastEmit(wrapper.emitted('update:modelValue'))).toEqual(['a', 'c']);
+  });
+
+  it('selectAll is a no-op in SINGLE mode (never rendered)', () => {
+    const wrapper = mount(SegmentedControl, {
+      props: { options: VIEW, modelValue: 'list', selectAll: true },
+    });
+    expect(selectAllBtn(wrapper).exists()).toBe(false);
+  });
+
+  it('columns=1 renders a single-column grid (a vertical top→bottom stack)', () => {
+    const wrapper = mount(SegmentedControl, {
+      props: { options: VIEW, multiple: true, columns: 1, modelValue: [] },
+    });
+    const group = wrapper.find('[role="group"]');
+    expect(group.classes()).toContain('grid');
+    expect((group.element as HTMLElement).style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))');
+  });
+});

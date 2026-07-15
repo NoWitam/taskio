@@ -24,7 +24,10 @@ class WorkflowListResource extends JsonResource
             'step_count' => count($this->steps ?? []),
             'next_due_at' => $this->next_due_at?->toISOString(),
 
-            'is_owner' => $this->creator_id === $request->user()?->id,
+            // Hot path: ownerUserId() reads creator_type/creator_id without loading the User
+            // (the list query does not eager-load creator). A run/bot creator yields null ->
+            // is_owner=false, matching isOwnedBy without the per-row N+1.
+            'is_owner' => $request->user() !== null && $this->ownerUserId() === $request->user()->id,
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

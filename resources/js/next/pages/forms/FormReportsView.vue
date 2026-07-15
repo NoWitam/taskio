@@ -374,9 +374,44 @@ const previewError = ref(false);
 const detailOpen = computed<boolean>({
   get: () => selected.value !== null,
   set: (open) => {
-    if (!open) selected.value = null;
+    if (!open) {
+      selected.value = null;
+      // Drop the deep-link param so the URL reflects the closed drawer (and a later
+      // re-open by the same id fires the query watcher again). Mirrors FormSubmissionsView.
+      if (route.query.report != null) {
+        const { report: _drop, ...rest } = route.query;
+        void router.replace({ query: rest });
+      }
+    }
   },
 });
+
+// --- Deep-link: `?report=<id>` auto-opens the report preview -------------------
+// Honors a report id in the URL on mount + route change: open it from the loaded page
+// when present, otherwise fetch the single report on demand (mirrors the submissions
+// `?submission=` pattern). The create_form_report run-step card links here.
+function readReportQuery(): string | null {
+  const raw = route.query.report;
+  const id = Array.isArray(raw) ? raw[0] : raw;
+  return typeof id === 'string' && id ? id : null;
+}
+async function openReportById(id: string): Promise<void> {
+  const inList = store.reportsFor(formId.value).find((r) => r.id === id);
+  if (inList) {
+    selected.value = inList;
+    return;
+  }
+  try {
+    selected.value = await store.fetchReport(id);
+  } catch {
+    toast.danger(t('forms.reports.actionError'));
+  }
+}
+function syncDrawerFromQuery(): void {
+  const id = readReportQuery();
+  if (id && (!selected.value || selected.value.id !== id)) void openReportById(id);
+}
+watch(() => route.query.report, () => syncDrawerFromQuery());
 
 async function loadPreview(): Promise<void> {
   previewSource.value = '';
@@ -450,6 +485,7 @@ onMounted(() => {
   hydrateFromQuery();
   void savedViews.load();
   refetch();
+  syncDrawerFromQuery();
 });
 </script>
 

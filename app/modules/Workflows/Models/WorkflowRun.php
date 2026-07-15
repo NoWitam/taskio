@@ -19,11 +19,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * is just the persisted row.
  *
  * origin (EVENT | SCHEDULE | MANUAL) is the AUTHORITATIVE record of how the run began.
- * creator_id is a softer audit field: HasCreator's saving hook stamps auth()->id() whenever
- * it is unset, so an engine run started OUTSIDE a request (queue/console/schedule) records
- * NULL, while an engine run whose trigger fired INSIDE an authenticated request carries the
- * triggering user. A MANUAL run explicitly carries the acting user. Do not infer engine vs
- * manual from creator_id — read `origin`.
+ * creator is a softer audit field and is now ALWAYS attributed: WorkflowRunManager::start
+ * stamps the acting user for a MANUAL run and the workflow AUTHOR for an engine run (event/
+ * schedule), so creator_id is never NULL for an engine run. Do not infer engine vs manual
+ * from creator_id — read `origin`. The run row itself is a 'user'-typed HasCreator record;
+ * the domain records its STEPS create are attributed to the RUN instead (via the polymorphic
+ * HasCreator, creator_type='workflow_run'), so those are system records nobody owns.
  */
 class WorkflowRun extends AbstractModel
 {
@@ -41,6 +42,7 @@ class WorkflowRun extends AbstractModel
         'depth',
         'origin_run_id',
         'creator_id',
+        'creator_type',
         'started_at',
         'finished_at',
         'error',

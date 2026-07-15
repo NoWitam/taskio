@@ -5,9 +5,12 @@ namespace App\Modules\Forms\Policies;
 use App\Models\User;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormReport;
+use App\Policies\Concerns\ChecksRecordOwnership;
 
 class FormReportPolicy
 {
+    use ChecksRecordOwnership;
+
     /**
      * Determine whether the user can view any form reports.
      */
@@ -30,13 +33,9 @@ class FormReportPolicy
      */
     public function delete(?User $user, FormReport $report): bool
     {
-        if ($user === null) {
-            return false;
-        }
-
         $report->loadMissing('form');
-        
-        return $report->form->creator_id === $user->id;
+
+        return $this->ownsOrManagesSystemRecord($report->form, $user);
     }
 
     /**
@@ -44,13 +43,9 @@ class FormReportPolicy
      */
     public function restore(?User $user, FormReport $report): bool
     {
-        if ($user === null) {
-            return false;
-        }
-
         $report->loadMissing('form');
-        
-        return $report->form->creator_id === $user->id;
+
+        return $this->ownsOrManagesSystemRecord($report->form, $user);
     }
 
     /**
@@ -58,12 +53,8 @@ class FormReportPolicy
      */
     public function forceDelete(?User $user, FormReport $report): bool
     {
-        if ($user === null) {
-            return false;
-        }
-
         $report->loadMissing('form');
-        
-        return $report->form->creator_id === $user->id;
+
+        return $this->ownsOrManagesSystemRecord($report->form, $user);
     }
 }

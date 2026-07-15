@@ -81,6 +81,24 @@ class WorkflowStepsTest extends TestCase
         app(CreateTaskStep::class)->run(['title' => '  '], $this->runRow($owner), []);
     }
 
+    public function test_create_task_step_clamps_a_long_title_to_the_column_width(): void
+    {
+        // REGRESSION (reviewer S2): a RESOLVED title (verbose variable / pipeline / ai-text output)
+        // longer than tasks.title (varchar 255) would crash the run with a raw SQL 22001. It must be
+        // clamped so the run still succeeds.
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $output = app(CreateTaskStep::class)->run(
+            ['title' => str_repeat('x', 400)],
+            $this->runRow($owner),
+            [],
+        );
+
+        $task = Task::findOrFail($output['task_id']);
+        $this->assertSame(255, mb_strlen($task->title));
+    }
+
     public function test_create_task_step_full_field_parity(): void
     {
         $owner = User::factory()->create();
@@ -189,6 +207,8 @@ class WorkflowStepsTest extends TestCase
 
         $this->assertArrayHasKey('report_id', $output);
         $this->assertSame('Weekly digest', $output['report_name']);
+        // form_id rides the output so the run detail can deep-link to the report's view.
+        $this->assertSame($form->id, $output['form_id']);
         $this->assertDatabaseHas('form_reports', [
             'id' => $output['report_id'],
             'form_id' => $form->id,

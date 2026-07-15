@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
-// WorkflowScheduleTimePanel.spec — the "Czas" tab `at` list (§4.5.5a, REV5.1). User
-// feedback: the per-time ✕ must live INSIDE the field, not as an external sibling Button.
-// So each `at` TimePicker uses its OWN `clearable` ✕ (a descendant of the picker's field
-// shell); clearing a time (the picker emits null) removes THAT row, and with a single time
-// the picker is not clearable so the last time can't be removed. Mounts the REAL panel +
-// real TimePickers over an `at` axis.
+// WorkflowScheduleTimePanel.spec — the "Czas" tab `at` editor (§4.5.5a, REV5.2). User
+// feedback: the times are no longer a row of editable pickers — there is ONE draft
+// TimePicker fused with the "Add time" button (a single entry group), and the added
+// times render as compact chips on the same wrapping line. Each chip carries its own
+// ✕; the LAST chip hides it (the axis requires ≥1 time). A duplicate / empty draft
+// disables Add. Mounts the REAL panel + a real TimePicker over an `at` axis.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { nextTick } from 'vue';
@@ -12,10 +12,10 @@ import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/hel
 import { setLocale } from '../../../app/i18n';
 import { en } from '../../../app/i18n/en';
 import WorkflowScheduleTimePanel from '../WorkflowScheduleTimePanel.vue';
+import TimePicker from '../../../ui/forms/TimePicker.vue';
 import type { TimeAxis } from '../workflowSchedule';
 
 const SCH = en.workflows.schedule;
-const CLEAR_TIME = en.pickers.clearTime;
 
 function mountPanel(axis: TimeAxis) {
   const wrapper: VueWrapper = mount(WorkflowScheduleTimePanel, {
@@ -27,40 +27,72 @@ function mountPanel(axis: TimeAxis) {
   return wrapper;
 }
 
-const atOf = (w: VueWrapper) => (w.props('modelValue') as { at: string[] }).at;
+const atOf = (w: VueWrapper) => (w.props() as { modelValue: { at: string[] } }).modelValue.at;
 
-describe('WorkflowScheduleTimePanel — `at` list clear (REV5.1)', () => {
+const addButton = (w: VueWrapper) =>
+  w.findAll('button').find((b) => b.text().includes(SCH.field.addTime))!;
+
+const chipRemove = (w: VueWrapper, time: string) =>
+  w.find(`button[aria-label="${SCH.field.removeTime} ${time}"]`);
+
+/** Set the DRAFT picker's value (the single TimePicker bound to `newAtTime`). */
+async function setDraft(w: VueWrapper, value: string): Promise<void> {
+  w.findComponent(TimePicker).vm.$emit('update:modelValue', value);
+  await nextTick();
+}
+
+describe('WorkflowScheduleTimePanel — `at` chips editor (REV5.2)', () => {
   beforeEach(() => {
     installBrowserMocks();
     setLocale('en');
   });
   afterEach(() => restoreBrowserMocks());
 
-  it('each `at` clear ✕ lives INSIDE the field (a picker-shell descendant), with no external remove Button', () => {
+  it('renders ONE draft picker + a chip per time; each chip has its own ✕', () => {
     const wrapper = mountPanel({ mode: 'at', at: ['09:00', '12:00'] });
-    // The old external per-row remove Button (labelled `field.removeTime`) is gone…
-    expect(wrapper.find(`button[aria-label="${SCH.field.removeTime}"]`).exists()).toBe(false);
-    // …replaced by the picker's OWN clear ✕ — one per field, each a `.next-field-shell` descendant.
-    const clears = wrapper.findAll(`button[aria-label="${CLEAR_TIME}"]`);
-    expect(clears.length).toBe(2);
-    clears.forEach((c) => expect(c.element.closest('.next-field-shell')).not.toBeNull());
+    // A single draft TimePicker (the entry group), not one picker per time.
+    expect(wrapper.findAllComponents(TimePicker).length).toBe(1);
+    // Both times render as chips with their own remove ✕.
+    expect(wrapper.text()).toContain('09:00');
+    expect(wrapper.text()).toContain('12:00');
+    expect(chipRemove(wrapper, '09:00').exists()).toBe(true);
+    expect(chipRemove(wrapper, '12:00').exists()).toBe(true);
     wrapper.unmount();
   });
 
-  it('clearing a time (the picker emits null) removes THAT row when there is more than one', async () => {
-    const wrapper = mountPanel({ mode: 'at', at: ['09:00', '12:00'] });
-    const clears = wrapper.findAll(`button[aria-label="${CLEAR_TIME}"]`);
-    expect(clears.length).toBe(2);
-    await clears[0].trigger('click');
+  it('adding: a filled draft + "Add time" appends and clears the draft', async () => {
+    const wrapper = mountPanel({ mode: 'at', at: ['09:00'] });
+    // An empty draft disables Add.
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined();
+
+    await setDraft(wrapper, '14:30');
+    expect(addButton(wrapper).attributes('disabled')).toBeUndefined();
+    await addButton(wrapper).trigger('click');
     await nextTick();
-    // The first row is removed (null ⇒ removeAt), leaving the second.
+
+    expect(atOf(wrapper)).toEqual(['09:00', '14:30']);
+    wrapper.unmount();
+  });
+
+  it('a DUPLICATE draft disables Add', async () => {
+    const wrapper = mountPanel({ mode: 'at', at: ['09:00'] });
+    await setDraft(wrapper, '09:00');
+    expect(addButton(wrapper).attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+  });
+
+  it('a chip ✕ removes THAT time when there is more than one', async () => {
+    const wrapper = mountPanel({ mode: 'at', at: ['09:00', '12:00'] });
+    await chipRemove(wrapper, '09:00').trigger('click');
+    await nextTick();
     expect(atOf(wrapper)).toEqual(['12:00']);
     wrapper.unmount();
   });
 
-  it('with a single time the picker is NOT clearable, so the last time cannot be removed', () => {
+  it('the LAST chip hides its ✕ (the axis requires at least one time)', () => {
     const wrapper = mountPanel({ mode: 'at', at: ['09:00'] });
-    expect(wrapper.find(`button[aria-label="${CLEAR_TIME}"]`).exists()).toBe(false);
+    expect(wrapper.text()).toContain('09:00');
+    expect(chipRemove(wrapper, '09:00').exists()).toBe(false);
     wrapper.unmount();
   });
 });

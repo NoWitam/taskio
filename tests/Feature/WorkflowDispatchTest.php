@@ -27,10 +27,9 @@ use Tests\TestCase;
  * deferred to DB::afterCommit at the hook, so it fires only after the authoring write commits.
  *
  * NOTE on run authorship: `origin` (EVENT | SCHEDULE | MANUAL) is the authoritative signal for
- * how a run began. `creator_id` is NOT that signal — HasCreator stamps auth()->id() on every
- * save, so an EVENT run fired inside an authenticated request carries the triggering user, and
- * the step runner (which updates the run repeatedly) keeps it stamped. A MANUAL run is
- * distinguished by origin=MANUAL and explicitly carries the acting user. Tests assert on origin.
+ * how a run began — never `creator_id`. WorkflowRunManager::start attributes a MANUAL run to the
+ * acting user and an ENGINE run (event/schedule) to the workflow AUTHOR, so creator_id is never
+ * NULL and does not distinguish the two. Tests assert on origin.
  */
 class WorkflowDispatchTest extends TestCase
 {
@@ -268,6 +267,46 @@ class WorkflowDispatchTest extends TestCase
 
         $this->submit($form, $owner, ['data' => ['priority' => 'high']]);
         $this->assertCount(1, $this->runsFor($workflow));
+    }
+
+    public function test_condition_tree_gates_the_run_over_and_or_pipelines(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
+
+        // Fires when category IS 'blog', OR (priority CONTAINS 'high' AND score > 10) — a mixed
+        // and/or tree with typed pipelines, evaluated over the same whitelisted `fields.<id>` map.
+        $tree = [
+            'logic' => 'or',
+            'children' => [
+                ['kind' => 'condition', 'source' => 'fields.category', 'source_type' => 'enum', 'pipeline' => [
+                    ['op' => 'enum_is', 'args' => ['value' => 'blog']],
+                ]],
+                ['kind' => 'group', 'logic' => 'and', 'children' => [
+                    ['kind' => 'condition', 'source' => 'fields.priority', 'source_type' => 'text', 'pipeline' => [
+                        ['op' => 'text_contains', 'args' => ['value' => 'high']],
+                    ]],
+                    ['kind' => 'condition', 'source' => 'fields.score', 'source_type' => 'number', 'pipeline' => [
+                        ['op' => 'num_gt', 'args' => ['value' => 10]],
+                    ]],
+                ]],
+            ],
+        ];
+        $workflow = $this->formSubmittedWorkflow($owner, conditions: $tree);
+
+        // Neither branch satisfied → no run.
+        $this->submit($form, $owner, ['data' => ['category' => 'news', 'priority' => 'low', 'score' => 5]]);
+        $this->assertCount(0, $this->runsFor($workflow));
+
+        // The enum branch is satisfied → a run starts.
+        $this->submit($form, $owner, ['data' => ['category' => 'blog', 'priority' => 'low', 'score' => 5]]);
+        $this->assertCount(1, $this->runsFor($workflow));
+
+        // The and-group branch is satisfied → another run starts.
+        $this->submit($form, $owner, ['data' => ['category' => 'news', 'priority' => 'high-value', 'score' => 42]]);
+        $this->assertCount(2, $this->runsFor($workflow));
     }
 
     // ---- Loop protection (depth cap machinery) -------------------------------

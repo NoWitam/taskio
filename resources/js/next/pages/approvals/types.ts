@@ -14,7 +14,11 @@
 // Self-contained: NO import from the legacy `resources/js/` (the legacy
 // `store/approvals.ts` + `types/approvals.ts` are reference only).
 
-/** A user as returned by UserResource (the stage `approver` + pipeline `creator`). */
+// The polymorphic `creator` union (user | workflow_run | bot) is shared across
+// every resource that emits it — imported, never redefined.
+import type { Creator } from '../../ui/patterns/creator';
+
+/** A user as returned by UserResource (the stage `approver`; also the legacy creator). */
 export interface ApprovalUser {
   id: string | number;
   name: string;
@@ -104,8 +108,8 @@ export interface ApprovalPipeline extends PipelineFlags {
   icon: string | null;
   description: string | null;
   stages: ApprovalStage[];
-  /** `whenLoaded('creator')`. */
-  creator?: ApprovalUser | null;
+  /** `whenLoaded('creator')` — polymorphic (Phase 3): user | workflow_run | bot | null. */
+  creator?: Creator | null;
   created_at: string | null;
 }
 

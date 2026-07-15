@@ -108,6 +108,7 @@ function save(): void {
         v-model="pipeline"
         :base-type="baseType"
         :catalog="catalog"
+        :source-options="definitions.find((d) => d.id === variableId)?.options"
       />
 
       <!-- Validation status -->

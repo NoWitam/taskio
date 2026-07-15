@@ -60,7 +60,7 @@ function detail(overrides: Partial<BotDetail> = {}): BotDetail {
     visual: null,
     audio: null,
     knowledge: { enabled: false, entries: [] },
-    creator: { id: 'u1', name: 'Ada' },
+    creator: { type: 'user', id: 'u1', name: 'Ada', email: 'ada@example.com', avatar: null },
     is_owner: true,
     can_execute_tasks: false,
     can_be_edited: true,

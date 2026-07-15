@@ -85,6 +85,9 @@ function sectionLink(section: string) {
 
 const moduleItems = computed<ModuleNavItem[]>(() => [
   { key: 'list', label: t('workflows.module.allWorkflows'), icon: 'list-checks', to: { name: 'next.workflows' } },
+  // Distinct key ('allRuns') so it never collides with the resource SECTION 'runs' tab
+  // in `isItemActive` (both nav lists share that matcher).
+  { key: 'allRuns', label: t('workflows.module.allRuns'), icon: 'clock', to: { name: 'next.workflows.runs' } },
 ]);
 const resourceItems = computed<ModuleNavItem[]>(() => [
   { key: 'overview', label: t('workflows.detail.tabOverview'), icon: 'layout-dashboard', to: sectionLink('overview') },
@@ -104,6 +107,7 @@ const resource = computed<ModuleResource | null>(() =>
 
 function isItemActive(item: ModuleNavItem): boolean {
   if (item.key === 'list') return route.name === 'next.workflows';
+  if (item.key === 'allRuns') return route.name === 'next.workflows.runs';
   return workflowId.value !== null && currentSection.value === item.key;
 }
 
@@ -205,6 +209,7 @@ function onEditorSaved(_workflow: WorkflowDetail): void {
       size="cover"
       :scroll-body="false"
       :show-close="false"
+      :padded="false"
       :aria-label="editId ? t('workflows.editor.editTitle') : t('workflows.editor.createTitle')"
     >
       <WorkflowEditorDrawer

@@ -4,6 +4,7 @@ namespace App\Modules\Workflows\Policies;
 
 use App\Models\User;
 use App\Modules\Workflows\Models\Workflow;
+use App\Policies\Concerns\ChecksRecordOwnership;
 
 /**
  * Workspace membership is enforced upstream by ResolveWorkspace + WorkspaceScope:
@@ -13,6 +14,8 @@ use App\Modules\Workflows\Models\Workflow;
  */
 class WorkflowPolicy
 {
+    use ChecksRecordOwnership;
+
     public function viewAny(?User $user): bool
     {
         return $user !== null;
@@ -30,23 +33,23 @@ class WorkflowPolicy
 
     public function update(?User $user, Workflow $workflow): bool
     {
-        return $user !== null && $workflow->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($workflow, $user);
     }
 
     /** Toggling a workflow's status (active|inactive) is a creator-only action (mirrors update). */
     public function changeStatus(?User $user, Workflow $workflow): bool
     {
-        return $user !== null && $workflow->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($workflow, $user);
     }
 
     public function delete(?User $user, Workflow $workflow): bool
     {
-        return $user !== null && $workflow->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($workflow, $user);
     }
 
     public function restore(?User $user, Workflow $workflow): bool
     {
-        return $user !== null && $workflow->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($workflow, $user);
     }
 
     /**

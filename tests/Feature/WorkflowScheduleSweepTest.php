@@ -86,10 +86,12 @@ class WorkflowScheduleSweepTest extends TestCase
         $this->assertSame(WorkflowRunState::COMPLETED, $run->state);
         $this->assertSame(0, $run->depth);
         $this->assertNull($run->origin_run_id);
-        // origin=SCHEDULE is the authoritative engine-vs-manual signal. creator_id is NOT:
-        // the sweep passes creatorId=null, but HasCreator stamps auth()->id() when unset, so
-        // under this test's actingAs the run carries that user. A real cron sweep runs outside
-        // a request, so creator_id is null in production. We assert on origin (see WorkflowRun).
+        // `origin` (SCHEDULE) is the authoritative engine-vs-manual signal — never creator_id.
+        // An engine run is attributed to the workflow AUTHOR (WorkflowRunManager::start), so the
+        // run row is a 'user'-typed record carrying $owner regardless of who (if anyone) is
+        // authenticated. The task its step creates is attributed to the RUN (see the smoke test).
+        $this->assertSame($owner->id, $run->creator_id);
+        $this->assertSame('user', $run->creator_type);
         $this->assertArrayHasKey('scheduled_at', $run->trigger_payload);
 
         // The step actually executed.
@@ -101,10 +103,13 @@ class WorkflowScheduleSweepTest extends TestCase
         $this->assertNotNull($workflow->last_scheduled_run_at);
     }
 
-    public function test_sweep_outside_a_request_records_a_null_creator(): void
+    public function test_engine_run_with_no_auth_attributes_created_records_to_the_run(): void
     {
-        // No actingAs: this mirrors a real cron sweep (no authenticated user). HasCreator has
-        // nothing to stamp, so the schedule run records creator_id = null.
+        // Regression for the reported "creator_id null" crash. No actingAs: this mirrors a real
+        // cron sweep (no authenticated user), so the create_task step runs on the queue path with
+        // NO auth. HasCreator must attribute the task to the active WorkflowRun — creator_type=
+        // 'workflow_run', creator_id=run->id — instead of stamping a NULL into tasks.creator_id
+        // (NOT NULL), which previously failed the step and stranded the run.
         $owner = User::factory()->create();
         $workflow = $this->scheduledWorkflow($owner, nextDueAt: now()->subMinute());
 
@@ -113,7 +118,18 @@ class WorkflowScheduleSweepTest extends TestCase
         $run = $this->runsFor($workflow)->first();
         $this->assertNotNull($run);
         $this->assertSame(WorkflowRunOrigin::SCHEDULE, $run->origin);
-        $this->assertNull($run->creator_id, 'a cron sweep run is engine-authored (no creator)');
+        // The run COMPLETED: the task write no longer crashes on the NOT NULL creator_id.
+        $this->assertSame(WorkflowRunState::COMPLETED, $run->state);
+        // The run itself inherits the workflow author (engine runs are never NULL-creator).
+        $this->assertSame($owner->id, $run->creator_id);
+        $this->assertSame('user', $run->creator_type);
+
+        // The task the step created is a SYSTEM record owned by the RUN, with a non-null id.
+        $this->assertDatabaseHas('tasks', [
+            'title' => 'Scheduled task',
+            'creator_type' => 'workflow_run',
+            'creator_id' => $run->id,
+        ]);
     }
 
     public function test_not_due_workflow_is_untouched(): void

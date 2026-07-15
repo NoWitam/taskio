@@ -264,17 +264,23 @@ function onApply(draft: ScheduleDraft): void {
         <div class="flex flex-col gap-next-4">
           <p class="text-next-xs text-next-muted-foreground">{{ t('workflows.schedule.exclusions.hint') }}</p>
 
-          <!-- Skip specific dates. -->
+          <!-- Skip specific dates — a FUSED entry group (picker + add read as one control,
+               sized to the date, never full-width) with the added dates as chips on the
+               SAME wrapping line (REV5.2). -->
           <FormField :label="t('workflows.schedule.exclusions.datesLabel')" :error="exclusionsDatesError">
-            <div class="flex flex-col gap-next-2">
-              <div class="flex flex-wrap items-center gap-next-2">
-                <DatePicker
-                  v-model="newExclusionDate"
-                  class="w-44"
-                  :aria-label="t('workflows.schedule.exclusions.datesLabel')"
-                />
+            <div class="flex flex-wrap items-center gap-next-2">
+              <!-- The picker sits in a FIXED-WIDTH wrapper (Popover-based fields drop the
+                   class attr; the trigger chain needs a forced w-full) and the well is
+                   shrink-0 so the wrapping row can never squeeze it into overlap. -->
+              <div class="inline-flex shrink-0 items-center gap-next-1 rounded-next-lg border border-next-border bg-next-muted p-next-1">
+                <div class="w-44 shrink-0 [&>div]:w-full">
+                  <DatePicker
+                    v-model="newExclusionDate"
+                    :aria-label="t('workflows.schedule.exclusions.datesLabel')"
+                  />
+                </div>
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   leading-icon="plus"
                   :disabled="!newExclusionDate || atDatesMax"
@@ -282,16 +288,13 @@ function onApply(draft: ScheduleDraft): void {
                 >
                   {{ t('workflows.schedule.exclusions.addDate') }}
                 </Button>
-                <span v-if="atDatesMax" class="text-next-xs text-next-muted-foreground">
-                  {{ t('workflows.schedule.exclusions.datesMax') }}
-                </span>
               </div>
 
               <p v-if="exclusionDates.length === 0" class="text-next-xs text-next-muted-foreground">
                 {{ t('workflows.schedule.exclusions.datesEmpty') }}
               </p>
-              <ul v-else class="flex flex-wrap gap-next-2">
-                <li
+              <template v-else>
+                <span
                   v-for="date in exclusionDates"
                   :key="date"
                   class="inline-flex items-center gap-next-1 rounded-next-md border border-next-border bg-next-card py-next-0_5 pl-next-2 pr-next-1 text-next-xs"
@@ -301,11 +304,15 @@ function onApply(draft: ScheduleDraft): void {
                     variant="ghost"
                     size="icon-xs"
                     leading-icon="x"
-                    :aria-label="t('workflows.schedule.exclusions.removeDate')"
+                    :aria-label="`${t('workflows.schedule.exclusions.removeDate')} ${date}`"
                     @click="removeExclusionDate(date)"
                   />
-                </li>
-              </ul>
+                </span>
+              </template>
+
+              <span v-if="atDatesMax" class="text-next-xs text-next-muted-foreground">
+                {{ t('workflows.schedule.exclusions.datesMax') }}
+              </span>
             </div>
           </FormField>
         </div>

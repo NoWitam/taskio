@@ -124,6 +124,48 @@ describe('buildStepConfig — create_task wire (strip empties, unions through, a
   });
 });
 
+// --- buildStepConfig: value-or-variable PIPELINE (SF1) ----------------------
+
+describe('buildStepConfig — value-or-variable pipeline (SF1: wire + round-trip)', () => {
+  const priorityWithPipeline: WorkflowFieldValue = {
+    kind: 'variable',
+    ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
+    pipeline: [{ op: 'enum_to_text', args: { status_map: { open: 'Open' } } }],
+  };
+
+  it('passes a variable ref WITH its operations pipeline through untouched', () => {
+    const cfg = buildStepConfig(step('create_task', { title: 'A', priority: priorityWithPipeline }));
+    expect(cfg.priority).toEqual(priorityWithPipeline);
+  });
+
+  it('strips an EMPTY pipeline array so an identity ref stays lean', () => {
+    const cfg = buildStepConfig(
+      step('create_task', {
+        title: 'A',
+        priority: { kind: 'variable', ref: { source: 'trigger', path: 'fields.status', type: 'enum' }, pipeline: [] },
+      }),
+    );
+    expect(cfg.priority).toEqual({ kind: 'variable', ref: { source: 'trigger', path: 'fields.status', type: 'enum' } });
+  });
+
+  it('round-trips a variable+pipeline union (re-building a saved config is idempotent)', () => {
+    const once = buildStepConfig(step('create_task', { title: 'A', priority: priorityWithPipeline }));
+    // Feed the emitted config back as a hydrated draft (as the drawer's seedStep does).
+    const twice = buildStepConfig(step('create_task', { title: 'A', priority: once.priority }));
+    expect(twice.priority).toEqual(priorityWithPipeline);
+  });
+
+  it('emits a date-window pipeline on a report step (submissions_from)', () => {
+    const from: WorkflowFieldValue<string> = {
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'trigger.submitted_at', type: 'date' },
+      pipeline: [{ op: 'date_add_days', args: { days: 7 } }],
+    };
+    const cfg = buildStepConfig(step('create_form_report', { form_id: 'f1', name: 'R', submissions_from: from }));
+    expect(cfg.submissions_from).toEqual(from);
+  });
+});
+
 // --- buildStepConfig: create_form_report wire shape -------------------------
 
 describe('buildStepConfig — create_form_report wire (required form_id/name, report sources, windows)', () => {

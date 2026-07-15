@@ -127,8 +127,13 @@ function save(): void {
         </span>
       </div>
 
-      <!-- Pipeline -->
-      <VariablePipelineEditor v-model="pipeline" :base-type="baseType" :catalog="catalog" />
+      <!-- Pipeline (the source definition's options feed enum/multi comparison args) -->
+      <VariablePipelineEditor
+        v-model="pipeline"
+        :base-type="baseType"
+        :catalog="catalog"
+        :source-options="definition?.options"
+      />
     </div>
 
     <template #footer>

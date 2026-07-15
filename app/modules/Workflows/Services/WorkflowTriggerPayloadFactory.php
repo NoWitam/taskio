@@ -143,7 +143,10 @@ class WorkflowTriggerPayloadFactory
             'title' => $task->title,
             'status' => $task->status?->value,
             'priority' => $task->priority?->value,
+            // creator is polymorphic: emit the morph type alongside the id so a condition can
+            // distinguish a human creator from a run/bot-created (system) task.
             'creator_id' => $task->creator_id,
+            'creator_type' => $task->creator_type,
             'assignee_type' => $task->assignee_type,
             'assignee_id' => $task->assignee_id,
             'form_id' => $task->form_id,

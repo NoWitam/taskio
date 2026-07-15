@@ -8,6 +8,7 @@ use App\Modules\Forms\Http\Requests\StoreFormReportRequest;
 use App\Modules\Forms\Http\Resources\FormReportResource;
 use App\Modules\Forms\Models\FormReport;
 use App\Modules\Forms\Services\FormReportService;
+use App\Modules\Workflows\Models\WorkflowRun;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
@@ -27,7 +28,13 @@ class FormReportsController extends Controller
 
     public function show(Request $request, string $id): FormReportResource
     {
-        $report = FormReport::with('form', 'creator', 'file')
+        $report = FormReport::with([
+            'form',
+            // A report can be run-created; load a run's workflow so CreatorResource renders
+            // the automation name without a lazy load.
+            'creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']]),
+            'file',
+        ])
             ->withTrashed()
             ->findOrFail($id);
 
@@ -43,7 +50,7 @@ class FormReportsController extends Controller
         );
 
         return FormReportResource::make(
-            $report->loadMissing(['form', 'creator'])
+            $report->loadMissing(['form', 'creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
         );
     }
 
@@ -68,7 +75,7 @@ class FormReportsController extends Controller
         $report->restore();
 
         return FormReportResource::make(
-            $report->loadMissing(['form', 'creator', 'file'])
+            $report->loadMissing(['form', 'creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']]), 'file'])
         );
     }
 

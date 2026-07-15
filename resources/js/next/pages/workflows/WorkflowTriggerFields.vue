@@ -29,7 +29,6 @@ import { computed, useTemplateRef } from 'vue';
 import FormField from '../../ui/forms/FormField.vue';
 import FormSelect from '../../ui/forms/FormSelect.vue';
 import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedControl.vue';
-import Checkbox from '../../ui/forms/Checkbox.vue';
 // The AI assist is hosted INSIDE the builder (opened from the summary), so
 // WorkflowTriggerFields renders only the builder for a schedule trigger.
 import WorkflowScheduleBuilder from './WorkflowScheduleBuilder.vue';
@@ -75,22 +74,21 @@ const formIdModel = computed<string | null>({
 
 const formSelected = computed(() => formConfig.value.form_id !== null);
 
-// --- form_submitted: Source (two-checkbox group → source[] | null) ----------
+// --- form_submitted: Source (multi-select cards → source[] | null) ----------
 const SOURCES: SubmissionSource[] = ['manual', 'task'];
 
-function sourceChecked(source: SubmissionSource): boolean {
-  return formConfig.value.source.includes(source);
-}
-function toggleSource(source: SubmissionSource, checked: boolean): void {
-  const set = new Set(formConfig.value.source);
-  if (checked) set.add(source);
-  else set.delete(source);
-  // Preserve the canonical order (manual before task).
-  formConfig.value = {
-    ...formConfig.value,
-    source: SOURCES.filter((s) => set.has(s)),
-  };
-}
+const sourceOptions = computed<SegmentOption<SubmissionSource>[]>(() => [
+  { value: 'manual', label: t('workflows.trigger.source.manual') },
+  { value: 'task', label: t('workflows.trigger.source.task') },
+]);
+
+const sourceModel = computed<SubmissionSource[]>({
+  get: () => formConfig.value.source,
+  // Preserve the canonical order (manual before task) regardless of toggle order.
+  set: (values) => {
+    formConfig.value = { ...formConfig.value, source: SOURCES.filter((s) => values.includes(s)) };
+  },
+});
 
 // --- form_submitted: Anonymous (tri-state → null/true/false) ----------------
 type AnonymousChoice = 'any' | 'only_anonymous' | 'only_non_anonymous';
@@ -128,9 +126,12 @@ defineExpose({ scheduleValid });
 
 <template>
   <section class="flex flex-col gap-next-4">
-    <!-- form_submitted panel (§4.4). -->
+    <!-- form_submitted panel (§4.4). ONE full-width responsive grid: the old per-field
+         `[12rem_1fr]` wrappers stranded every control in a 12rem column (empty right
+         half + the anonymity cards squeezed until their labels vanished). Three
+         columns side by side on wide screens, stacking on narrow. -->
     <template v-if="type === 'form_submitted'">
-      <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-[12rem_1fr]">
+      <div class="grid grid-cols-1 items-start gap-next-6 next-md:grid-cols-3">
         <FormField
           :label="t('workflows.editor.trigger.formLabel')"
           :description="t('workflows.editor.trigger.formHint')"
@@ -143,33 +144,30 @@ defineExpose({ scheduleValid });
             :aria-label="t('workflows.editor.trigger.formLabel')"
           />
         </FormField>
-      </div>
 
-      <!-- Source — two-checkbox group; empty ⇒ any source. -->
-      <div class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-[12rem_1fr]">
+        <!-- Source — the SAME selection-card control as Anonymity, in `multiple` mode:
+             a vertical stack (columns=1) with a "Select all" card; empty ⇒ any source. -->
         <FormField
           :label="t('workflows.editor.trigger.sourceLabel')"
           :description="t('workflows.trigger.source.hint')"
           :error="errors['trigger_config.source.in']"
         >
-          <div class="flex flex-col gap-next-2" role="group" :aria-label="t('workflows.editor.trigger.sourceLabel')">
-            <Checkbox
-              v-for="source in SOURCES"
-              :key="source"
-              :model-value="sourceChecked(source)"
-              :label="t(`workflows.trigger.source.${source}`)"
-              @update:model-value="(v: boolean) => toggleSource(source, v)"
-            />
-          </div>
+          <SegmentedControl
+            v-model="sourceModel"
+            :options="sourceOptions"
+            multiple
+            select-all
+            :columns="1"
+            :aria-label="t('workflows.editor.trigger.sourceLabel')"
+          />
         </FormField>
-      </div>
 
-      <!-- Anonymous — tri-state, shown whenever a form is selected (§4.4). -->
-      <div
-        v-if="formSelected"
-        class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-[12rem_1fr]"
-      >
-        <FormField :label="t('workflows.editor.trigger.anonymousLabel')" :error="errors['trigger_config.anonymous']">
+        <!-- Anonymous — tri-state, shown whenever a form is selected (§4.4). -->
+        <FormField
+          v-if="formSelected"
+          :label="t('workflows.editor.trigger.anonymousLabel')"
+          :error="errors['trigger_config.anonymous']"
+        >
           <SegmentedControl
             v-model="anonymousModel"
             :options="anonymousOptions"

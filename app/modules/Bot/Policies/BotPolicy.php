@@ -4,6 +4,7 @@ namespace App\Modules\Bot\Policies;
 
 use App\Models\User;
 use App\Modules\Bot\Models\Bot;
+use App\Policies\Concerns\ChecksRecordOwnership;
 
 /**
  * Workspace membership is enforced upstream by ResolveWorkspace + WorkspaceScope:
@@ -13,6 +14,8 @@ use App\Modules\Bot\Models\Bot;
  */
 class BotPolicy
 {
+    use ChecksRecordOwnership;
+
     public function viewAny(?User $user): bool
     {
         return $user !== null;
@@ -30,23 +33,23 @@ class BotPolicy
 
     public function update(?User $user, Bot $bot): bool
     {
-        return $user !== null && $bot->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($bot, $user);
     }
 
     /** Toggling a bot's status (active|inactive) is a creator-only action (mirrors update). */
     public function changeStatus(?User $user, Bot $bot): bool
     {
-        return $user !== null && $bot->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($bot, $user);
     }
 
     public function delete(?User $user, Bot $bot): bool
     {
-        return $user !== null && $bot->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($bot, $user);
     }
 
     public function restore(?User $user, Bot $bot): bool
     {
-        return $user !== null && $bot->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($bot, $user);
     }
 
     /**
@@ -56,6 +59,6 @@ class BotPolicy
      */
     public function retry(?User $user, Bot $bot): bool
     {
-        return $user !== null && $bot->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($bot, $user);
     }
 }

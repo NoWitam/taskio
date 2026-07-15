@@ -144,6 +144,32 @@ export function createMention(options: MentionOptions) {
         } as DOMRect;
       };
 
+      // SF3.1 — keep the popup glued to the caret on scroll. Re-measure the caret
+      // rect (coordsAtPos reflects the CURRENT scroll) and either follow it, or
+      // CLOSE when the caret scrolled out of the viewport (a detached popup is worse
+      // than none). Shared with `@`-mentions in Tasks — same behavior everywhere.
+      const reposition = (): void => {
+        if (!store.active) return;
+        const state = pluginKey.getState(editor.view.state) as TriggerState | undefined;
+        if (!state?.active || !state.range) {
+          close();
+          return;
+        }
+        let rect: DOMRect;
+        try {
+          rect = caretRect(editor.view, state.range.from);
+        } catch {
+          close();
+          return;
+        }
+        if (rect.bottom < 0 || rect.top > window.innerHeight) {
+          close();
+          return;
+        }
+        store.rect = rect;
+      };
+      store.reposition = reposition;
+
       const insert = (view: EditorView, item: SuggestionRow): void => {
         const state = pluginKey.getState(view.state) as TriggerState | undefined;
         if (!state?.range) return;

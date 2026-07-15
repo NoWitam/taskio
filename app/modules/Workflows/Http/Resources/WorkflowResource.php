@@ -2,7 +2,7 @@
 
 namespace App\Modules\Workflows\Http\Resources;
 
-use App\Modules\Users\Http\Resources\UserResource;
+use App\Http\Resources\CreatorResource;
 use App\Modules\Workflows\Services\LegacyScheduleUpgrader;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -39,10 +39,10 @@ class WorkflowResource extends JsonResource
             'last_scheduled_run_at' => $this->last_scheduled_run_at?->toISOString(),
             'next_due_at' => $this->next_due_at?->toISOString(),
 
-            'creator' => UserResource::make($this->whenLoaded('creator')),
+            'creator' => CreatorResource::make($this->whenLoaded('creator')),
 
             // Capability flags (mirrors the Bot/Approvals convention).
-            'is_owner' => $this->creator_id === $request->user()?->id,
+            'is_owner' => $this->isOwnedBy($request->user()),
             'can_be_edited' => $request->user()?->can('update', $this->resource) ?? false,
             'can_be_deleted' => $request->user()?->can('delete', $this->resource) ?? false,
             'can_change_status' => $request->user()?->can('changeStatus', $this->resource) ?? false,

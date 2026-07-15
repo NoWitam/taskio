@@ -51,6 +51,7 @@ import MarkdownEditor from '../../ui/editor/MarkdownEditor.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Timeline, { type TimelineEntry } from '../../ui/patterns/Timeline.vue';
+import CreatorBadge from '../../ui/patterns/CreatorBadge.vue';
 import TaskComments from './TaskComments.vue';
 import TaskAttachmentsField from './TaskAttachmentsField.vue';
 import TaskBotActions from './TaskBotActions.vue';
@@ -1084,10 +1085,7 @@ function goToApprovals(): void {
           <span class="text-next-sm font-next-medium text-next-fg">
             {{ t('tasks.detail.creator') }}
           </span>
-          <span class="flex items-center gap-next-2">
-            <Avatar :name="task.creator?.name" size="sm" class="shrink-0" />
-            <span class="min-w-0 truncate text-next-sm text-next-fg">{{ task.creator?.name }}</span>
-          </span>
+          <CreatorBadge :creator="task.creator" size="sm" class="text-next-sm" />
         </div>
 
             <!-- Attachments: existing (removable) + new uploads, or read-only when trashed. -->

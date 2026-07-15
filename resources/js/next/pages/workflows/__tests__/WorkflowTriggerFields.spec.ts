@@ -123,19 +123,42 @@ describe('WorkflowTriggerFields', () => {
     wrapper.unmount();
   });
 
-  it('toggling a source checkbox writes the ordered source subset', async () => {
+  it('toggling the source CARDS writes the ordered source subset (multi selection cards)', async () => {
     const { wrapper, state } = mountFields({
       formConfig: { form_id: 'form-a', source: [], anonymous: null },
     });
 
-    const checkboxes = wrapper.findAll('input[type="checkbox"]');
-    // The group renders manual then task; check task first, then manual → canonical order.
-    await checkboxes[1].setValue(true); // task
+    // The source group is the same selection-card control as Anonymity, in multi mode.
+    const cards = wrapper.findAll('[role="checkbox"]');
+    const cardBy = (text: string) => cards.find((c) => c.text().includes(text))!;
+    // Toggle task first, then manual → the emitted subset stays in canonical order.
+    await cardBy('during a task').trigger('click');
     await nextTick();
-    await checkboxes[0].setValue(true); // manual
+    await cardBy('manually').trigger('click');
     await nextTick();
 
     expect(state.formConfig.source).toEqual(['manual', 'task']);
+
+    wrapper.unmount();
+  });
+
+  it('the source "Select all" card selects both sources at once', async () => {
+    const { wrapper, state } = mountFields({
+      formConfig: { form_id: 'form-a', source: [], anonymous: null },
+    });
+
+    const selectAll = wrapper.find('[data-seg-select-all]');
+    expect(selectAll.exists()).toBe(true);
+    expect(selectAll.attributes('aria-checked')).toBe('false');
+
+    await selectAll.trigger('click');
+    await nextTick();
+    expect(state.formConfig.source).toEqual(['manual', 'task']);
+
+    // …and toggles back to none (empty ⇒ any source).
+    await wrapper.find('[data-seg-select-all]').trigger('click');
+    await nextTick();
+    expect(state.formConfig.source).toEqual([]);
 
     wrapper.unmount();
   });

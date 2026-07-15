@@ -19,7 +19,8 @@ const WINDOW_TEMPLATE = en.workflows.schedule.time.card.everyMinutes.window;
 
 function mountField(props: Record<string, unknown>) {
   return mount(WorkflowScheduleWindowField, {
-    props: { toggleLabel: W.toggle.time, windowTemplate: WINDOW_TEMPLATE, ...props },
+    // `enabled` is a REQUIRED prop — default it so the spread only overrides.
+    props: { enabled: false, toggleLabel: W.toggle.time, windowTemplate: WINDOW_TEMPLATE, ...props },
     slots: {
       // Reflect the `disabled` slot-prop onto a data-attr so the wiring is observable.
       from: (p: { disabled: boolean }) =>

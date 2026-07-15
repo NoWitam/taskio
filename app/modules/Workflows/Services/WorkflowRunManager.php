@@ -34,8 +34,12 @@ class WorkflowRunManager
      * commits (so a sync worker sees the committed row, and an async worker never races a
      * not-yet-committed insert). Returns the created run.
      *
-     * $depth / $originRunId thread the re-trigger chain; $creatorId is null for
-     * an engine-started run (event/schedule) and a uuid for a manual one.
+     * $depth / $originRunId thread the re-trigger chain. $creatorId is the acting user for a
+     * MANUAL run and null for an engine-started one (event/schedule) — a null creator INHERITS
+     * the workflow author, so an engine run is attributed to whoever authored the definition
+     * (never NULL). Both the id and 'user' type are set EXPLICITLY so HasCreator's saving hook
+     * cannot stamp a parent run onto a child re-trigger run. Engine-vs-manual is read from
+     * `origin`, never from creator_id.
      *
      * @param  array<string, mixed>  $triggerPayload
      */
@@ -57,7 +61,8 @@ class WorkflowRunManager
             'context' => null,
             'depth' => $depth,
             'origin_run_id' => $originRunId,
-            'creator_id' => $creatorId,
+            'creator_id' => $creatorId ?? $workflow->creator_id,
+            'creator_type' => 'user',
         ]);
 
         DB::afterCommit(fn () => WorkflowRunJob::dispatch($run->id));

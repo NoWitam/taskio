@@ -10,7 +10,14 @@
 // is a plain array (the element tree). Unlike Tasks there is NO ProseMirror /
 // MarkdownTreeCast boundary here — no doc↔markdown conversion is needed.
 
-/** A user as returned by UserResource (the `creator` relation). */
+// The polymorphic `creator` union (user | workflow_run | bot) is shared across
+// every resource that emits it — imported, never redefined.
+import type { Creator } from '../../ui/patterns/creator';
+
+/**
+ * A user as returned by UserResource. Retained for reference; the `creator`
+ * relation is now the polymorphic `Creator` union (Phase 3), not a bare user.
+ */
 export interface FormUser {
   id: string | number;
   name: string;
@@ -58,8 +65,12 @@ export interface FormBase {
   available_filters?: unknown;
   reporting_mode?: string | null;
 
-  /** `whenLoaded('creator')` → present on the list query (with('creator')). */
-  creator?: FormUser | null;
+  /**
+   * `whenLoaded('creator')` → present on the list query (with('creator')).
+   * Polymorphic (Phase 3): a User, a workflow_run (automation), or a Bot — or
+   * null. Render via `CreatorBadge` / the `creator` helpers.
+   */
+  creator?: Creator | null;
   /** `whenCounted('submissions')` → may be absent; treat as 0. */
   submissions_count?: number;
   created_at: string | null;
@@ -220,7 +231,8 @@ export interface FormSubmission {
   approved_at: string | null;
   is_approved: boolean;
   can_be_edited: boolean;
-  creator?: FormUser | null;
+  /** Polymorphic creator (Phase 3): user | workflow_run | bot | null. */
+  creator?: Creator | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -273,7 +285,8 @@ export interface FormReport {
   completed_at: string | null;
   /** The generated file (present once completed). */
   file?: FormReportFile | null;
-  creator?: FormUser | null;
+  /** Polymorphic creator (Phase 3): user | workflow_run | bot | null. */
+  creator?: Creator | null;
   created_at: string | null;
   updated_at: string | null;
   deleted_at: string | null;

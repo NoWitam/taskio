@@ -2,7 +2,7 @@
 
 namespace App\Modules\Forms\Http\Resources;
 
-use App\Modules\Users\Http\Resources\UserResource;
+use App\Http\Resources\CreatorResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -21,7 +21,7 @@ class FormSubmissionResource extends JsonResource
             'approved_at' => $this->approved_at?->toISOString(),
             'is_approved' => $this->isApproved(),
             'can_be_edited' => $this->canBeEdited(),
-            'creator' => UserResource::make($this->whenLoaded('creator')),
+            'creator' => CreatorResource::make($this->whenLoaded('creator')),
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
         ];

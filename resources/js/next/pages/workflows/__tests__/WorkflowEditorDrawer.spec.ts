@@ -94,27 +94,37 @@ const TriggerFieldsStub = {
   },
 };
 
-// The conditions stub exposes an "add" button that pushes a complete condition row.
+// The conditions stub (B3 TREE): `modelValue` is a DraftConditionGroup; "add" emits a
+// one-condition AND tree. `data-count` reads the root's child count.
+const TREE_ONE = {
+  uid: 'g-root',
+  kind: 'group',
+  logic: 'and',
+  children: [
+    {
+      uid: 'c1',
+      kind: 'condition',
+      source: 'fields.status',
+      sourceType: 'enum',
+      pipeline: [{ stepId: 's', operationId: 'enum_is', args: { value: 'a' }, outputType: 'boolean' }],
+    },
+  ],
+};
 const ConditionsStub = {
   name: 'WorkflowConditionsEditor',
-  props: ['modelValue', 'fields', 'formSelected', 'errors'],
+  props: ['modelValue', 'catalog', 'formSelected', 'errors'],
   emits: ['update:modelValue'],
   setup(props: Record<string, unknown>, { emit }: { emit: (e: string, v: unknown) => void }) {
     return () =>
-      h('div', { class: 'conditions-stub', 'data-count': String((props.modelValue as unknown[])?.length ?? 0), 'data-gated': String(!(props.formSelected as boolean)) }, [
-        h(
-          'button',
-          {
-            class: 'add-condition',
-            onClick: () =>
-              emit('update:modelValue', [
-                ...(props.modelValue as unknown[]),
-                { field: 'fields.status', field_type: 'enum', operator: 'is', value: 'a' },
-              ]),
-          },
-          'add',
-        ),
-      ]);
+      h(
+        'div',
+        {
+          class: 'conditions-stub',
+          'data-count': String(((props.modelValue as { children?: unknown[] })?.children ?? []).length),
+          'data-gated': String(!(props.formSelected as boolean)),
+        },
+        [h('button', { class: 'add-condition', onClick: () => emit('update:modelValue', TREE_ONE) }, 'add')],
+      );
   },
 };
 
@@ -342,7 +352,11 @@ describe('WorkflowEditorDrawer', () => {
       trigger_type: 'form_submitted',
       steps: [{ type: 'create_task', key: 'task', config: { title: 'Do it' } }],
       trigger_config: { form_id: 'form-a', source: { in: ['manual'] }, anonymous: true },
-      conditions: [{ field: 'fields.status', field_type: 'enum', operator: 'is', value: 'a' }],
+      // The condition TREE wire (root without `kind`; pipeline steps as {op, args}).
+      conditions: {
+        logic: 'and',
+        children: [{ kind: 'condition', source: 'fields.status', source_type: 'enum', pipeline: [{ op: 'enum_is', args: { value: 'a' } }] }],
+      },
     });
     expect(toastSuccess).toHaveBeenCalled();
   });
@@ -426,7 +440,7 @@ describe('WorkflowEditorDrawer', () => {
     expect(toastDanger).toHaveBeenCalled();
   });
 
-  it('edit seed — hydrates form config + schedule + drops legacy flat conditions', async () => {
+  it('edit seed — hydrates a LEGACY flat condition list into an editable TREE + saves the tree', async () => {
     detailRef.value = {
       id: 'wf1',
       name: 'Seeded',
@@ -435,11 +449,8 @@ describe('WorkflowEditorDrawer', () => {
       icon: null,
       trigger_type: 'form_submitted',
       trigger_config: { form_id: 'form-a', source: { in: ['task'] }, anonymous: false },
-      // one typed condition (kept) + one legacy flat condition (dropped, no field_type).
-      conditions: [
-        { field: 'fields.status', field_type: 'enum', operator: 'is', value: 'a' },
-        { field: 'legacy', operator: 'equals', value: 'x' } as never,
-      ],
+      // A legacy FLAT list — B3 converts it to a single AND group (operator → op table).
+      conditions: [{ field: 'fields.status', field_type: 'enum', operator: 'is', value: 'a' }],
       steps: [{ type: 'create_task', key: 'task', config: { title: 'Existing' } }],
       last_scheduled_run_at: null,
       next_due_at: null,
@@ -451,25 +462,24 @@ describe('WorkflowEditorDrawer', () => {
       created_at: null,
       updated_at: null,
     };
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const { wrapper } = mountDrawer('wf1');
     await nextTick();
     await Promise.resolve();
     await nextTick();
 
-    // The seeded form triggers a catalog fetch on mount.
+    // The seeded form triggers a catalog fetch on mount; the flat list became a 1-child tree.
     expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form-a');
-    // Only the typed condition survives (the legacy flat one is dropped + warned).
     expect(wrapper.get('.conditions-stub').attributes('data-count')).toBe('1');
-    expect(warn).toHaveBeenCalled();
 
     await save(wrapper);
     const payload = updateWorkflow.mock.calls[0][1];
     expect(payload.trigger_config).toEqual({ form_id: 'form-a', source: { in: ['task'] }, anonymous: false });
-    expect(payload.conditions).toEqual([{ field: 'fields.status', field_type: 'enum', operator: 'is', value: 'a' }]);
-
-    warn.mockRestore();
+    // Saved as the TREE wire (the legacy `is` operator → enum_is).
+    expect(payload.conditions).toEqual({
+      logic: 'and',
+      children: [{ kind: 'condition', source: 'fields.status', source_type: 'enum', pipeline: [{ op: 'enum_is', args: { value: 'a' } }] }],
+    });
   });
 
   // --- B7 wizard behaviour ---------------------------------------------------

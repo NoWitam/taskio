@@ -79,4 +79,27 @@ return [
 
     'assist_rate_per_minute' => (int) env('WORKFLOWS_ASSIST_RATE_PER_MINUTE', 5),
 
+    /*
+    |--------------------------------------------------------------------------
+    | AI Text directive (SB2)
+    |--------------------------------------------------------------------------
+    |
+    | An `@[ai-text]` directive in a step's text field generates a piece of text
+    | through an LLM at RUN time (one AI call per directive occurrence). Since the
+    | RUN is already the metered cost unit, these are not throttled per user; they
+    | are bounded PER RUN instead so a single run cannot fan out unbounded spend.
+    |
+    | ai_text_max_calls_per_run  Hard cap on ai-text AI calls within ONE run.
+    |                            Occurrences beyond the cap resolve to '' (empty).
+    | ai_text_max_chars          Length cap applied to each generated string. The
+    |                            target field's own DB limit still applies on top
+    |                            (a task title is a short column) — keep title
+    |                            prompts concise.
+    |
+    */
+
+    'ai_text_max_calls_per_run' => (int) env('WORKFLOWS_AI_TEXT_MAX_CALLS_PER_RUN', 10),
+
+    'ai_text_max_chars' => (int) env('WORKFLOWS_AI_TEXT_MAX_CHARS', 2000),
+
 ];

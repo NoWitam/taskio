@@ -8,7 +8,21 @@
 /** The directive payload schema version. Legacy FORMAT.md pins this at 1. */
 export const DATA_VERSION = 1 as const;
 
-export type VariablePrimitive = 'text' | 'number' | 'boolean';
+/**
+ * The editor's variable value types. The ORIGINAL trio (text/number/boolean) is
+ * what the legacy FORMAT.md ever serialized; `date` / `enum` / `multi` extend the
+ * vocabulary for hosts that carry richer sources (e.g. workflow-condition editing
+ * over form fields: selects → enum, multi-selects → multi, date inputs → date).
+ * Wire values: date = an ISO `YYYY-MM-DD` string; enum = one of the source
+ * variable's option VALUES; multi = an array of option values.
+ */
+export type VariablePrimitive = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'multi';
+
+/** One selectable option of an enum/multi SOURCE variable. */
+export interface VariableOption {
+  label: string;
+  value: string;
+}
 
 // --- Mention ----------------------------------------------------------------
 // FORMAT.md: `@[mention]("{…}")` with at least `id`, `name`, `avatar`.
@@ -34,9 +48,41 @@ export interface VariableDefinition {
   id: string;
   name: string;
   type: VariablePrimitive;
+  /** The selectable options of an `enum`/`multi` source (feed `sourceOption(s)` args). */
+  options?: VariableOption[];
 }
 
-export type VariableOperationArgumentType = VariablePrimitive | 'select';
+/**
+ * Operation argument control types. Beyond the value primitives and the static
+ * `select` (options fixed on the operation definition), the SOURCE-driven kinds
+ * draw their choices from the SOURCE variable's `options`, not from the operation:
+ * `sourceOption` (pick ONE option value), `sourceOptions` (pick MANY; the arg value
+ * is a `string[]`), and `sourceMap` (one TARGET value PER option — the arg value is a
+ * `Record<optionValue, targetValue>`, with the target's kind declared by the arg's
+ * `mapType`; `mapType:'enum'` maps each option to a DESTINATION choice value).
+ *
+ * The TARGET-driven kinds (choice-producing ops) draw their choices from the
+ * DESTINATION field's option set, injected as `targetOptions`: `choiceRules` (a
+ * repeatable `{when,then}[]` list — `when` is free text, `then` is a target choice)
+ * and `choiceFallback` (a single required target choice).
+ */
+export type VariableOperationArgumentType =
+  | 'text'
+  | 'number'
+  | 'boolean'
+  | 'date'
+  | 'select'
+  | 'sourceOption'
+  | 'sourceOptions'
+  | 'sourceMap'
+  | 'choiceRules'
+  | 'choiceFallback';
+
+/** One rule of a `choiceRules` arg: a text match → a destination choice value. */
+export interface ChoiceRule {
+  when: string;
+  then: string;
+}
 
 export interface VariableOperationArgumentDefinition {
   id: string;
@@ -45,6 +91,8 @@ export interface VariableOperationArgumentDefinition {
   placeholder?: string;
   options?: Array<{ label: string; value: string }>;
   defaultValue?: string | number | boolean;
+  /** `sourceMap` only: the kind of each mapped TARGET value (`enum` = a target choice). */
+  mapType?: 'text' | 'number' | 'date' | 'enum';
 }
 
 /** An operation in the catalog: valid on `inputTypes`, yields `outputType`. */
@@ -60,7 +108,12 @@ export interface VariableOperationDefinition {
 export interface VariablePipelineStep {
   stepId: string;
   operationId: string;
-  args: Record<string, string | number | boolean>;
+  /**
+   * Arg values by arg id; `string[]` carries a `sourceOptions` multi-pick, a
+   * `Record<optionValue, targetValue>` carries a `sourceMap` per-option mapping, and
+   * a `ChoiceRule[]` carries a `choiceRules` when→then list.
+   */
+  args: Record<string, string | number | boolean | string[] | Record<string, string | number> | ChoiceRule[]>;
   outputType: VariablePrimitive;
 }
 

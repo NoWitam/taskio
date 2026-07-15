@@ -115,19 +115,32 @@ describe('WorkflowSchedulePreviewStrip', () => {
     wrapper.unmount();
   });
 
-  it('PAGING → "Load more" re-calls with anchor = the last run and appends the rest', async () => {
-    // A full first page (6) → hasMore → the "Load more" affordance shows.
+  it('PAGING → scrolling to the sentinel re-calls with anchor = the last run, shows skeleton tiles, appends the rest', async () => {
+    // A full first page (6) → hasMore → the sentinel drives paging (NO button).
     const first = ['2026-07-13T08:00:00Z', '2026-07-14T08:00:00Z', '2026-07-15T08:00:00Z', '2026-07-16T08:00:00Z', '2026-07-17T08:00:00Z', '2026-07-18T08:00:00Z'];
     schedulePreview.mockResolvedValueOnce(page(first));
     const wrapper = mountStrip();
     await flush();
 
+    // No "load more" button anywhere — paging is scroll-driven only.
+    expect(wrapper.findAll('button').length).toBe(0);
+
     // The next page: occurrences[0] is the prev-or-at of the anchor (= the last shown,
-    // dropped as a duplicate), then two fresh runs.
-    schedulePreview.mockResolvedValueOnce(page(['2026-07-18T08:00:00Z', '2026-07-19T08:00:00Z', '2026-07-20T08:00:00Z']));
-    const loadMore = wrapper.findAll('button').find((b) => b.text().includes(en.workflows.schedule.preview.loadMore));
-    expect(loadMore).toBeTruthy();
-    await loadMore!.trigger('click');
+    // dropped as a duplicate), then two fresh runs. Held pending so the in-flight
+    // skeleton tiles are observable.
+    let resolveNext!: (v: unknown) => void;
+    schedulePreview.mockReturnValueOnce(new Promise((res) => (resolveNext = res)));
+
+    // The user scrolls the rail (happy-dom geometry is 0/0, so any scroll counts as
+    // "near the right edge" — the paging is scroll-edge driven, not IO-driven).
+    await wrapper.find('ul').trigger('scroll');
+    await nextTick();
+
+    // Mid-flight: 3 trailing skeleton tiles render inside the rail.
+    expect(wrapper.findAll('ul li[aria-hidden="true"]').length).toBe(3);
+
+    resolveNext(page(['2026-07-18T08:00:00Z', '2026-07-19T08:00:00Z', '2026-07-20T08:00:00Z']));
+    await Promise.resolve();
     await Promise.resolve();
     await nextTick();
 

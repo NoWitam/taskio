@@ -78,7 +78,10 @@ records its own `resumed` / `revision_started` action alongside `task_started`.
 - `icon` — general-info icon identifier (B6), nullable.
 - `has_text_module` is always `true` (persona is mandatory on create).
 - `task_execution_enabled` reflects `task_execution.enabled` (false when not configured).
-- `is_owner` — `creator_id === auth user id`; gating edit/delete in the UI.
+- `is_owner` — `isOwnedBy(auth user)`, via the hot-path `ownerUserId()` (no `creator` eager-load on
+  the list). TRUE only for a HUMAN creator match — presentational, not authoritative. Gate UI
+  actions on `can_be_edited`/`can_be_deleted` (see below and Authorization), not on `is_owner`. See
+  `docs/backend/creator-attribution.md`.
 
 ### BotResource (show / store / update / restore)
 
@@ -109,7 +112,7 @@ records its own `resumed` / `revision_started` action alongside `task_started`.
   "visual": null,
   "audio": null,
 
-  "creator": { "id": "uuid", "name": "string", "email": "string" },
+  "creator": { "type": "user", "id": "uuid", "name": "string", "email": "string", "avatar": null },
 
   "is_owner": true,
   "can_execute_tasks": false,
@@ -122,6 +125,13 @@ records its own `resumed` / `revision_started` action alongside `task_started`.
 ```
 
 Notes:
+- **`creator`** is `App\Http\Resources\CreatorResource`'s discriminated union — `{ type: 'user', id,
+  name, email, avatar }` (shown above) for a human-created bot, or a `workflow_run`/`bot` shape /
+  `null` / an omitted key for other states. **No write path stamps a non-`user` creator on a `Bot`
+  today** (a `Bot` is only ever created through the authenticated `POST /bots` endpoint), so this
+  field is effectively always the `user` shape in practice — the union is documented in full at
+  `docs/backend/creator-attribution.md`, which also covers the `is_owner` vs `can_be_edited`
+  divergence for a genuinely system-created record.
 - **`icon`** (B6) — general-info icon identifier shown in the always-visible editor header. Nullable, max 100.
 - **`task_execution.knowledge_source` was REMOVED in B6.** The knowledge module replaces it.
   If an old client still sends `task_execution.knowledge_source`, the backend silently ignores
@@ -384,16 +394,26 @@ Auth: workspace membership (no ownership check — any member can view).
 
 ## Authorization
 
-`BotPolicy` gates:
+`BotPolicy` gates, all mutating checks routed through the shared
+`ChecksRecordOwnership::ownsOrManagesSystemRecord()` (see `docs/backend/creator-attribution.md`):
 
 | Gate       | Rule                                                         |
 |------------|--------------------------------------------------------------|
 | `viewAny`  | Any authenticated workspace member.                         |
 | `view`     | Any authenticated workspace member.                         |
 | `create`   | Any authenticated workspace member.                         |
-| `update`   | Authenticated; `bot.creator_id === auth user id`.           |
-| `delete`   | Authenticated; `bot.creator_id === auth user id`.           |
-| `restore`  | Authenticated; `bot.creator_id === auth user id`.           |
+| `update`   | The bot's human owner (`isOwnedBy`), OR — only for a bot with NO human creator — the active workspace's OWNER (fallback). |
+| `delete`   | Same rule as `update`.           |
+| `restore`  | Same rule as `update`.           |
+| `changeStatus` | Same rule as `update` (toggling `active`/`disabled` — `PATCH /bots/{id}/status`, not otherwise documented on this page). |
+| `retry`    | Same rule as `update` (manually retrying a failed task run — `POST /bots/{bot}/tasks/{task}/retry`, not otherwise documented on this page; gated to the owner because it dispatches a real, cap-exempt AI run). |
+
+**A `Bot` is created only through the authenticated `POST /bots` endpoint** — no engine step or
+agent creates one — so in practice its creator is always human today, and the workspace-owner
+fallback above is currently unreachable for this resource. It is documented because the Policy
+code implements it generically (the same `ownsOrManagesSystemRecord()` trait method Task/Workflow
+use), and because a future write path (e.g. a bot provisioning its own sub-bot) would activate it
+without a Policy change.
 
 Workspace membership is enforced upstream by `ResolveWorkspace` + `WorkspaceScope`; these
 policy checks are additive owner gates on top of that guarantee.
@@ -595,10 +615,19 @@ section below.
 
 A bot-generated file is a real `Disk` `File` row, `fileable` to the task, visible/downloadable
 like any human-uploaded attachment. `uploader_id` is `NOT NULL` on `files` and a bot has no
-user row, so the uploader is attributed to **the task's (human) creator** — a deliberate
-stopgap, not a bug. A future schema pass may make `uploader_id` nullable and add an explicit
-bot-uploader marker; until then this compromise is intentional and should not be "fixed" as a
-drive-by change.
+user row, so the uploader is attributed to **the task's creator** (`uploader_id => $task->creator_id`)
+— a deliberate stopgap, not a bug. A future schema pass may make `uploader_id` nullable and add an
+explicit bot-uploader marker; until then this compromise is intentional and should not be "fixed"
+as a drive-by change.
+
+`files.uploader_type` is now a polymorphic discriminator (the same `user | workflow_run | bot`
+morph as `creator` elsewhere — see `docs/backend/creator-attribution.md`), but `GenerateFileTool`
+does not set it explicitly, so `HasCreator` defaults it to `'user'`. **Sharper edge case, not yet
+fixed:** if the task itself is a system record (its own `creator_id` is a `WorkflowRun`/`Bot` uuid
+— e.g. a task created by another workflow's `create_task` step), the generated file's `uploader_id`
+copies that non-user uuid while `uploader_type` stays `'user'`, so `File.creator` resolves to
+`null` instead of a meaningful attribution. Documented as a known gap in
+`docs/backend/creator-attribution.md` and ADR-0015, not silently patched here.
 
 ### `read_attachments` — scope and text-sniffing
 

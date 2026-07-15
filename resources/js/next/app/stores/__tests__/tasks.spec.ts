@@ -42,7 +42,7 @@ function detail(overrides: Partial<TaskDetail> = {}): TaskDetail {
     is_overdue: false,
     is_at_risk: false,
     attachments: [],
-    creator: USER,
+    creator: { type: 'user', id: 'u1', name: 'Ada', email: 'ada@example.com', avatar: null },
     assigned: USER,
     labels: [],
     form_id: null,

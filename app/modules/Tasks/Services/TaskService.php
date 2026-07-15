@@ -166,10 +166,14 @@ class TaskService
                 $users = $request->array('user_id'),
                 function (Builder $query) use ($users) {
                     // A task matches a user filter if the user created it OR is its
-                    // (User) assignee. assignee_type='user' guards against a bot id
-                    // colliding with a user id in the polymorphic column.
+                    // (User) assignee. Both sides are morph-type-guarded: creator_type='user'
+                    // (a run/bot-created task never appears in a user's "mine") and
+                    // assignee_type='user' (a bot id must not collide with a user id).
                     $query->where(function (Builder $usersQuery) use ($users) {
-                        $usersQuery->whereIn('creator_id', $users)
+                        $usersQuery->where(function (Builder $creatorQuery) use ($users) {
+                            $creatorQuery->where('creator_type', 'user')
+                                ->whereIn('creator_id', $users);
+                        })
                             ->orWhere(function (Builder $assigneeQuery) use ($users) {
                                 $assigneeQuery->where('assignee_type', 'user')
                                     ->whereIn('assignee_id', $users);
@@ -222,7 +226,7 @@ class TaskService
             );
         });
 
-        return Task::with(Task::DETAIL_RELATIONS)
+        return Task::with(Task::detailRelations())
             ->findOrFail($task->id);
     }
 

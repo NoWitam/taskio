@@ -7,7 +7,7 @@ import StoryGrid from '../StoryGrid.vue';
 import StoryCell from '../StoryCell.vue';
 import ApiTable, { type ApiRow } from '../ApiTable.vue';
 
-const variants = ['neutral', 'primary', 'success', 'warning', 'danger', 'info'] as const;
+const variants = ['neutral', 'primary', 'success', 'warning', 'danger', 'info', 'modified'] as const;
 
 const tags = ref(['Design', 'Frontend', 'Vue', 'Accessibility']);
 function removeTag(tag: string) {
@@ -15,7 +15,7 @@ function removeTag(tag: string) {
 }
 
 const propRows: ApiRow[] = [
-  { name: 'variant', type: "'neutral' | 'primary' | 'success' | 'warning' | 'danger' | 'info'", default: "'neutral'", description: 'Color family.' },
+  { name: 'variant', type: "'neutral' | 'primary' | 'success' | 'warning' | 'danger' | 'info' | 'modified'", default: "'neutral'", description: 'Color family. `modified` = the project-wide "changed since a snapshot" semantic (see Foundations → Design Tokens).' },
   { name: 'tone', type: "'solid' | 'subtle'", default: "'subtle'", description: 'Filled vs tinted surface.' },
   { name: 'size', type: "'sm' | 'md'", default: "'md'", description: 'Chip height + text scale.' },
   { name: 'icon', type: 'IconName', default: '—', description: 'Leading icon.' },
@@ -37,7 +37,7 @@ const slotRows: ApiRow[] = [
 <template>
   <StoryPage
     title="Badge"
-    description="A compact status/label chip. Six color families × solid/subtle tones × two sizes, with icon, dot, count, removable, and truncated states."
+    description="A compact status/label chip. Seven color families × solid/subtle tones × two sizes, with icon, dot, count, removable, and truncated states."
   >
     <template #a11y>
       <ul class="ml-next-4 list-disc space-y-next-1">
@@ -84,6 +84,13 @@ const slotRows: ApiRow[] = [
         <StoryCell label="online"><Badge variant="success" dot>Online</Badge></StoryCell>
         <StoryCell label="away"><Badge variant="warning" dot>Away</Badge></StoryCell>
         <StoryCell label="offline"><Badge variant="neutral" dot>Offline</Badge></StoryCell>
+      </StoryGrid>
+    </StorySection>
+
+    <StorySection title="Modified (diff / changed)" description="The project-wide &quot;this value drifted from a captured snapshot&quot; semantic — never a substitute for `warning`. First shipped in the Workflows run detail's submission diff (Workflows → Run detail → a form-submission trigger).">
+      <StoryGrid>
+        <StoryCell label="subtle"><Badge variant="modified" tone="subtle" icon="pencil">Changed</Badge></StoryCell>
+        <StoryCell label="solid"><Badge variant="modified" tone="solid" icon="pencil">Changed</Badge></StoryCell>
       </StoryGrid>
     </StorySection>
 

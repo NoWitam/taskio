@@ -1,5 +1,41 @@
 # Workflows module — UX/UI specification
 
+> **REVISION 6 — Runs UI: global cross-workflow feed, source relabel, schedule "reason", form/
+> submission cards, run-now Pick/Create (B1–B8) — STATUS: IMPLEMENTED, date 2026-07-15.** This
+> revision rewrites `§5` (Runs view) and `§6` (Run-now flow) in place to the as-built module; it
+> does not touch `§4` (the editor) or anything above `§5`. Five deltas:
+> - **A new TOP-LEVEL "All runs" list** (`WorkflowRunsListView.vue`, route `next.workflows.runs`,
+>   `GET /workflows/runs`) sits ALONGSIDE the existing "All workflows" list in the module nav
+>   (`§1.1`–`§1.3`). Unlike the per-workflow Runs section, this list is NOT detail-nested — it
+>   carries the mandatory `FilterBar` + `#top` Saved Views `FilterTabBar` (context
+>   `workflow-runs`), same as every other top-level next list.
+> - **Every runs filter (both the global list and the per-workflow section) is now a
+>   MULTI-SELECT `Select`, not a `SegmentedControl`**, plus a shared `DateRangeFilter`
+>   (`date_from`/`date_to`/`date_preset`). The global list adds a fourth filter, a searchable
+>   single-`Select` scoping to one workflow (`workflow_id`, global-only). The per-workflow
+>   section's SOURCE filter hides the "schedule" option when the open workflow's `trigger_type` is
+>   `form_submitted` (a form-triggered workflow can never produce a schedule-origin run).
+> - **The origin/trigger-type pair collapses into ONE "source" badge** on both the run row and the
+>   run-detail header — REV1/REV2's separate origin badge + trigger-type chip is GONE. The origin
+>   RELABEL itself (`event` → "Wysłanie formularza"/"Form submission") is an i18n-only change; the
+>   `event` wire value is untouched (§9's note #1 below still applies to the VALUE, not the label).
+> - **The run detail drawer gained TWO trigger-specific bodies**, replacing the old flat
+>   `trigger_payload` key→value dump for these two cases: a schedule run shows a semantic "Powód"/
+>   "Reason" sentence (`describeOccurrence`, computed client-side from the run's
+>   `schedule_descriptor` + `trigger_payload.scheduled_at`); a `form_submitted` run shows a Form
+>   card (opens the form in a new tab) + a Submission card (opens `SubmissionPreviewDrawer` in its
+>   new `diff` mode — snapshot vs. current, project-wide `modified` token for changed fields). Any
+>   OTHER trigger payload shape still falls back to the flat key→value rows.
+> - **Run-now's `form_submitted` target is no longer a raw id `TextInput`** (§6.1's REV1/REV2 gap,
+>   flagged in the old §9). `TargetPickerModal` now shows a read-only selected-submission summary
+>   plus **Pick** (`SubmissionPickerDrawer`) and **Create** (`FormFillView` in a drawer) actions.
+>   The wire contract (`{target_id}`) and the 422 bag (`target_id` / `workflow`, §6.3) are
+>   UNCHANGED — only how the id is obtained changed.
+>
+> See `docs/backend/workflows-api.md`'s Runs endpoints section and
+> `docs/decisions/ADR-0016-workflows-global-runs-and-schedule-reason.md` for the backend/design
+> record this revision implements against.
+
 > **REVISION 5 — step 2a `schedule` builder UX compaction (fresh user feedback on the
 > shipped REV4) — STATUS: PLANNED (this spec drives it), date 2026-07-13.** REV5 is a
 > SURGICAL delta on REV4's schedule builder — the compositional descriptor v2
@@ -165,8 +201,8 @@ Precedent files this spec mirrors (verified while writing):
 
 ## 1. Information architecture
 
-*(Carried forward from REV 1 — unchanged by 5.1 except the trigger/step tables it
-never touched. The `workflow` glyph is the confirmed module identity.)*
+*(Carried forward from REV 1, updated by REVISION 6 for the new top-level "All runs" list — see
+`§1.1`/`§1.2`/`§1.3`. The `workflow` glyph is the confirmed module identity.)*
 
 ### 1.1 Module nav entry & icon
 
@@ -174,6 +210,7 @@ never touched. The `workflow` glyph is the confirmed module identity.)*
 | --- | --- | --- |
 | Module nav icon | **`workflow`** | The Lucide `workflow` glyph (two connected blocks — "steps linked into a pipeline") is the Workflows module identity everywhere (nav, PageHeader, aside header, empty state, card/entity fallback). Avoids the `git-branch` collision with the Approvals top-level nav. `git-branch` remains a SECTION glyph. |
 | List sub-nav icon | `list-checks` | "the list of workflow definitions". |
+| **All-runs sub-nav icon (REVISION 6)** | `clock` | the same glyph as the per-workflow Runs section — a time-ordered history, now also reachable as its own top-level list. |
 | Overview section icon | `layout-dashboard` | "summary of this entity". |
 | Runs section icon | `clock` | runs are a time-ordered history. |
 
@@ -183,6 +220,10 @@ Register under the authenticated AppLayout children, parallel to `bots`:
 
 ```
 /workflows                     name: next.workflows          → WorkflowsView (list)
+/workflows/runs                name: next.workflows.runs     → WorkflowRunsListView (REVISION 6,
+                                                                 the GLOBAL cross-workflow feed;
+                                                                 declared BEFORE the dynamic `:id`
+                                                                 record so the static segment wins)
 /workflows/:id                 name: next.workflows.detail   → WorkflowDetailView
                                ?section=overview|runs (default overview)
 ```
@@ -190,7 +231,10 @@ Register under the authenticated AppLayout children, parallel to `bots`:
 - Editor overlay = query key `?workflow=new` / `?workflow=<id>` (owned by the
   module layout, Bots' `?bot=` pattern; preserved across filter + section nav).
 - Run-now overlay = query key `?run=<id>`.
-- Run-detail overlay = query key `?run_detail=<runId>` (on the detail route).
+- Run-detail overlay = query key `?run_detail=<runId>` (on the detail route). The GLOBAL runs list
+  (REVISION 6) hosts its OWN run-detail drawer locally (no `?run_detail=` on `/workflows/runs` —
+  the selected run is kept in local component state, not the URL, since it is resolved from the
+  clicked row rather than a deep-linkable id).
 - Deep-link unknown id → the detail view fetches by id and shows its own error
   state (Bots precedent).
 
@@ -200,14 +244,18 @@ Register under the authenticated AppLayout children, parallel to `bots`:
 
 - **On the list**: module header (white-on-primary icon bubble
   `bg-next-primary text-next-primary-foreground` with `workflow`, title, select
-  hint) + a single "All workflows" sub-nav item (`list-checks`).
+  hint) + **two** sub-nav items (REVISION 6): "All workflows" (`list-checks`,
+  `next.workflows`) and "All runs" (`clock`, `next.workflows.runs`) — a distinct nav-item key
+  (`allRuns`) keeps it from colliding with the per-workflow Runs SECTION tab (`runs`), which
+  shares the same active-item matcher.
 - **After opening a workflow**: `back-to-list` (`arrow-left`) + the entity info
   block (icon bubble, name, StatusBadge) + a section sub-nav (**Overview** /
   **Runs**) driven by `?section=`. The layout `watch`es the route id and
   prefetches the detail so the aside renders identity immediately.
 - Aside is `hidden … next-lg:flex`.
 - The layout **hosts** the editor `Drawer` (`?workflow=`), the run-now `Modal`
-  (`?run=`), and the run-detail `Drawer` (`?run_detail=`).
+  (`?run=`), and the run-detail `Drawer` (`?run_detail=`, per-workflow section only — the global
+  runs list's detail drawer is self-hosted, `§1.2`).
 
 ---
 
@@ -1347,39 +1395,72 @@ state line goes through `t()`.
 > UNTOUCHED for its other consumers. This inventory supersedes the schedule rows of
 > §8.3/§8.4; the non-schedule rows there stand.
 
-### 4.6 Steps editor — `WorkflowStepListEditor.vue` + `WorkflowStepCard.vue` (REWRITTEN for 5.1)
+### 4.6 Steps editor — `WorkflowStepListEditor.vue` + `WorkflowStepCard.vue` (REWRITTEN for 5.1; AS-BUILT updated for SB1/SB2/SF1/SF2)
+
+> **This section now describes the SHIPPED, uncommitted-at-time-of-writing SF1/SF2
+> behavior, not the original B7 plan.** Three things changed from the plan below:
+> the add-step control is a CARD GRID, not a `DropdownMenu`; every card is
+> COLLAPSIBLE with a one-line summary (new, not in any earlier revision); and the
+> step's markdown/value-or-variable fields carry real runtime power (operations
+> pipelines, if-blocks, AI text — §4.7, §4.9) instead of pure references. See
+> ADR-0013 for the backend decisions this FE work wires up to.
 
 Reuses the Approvals ordered-stage pattern: an `<ol>` of step cards, ▲▼ reorder,
 X-before-chevron trailing order, min 1 step, per-index 422 mapping. Not
 drag-and-drop, not a canvas.
 
-- **Add step:** a `DropdownMenu` type-picker (`Button variant="outline" size="sm"
-  leading-icon="plus"` → two items: `create_task` (icon `plus`) /
-  `create_form_report` (icon `file-text`), each `workflows.step.<type>.label`).
-  Choosing the type yields a correctly-shaped empty card immediately.
-- **Per-step card header** (each an `<li>`, keyed by a stable local `uid`):
-  position badge + type badge + trailing controls in rule order — conditional
-  remove `Button size="icon-xs" leading-icon="x"` (only when > 1 step) **before**
-  the permanent `chevron-up`/`chevron-down` (disabled at the ends).
+- **Add step (AS-BUILT — supersedes the `DropdownMenu` plan):** one SELECTION CARD
+  per step type, in a `next-sm:grid-cols-2` grid — consistent with the step-1
+  trigger cards' look, not a dropdown menu. Each card shows the type icon + label +
+  a one-line description (`workflows.step.<type>.description`); clicking it appends
+  a correctly-shaped empty `StepDraft` with an auto-suggested unique key, OPENS only
+  that new card, and collapses every other card (so a long stack never stays fully
+  expanded). The whole grid disables (with a `Tooltip` explaining
+  `workflows.step.maxSteps`) at the client `MAX_STEPS` ceiling (mirrors the
+  backend's `max:50`).
+- **Collapsible cards (NEW — not in any earlier revision).** The LIST editor (not
+  each card) owns which cards are expanded (`expandedUids`, a `Set<uid>`). A
+  freshly-created workflow's single step starts OPEN; opening the editor on an
+  EXISTING (already-configured) workflow starts fully COLLAPSED — so editing a
+  10-step workflow does not open 10 full field sets at once. A collapsed card is a
+  single ROW: a chevron (rotates open) + the position badge + the type `Badge` + a
+  truncated one-line SUMMARY + (when applicable) an error `Badge`; clicking
+  anywhere on the row toggles it (`aria-expanded` / `aria-controls` wired to the
+  body). The summary is the step's `title` (or report `name`) with its variable
+  directives stripped down to their variable NAMES — resolved against the catalog
+  / step outputs / trigger system variables, so a chip reads as `Priority` rather
+  than raw `@[variable](…)` bytes — falling back to a generic per-type label
+  (`workflows.step.summary.createTaskFallback` / `.createFormReportFallback`) when
+  still blank. A card carrying ANY error (a `steps.<i>.*` 422 or a duplicate key)
+  auto-EXPANDS (the editor watches the error map), so a failed save always lands
+  the user on the field to fix even inside a long collapsed stack.
+- **Per-step card header** (each an `<li>`, keyed by a stable local `uid`): the
+  collapse toggle spans the row; the trailing controls stay in the SAME rule order
+  as before — conditional remove `Button size="icon-xs" leading-icon="x"` (only
+  when > 1 step) **before** the permanent `chevron-up`/`chevron-down` reorder
+  (disabled at the ends) — visible whether the card is open or closed.
 - **`key` field** (`TextInput` mono, required, `workflows.step.keyLabel`, helper
   `workflows.step.keyHint` "Used to reference this step's output as
   `steps.<key>.…`"). Client-validate uniqueness (`.keyDuplicate`) + non-empty
-  (`.keyRequired`). **5.1:** the step's `key` is what the FE substitutes into
-  step-output variable refs (the catalog gives `steps.<TYPE>.<name>` templates;
-  the FE swaps `<TYPE>` → the user's `<key>` — see §4.7).
+  (`.keyRequired`); **AS-BUILT (SF2):** every keystroke is additionally SANITIZED
+  to `[A-Za-z0-9_]` (`sanitizeStepKey`) rather than merely validated after the
+  fact, so an invalid character can never even land in the field. The step's `key`
+  is what the FE substitutes into step-output variable refs (the catalog gives
+  `steps.<TYPE>.<name>` templates; the FE swaps `<TYPE>` → the user's `<key>` — see
+  §4.7).
 
-#### 4.6.1 `create_task` card — field by field
+#### 4.6.1 `create_task` card — field by field (AS-BUILT: typed variable feed + pipelines)
 
 Config keys (allow-list from `StoreWorkflowRequest::allowedStepKeys`): `title`,
 `description`, `priority`, `deadline`, `labels`, `assignee_type`, `assignee_id`,
 `form_id`, `approval_pipeline_id`.
 
-| Field | Control | Variable support | Wire |
+| Field | Control | Variable support (AS-BUILT) | Wire |
 | --- | --- | --- | --- |
-| **title** (required, one line) | **`MarkdownEditor`** with `:variables` from the catalog, `hideToolbar`, `minHeight` = one line — see §4.6.3 for the "one-line editor" decision. | Full variable chips (identity-only directives). | string with directives. |
-| **description** | **`MarkdownEditor`** + `:variables` (full toolbar). | Full variable chips. | markdown string. |
-| **priority** | **`ValueOrVariableField`** (§4.9): a `Select` over `low\|medium\|high\|urgent` OR a picked enum/text-typed variable. | value-or-variable. | `{kind:'literal', value} \| {kind:'variable', ref}` (bare enum string also accepted as literal). |
-| **deadline** | **`DateOrVariableField`** (§4.9): `DatePicker` OR a date-typed variable. | date value-or-variable. | `{kind:'literal', value} \| {kind:'variable', ref}`. |
+| **title** (required, one line) | **`MarkdownEditor`**, full toolbar (SF3.6 — see §4.6.3). | Variable chips fed the TRUE type + enum options (`toEditorVariablesTyped`) + the merged 68-op catalog (`resolveOperationCatalog`) — a chip's pipeline Modal offers the real operations for its type. **AS-BUILT (SF3.6): if-blocks + `@[ai-text]` are now available here too** (see the reversed decision in §4.6.3). | string with directives (a directive's `pipeline`, if non-empty, executes at run time — ADR-0013 §2). |
+| **description** | **`MarkdownEditor`**, full toolbar. | SAME typed variable feed + operations catalog, PLUS `:if-blocks="{maxDepth:3}"` and `:ai-text="{personas, labelsEnabled:false}"` (§4.7, §ADR-0013 §§3–4) — a conditional branch and/or an AI-generated paragraph can be inserted from the toolbar. | markdown string (if-blocks / `@[ai-text]` resolve at run time; unvalidated at write time — no server-side markdown parser). |
+| **priority** | **`ValueOrVariableField`** (§4.9, AS-BUILT SF3 redesign): a `Select` over `low\|medium\|high\|urgent` in Value mode, OR — in Variable mode — ANY referenceable variable (no type pre-filter, SF3.2), coerced via an operations pipeline opened from the picked variable's chip. | value-or-variable + pipeline, gated to a **CHOICE** terminal — the pipeline must END in `enum_to_choice` / `match_to_choice` mapping into `TaskPriority::ids()` (ADR-0014); a bare identity ref or a non-choice terminal (e.g. `enum_to_text`) is rejected. | `{kind:'literal', value} \| {kind:'variable', ref, pipeline?}` (bare enum string also accepted as literal). |
+| **deadline** | **`DateOrVariableField`** (§4.9, AS-BUILT SF3 redesign): `DatePicker` in Value mode, OR — in Variable mode — ANY referenceable variable (no type pre-filter, SF3.2), coerced to a date via an operations pipeline (e.g. `enum_to_date`, or nothing extra when already date-typed). | date value-or-variable + pipeline, gated to a `date` terminal (no `targetOptions` — a date field is not a choice field). | `{kind:'literal', value} \| {kind:'variable', ref, pipeline?}`. |
 | **labels** | **`LabelSelect`** (multi, `addable=false`) | literal ids only (no variable). | `string[]` of label ids. |
 | **assignee** | a **`SegmentedControl`** `user`/`bot` + a **`UserSelect`** / **`BotSelect`** (swapped by the segment) | literal id only. Pickers scope to the workspace **client-side**. | `assignee_type ∈ {user,bot}` + `assignee_id` (uuid) **both-or-neither** — when the assignee is left empty, emit **neither** key. |
 | **form_id** | **`FormSelect`** (single, optional) | literal id. | uuid \| omit. |
@@ -1399,18 +1480,18 @@ Config keys (allow-list from `StoreWorkflowRequest::allowedStepKeys`): `title`,
 Outputs (for the reference/variable system): `steps.<key>.task_id`,
 `steps.<key>.title`.
 
-#### 4.6.2 `create_form_report` card — field by field
+#### 4.6.2 `create_form_report` card — field by field (AS-BUILT: same pipeline/if-block/AI wiring)
 
 Config keys (allow-list): `form_id`, `name`, `guidelines`, `sources`,
 `submissions_from`, `submissions_to`. **Mirrors the interactive form-report form.**
 
-| Field | Control | Variable support | Wire |
+| Field | Control | Variable support (AS-BUILT) | Wire |
 | --- | --- | --- | --- |
 | **form_id** (required) | **`FormSelect`** (single) | literal id. | uuid. |
-| **name** (required) | **`MarkdownEditor`** one-line + `:variables` (§4.6.3). | full variable chips. | string with directives. |
-| **guidelines** (optional) | **`MarkdownEditor`** + `:variables` (full toolbar). | full variable chips. | markdown string \| omit. |
+| **name** (required) | **`MarkdownEditor`**, full toolbar (SF3.6 — see §4.6.3). | Same as `create_task.title`: chips + pipeline, PLUS if-blocks + AI-text as of SF3.6. | string with directives. |
+| **guidelines** (optional) | **`MarkdownEditor`**, full toolbar. | Same as `create_task.description`: chips + pipeline + if-blocks + AI-text. | markdown string \| omit. |
 | **sources** | a **two-checkbox group** (`task` / `form`) | literal. | `sources[]` subset of **`['task','form']`** — **NOTE the report vocabulary is `task`/`form`, NOT `manual`/`task`** (verified in `StoreFormReportRequest`: `Rule::in(['task','form'])`). Labels `workflows.step.report.source.task` / `.form`. Empty ⇒ omit `sources`. |
-| **submissions_from / submissions_to** | **`DateOrVariableField`** each (§4.9), **OPTIONAL** | date value-or-variable. | `{kind:…}` \| omit. |
+| **submissions_from / submissions_to** | **`DateOrVariableField`** each (§4.9), **OPTIONAL** | date value-or-variable + pipeline (any referenceable variable, no type pre-filter — SF3.2), gated to a `date` terminal. | `{kind:…, pipeline?}` \| omit. |
 
 - **Optional-with-implicit-defaults copy:** present `submissions_from` /
   `submissions_to` as optional and explain the server defaults via
@@ -1422,7 +1503,7 @@ Config keys (allow-list): `form_id`, `name`, `guidelines`, `sources`,
 
 Outputs: `steps.<key>.report_id`, `steps.<key>.report_name`.
 
-#### 4.6.3 The "one-line editor" decision (title / report name)
+#### 4.6.3 The "one-line editor" decision (title / report name) — SF3.6 REVERSES the if-block/AI-text exclusion
 
 `title` and report `name` are **single-line** yet must accept variable directives.
 Two controls were weighed:
@@ -1443,48 +1524,113 @@ string with directives", so a one-line editor's serialized markdown is valid. B7
 constrains height/toolbar; it does **not** hard-block Enter (a stray newline in a
 title is harmless and the backend trims), but the field is styled to one row.
 
-### 4.7 Variable wiring — the MarkdownEditor variable extension (REWRITTEN — replaces REV 1's reference popover)
+**AS-BUILT (SF1) — the original reasoning, no longer current:** operations pipelines were offered
+here from the start (a chip's Modal works regardless of toolbar visibility), but if-blocks and
+`@[ai-text]` were initially kept OFF `title`/`name` — both features insert through the TOOLBAR,
+and B7's original `hideToolbar` styling hid it to keep these fields reading as one line; an
+if-block is also a BLOCK container that would visually break inside a field styled that way.
+
+**AS-BUILT (SF3.6) — REVERSED: `title`/`name` are now ordinary multi-line `MarkdownEditor`s WITH
+the toolbar, carrying the FULL power `description`/`guidelines` already had.** The user asked for
+the same conditional-branch / AI-written-value capability on `title`/`name` that
+`description`/`guidelines` already had, and there is no structural reason to withhold it (the
+backend's markdown-field contract never distinguished single-line from multi-line fields — see
+`docs/backend/workflows-api.md`'s "Where each is enabled" note, which is itself corrected by this
+same SF3.6 pass). `WorkflowStepCard.vue` renders `title`/`name` with `min-height="4rem"` and the
+same `:if-blocks="IF_BLOCK_CONFIG"` / `:ai-text="aiTextConfig"` props `description`/`guidelines`
+use — there is no longer a toolbar-less, single-line variant of these fields. The engine already
+trims a resolved `title`/`name` to 255 chars at run time (the DB column width — a reviewer fix,
+see `docs/backend/workflows-api.md`'s Steps section), so a longer composed value from an if-block
+branch or an AI-generated sentence never breaks a run.
+
+### 4.7 Variable wiring — the MarkdownEditor variable extension (REWRITTEN — replaces REV 1's reference popover; AS-BUILT updated for SB1/SF1/SF2)
+
+> **The "pipeline operations are a non-goal this batch" line from the original B7
+> plan is WRONG as of SF1 — corrected below.** Operations pipelines, if-blocks, and
+> AI text are now wired and executing at run time (§4.6, ADR-0013). This section
+> also corrects the ORIGINAL plan's claim that the trigger's system variables
+> (`trigger.scheduled_at`) were already offered for a null catalog — they were
+> PLANNED to be, but the code did not actually do it until SF2 (see 4.7.4 below).
 
 **The `{{…}}` reference popover of REV 1 is DELETED.** 5.1 uses the existing
 editor variable extension.
 
 - **Catalog fetch.** When the trigger is `form_submitted` **and** a `form_id` is
   selected, fetch `GET /forms/{form}/workflow-catalog` →
-  `{data:{variables:[{source, path, name, type, enumOptions?, nullable?}],
-  fields:[…]}}`. Cache per form id in the editor store. The `variables` array feeds
-  **every** variable-capable control on this workflow (all step editors + the
-  add-on fields). When the trigger is `schedule`, there is no form; the only
-  variables are the trigger's `scheduled_at` + the step outputs (§4.7.3) —
-  assembled FE-side from the static trigger-system list + the live step list (no
-  catalog HTTP call is possible without a form, and none is needed).
-- **Feeding the editor.** Pass `:variables="{ variables: <catalogVariables>,
-  operationsCatalog: [] }"` to each `MarkdownEditor`. **Pipeline operations are a
-  non-goal this batch** (§7.9) → `operationsCatalog` is empty, so the variable
-  panel shows the chosen variable with **no** transform pipeline (the chip is a
-  pure reference). This is a deliberate scope cut: the editor supports pipelines,
-  but 5.1 wires none.
-- **Identity-only directive (the key nuance).** The editor's `variable` directive
-  is **identity-only** — it stores `data.id` (= the variable's `path`) and a
-  degraded editor primitive `data.type ∈ {text,number,boolean}`; it carries **no**
-  workflow type. The FE **recovers the real workflow type from the catalog by
-  path**. So date/enum/multi variables serialize with `data.type: 'text'` inside
-  the directive and are re-typed from the catalog on read. B7 must map a catalog
-  variable → a `VariableDefinition { id: path, name, type: editorPrimitive(type) }`
-  when feeding `:variables`, and re-resolve the true type from the catalog wherever
-  the true type matters (the add-on fields, the read-side chip rendering).
+  `{data:{variables:[…], fields:[…], operations:[…], ai_personas:[…]}}`. Cache per
+  form id in the editor store. The `variables` array feeds **every**
+  variable-capable control on this workflow (all step editors + the add-on
+  fields); `operations` (SB1; 66→68 ops with the ADR-0014 choice-coercion batch) is
+  the operation catalog and `ai_personas` (SB2) is the closed AI-text tone set (both
+  label-less — the FE attaches labels). When the
+  trigger is `schedule`, there is no form; the only variables are the trigger's
+  `scheduled_at` + the step outputs (§4.7.3/§4.7.4).
+- **Feeding the editor — AS-BUILT (SF1): pipelines ARE wired.** Each `MarkdownEditor`
+  is fed `:variables="{ variables: toEditorVariablesTyped(...), operationsCatalog:
+  resolveOperationCatalog(catalog) }"` — `operationsCatalog` is the merged
+  backend-descriptor × FE-label catalog (`resolveOperationCatalog`,
+  `workflowConditions.ts`; unknown/missing descriptors degrade to the full FE
+  standard catalog), never empty. A variable chip's Modal therefore opens the FULL
+  operations-pipeline editor, filtered to the picked variable's type — this
+  REVERSES the original plan's "pipeline operations are a non-goal this batch."
+- **Two variable feeds, not one (SF1).** `toEditorVariables(...)` (unchanged,
+  degrade-to-primitive) still feeds anything that only needs identity + the
+  editor's 3-primitive vocabulary (read-side/summary code). NEW:
+  `toEditorVariablesTyped(...)` feeds the step markdown editors — the SAME
+  identity-only definitions (`id = path`) but carrying the variable's TRUE
+  `WorkflowVariableType` (not the degraded primitive) plus its enum `options`, so
+  a chip's pipeline modal offers the RIGHT type-specific operations (date/enum/
+  multi, not just text/number/boolean) and enum comparison args are populated from
+  the real option list.
+- **Identity-only directive PAYLOAD (the key nuance, UNCHANGED by SB1).** The
+  editor's `variable` directive is still **identity-only in its base shape** —
+  `data.id` (= the variable's `path`) and a degraded editor primitive
+  `data.type ∈ {text,number,boolean}`; it carries **no** workflow-type field. The
+  FE **recovers the real workflow type from the catalog by path** exactly as
+  before. What changed is that the directive MAY ADDITIONALLY carry a non-empty
+  `data.pipeline` (an array of `{stepId, operationId, args, outputType}` steps,
+  the editor's `VariablePipelineEditor` format) — when present, the BACKEND
+  transforms the resolved value through it at run time (ADR-0013 §2); the
+  directive's identity/type-degrade contract is otherwise untouched.
 
-#### 4.7.1 The catalog→editor adapter (`workflowVariables.ts`, new)
+#### 4.7.1 The catalog→editor adapter (`workflowVariables.ts`)
 
 A pure module mapping the catalog to the shapes each consumer needs:
 
-- `toEditorVariables(catalogVariables, steps, positionIndex)` →
-  `VariableDefinition[]` for a `MarkdownEditor`: system + field variables as-is
-  (id = path, type = `editorPrimitive`), plus **position-scoped step outputs**
-  (§4.7.3). Enum/multi/date collapse to their editor primitive here (real type
-  stays recoverable by id).
-- `resolveVariableType(catalog, path)` → the true `WorkflowVariableType` for a
-  path (used by the add-on value-or-variable fields to filter which variables are
-  offered, and by read-side rendering).
+- `toEditorVariables(catalog, steps, position, triggerType?)` →
+  `VariableDefinition[]` for a plain (untyped) `MarkdownEditor` feed: system +
+  field variables as-is (id = path, type = `editorPrimitive`), plus
+  **position-scoped step outputs** (§4.7.3). Enum/multi/date collapse to their
+  editor primitive here (real type stays recoverable by id).
+- **`toEditorVariablesTyped(catalog, steps, position, triggerType?)` (SF1, NEW)** —
+  the step markdown editors' actual feed: the SAME identity-only definitions PLUS
+  the TRUE `WorkflowVariableType` and enum `options` (not degraded) — see above.
+- `resolveVariableType(path, catalog, steps, triggerType?)` / `resolveVariable(...)`
+  → the true `WorkflowVariableType` / full `CatalogVariable` for a path (used by
+  the add-on value-or-variable fields, and by read-side rendering). **SF2:** both
+  now also fall back to the static trigger-system mirror (§4.7.4) when the path
+  isn't in the catalog, so a null-catalog schedule workflow still resolves
+  `trigger.scheduled_at`'s type/name correctly.
+- `variablesOfType(catalog, steps, position, types, triggerType?)` → a type-filtered
+  variable list, still exported but **no longer what an add-on field's picker
+  actually receives** (superseded by `allValueVariables` below — SF3.2/"show-all",
+  §4.9).
+- **`allValueVariables(catalog, steps, position, triggerType?)` (SF3.2, NEW)** — the
+  actual add-on picker feed as of the SF3 redesign: `variablesOfType(...)` called
+  with EVERY value-or-variable-referenceable type, i.e. no per-field type filter at
+  all. Every `ValueOrVariableField`/`DateOrVariableField` on the card receives this
+  SAME full list regardless of its own accepted terminal — the user picks any
+  variable and coerces it with an operations pipeline (§4.9.1). Both this and
+  `variablesOfType` strip identifier variables (`isIdVariable` — a path ending in
+  `.id`/`_id`) from the OFFERED list; a saved reference to one still resolves/renders
+  correctly, only NEW picking is restricted.
+- `variableIcon(type)` → the per-`WorkflowVariableType` icon for an add-on chip
+  (§7.5) — covers date/enum/multi too, unlike the editor's own primitive-only map.
+- **`stripVariableDirectives(text, catalog, steps, triggerType?)` (SF2, NEW)** —
+  replaces every directive in a string with its variable NAME (catalog-resolved by
+  the directive's `id`, falling back to the directive's own embedded name); powers
+  the collapsed step card's one-line SUMMARY (§4.6) so a chip never leaks raw
+  `@[variable](…)` bytes into a read-only echo.
 
 #### 4.7.2 Position scoping
 
@@ -1494,7 +1640,7 @@ outputs only for steps `0..positionIndex-1`. A field outside any step (there are
 none in 5.1 — conditions use the typed builder, not variables) would see trigger
 vars only.
 
-#### 4.7.3 Step-output KEY substitution
+#### 4.7.3 Step-output KEY substitution (the static `STEP_OUTPUTS` mirror — NOT re-pointed at the catalog)
 
 The catalog lists step outputs as **`steps.<TYPE>.<name>`** templates
 (`steps.create_task.task_id`, `steps.create_task.title`,
@@ -1502,9 +1648,43 @@ The catalog lists step outputs as **`steps.<TYPE>.<name>`** templates
 When offering an earlier step's outputs, the adapter **substitutes the user's
 actual step `key`** for `<TYPE>` → the inserted/stored ref path is
 `steps.<key>.<name>`. A keyless earlier step contributes no outputs yet (skip it
-until it has a key). This mirrors the existing `workflowEditorModel.referenceGroupsAt`
-KEY-substitution logic (which B7 keeps but re-points at the catalog's real output
-names, dropping the old hand-written `STEP_OUTPUT_SUFFIXES` in favor of the catalog).
+until it has a key).
+
+**Spec-vs-built gap (checked as part of this doc pass, still open).** The
+original plan described this as re-pointing at "the catalog's real output names,
+dropping the old hand-written `STEP_OUTPUT_SUFFIXES`." **This did NOT happen.**
+`workflowVariables.ts` still hand-maintains its own `STEP_OUTPUTS` constant (a
+`{create_task: [...], create_form_report: [...]}` map mirroring the backend's
+step-output descriptors) and `toEditorVariables`/`toEditorVariablesTyped`
+EXPLICITLY FILTER OUT the catalog's own `source:'steps'` entries
+(`nonStepVariables()`) rather than reading them — the live, key-substituted
+per-position outputs come entirely from the local static mirror, never from
+`catalog.variables`. The code's own comment marks this as a deliberate two-step
+plan ("B7a keeps this as a static mirror… B7b re-points it at the catalog's real
+step-output names") — **B7b was never done**; SF1/SF2 did not revisit it either.
+This is a real drift risk (a backend step-output rename would silently desync
+from this FE mirror with no compile-time or catalog-driven signal) — flagged here
+as an OPEN gap, not fixed by this doc pass.
+
+#### 4.7.4 Trigger SYSTEM variables for a null catalog (SF2 — NOW ACTUALLY WIRED)
+
+A `schedule` trigger (or a `form_submitted` trigger with no form selected) has no
+catalog to fetch, so the trigger's SYSTEM variables (`trigger.scheduled_at` for
+`schedule`; `trigger.submission.id`/`.form.id`/`.form.name`/`.source`/
+`.submitted_at`/`.task.id` for `form_submitted`) would otherwise be invisible to
+every step editor even though the RUNTIME resolves them regardless. **This is
+what the original spec claimed already happened ("the only variables are the
+trigger's `scheduled_at` + the step outputs") — it did not; SF2 is what actually
+built it.** `workflowVariables.ts` now carries `TRIGGER_SYSTEM_VARIABLES` (a
+`Record<WorkflowTriggerType, CatalogVariable[]>` — a hand-maintained mirror of
+`WorkflowVariableCatalogService::triggerSystemVariables()`, same drift caveat as
+§4.7.3) and `triggerSystemVariables(triggerType)` reads it. Every variable-feed
+function (`toEditorVariables[Typed]`, `variablesOfType`, `resolveVariableType`,
+`resolveVariable`) now takes an OPTIONAL `triggerType` and MERGES these into the
+non-step variables (deduped by path — a present catalog entry always wins), so a
+schedule workflow's step editors correctly offer `trigger.scheduled_at` as a
+date-typed variable with the same name the catalog would have produced had a form
+existed. Every step editor/card passes `triggerType` down from the drawer.
 
 ### 4.8 Conditions builder — `WorkflowConditionsEditor.vue` (REWRITTEN — typed, schema-driven)
 
@@ -1559,37 +1739,132 @@ clause `{field: 'fields.<id>', field_type, operator, value}` driven by
   row; `trigger_config.form_id` (the "form required when conditions present" error)
   → surfaced on the FormSelect in the trigger panel + scroll it into view.
 
-### 4.9 Non-text variable add-ons — interaction spec (NEW)
+### 4.9 Non-text variable add-ons — interaction spec (NEW; AS-BUILT toggle + pipeline for SF1; REDESIGNED for SF3.3-5)
 
-Three small field wrappers give non-text fields the **same "or a variable" power**
-the editor chips give text, echoing the chip's look/feel (type icon + token-styled
-pill). Wire shape everywhere:
-`{kind:'literal', value} | {kind:'variable', ref:{source, path, type}}` — bare
-scalars are also accepted as literals (the backend's `validateUnionOrLiteral`).
+> **This section describes the SF3.3-5 REDESIGN of the fields, which SUPERSEDES the SF1
+> "SegmentedControl + inline pipeline editor" shape described in earlier snapshots of this
+> document.** The wire contract (the `{kind, ref, pipeline?}` union) and the underlying
+> "no separate `ConditionalSelectField`" verdict (§4.9.3) are UNCHANGED — only the field's own
+> internal layout and the pipeline's editing surface moved from an inline `SegmentedControl` +
+> below-the-chip editor to a compact in-field toggle + a Modal, and the picker DROPPED its
+> type pre-filter (SF3.2/"show-all"). See ADR-0013/ADR-0014 for the backend decisions (the
+> shared operations engine; the choice-producing terminal rule) this redesign wires up to.
+
+Two field wrappers give non-text fields the **same "or a variable" power** the editor
+chips give text. Wire shape everywhere (unchanged since SF1):
+`{kind:'literal', value} | {kind:'variable', ref:{source, path, type}, pipeline?:
+{op, args}[]}` — bare scalars are also accepted as literals (the backend's
+`validateUnionOrLiteral`).
 
 #### 4.9.1 `ValueOrVariableField` (priority; and enum-typed select values)
 
-- **Default (literal) mode:** the field's native literal control (for `priority`, a
-  `Select` over `low\|medium\|high\|urgent`).
-- **A trailing toggle** — a `Button size="icon-xs" variant="ghost"` with the
-  `braces` icon (the same glyph the editor variable insert uses) — flips the field
-  to **variable mode**: the literal control is replaced by a **variable picker**
-  (a `Select` whose options are the catalog variables **filtered to compatible
-  types**; for `priority` that is `enum`/`text` variables). The picked variable
-  renders as a **chip** styled like `VariableChip` (type icon + name) with an ✕ to
-  return to literal mode.
+**AS-BUILT (SF3.3-5) — ONE input-look box, not a SegmentedControl + a separate editor
+panel.** The field reads as a SINGLE bordered box (matching every other form control's
+look): a COMPACT leading toggle — two small icon `Button size="icon-xs"`s,
+`pencil` (Value) / `braces` (Variable), each `aria-pressed` — sits INSIDE the box's left
+edge, divided by a hairline from the body; the body holds either the literal control
+(Value mode) or the variable picker/chip (Variable mode), flattened so the whole thing
+shares ONE border/focus ring rather than nesting a field-inside-a-field.
+
+- **Value mode (default):** the field's native literal control fills the body (for
+  `priority`, a `Select` over `low\|medium\|high\|urgent`).
+- **Variable mode, no pick yet:** a `Select` picker fills the body. **AS-BUILT
+  (SF3.2/"show-all") — the picker offers EVERY referenceable variable, not a
+  type-filtered subset.** The SF1 plan's `variablesOfType(...)` type pre-filter is
+  GONE: `allValueVariables(...)` feeds the SAME full, position-scoped +
+  trigger-system-merged variable list to every value-or-variable field regardless of
+  the field's own accepted type — the user picks ANY variable and COERCES it to the
+  field's terminal with an operations pipeline (a text field becomes a choice via
+  `enum_to_choice`/`match_to_choice`, a number becomes a date via a suitable op, etc.).
+  Identifier variables (`*.id` / `*_id` — `trigger.submission.id`, `steps.<key>.task_id`,
+  …) stay STRIPPED from every offered list (`isIdVariable`, unchanged since SF3.2) — a
+  machine key is never useful to drop into a priority or a deadline.
+- **Variable mode, picked:** the picker is replaced by a **CHIP token rendered AS the
+  field's value** — inline inside the box (not below it), styled like the editor's own
+  `VariableChip` (type icon + name), with a trailing ✕ (`Button size="icon-xs"`,
+  X-before-permanent-control order) to remove it and return to Value mode. **Clicking
+  the chip's body (not the ✕) opens the OPERATIONS MODAL** (below) rather than expanding
+  an inline pipeline editor underneath the field — operations no longer live inline.
+- **The operations Modal** (mirrors `WorkflowConditionModal`'s shape, §4.8): a read-only
+  SOURCE header (the picked variable's icon + name + its TRUE type as a `Badge`), the
+  shared `VariablePipelineEditor` (seeded from the variable's true type, its enum/multi
+  option list as `sourceOptions`, and — for a CHOICE field — the destination's own option
+  list as `targetOptions`), a live **"Returns: `<type>`"** status strip (success tone
+  when the in-progress pipeline satisfies the field's terminal contract, warning tone +
+  the expected type(s) otherwise — the SAME `pipelineSatisfies(...)` predicate the field-
+  level gate below uses, so the Modal and the field can never disagree), and a
+  Cancel/Save footer. **Save is DISABLED (gated) until the pipeline's terminal
+  satisfies the field** — a client-side preview of the exact terminal-type/choice gate
+  the backend 422s on (`docs/backend/workflows-api.md`'s write-validation + "Choice
+  fields" sections). Cancel discards the Modal's edits (a local clone); only Save
+  commits the pipeline onto the field's model.
+- **Choice fields (priority) — the Modal's choice-targeting affordance.** When the host
+  passes a non-empty `targetOptions` (priority → `TaskPriority::ids()`), the Modal's
+  pipeline editor offers the two choice-producing ops — `enum_to_choice`
+  ("Zamień na wybór", enum source) and `match_to_choice` ("Dopasuj do wyboru", text
+  source) — each editing UI presenting the FIELD's specific options (`urgent`/`high`/
+  `medium`/`low`) as the mapping targets/rule `then`/`fallback` values, not a generic
+  free-text target. A pipeline that already returns the right TYPE but does not END on a
+  choice op shows a distinct hint (`workflows.field.needsChoice`, "zmapuj ją na jedną z
+  wartości tego pola") rather than the generic "expected …" mismatch text, since
+  "expected Choice" would otherwise read confusingly next to a value that already IS an
+  enum.
+- **Field-level TYPE ERROR (outside the Modal) — engages even while the step card is
+  COLLAPSED.** The gate is derived from the SAVED `{kind, ref, pipeline?}` model, not
+  from the Modal's live edits — so a workflow loaded for editing with an already-invalid
+  saved pipeline (e.g. an old `enum_to_text`-terminated priority, now rejected by
+  ADR-0014) is flagged immediately, before the user ever opens the field. When the saved
+  pipeline does not satisfy the field: the box takes an `is-error` danger skin (a danger
+  border + inset ring, mirroring the focus-within ring so the field itself reads
+  "action required"), the chip gains a danger **"Wymaga uwagi"** pill (replacing the
+  neutral "N ops" count marker) with `aria-invalid="true"` on the chip's clickable body,
+  and one inline helper line renders under the box
+  (`workflows.field.typeError`, "Ta zmienna nie pasuje jeszcze do pola — dodaj operacje,
+  aby zwracała {expected}."). The step card/drawer's Save is BLOCKED while any card
+  carries this error (bubbled via a `type-error` event up through
+  `WorkflowStepListEditor` to the drawer — the SAME boolean gate a `steps.<i>.*` 422
+  already used). **Because this reads the SAVED model on an ALWAYS-mounted card** (only
+  the card's BODY sits behind `v-if="expanded"`, the card itself never unmounts), a
+  multi-step workflow that hydrates fully COLLAPSED still reports its per-field errors
+  immediately (`immediate: true` watchers) — and `WorkflowStepListEditor` auto-EXPANDS
+  any card carrying one, exactly like an existing `steps.<i>.*` 422 already does (§4.6).
+- **Suppressing a duplicate message (`externalErrorPresent`):** when the host's
+  `FormField` ALREADY renders a server 422 for this exact field, the field passes
+  `:external-error-present="true"` and the inline client-side type-error TEXT is
+  suppressed — the danger skin / pill / `aria-invalid` still render (so the visual
+  "action required" cue never disappears), only the redundant second line of prose is
+  dropped, so exactly ONE error message shows per field.
 - **State:** `{ kind: 'literal', value }` by default; picking a variable sets
-  `{ kind: 'variable', ref: { source, path, type } }` (source/type from the
-  catalog variable; `type` is the TRUE workflow type, not the editor primitive).
-- **a11y:** the toggle is a real `Button` with `aria-pressed` + an aria-label
-  (`workflows.field.useVariable` / `.useLiteral`); the variable `Select` carries a
-  label; the chip's ✕ is a `Button size="icon-xs"`.
+  `{ kind: 'variable', ref: { source, path, type } }` (source/type from the catalog
+  variable; `type` is the TRUE workflow type, not the editor primitive); Saving the
+  Modal adds `pipeline: [{op, args}, …]` to the same object (omitted — a plain identity
+  ref — when the Modal's pipeline is empty AND the field is not a choice field; a
+  choice field's Modal Save is gated so an empty pipeline can never be committed).
+  Switching the toggle back to "Wartość" restores a literal value AND drops any
+  pipeline/ref entirely.
+- **Props (component contract):** `variables` (the show-all feed), `operationsCatalog`
+  (empty ⇒ no Modal offered — a removable-pill-only fallback for any future host that
+  does not wire operations), `resultTypes` (the accepted terminal type(s) — `['enum']`
+  for `priority`, `['date']` for a date field), **`targetOptions`** (NEW — the
+  destination option set for a choice field; empty/omitted ⇒ not a choice field),
+  **`externalErrorPresent`** (NEW — suppresses the inline type-error TEXT only, per the
+  bullet above), `pickerLabel`/`pickerPlaceholder`, `disabled`.
+- **a11y:** the mode toggle is `role=group` with two `aria-pressed` `Button`s (not a
+  `SegmentedControl` radiogroup, since it needs no arrow-key roving-tabindex behavior
+  for just two icon buttons); the chip's clickable body carries `aria-invalid` +
+  an `aria-label` naming both the variable AND the "edit operations" action; the chip's
+  ✕ is a `Button size="icon-xs"`; the Modal inherits standard focus-trap/Esc/scrim
+  behavior (`ui/overlay/Modal.vue`) and the pipeline editor's own a11y (§4.8/editor
+  README).
 
 #### 4.9.2 `DateOrVariableField` (deadline; report windows)
 
-Identical pattern, literal mode = a **`DatePicker`**; variable mode filters the
-catalog to **`date`-typed** variables (`trigger.scheduled_at`,
-`trigger.submitted_at`, any date form field). Chip identical.
+Same AS-BUILT SF3.3-5 pattern as §4.9.1 (the compact in-field toggle, chip-opens-Modal,
+field-level error affordance, `externalErrorPresent`), literal mode = a **`DatePicker`**;
+variable mode offers the SAME show-all variable feed (§4.9.1's SF3.2 note — no `date`
+type pre-filter), coerced to a `date` terminal via the Modal's pipeline. `targetOptions`
+is never passed here (a date field is never a choice field) — the Modal's type-gate
+strip is the plain "Returns: `<type>`" success/warning contract, no choice-specific hint.
 
 #### 4.9.3 `ConditionalSelectField` verdict
 
@@ -1618,8 +1893,20 @@ including nested keys:
   `trigger_config.schedule.tz` → the matching schedule control (scroll into view).
 - `conditions.<i>.field` / `.operator` / `.value` → the matching condition row.
 - `steps.<i>.key` / `steps.<i>.config.<field>` (incl. the union sub-keys
-  `steps.<i>.config.priority.ref.path` etc.) → the matching step card by index
+  `steps.<i>.config.priority.ref.path` / `.pipeline.<m>.op` /
+  `.pipeline.<m>.args.mapping.<key>` / `.pipeline.<m>.args.rules.<j>.then` /
+  `.pipeline.<m>.args.fallback` etc.) → the matching step card by index
   (the Approvals `stages.<i>.<field>` regex approach), scrolled into view.
+  `WorkflowStepCard.vue`'s `fieldError(field)` helper falls back from the exact
+  `config.<field>` key to any `config.<field>.`-prefixed nested key, so a deep
+  pipeline-arg 422 still surfaces on the right `FormField` (`:external-error-present`
+  is then `true` for that field — §4.9.1).
+- **A CLIENT-SIDE type-satisfaction gate mirrors the server's choice/terminal 422
+  BEFORE submit** (§4.9.1): each value-or-variable field's SAVED pipeline is checked
+  against its `resultTypes`/`targetOptions` contract via the same
+  `pipelineSatisfies(...)` helper the field and its operations Modal both use; any
+  card failing this — including a `priority` pipeline that does not end in a choice
+  op — blocks Save and auto-expands, without waiting for a round-trip 422.
 - Any un-mappable 422 → a translated danger toast (`workflows.editor.toasts.error`).
 
 Success → `useToast` success (`.created` / `.updated`), emit `saved`, close; the
@@ -1627,40 +1914,122 @@ store reconciles the list (prepend on create, replace on update).
 
 ---
 
-## 5. Runs view — `WorkflowRunsView.vue` (`?section=runs`)
+## 5. Runs view — the global list, the per-workflow section, and the shared detail drawer (REVISION 6, IMPLEMENTED)
 
-*(Carried forward from REV 1 — the runs contract was NOT re-scoped by 5.1. The one
-note: `origin: 'event'` now corresponds to a form-submission-triggered run since
-event triggers are gone; the FE keeps the three-origin filter and labels `event`
-via `workflows.runs.origin.event`. Flagged in §8 — no invented field.)*
+*(REVISION 6 rewrites this section in place. Two entry points share the same run-row and
+run-detail components: the TOP-LEVEL global list `WorkflowRunsListView.vue`
+(`next.workflows.runs`, `§5.0`) and the detail-nested per-workflow section
+`WorkflowRunsView.vue` (`?section=runs`, `§5.1`–`§5.2`). Both render `WorkflowRunRow.vue`
+(`§5.3`) and open the same `WorkflowRunTimeline.vue` drawer (`§5.4`).)*
 
-### 5.1 Saved-Views exemption
+### 5.0 Global list — `WorkflowRunsListView.vue` (`next.workflows.runs`, top-level)
 
-The Runs list does **NOT** carry a FilterTabBar / Saved Views (it is a
-detail-nested, entity-scoped list — the Queue/inbox precedent).
+A TOP-LEVEL module list (a child of `WorkflowsModuleLayout`, `§1`), so — UNLIKE the detail-nested
+per-workflow section (`§5.1`) — it carries the MANDATORY `FilterBar` + the `#top` Saved Views
+`FilterTabBar` (context `workflow-runs`), mirroring `WorkflowsView.vue`/`FormSubmissionsView.vue`.
 
-### 5.2 Filters (segmented, not FilterBar)
+- **Filters (`FilterBar` default slot, no text search — runs have no search param):** STATE
+  `Select multiple`, SOURCE `Select multiple`, TRIGGER `Select multiple` (all three:
+  `workflows.runs.filters.*Label`/`.all*`), a searchable single **WORKFLOW** `Select`
+  (`workflow_id`, global-feed-only, seeded from the workflows store, `workflows.runs.filters.
+  workflowLabel`/`.anyWorkflow`), and the shared `DateRangeFilter` (`date_from`/`date_to`/
+  `date_preset`, presets `today`/`this_week`/`last_week`/`this_month`). All five drive
+  `GET /workflows/runs` through the `workflowRuns` store's `'global'` scope, kept separate from the
+  per-workflow feed's cached items.
+- **Active-filter chips**: state/origin/trigger render as multi-value chip GROUPS (one chip per
+  selected value, `workflows.runs.filters.chip.*`, never "N selected"); the workflow filter and the
+  date range render as single removable chips.
+- **Rows**: `WorkflowRunRow` with `show-workflow` (the leading workflow-identity line, `§5.3`).
+- **Detail**: clicking a row opens a LOCAL `WorkflowRunTimeline` drawer (`Drawer size="lg"
+  :show-close="false"`), resolved via the clicked row's OWN `run.workflow.id` — no URL query key
+  (`§1.2`).
+- **Four states**: error+retry (`EmptyState variant="error"`); initial loading (6 row-shaped
+  skeletons — state chip pair + two text lines, never a spinner); empty (`hasActiveFilters` ?
+  filtered-search copy : first-run copy, `workflows.runs.global.empty.*`); success (rows +
+  `useInfiniteScroll` + a retryable append `Alert`, `workflows.runs.global.error.*`).
+- On unmount the store's global slice is reset (`store.resetAll()`) so a later visit never bleeds
+  stale rows from a previous filter set.
 
-Two `SegmentedControl`s drive `?state=` + `?origin=`:
-- **State:** All / pending / running / waiting / completed / failed / cancelled
-  (`workflows.runs.state.*`); reserved states (`waiting`, `cancelled`) render
-  greyed at zero.
-- **Origin:** All / event / schedule / manual (`workflows.runs.origin.*`).
-Plus a manual Refresh `Button variant="outline" size="sm" leading-icon="rotate-ccw"`.
+### 5.1 Per-workflow section — Saved-Views exemption
+
+The detail-nested Runs SECTION (`?section=runs`, inside a workflow's own detail) still does
+**NOT** carry a FilterTabBar / Saved Views — the `§5.1` REV1 exemption is UNCHANGED (a
+detail-nested, entity-scoped list, the Queue/inbox precedent). Saved Views live only on the NEW
+global list (`§5.0`), which is a proper top-level list.
+
+### 5.2 Filters — multi-select `Select`s + a date range (REVISION 6: no longer `SegmentedControl`)
+
+Both the global list (`§5.0`) and the per-workflow section share the SAME filter vocabulary; the
+per-workflow section renders it as two labelled `Select :multiple size="sm"` fields + a
+`DateRangeFilter size="sm"` (no `FilterBar` wrapper, per the `§5.1` exemption) rather than the
+`FilterBar` row the global list uses:
+
+- **State** `Select multiple` — every `WorkflowRunState` value (`workflows.runs.state.*`); no
+  explicit "All" option, an empty selection means unfiltered.
+- **Source** (origin) `Select multiple` — `workflows.runs.origin.*`. **Per-workflow only:** when
+  the open workflow's `trigger_type` is `form_submitted`, the "schedule" option is DROPPED from the
+  list (a form-triggered workflow can never produce a schedule-origin run) —
+  `WorkflowRunsSection.vue` threads the cached detail's `trigger_type` down for this.
+- **Trigger** `Select multiple` — global list ONLY (a per-workflow section's trigger type is fixed
+  by definition, so filtering by it there would be a no-op).
+- **Date range** — the shared `DateRangeFilter` (`date_from`/`date_to`/`date_preset`).
+
+Plus a manual Refresh `Button variant="outline" size="sm" leading-icon="rotate-ccw"`
+(per-workflow section only — the global list relies on `useInfiniteScroll` + filter changes, no
+separate refresh button). The per-workflow section's filters are URL-synced (`?state[]=`/
+`?origin[]=`/`date_*`), preserving the `?run_detail=` overlay key across a filter change.
 
 ### 5.3 Run row anatomy — `WorkflowRunRow.vue`
 
-Cursor list, 15/page. Each row: state badge (6-state, §5.5), origin badge,
-trigger-type chip (`hidden next-sm:inline-flex`; only `form_submitted`/`schedule`
-now), steps count (`list-checks` + `steps_count`), started (relative) + duration
-(or "—"), error preview (failed, one line, `text-next-danger`), nested badge when
-`depth > 0` (`git-branch` + `{depth}`). Row click → run-detail drawer.
+Cursor list, 15/page, shared by BOTH entry points. Each row (a `Surface` card, the whole row a
+button):
 
-### 5.4 Run detail — `WorkflowRunTimeline.vue` (right-side `Drawer size="lg"`, `?run_detail=`)
+- **`showWorkflow` prop** (`boolean`, default `false`) — when `true` (the global list only), renders
+  a leading identity line: the parent workflow's icon + name (`run.workflow.icon`/`.name`, from the
+  resource's `workflow` block, `whenLoaded`). Degrades to nothing when the row carries no
+  `workflow` (the per-workflow feed omits that block server-side, `§9`).
+- **State badge** — the exhaustive 6-state map (`§5.5`), icon + label, NEVER color-only; `failed`
+  renders `tone="solid"` for emphasis.
+- **ONE source badge** (REVISION 6 — collapses the REV1/REV2 separate origin badge + trigger-type
+  chip into a single badge; the trigger type was redundant information once origin already implies
+  it in practice) — `originIcon(run.origin)` + `originLabel(run.origin, t)` (the RELABELLED origin,
+  `§7.1`).
+- **Nested-run badge** when `depth > 0` (`git-branch` + `workflows.runs.nestedBadge`).
+- **Meta line**: steps count (`list-checks` + `workflows.runs.stepsCount`), started time
+  (`workflows.runs.detail`-style relative/absolute formatting) + duration (`workflows.runs.
+  duration` or "—" while unfinished).
+- **Error preview** (failed runs only) — one truncated line, `text-next-danger`.
 
-- **Header:** state badge + origin + started/finished + duration.
-- **Trigger payload:** `DescriptionList` key→value from `trigger_payload` (mono
-  keys), not raw JSON.
+Row click emits `open(run)`; each host resolves that into its own drawer-opening mechanism
+(URL query key for the per-workflow section, local ref for the global list, `§1.2`).
+
+### 5.4 Run detail — `WorkflowRunTimeline.vue` (right-side `Drawer size="lg"`, no own chrome)
+
+- **Header:** state badge + the ONE source badge (mirrors `§5.3`) + a nested-run badge when
+  applicable + started/finished + duration. Own close button (`Button variant="outline"
+  size="icon-sm"`) since the host `Drawer` renders with `:show-close="false"`.
+- **Trigger context — THREE cases, most-specific first:**
+  1. **Schedule run with a resolvable "reason"** (REVISION 6, NEW): a single labelled row — "Powód"/
+     "Reason" — rendering `describeOccurrence(scheduledAtIso, run.schedule_descriptor, t)`, a
+     CLIENT-COMPUTED sentence ("pierwszy czwartek o 14:00 w lipcu" / "the first Thursday at 14:00 in
+     July") that names the matched occurrence semantically instead of showing a bare timestamp. The
+     descriptor rides on the run's OWN `schedule_descriptor` field (backend-supplied data,
+     `docs/backend/workflows-api.md`); the sentence GRAMMAR itself is entirely frontend
+     (`workflowSchedule.ts`'s `describeOccurrence`, reusing the schedule builder's own
+     `describeSchedule` clause-building — see ADR-0016). Falls back to a plain formatted timestamp
+     (never blank) when the descriptor is missing or the occurrence cannot be named semantically
+     (Tier-A fallback — compound/exclusion/unnamed descriptors).
+  2. **`form_submitted` run** (REVISION 6, NEW): a "Wysłanie formularza"/"Form submission" heading
+     over TWO cards:
+     - **Form card** (`EntityCard`, whole card opens the form in a NEW TAB) — title = form name
+       (or "Untitled form"), an `external-link` status icon, and — when the form is anonymous — an
+       "Anonymous form" meta line (`eye-off`).
+     - **Submission card** (`EntityCard`) — title "Submission", meta = submitted-at date + source
+       (manual/task), a status badge (approved/pending derived from whether `submitted_at` is
+       present). Clicking it opens `SubmissionPreviewDrawer` in **`diff`** mode (`§5.4a`), NOT a
+       navigation — the run stays open behind it.
+  3. **Anything else** — the REV1 fallback: a flat `trigger_payload` key→value `dl` (mono keys),
+     not raw JSON.
 - **Step timeline:** shared `Timeline` (`ui/patterns/Timeline.vue`), one item per
   audit step ordered by `position`: node icon toned by `status_tone`; title = step
   **type** label + the **`key`** mono chip; status badge (`status_label` /
@@ -1668,6 +2037,30 @@ now), steps count (`list-checks` + `steps_count`), started (relative) + duration
   `Alert size="sm"`.
 - **States:** loading → skeleton timeline items; error → inline `Alert` + retry;
   empty → `EmptyState size="sm"` `workflows.runs.detail.emptySteps`.
+
+#### 5.4a `SubmissionPreviewDrawer` — `diff` mode (REVISION 6, NEW; extracted from Forms)
+
+`SubmissionPreviewDrawer` (`pages/forms/SubmissionPreviewDrawer.vue`) was EXTRACTED from
+`FormSubmissionsView`'s inline detail drawer so both the Forms submissions screen AND this run
+detail can reuse it, via a new `mode: 'view' | 'diff'` prop (default `'view'`):
+
+- **`view`** (Forms submissions, unchanged behavior) — renders the submission read-only through
+  `FormViewer`, with an edit affordance when `can_be_edited`.
+- **`diff`** (this drawer) — the run captured a SNAPSHOT of the form's answers
+  (`trigger_payload.fields`, prop `snapshotFields`). The drawer shows that snapshot AND fetches the
+  CURRENT submission (`GET /api/form-submissions/{id}`, prop `submissionId`) to diff against it:
+  - a header status: `Spinner` "Comparing…" while the fetch is in flight, then a
+    `Badge variant="modified"` "Changed" (any field differs) or a `Badge variant="success"`
+    "Unchanged" — computed via an order-insensitive canonical-value comparison (handles arrays/
+    objects, not just scalars);
+  - each field row that differs is highlighted `bg-next-modified-subtle`, carries a
+    `Badge variant="modified" icon="pencil"` "Changed" marker, and shows the CURRENT value inline
+    below the snapshot value (`workflows.runs` reuses `forms.submissions.preview.*` keys, not a
+    Workflows-local i18n group — the drawer lives in `pages/forms/`);
+  - a compare-failed `Alert variant="warning"` if the current-submission fetch errors (the
+    snapshot still renders);
+  - the footer offers "Open original submission" (`external-link`, opens the submission's Forms
+    detail route in a new tab) instead of the `view` mode's submitter/date/status line.
 
 ### 5.5 Run states — full 6-state badge map
 
@@ -1684,26 +2077,64 @@ FE derives `variant` from `state_tone`; icon from this fixed map by `state`.
 
 ### 5.6 Runs list four states
 
-error+retry (`Alert`); loading (row-shaped skeletons); empty (per-filter vs
+Per-workflow section: error+retry (`Alert`); loading (row-shaped skeletons); empty (per-filter vs
 first-run message, `workflows.runs.empty.*`); success (rows + infinite-scroll +
-retryable append), via `useInfiniteScroll`.
+retryable append), via `useInfiniteScroll`. The global list's own four states are documented in
+`§5.0` (`workflows.runs.global.*` copy, distinct from the per-workflow keys).
 
 ---
 
-## 6. Run-now flow — `TargetPickerModal.vue` (`?run=<id>`) (REWRITTEN for 5.1)
+## 6. Run-now flow — `TargetPickerModal.vue` (`?run=<id>`) (REVISION 6: Pick / Create replace the raw id field)
 
 A `Modal` hosted by the module layout, opened from the row menu + the detail
 action bar. **5.1 delta:** only two trigger types, only two 422 bag keys.
+**REVISION 6 delta:** the `form_submitted` target is acquired through Pick/Create instead of a
+typed-in id (`§6.1`); the wire contract and the 422 bag are otherwise UNCHANGED (`§6.3`).
 
 ### 6.1 Per-trigger-type target picker
 
 | Trigger type | Target | Control |
 | --- | --- | --- |
-| `form_submitted` | a **FormSubmission id** | a **`TextInput`** (`workflows.run.submissionIdLabel`, helper `.submissionIdHint` "Paste the id of the submission to run against."). **No submission picker exists** — a light id field is the honest MVP (carried from REV 1; flagged §8). |
-| `schedule` | **none** | confirm-only; the modal body shows only the confirm copy. |
+| `form_submitted` | a **FormSubmission id**, resolved via Pick or Create | A read-only **selected-submission summary** (`EntityCard selected`, `CreatorBadge` glyph, submitted-at + source meta, a clear-selection ✕) when a submission is chosen, or an `EmptyState` ("No submission selected") otherwise — plus two actions: **Pick** (`workflows.run.pick`, opens `SubmissionPickerDrawer`, `§6.1a`) and **Create** (`workflows.run.create`, opens `FormFillView` in a drawer, `§6.1b`). Both resolve to the SAME hidden `target_id` the confirm button submits; Run stays disabled (`canConfirm`) until one is set. **REVISION 6 REPLACES** the REV1/REV2 raw-uuid `TextInput` (`workflows.run.submissionIdLabel`/`.submissionIdHint` — now unused, retained only for i18n-parity history) — the "no picker exists" gap flagged in the old `§9` is CLOSED. |
+| `schedule` | **none** | confirm-only; the modal body shows only the confirm copy (`workflows.run.scheduleConfirm`). |
 
 The task/approval target controls of REV 1 are **DELETED** (no task/approval
 triggers exist).
+
+#### 6.1a Pick — `SubmissionPickerDrawer.vue` (REVISION 6, NEW)
+
+A right `Drawer size="xl"` listing a form's APPROVED submissions for selection — a lean list over
+the shared `useFormsStore` (`submissionsFor`/`fetchSubmissions`), not the coupled
+`FormSubmissionsView` page:
+
+- **Scope**: prop `formId` — the trigger's bound form (`trigger_config.form_id`) or `null` ("any
+  form"). When `null`, the drawer shows a `FormSelect` step FIRST (`workflows.run.picker.
+  chooseForm`/`.chooseFormHint`); once a form is chosen it lists that form's submissions (a
+  "change form" `arrow-left` link returns to the chooser).
+- **Filters**: search + a source `Select multiple` (manual/task) + the shared `DateRangeFilter`, via
+  a `FilterBar` INSIDE the drawer (this is a drawer-scoped list, not a top-level route, so it does
+  not carry Saved Views). **No approved/pending filter** — the submissions endpoint returns only
+  approved submissions already, so the whole list is implicitly approved.
+- **Rows**: `SubmissionCard` (`pages/forms/SubmissionCard.vue`) in its `selectable` prop mode
+  (`§6.1a` note below) — cursor-paginated via `useInfiniteScroll`, standard loading/empty/error/
+  success states.
+- **Pick**: clicking a card emits `select(id, submission)` and CLOSES the drawer, setting the
+  modal's selected-submission summary (`setSelected`).
+
+**`SubmissionCard.selectable` prop** (`boolean`, default `false`, additive/non-breaking): when
+`true`, the WHOLE card becomes a pick affordance (`EntityCard`'s stretched-click action, a real
+keyboard-activatable control) that emits `select(submission)` instead of navigating, and the
+kebab/action menu (delete/restore/force-delete) is SUPPRESSED. `false` (the Forms submissions
+screen's usage) is today's unchanged behavior.
+
+#### 6.1b Create — `FormFillView` in a drawer (REVISION 6, NEW)
+
+A right `Drawer size="xl"` (`workflows.run.createDrawer.title`) mounting the EXISTING
+`FormFillView` (the same component the Forms module's own fill flow uses) so Create produces a
+REAL `FormSubmission`, not a synthetic one. When the trigger's form is `null` ("any form"), a
+`FormSelect` step precedes the form (`workflows.run.createDrawer.chooseForm`/`.chooseFormHint`).
+On `@submitted`, the new submission becomes the modal's selection (`setSelected`) and the drawer
+closes.
 
 ### 6.2 Inactive workflow = "test run" framing
 
@@ -1786,14 +2217,43 @@ workflows.field.*            [NEW] useVariable, useLiteral, pickVariable,
 workflows.editor.*           createTitle, editTitle, cancel, save, saving,
                              detailError, sections.*, trigger.typeChangeWarning,
                              validation.*, toasts.created/.updated/.error
-workflows.runs.*             refresh, state.<6>, origin.<3>, stepStatus.*, duration,
-                             nestedBadge, listLabel, empty.*, detail.*, loadError
-workflows.run.*              [CHANGED] title, purpose, submissionIdLabel/.Hint,
-                             confirm, cancel, testRunNote, testRunConfirm,
-                             toasts.started,
+workflows.runs.*             refresh, state.<6>, origin.<3> [origin.event RELABELLED
+                             "Wysłanie formularza"/"Form submission", REVISION 6 —
+                             i18n only, the wire VALUE is still `event`],
+                             stepStatus.*, duration, nestedBadge, listLabel,
+                             openRun, stepsCount, empty.*, detail.* [REVISION 6 adds
+                             .reason.* (heading/label/daily/weekday/monthDay/lastDay/
+                             lastWorkingDay/lastWeekday/nthWeekday — the schedule
+                             "reason" sentence templates, PL+EN) and .formTrigger.*
+                             (heading/openForm/untitledForm/anonymousForm/
+                             submissionTitle/sourceManual/sourceTask)], loadError,
+                             filters.* [REVISION 6, both entry points: stateLabel/
+                             originLabel/triggerLabel/workflowLabel/allStates/
+                             allOrigins/allTriggers/anyWorkflow/dateLabel/dateAny/
+                             workflowSearchPlaceholder/chip.*],
+                             global.* [REVISION 6, NEW — the top-level list only:
+                             title, subtitle, error.title/.description,
+                             empty.title/.description/.searchTitle/.searchDescription]
+workflows.run.*              [CHANGED] title, purpose, confirm, cancel, testRunNote,
+                             testRunConfirm, scheduleConfirm, toasts.started,
                              errors.targetRequired/.targetNotFound/.capReached/.generic
+                             [REVISION 6 NEW — Pick/Create replace the id field]
+                             pick, create, noSubmission/.noSubmissionHint,
+                             clearSelection, picker.title/.chooseForm/
+                             .chooseFormHint/.changeForm, createDrawer.title/
+                             .chooseForm/.chooseFormHint
+                             [REVISION 6 RETIRED, kept for i18n-parity history only —
+                             no longer rendered] submissionIdLabel/.Hint/.Placeholder
                              [REMOVED] taskIdLabel/.Hint, approvalRequirement,
                              errors.noConcludedApproval
+workflows.module.allRuns     [REVISION 6, NEW] the "All runs" module-nav item label
+forms.submissions.preview.*  [REVISION 6, NEW keys on the FORMS i18n namespace —
+                             `SubmissionPreviewDrawer`'s diff mode lives in
+                             `pages/forms/`, not `pages/workflows/`]
+                             diffTitle, snapshotNote, comparing, compareError,
+                             status.changed/.unchanged, changedMarker, nowLabel,
+                             submitter, sourceManual/.sourceTask, emptyFields,
+                             openOriginal
 ```
 
 Reuse shared keys (`common.cancel`, `common.delete`, the shared
@@ -1821,8 +2281,8 @@ state line goes through `t()`.
 
 ### 7.5 Add-on / assist icons
 
-`braces` (the value-or-variable toggle, echoing the editor's variable glyph) ·
-`sparkles` (the AI schedule assist). Both real. Chip icons: INSIDE the editor,
+`pencil` / `braces` (the value-or-variable field's compact two-icon mode toggle — Value /
+Variable, SF3.3-5, §4.9.1) · `sparkles` (the AI schedule assist). All real. Chip icons: INSIDE the editor,
 `getVariableIconName(type)` is reused verbatim — but it maps PRIMITIVES only
 (text|number|boolean), so date/enum/multi variables would all fall to the text
 glyph. For the ADD-ON chips (§4.9), B7 therefore adds a tiny
@@ -1854,8 +2314,11 @@ read identically in both themes. State/origin badges = tone token + icon + label
   weekday/status/operator `Select`s, condition value controls, outcome/source
   `SegmentedControl`/checkbox groups all carry `aria-label`s; `SegmentedControl` is
   `role=radiogroup` with arrow-key nav.
-- The `ValueOrVariableField` / `DateOrVariableField` toggle is an `aria-pressed`
-  `Button`; the resulting variable chip's ✕ is a `Button size="icon-xs"`.
+- The `ValueOrVariableField` / `DateOrVariableField` toggle (SF3.3-5) is a `role=group`
+  pair of `aria-pressed` `Button size="icon-xs"`s (Value/Variable); the resulting
+  variable chip's clickable body carries `aria-invalid` when its saved pipeline does
+  not satisfy the field, and its ✕ is a `Button size="icon-xs"`; the operations Modal
+  it opens is focus-trapped/Esc-closable like every other Modal.
 - The MarkdownEditor variable insert (`{`) suggestion popup is keyboard-navigable
   (`role=listbox`/`option`, ↑/↓/Enter/Esc) — inherited from the editor.
 - The AI-assist composer, the run-now Modal, and the run-detail Drawer are focus-
@@ -1869,11 +2332,22 @@ read identically in both themes. State/origin badges = tone token + icon + label
 
 ### 7.9 Explicit non-goals / deferred (this batch)
 
-- **No variable pipeline operations** — `operationsCatalog` is fed empty; a
-  variable chip is a pure reference (the editor supports pipelines; 5.1 wires
-  none).
-- **No if-blocks** — the editor's `ifBlocks` feature stays OFF in the workflow
-  editors.
+- ~~No variable pipeline operations~~ — **DONE (SB1/SF1), no longer a non-goal.**
+  `operationsCatalog` is now the merged 68-op catalog (66 at SB1/SF1 time, +2 with the
+  SF3/ADR-0014 choice-coercion ops) on every step markdown editor + value-or-variable
+  add-on; a variable chip's pipeline executes at run time (§4.6, §4.7, §4.9,
+  ADR-0013, ADR-0014). This bullet is kept, struck through, so a reader of an older
+  snapshot of this doc understands the change rather than finding a silent
+  contradiction.
+- ~~No if-blocks~~ — **DONE (SB1/SF1) for `description`/`guidelines`; SF3.6 EXTENDS
+  it to `title`/`name` too** — every text field now offers if-blocks + `@[ai-text]`
+  (§4.6.3). Not a non-goal at all anymore, for any text field.
+- ~~Value-or-variable pickers type-filtered to the field's own type~~ — **REPLACED
+  by SF3.2/"show-all" (§4.9.1).** Every add-on field now offers EVERY referenceable
+  variable (identifiers still stripped) and relies on the operations pipeline to
+  coerce it — including, for `priority`, a mapping into the CHOICE option set
+  (`enum_to_choice`/`match_to_choice`, ADR-0014). Kept struck through for the same
+  reason as the two bullets above.
 - **No `TaskSelect`** — no task target exists in 5.1 (task triggers gone); the
   create_task assignee uses `UserSelect`/`BotSelect`, not a task picker.
 - **No caret-aware token insertion for plain inputs** — variable insertion is the
@@ -1882,7 +2356,10 @@ read identically in both themes. State/origin badges = tone token + icon + label
   the reference popover.)
 - **No bot-source distinction** — `source.task` covers in-task submissions
   including bots; the UI does not (and cannot) separate them.
-- **No submission picker** — the run-now target is an id `TextInput` (flagged §8).
+- ~~No submission picker~~ — **DONE (REVISION 6, §6.1a/§6.1b).** The run-now target
+  is now acquired via Pick (`SubmissionPickerDrawer`) or Create (`FormFillView` in a drawer); the
+  raw-uuid `TextInput` is retired. Kept struck through for the same reason as the two bullets
+  above it (a resolved gap, not a still-open one).
 - **No visual canvas / node-graph builder**, **no raw cron input**, **no
   wait-for-approval UI**, **no real-time run streaming / websockets**, **no
   runs-this-month / cost dashboard** — all as REV 1.
@@ -1906,7 +2383,7 @@ read identically in both themes. State/origin badges = tone token + icon + label
 | `LabelSelect` | `ui/forms/LabelSelect.vue` | create_task.labels |
 | `UserSelect` / `BotSelect` | `ui/forms/*` | create_task assignee |
 | `DatePicker` / `TimePicker` / `NumberInput` | `ui/forms/*` | condition/date values, schedule time, schedule ints |
-| `TextInput` / `Textarea` | `ui/forms/*` | name, key, tz, submission id, condition text |
+| `TextInput` / `Textarea` | `ui/forms/*` | name, key, tz, condition text |
 | `Checkbox` (or `PillGroupInput`) | `ui/forms/*` | source (`manual`/`task`), report sources (`task`/`form`) |
 | `IconInput` | `ui/forms/IconInput.vue` | workflow icon |
 | `StatusBadge` / `Badge` | `ui/data/*`, `ui/primitives/*` | status; trigger/step/origin/count chips |
@@ -1940,7 +2417,7 @@ read identically in both themes. State/origin badges = tone token + icon + label
 | `pages/workflows/workflowMeta.ts` | 2 trigger icons/labels, 2 step icons/labels; add schedule family labels + tier grouping helpers + `describeSchedule`. |
 | `pages/workflows/WorkflowCard.vue` | Trigger badge over 2 types (mechanical). |
 | `pages/workflows/WorkflowDetailView.vue` | Overview trigger/conditions/steps panels per §3.2 (typed value chips, variable-chip step summaries, `describeSchedule`). |
-| `pages/workflows/TargetPickerModal.vue` | 2 target cases (submission id / none); task/approval cases removed. |
+| `pages/workflows/TargetPickerModal.vue` | 2 target cases (submission / none); task/approval cases removed. **REVISION 6:** the `form_submitted` case is Pick/Create (`§6.1a`/`§6.1b`), not a raw id `TextInput`. |
 | `pages/workflows/runNowErrors.ts` | Drop `approval_process` / `noConcludedApproval`; map only `target_id` (required/notFound) + `workflow` (cap) + generic. |
 | `pages/workflows/WorkflowEditorDrawer.vue` | Host the rebuilt sections; catalog fetch-per-form + cache; conditions clear-on-form-change; assist wiring; 422 map per §4.10. |
 | the `__tests__/*` for the rebuilt files | Re-point at the new contracts (editor model, trigger fields, target picker, run-now errors). |
@@ -1952,13 +2429,16 @@ read identically in both themes. State/origin badges = tone token + icon + label
 > REV3 store-methods row's `fetchScheduleFamilies()`/`schedulePreview(config, count)`
 > shape) — removed here; see §4.5.15 for the current REV4 component inventory and
 > §4.5.9/§4.5.4 for the current AI-modal/preview contracts. The non-schedule rows below
-> (the two add-on fields, `workflowVariables.ts`) are UNCHANGED and stand.
+> (the two add-on fields, `workflowVariables.ts`) were true AT THE TIME this table was
+> written; **SB1/SF1/SF2/SF3 (§4.6, §4.7, §4.9, ADR-0013, ADR-0014) since updated
+> both** — the table below reflects the AS-BUILT current shape, not the original
+> snapshot.
 
 | New file | Path | Responsibility |
 | --- | --- | --- |
-| `ValueOrVariableField.vue` | `pages/workflows/` | Literal control OR a catalog-variable picker (type-filtered), emitting `{kind:…}`; used for priority (and any enum value-or-variable). |
-| `DateOrVariableField.vue` | `pages/workflows/` | `DatePicker` OR a date-typed variable picker, emitting `{kind:…}`; used for deadline + report windows. |
-| `workflowVariables.ts` | `pages/workflows/` | Catalog→editor adapter: `toEditorVariables` (system/field/position-scoped step outputs, KEY-substituted, editor-primitive typed), `resolveVariableType`, `variablesOfType` (for the add-on filters). |
+| `ValueOrVariableField.vue` | `pages/workflows/` | Compact `pencil`/`braces` in-field toggle (SF3.3-5, replacing SF1's `SegmentedControl`) over EITHER a literal control OR a show-all catalog-variable picker (SF3.2, no type pre-filter, `*_id`/`*.id` stripped) whose pick renders as an in-field chip; the chip opens an OPERATIONS MODAL (mirrors `WorkflowConditionModal`) hosting the shared `VariablePipelineEditor` + a live "Returns: …" gate, Save disabled until the pipeline satisfies `resultTypes`/`targetOptions`; emits `{kind:…, pipeline?}`. Props: `variables`, `operationsCatalog`, `resultTypes`, **`targetOptions`** (a choice field's option set, e.g. `TaskPriority::ids()` for priority — ADR-0014), **`externalErrorPresent`** (suppresses the inline type-error TEXT when the host already shows a server error), `pickerLabel`/`pickerPlaceholder`, `disabled`. Emits `update:typeError` so the host can gate Save even while the card is collapsed. Used for priority (choice-gated) and any other enum value-or-variable. |
+| `DateOrVariableField.vue` | `pages/workflows/` | Same SF3.3-5 pattern (in-field toggle, chip-opens-Modal, `externalErrorPresent`), literal mode = `DatePicker`, variable mode = the SAME show-all feed (no `date` pre-filter) coerced via the Modal's pipeline; `targetOptions` never passed (a date field is never a choice field); emits `{kind:…, pipeline?}`; used for deadline + report windows. |
+| `workflowVariables.ts` | `pages/workflows/` | Catalog→editor adapter: `toEditorVariables` (editor-primitive typed) + **`toEditorVariablesTyped`** (SF1, TRUE type + enum options, feeds the step markdown editors' pipeline modal), both KEY-substituted + position-scoped; `resolveVariableType`/`resolveVariable`, `variablesOfType` (per-type filter, still used internally) + **`allValueVariables`** (SF3.2/"show-all" — every add-on field's actual feed, no type filter), **`isIdVariable`** (SF3.2 — the `*.id`/`*_id` stripping rule applied to every OFFERED list), **`triggerSystemVariables`** (SF2, the null-catalog mirror — §4.7.4), **`stripVariableDirectives`** (SF2, the collapsed-card summary echo — §4.6), `variableIcon`. The step-output stems (`STEP_OUTPUTS`) remain a hand-written static mirror, NOT re-pointed at the live catalog — see §4.7.3's open-gap note. |
 | store method `fetchWorkflowCatalog(formId)` on `app/stores/workflows.ts` | `app/stores/` | Cached per form; unrelated to the schedule rebuild. The schedule-specific store methods (`scheduleAssist`, `schedulePreview`) are documented in §4.5.15, not here. |
 
 > No new UI **primitive** is required — the two add-on fields and the schedule
@@ -1980,13 +2460,36 @@ read identically in both themes. State/origin badges = tone token + icon + label
 > `schedulePreview`). Their correctness is what keeps the FE from drifting off
 > the descriptor/catalog contract.
 
-> **Carried UNCHANGED (provably complete inventory):** `WorkflowsModuleLayout.vue`,
-> `WorkflowsView.vue`, `WorkflowRunsView.vue`, `WorkflowRunRow.vue`,
-> `WorkflowRunTimeline.vue`, `runFormat.ts`, `workflowStatus.ts`, the
-> `workflowRuns.ts` store, and the runs/read i18n groups — all verified
-> contract-clean (no removed trigger/step references; runs surfaces render both
-> surviving step types unchanged). B7f re-verifies they compile against the
-> narrowed `types.ts`.
+> **Carried UNCHANGED by B7 (5.1), later touched by REVISION 6 (see §8.5):**
+> `WorkflowsModuleLayout.vue`, `WorkflowsView.vue`, `WorkflowRunsView.vue`,
+> `WorkflowRunRow.vue`, `WorkflowRunTimeline.vue`, `runFormat.ts`, `workflowStatus.ts`, the
+> `workflowRuns.ts` store, and the runs/read i18n groups were all verified contract-clean by B7
+> (no removed trigger/step references; runs surfaces rendered both surviving step types
+> unchanged) — this note is retained for that historical record, but every file it lists except
+> `runFormat.ts`/`workflowStatus.ts` was substantively REWRITTEN by REVISION 6 (§8.5); it no
+> longer describes their current state.
+
+### 8.5 REVISION 6 file set — Runs UI (global feed, source relabel, schedule reason, form/submission cards, run-now Pick/Create)
+
+| File | Path | Kind | What changed / was added |
+| --- | --- | --- | --- |
+| `WorkflowsModuleLayout.vue` | `pages/workflows/` | MODIFY | `moduleItems` gains the "All runs" nav entry (`§1.1`/`§1.3`); `isItemActive` gains the `allRuns` branch. |
+| `WorkflowRunsListView.vue` | `pages/workflows/` | **NEW** | The TOP-LEVEL global runs list (`§5.0`) — `FilterBar` + `#top` Saved Views `FilterTabBar` (context `workflow-runs`), the 4 filters incl. the workflow `Select`, `WorkflowRunRow show-workflow`, a self-hosted run-detail `Drawer` (no URL query key), `useInfiniteScroll`, the module's standard save/edit/delete-view modals. |
+| `WorkflowRunsView.vue` | `pages/workflows/` | MODIFY | State/origin filters become `Select multiple` + a `DateRangeFilter` replacing the old `SegmentedControl` pair (`§5.2`); the origin options drop `schedule` when `triggerType === 'form_submitted'` (a new prop). |
+| `WorkflowRunsSection.vue` | `pages/workflows/` | **NEW** (thin route adapter) | Derives `workflowId` from `route.params` and threads the cached detail's `trigger_type` down to `WorkflowRunsView` for the schedule-origin-hide rule — kept as a separate file so `WorkflowRunsView` stays routing-agnostic. |
+| `WorkflowRunRow.vue` | `pages/workflows/` | MODIFY | New `showWorkflow` prop (`§5.3`) rendering the leading workflow-identity line; the separate origin badge + trigger-type chip collapse into ONE source badge. |
+| `WorkflowRunTimeline.vue` | `pages/workflows/` | MODIFY | New schedule-"reason" section (`§5.4`, `describeOccurrence` from `workflowSchedule.ts`) and form/submission-card section (mounts `SubmissionPreviewDrawer` in `diff` mode) ahead of the REV1 flat-payload fallback; header collapses to ONE source badge, mirroring the row. |
+| `SubmissionPreviewDrawer.vue` | `pages/forms/` | MOVED + MODIFY | Extracted out of `FormSubmissionsView`'s inline drawer; gains `mode: 'view' \| 'diff'` (`§5.4a`). `view` is the original unchanged behavior; `diff` is new. |
+| `SubmissionCard.vue` | `pages/forms/` | MODIFY | New `selectable` prop (`§6.1a`) — additive, default `false`, today's behavior unchanged. |
+| `SubmissionPickerDrawer.vue` | `pages/workflows/` | **NEW** | The run-now Pick flow (`§6.1a`) — a lean submissions list scoped by the trigger's bound form (or a `FormSelect` chooser step when unbound). |
+| `TargetPickerModal.vue` | `pages/workflows/` | MODIFY | `form_submitted` case rebuilt around the selected-submission summary + Pick/Create (`§6.1`); `{target_id}` wire contract and the 422 bag are unchanged. |
+| `workflowMeta.ts` | `pages/workflows/` | MODIFY | `originLabel`/`originIcon` unchanged in signature; the underlying i18n VALUE for `origin.event` is relabelled (`§7.1`). |
+| `workflowSchedule.ts` | `pages/workflows/` | MODIFY | New `describeOccurrence(scheduledAtIso, descriptor, t)` — names a matched occurrence semantically by reusing the builder's own clause-building, with a Tier-A timestamp fallback (`§5.4`). |
+| `app/stores/workflowRuns.ts` | `app/stores/` | MODIFY | Gains a `'global'` fetch scope (`GET /workflows/runs`) alongside the existing per-workflow scope, keeping their cached item lists separate; `resetAll()` clears whichever scope is active. |
+| `app/router/index.ts` | `app/router/` | MODIFY | Registers `next.workflows.runs` (`§1.2`), declared before the dynamic `:id` child. |
+
+Backend counterpart: `docs/backend/workflows-api.md` (Runs endpoints section) +
+`docs/decisions/ADR-0016-workflows-global-runs-and-schedule-reason.md`.
 
 ---
 

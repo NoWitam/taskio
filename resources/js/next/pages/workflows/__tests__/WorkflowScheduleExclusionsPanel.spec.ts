@@ -62,7 +62,7 @@ function mountBuilder(draft: ScheduleDraft) {
 }
 
 type W = VueWrapper;
-const draftOf = (w: W) => w.props('modelValue') as ScheduleDraft;
+const draftOf = (w: W) => (w.props() as { modelValue: ScheduleDraft }).modelValue;
 
 describe('WorkflowScheduleBuilder — exceptions panel (real DatePicker)', () => {
   beforeEach(() => {
@@ -103,18 +103,18 @@ describe('WorkflowScheduleBuilder — exceptions panel (real DatePicker)', () =>
 
     expect(draftOf(wrapper).exclusions.dates).toEqual(['2026-12-24']);
 
-    // A chip renders for the ISO date with a "Remove date" affordance.
-    const chip = wrapper.findAll('li').find((li) => li.text().includes('2026-12-24'))!;
-    expect(chip).toBeTruthy();
-    const removeBtn = chip.findAll('button').find((b) => b.attributes('aria-label') === SCH.exclusions.removeDate)!;
-    expect(removeBtn).toBeTruthy();
+    // A chip renders INLINE (same wrapping row as the entry group, REV5.2) for the ISO
+    // date, with a per-chip "Remove date <date>" affordance.
+    expect(wrapper.text()).toContain('2026-12-24');
+    const removeBtn = wrapper.find(`button[aria-label="${SCH.exclusions.removeDate} 2026-12-24"]`);
+    expect(removeBtn.exists()).toBe(true);
 
     // Removing it empties the draft and drops the chip (the empty hint returns).
     await removeBtn.trigger('click');
     await nextTick();
 
     expect(draftOf(wrapper).exclusions.dates).toEqual([]);
-    expect(wrapper.findAll('li').some((li) => li.text().includes('2026-12-24'))).toBe(false);
+    expect(wrapper.text()).not.toContain('2026-12-24');
     expect(wrapper.text()).toContain(SCH.exclusions.datesEmpty);
     wrapper.unmount();
   });

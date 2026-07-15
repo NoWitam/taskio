@@ -35,16 +35,19 @@ use RuntimeException;
  *                         same way the request does: from = the form's enabled_at date, to =
  *                         today (so an unspecified window covers the form's whole life).
  *
- * Creator attribution: FormReport uses HasCreator, which stamps auth()->id() on save. An
- * EVENT run fires inside the triggering user's authenticated request and a MANUAL run inside
- * the acting user's — so the report's creator is that user in both cases (identical to the
- * created task). A SCHEDULE run with no authenticated user would stamp null; that is the
- * existing HasCreator semantic, unchanged here.
+ * Creator attribution: FormReport uses HasCreator. Because this step runs INSIDE a live
+ * WorkflowRunContext (WorkflowStepRunner sets it around the whole step loop), the report is
+ * attributed to the RUN — creator_type='workflow_run', creator_id=run->id — whether or not a
+ * user is authenticated, so a queue/schedule run no longer stamps a NULL creator. The task
+ * created by CreateTaskStep is attributed the same way.
  *
  * Output: report_id, report_name.
  */
 class CreateFormReportStep implements WorkflowStep
 {
+    /** The `form_reports.name` column width — resolved names are clamped to it (see requireString). */
+    private const NAME_MAX = 255;
+
     public function __construct(
         private FormReportService $reports,
         private WorkflowVariableResolver $resolver,
@@ -60,13 +63,16 @@ class CreateFormReportStep implements WorkflowStep
         return [
             ['name' => 'report_id', 'type' => WorkflowVariableType::TEXT],
             ['name' => 'report_name', 'type' => WorkflowVariableType::TEXT],
+            // The report's FORM — lets the run detail deep-link to the report's view
+            // (reports are form-scoped: /forms/{form_id}/reports).
+            ['name' => 'form_id', 'type' => WorkflowVariableType::TEXT],
         ];
     }
 
     public function run(array $config, WorkflowRun $run, array $context): array
     {
         $form = $this->requireForm($config);
-        $name = $this->requireString($config, 'name');
+        $name = $this->requireString($config, 'name', self::NAME_MAX);
 
         $report = $this->reports->create(new FormReportDTO(
             form_id: $form->id,
@@ -80,6 +86,7 @@ class CreateFormReportStep implements WorkflowStep
         return [
             'report_id' => $report->id,
             'report_name' => $report->name,
+            'form_id' => $form->id,
         ];
     }
 
@@ -110,7 +117,7 @@ class CreateFormReportStep implements WorkflowStep
      * A required string config value (already reference-resolved by the runner). Blank after
      * resolution is a hard failure — the runner records the step failed and stops the run.
      */
-    private function requireString(array $config, string $key): string
+    private function requireString(array $config, string $key, ?int $max = null): string
     {
         $value = $config[$key] ?? null;
 
@@ -118,7 +125,9 @@ class CreateFormReportStep implements WorkflowStep
             throw new RuntimeException("create_form_report step requires a non-empty `{$key}`.");
         }
 
-        return $value;
+        // Clamp to the destination column (see CreateTaskStep) so a long resolved name can never
+        // overflow the DB and fail the run with a raw SQL error.
+        return $max !== null ? mb_substr($value, 0, $max) : $value;
     }
 
     /** The resolved guidelines string, or null when absent/blank. */

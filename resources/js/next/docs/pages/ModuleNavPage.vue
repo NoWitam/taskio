@@ -118,12 +118,12 @@ const tabsProps: ApiRow[] = [
     </StorySection>
 
     <StorySection :title="t('story.moduleNav.apiAside', 'ModuleAside API')">
-      <ApiTable :rows="asideProps" />
-      <ApiTable :rows="asideSlots" />
+      <ApiTable title="Props" :rows="asideProps" />
+      <ApiTable title="Slots" :rows="asideSlots" />
     </StorySection>
 
     <StorySection :title="t('story.moduleNav.apiTabs', 'ModuleTabs API')">
-      <ApiTable :rows="tabsProps" />
+      <ApiTable title="Props" :rows="tabsProps" />
     </StorySection>
   </StoryPage>
 </template>

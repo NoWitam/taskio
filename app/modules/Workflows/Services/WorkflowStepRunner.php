@@ -33,12 +33,14 @@ class WorkflowStepRunner
         private WorkflowVariableResolver $resolver,
         private WorkflowRunManager $runManager,
         private WorkflowRunContext $runContext,
+        private WorkflowVariableCatalogService $catalog,
     ) {}
 
     public function run(WorkflowRun $run): void
     {
         $run->loadMissing('workflow');
-        $definition = $run->workflow?->steps ?? [];
+        $workflow = $run->workflow;
+        $definition = $workflow?->steps ?? [];
 
         // The context steps read: `trigger` = the run's trigger payload, `steps` grows as
         // each step returns its output.
@@ -46,6 +48,11 @@ class WorkflowStepRunner
             'trigger' => $run->trigger_payload ?? [],
             'steps' => [],
         ];
+
+        // The run's path → variable-type map lets the resolver execute directive / if-block
+        // pipelines against each reference's REAL type (recovered from the catalog, not the
+        // degraded editor primitive). Built once for the whole run.
+        $typeMap = $workflow !== null ? $this->catalog->runtimeTypeMap($workflow) : [];
 
         $this->runContext->set($run);
 
@@ -56,7 +63,7 @@ class WorkflowStepRunner
                 $rawConfig = is_array($step['config'] ?? null) ? $step['config'] : [];
 
                 try {
-                    $config = $this->resolver->resolve($rawConfig, $context);
+                    $config = $this->resolver->resolve($rawConfig, $context, $typeMap);
                     $output = $this->steps->makeFromValue($type)->run($config, $run, $context);
                 } catch (Throwable $e) {
                     $this->recordStep($run, $position, $type, $key, WorkflowRunStepStatus::FAILED, null, $e->getMessage());

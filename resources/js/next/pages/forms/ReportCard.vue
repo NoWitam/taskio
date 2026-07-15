@@ -12,6 +12,7 @@ import StatusBadge, { type StatusDescriptor } from '../../ui/data/StatusBadge.vu
 import Button from '../../ui/primitives/Button.vue';
 import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
+import { creatorIcon, creatorLabel } from '../../ui/patterns/creator';
 import { useI18n } from '../../app/i18n';
 import type { FormReport } from './types';
 
@@ -44,7 +45,9 @@ function formatDate(iso: string | null): string {
 // Who + when the report was generated, and from which sources.
 const meta = computed<EntityMetaItem[]>(() => {
   const out: EntityMetaItem[] = [];
-  if (props.report.creator?.name) out.push({ icon: 'user', label: props.report.creator.name });
+  if (props.report.creator) {
+    out.push({ icon: creatorIcon(props.report.creator), label: creatorLabel(props.report.creator, t) });
+  }
   out.push({ icon: 'clock', label: formatDate(props.report.created_at) });
   if (props.report.sources_formatted?.length) {
     out.push({ icon: 'inbox', label: props.report.sources_formatted.join(', ') });

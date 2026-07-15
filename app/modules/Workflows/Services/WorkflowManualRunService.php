@@ -3,6 +3,7 @@
 namespace App\Modules\Workflows\Services;
 
 use App\Modules\Forms\Models\FormSubmission;
+use App\Modules\Workflows\Enums\WorkflowRunState;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
 use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workflows\Models\WorkflowRun;
@@ -37,13 +38,49 @@ class WorkflowManualRunService
         $payload = $this->buildPayload($workflow->trigger_type, $targetId);
 
         // Manual runs COUNT toward caps and are REFUSED (not silently skipped) at the ceiling.
+        $this->guardCap($workflow);
+
+        return $this->dispatcher->dispatchManual($workflow, $payload, $creatorId);
+    }
+
+    /**
+     * Retry a FAILED run: start a NEW manual run for the SAME workflow reusing the failed run's
+     * STORED trigger_payload. There is no mid-run resume — WorkflowStepRunner always runs from the
+     * first step — so a "retry" is a fresh run over the same trigger context (the form/submission
+     * snapshot, or the schedule's scheduled_at), not a resume.
+     *
+     * Only a TERMINAL FAILED run may be retried; a pending/running/waiting/completed/cancelled run
+     * is a 422 (a completed run is not "with an error"). Honors the SAME run-budget cap as run-now
+     * (dispatchManual itself does not enforce it), and attributes the new run to the acting user as
+     * a MANUAL run (reusing WorkflowRunOrigin::MANUAL — a user re-triggered it).
+     */
+    public function retry(WorkflowRun $run, string $creatorId): WorkflowRun
+    {
+        if ($run->state !== WorkflowRunState::FAILED) {
+            throw ValidationException::withMessages([
+                'run' => ['Ponowić można tylko uruchomienie zakończone błędem.'],
+            ]);
+        }
+
+        $workflow = $run->workflow;
+
+        $this->guardCap($workflow);
+
+        return $this->dispatcher->dispatchManual($workflow, $run->trigger_payload ?? [], $creatorId);
+    }
+
+    /**
+     * Refuse the run with a 422 when the run budget is reached — the per-workflow monthly soft
+     * cap or the workspace-wide hard cap (WorkflowDispatchService::capReached). Shared by run-now
+     * and retry so both surface the identical ceiling message rather than drifting apart.
+     */
+    private function guardCap(Workflow $workflow): void
+    {
         if ($this->dispatcher->capReached($workflow)) {
             throw ValidationException::withMessages([
                 'workflow' => ['Ten workflow osiągnął limit uruchomień na ten miesiąc. Uruchomienie zostało zablokowane.'],
             ]);
         }
-
-        return $this->dispatcher->dispatchManual($workflow, $payload, $creatorId);
     }
 
     /**

@@ -17,7 +17,7 @@
 //
 // STATES: loading → option-shaped Skeleton rows (skeleton rule: mimic the row,
 // show several — never a spinner). empty → a muted "No matches" row.
-import { computed, ref, watch, nextTick } from 'vue';
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue';
 import { useAnchoredPosition } from '../../../app/composables/useAnchoredPosition';
 import { useTheme } from '../../../app/lib/theme';
 import Avatar from '../../primitives/Avatar.vue';
@@ -44,16 +44,19 @@ const { style: anchorStyle, update: updatePosition } = useAnchoredPosition(
   { placement: () => 'bottom-start', gap: 6, flip: true },
 );
 
+// A STABLE synthetic anchor whose rect always reflects the store's CURRENT caret
+// rect. Keeping it stable (instead of re-creating it per rect change) means
+// `updatePosition` reads fresh caret coordinates on every recompute — the key to
+// following the caret on scroll (SF3.1).
+const syntheticAnchor = {
+  getBoundingClientRect: () => props.store.rect ?? new DOMRect(),
+} as unknown as HTMLElement;
+
 watch(
   () => props.store.rect,
   (rect) => {
-    if (!rect) {
-      anchorRef.value = null;
-      return;
-    }
-    anchorRef.value = {
-      getBoundingClientRect: () => rect,
-    } as unknown as HTMLElement;
+    anchorRef.value = rect ? syntheticAnchor : null;
+    if (!rect) return;
     void nextTick(() => {
       updatePosition();
       requestAnimationFrame(updatePosition);
@@ -62,18 +65,33 @@ watch(
   { immediate: true },
 );
 
+// SF3.1 — on scroll/resize while open, ask the PLUGIN to re-measure the caret
+// (store.reposition updates store.rect → the watch above repositions, or CLOSES
+// the popup when the caret scrolled out of view). Fall back to a plain reposition
+// when no plugin callback is wired (e.g. isolated component tests).
+function onViewportChange(): void {
+  if (props.store.reposition) props.store.reposition();
+  else updatePosition();
+}
+
+function bindViewportListeners(): void {
+  window.addEventListener('scroll', onViewportChange, true);
+  window.addEventListener('resize', onViewportChange);
+}
+function unbindViewportListeners(): void {
+  window.removeEventListener('scroll', onViewportChange, true);
+  window.removeEventListener('resize', onViewportChange);
+}
+
 watch(
   () => props.store.active,
   (active) => {
-    if (active) {
-      window.addEventListener('scroll', updatePosition, true);
-      window.addEventListener('resize', updatePosition);
-    } else {
-      window.removeEventListener('scroll', updatePosition, true);
-      window.removeEventListener('resize', updatePosition);
-    }
+    if (active) bindViewportListeners();
+    else unbindViewportListeners();
   },
 );
+
+onBeforeUnmount(unbindViewportListeners);
 
 const showEmpty = computed(
   () => !props.store.loading && props.store.items.length === 0,

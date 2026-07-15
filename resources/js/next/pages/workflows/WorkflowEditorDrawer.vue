@@ -60,7 +60,6 @@ import type {
   ScheduleTriggerConfig,
   SubmissionSource,
   WorkflowCatalog,
-  WorkflowCondition,
   WorkflowDetail,
   WorkflowScheduleConfig,
   WorkflowStep,
@@ -73,10 +72,19 @@ import {
   emptyFormTriggerDraft,
   makeStepDraft,
   nextUid,
-  sanitizeConditions,
+  MAX_STEPS,
+  STEP_KEY_RE,
   type FormTriggerDraft,
   type StepDraft,
 } from './workflowEditorModel';
+import {
+  draftToWire,
+  emptyConditionTree,
+  isTreeComplete,
+  resolveOperationCatalog,
+  wireToDraft,
+  type DraftConditionGroup,
+} from './workflowConditions';
 import {
   configToDraft,
   draftToConfig,
@@ -119,7 +127,7 @@ const form = reactive<{
   triggerType: WorkflowTriggerType;
   formTrigger: FormTriggerDraft;
   scheduleDraft: ScheduleDraft;
-  conditions: WorkflowCondition[];
+  conditionsTree: DraftConditionGroup;
   steps: StepDraft[];
 }>({
   name: '',
@@ -129,7 +137,8 @@ const form = reactive<{
   formTrigger: emptyFormTriggerDraft(),
   // The neutral v2 schedule draft (once daily at 09:00, §4.5.1).
   scheduleDraft: emptyScheduleDraft(),
-  conditions: [],
+  // The B3 condition TREE draft (empty AND group = "always runs").
+  conditionsTree: emptyConditionTree(),
   steps: [makeStepDraft('create_task', [])],
 });
 
@@ -186,15 +195,11 @@ function seedFromDetail(d: WorkflowDetail): void {
     form.scheduleDraft = configToDraft(cfg.schedule as WorkflowScheduleConfig);
   }
 
-  // Conditions: typed since B3. Tolerate a legacy flat pre-5.1 draft by DROPPING rows
-  // that don't carry a field_type (they can't render in the typed builder, B7c note).
-  const rawConditions = d.conditions ?? [];
-  form.conditions = rawConditions.filter((c): c is WorkflowCondition => {
-    if (c && typeof c === 'object' && 'field_type' in c && c.field_type) return true;
-    // eslint-disable-next-line no-console
-    console.warn('[workflows] dropped a legacy flat condition (no field_type):', c);
-    return false;
-  });
+  // Conditions: the B3 TREE. wireToDraft hydrates BOTH the tree shape and a LEGACY
+  // flat list (→ a single AND group; operator→op table). The conversion of a flat
+  // "not_equals"/"is_not"/"excludes" changes the missing-field semantics (documented
+  // in workflowConditions.ts) — a conscious difference when editing OLD workflows.
+  form.conditionsTree = wireToDraft(d.conditions);
 
   // Steps: merge each saved config over the type's fully-shaped empty draft so every
   // control renders a defined value (B7c note #4).
@@ -278,6 +283,8 @@ const showConditions = computed(() => form.triggerType === 'form_submitted');
 const formSelected = computed(
   () => form.triggerType === 'form_submitted' && form.formTrigger.form_id !== null,
 );
+/** The merged operations catalog — the condition save gate (isTreeComplete) needs it. */
+const operationsCatalog = computed(() => resolveOperationCatalog(catalog.value));
 
 async function loadCatalog(formId: string): Promise<void> {
   catalogLoading.value = true;
@@ -303,8 +310,8 @@ function onFormChange(nextFormId: string | null): void {
   const previous = catalogFormId;
   if (nextFormId === previous) return;
 
-  const hadConditions = form.conditions.length > 0;
-  form.conditions = [];
+  const hadConditions = form.conditionsTree.children.length > 0;
+  form.conditionsTree = emptyConditionTree();
   if (hadConditions) toast.info(t('workflows.condition.clearedOnFormChange'));
 
   clearScopedErrors();
@@ -324,6 +331,16 @@ if (formSelected.value && form.formTrigger.form_id) {
 
 function onStepsUpdate(next: StepDraft[]): void {
   form.steps = next;
+}
+
+/**
+ * Whether any step has a value-or-variable field whose SAVED pipeline does not satisfy
+ * the field (a type/choice mismatch, bubbled from the step cards). Feeds the Save gate
+ * so we block before the server 422s — the field + row badge already point at the fix.
+ */
+const stepsHaveTypeErrors = ref(false);
+function onStepTypeErrors(hasAny: boolean): void {
+  stepsHaveTypeErrors.value = hasAny;
 }
 
 // --- Validation (client-side, mirrors the FormRequest, §4.10) --------------
@@ -362,8 +379,8 @@ function validateGeneral(): boolean {
 /**
  * Step 2 — the trigger + its conditions. Schedule: the builder's own live validation
  * (bounds + lt + a non-empty preview) must pass. form_submitted: we do NOT force a form
- * (the backend accepts "any form"), but any condition rows must be complete (a complete
- * row survives sanitizeConditions unchanged; an incomplete one is dropped).
+ * (the backend accepts "any form"), but the condition TREE must be complete — every
+ * leaf resolves to a boolean and every group has ≥1 child (an empty tree is valid).
  */
 function validateTrigger(): boolean {
   clearStepErrors('trigger');
@@ -377,15 +394,11 @@ function validateTrigger(): boolean {
     return ok;
   }
 
-  // form_submitted: flag any incomplete condition row (backend rejects them anyway).
-  if (formSelected.value) {
-    const kept = sanitizeConditions(form.conditions);
-    if (kept.length !== form.conditions.length) {
-      form.conditions.forEach((_, i) => {
-        errors[`conditions.${i}.value`] = t('workflows.condition.validation.incomplete');
-      });
-      ok = false;
-    }
+  // form_submitted: the condition TREE must be complete (every leaf resolves to a
+  // boolean; every group has ≥1 child). An EMPTY tree is valid ("always runs").
+  if (formSelected.value && !isTreeComplete(form.conditionsTree, operationsCatalog.value)) {
+    errors['conditions'] = t('workflows.condition.validation.treeIncomplete');
+    ok = false;
   }
   return ok;
 }
@@ -400,11 +413,21 @@ function validateSteps(): boolean {
     errors['steps'] = t('workflows.editor.validation.stepRequired');
     ok = false;
   }
+  // At most MAX_STEPS (backend max:50 — the add cards also disable at the ceiling).
+  if (form.steps.length > MAX_STEPS) {
+    errors['steps'] = t('workflows.step.maxSteps');
+    ok = false;
+  }
 
   const dupes = duplicateKeyUids(form.steps);
   form.steps.forEach((s, i) => {
-    if (!s.key.trim()) {
+    const key = s.key.trim();
+    if (!key) {
       errors[`steps.${i}.key`] = t('workflows.step.validation.keyRequired');
+      ok = false;
+    } else if (!STEP_KEY_RE.test(key)) {
+      // A dot/space in the key would break `steps.<key>.<name>` references.
+      errors[`steps.${i}.key`] = t('workflows.step.validation.keyInvalid');
       ok = false;
     }
     if (dupes.has(s.uid)) {
@@ -426,6 +449,13 @@ function validateSteps(): boolean {
       if (blank('form_id') || blank('name')) ok = false;
     }
   });
+
+  // A value-or-variable field type/choice mismatch (bubbled from the cards) blocks Save
+  // — the offending field + its step row already carry the specific error surfacing.
+  if (stepsHaveTypeErrors.value) {
+    if (!errors['steps']) errors['steps'] = t('workflows.editor.validation.fieldTypeErrors');
+    ok = false;
+  }
 
   return ok;
 }
@@ -478,8 +508,10 @@ function buildPayload(): WorkflowWritePayload {
 
   if (form.triggerType === 'form_submitted') {
     payload.trigger_config = buildFormTriggerConfig();
-    // Typed conditions only when a form trigger has a form selected (§4.8); dropped otherwise.
-    payload.conditions = formSelected.value ? sanitizeConditions(form.conditions) : [];
+    // The condition TREE, only when a form is selected (§4.8). draftToWire OMITS an
+    // empty tree (emit-or-omit) → the `conditions` key is dropped entirely.
+    const wire = formSelected.value ? draftToWire(form.conditionsTree) : undefined;
+    if (wire) payload.conditions = wire;
   } else {
     payload.trigger_config = buildScheduleTriggerConfig();
   }
@@ -608,8 +640,9 @@ function onStepClick(value: WizardStep): void {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <!-- SLIM header: just the title (Anuluj/Zapisz live in the sticky footer). -->
-    <header class="flex items-center gap-next-3 border-b border-next-border p-next-4">
+    <!-- SLIM header: just the title (Anuluj/Zapisz live in the sticky footer). The host
+         drawer is :padded="false", so this owns BOTH vertical gaps — kept symmetric. -->
+    <header class="flex items-center gap-next-3 border-b border-next-border px-next-4 py-next-5">
       <h2 class="min-w-0 truncate text-next-lg font-next-semibold text-next-fg">
         {{ isEdit ? t('workflows.editor.editTitle') : t('workflows.editor.createTitle') }}
       </h2>
@@ -734,8 +767,8 @@ function onStepClick(value: WizardStep): void {
             </Alert>
             <WorkflowConditionsEditor
               v-else
-              v-model="form.conditions"
-              :fields="catalog?.fields ?? null"
+              v-model="form.conditionsTree"
+              :catalog="catalog"
               :form-selected="formSelected"
               :errors="errors"
             />
@@ -748,15 +781,17 @@ function onStepClick(value: WizardStep): void {
           <WorkflowStepListEditor
             :steps="form.steps"
             :catalog="catalog"
+            :trigger-type="form.triggerType"
             :errors="errors"
             @update:steps="onStepsUpdate"
+            @type-errors="onStepTypeErrors"
           />
         </section>
       </div>
 
       <!-- STICKY FOOTER: Anuluj (left) · Wstecz / Dalej | Zapisz przepływ (right). -->
       <footer
-        class="flex shrink-0 items-center justify-between gap-next-2 border-t border-next-border bg-next-card p-next-4"
+        class="flex shrink-0 items-center justify-between gap-next-2 border-t border-next-border bg-next-card px-next-4 py-next-5"
       >
         <Button variant="ghost" :disabled="saving" @click="onCancel">
           {{ t('workflows.editor.cancel') }}

@@ -42,6 +42,12 @@ export interface SuggestionState {
   onSelect: ((item: SuggestionRow) => void) | null;
   /** Closes the popup (Esc); wired by the plugin. */
   onClose: (() => void) | null;
+  /**
+   * Re-measures the caret rect from ProseMirror and either updates `rect` (so the
+   * popup FOLLOWS the caret on scroll) or CLOSES the popup when the caret scrolled
+   * out of view (SF3.1). Wired by the plugin; the popup calls it on scroll/resize.
+   */
+  reposition: (() => void) | null;
   /** Monotonic id so each open is a fresh popup instance (resets state). */
   token: number;
 }
@@ -57,6 +63,7 @@ export function createSuggestionStore(): SuggestionState {
     activeIndex: 0,
     onSelect: null,
     onClose: null,
+    reposition: null,
     token: 0,
   });
 }

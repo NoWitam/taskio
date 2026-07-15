@@ -16,7 +16,9 @@ type BadgeVariant =
   | 'success'
   | 'warning'
   | 'danger'
-  | 'info';
+  | 'info'
+  // Project-wide "value drifted from a snapshot" semantic (see --color-next-modified).
+  | 'modified';
 type BadgeTone = 'solid' | 'subtle';
 type BadgeSize = 'sm' | 'md';
 
@@ -67,6 +69,7 @@ const SOLID_CLASS: Record<BadgeVariant, string> = {
   warning: 'bg-next-warning text-next-warning-foreground',
   danger: 'bg-next-danger text-next-danger-foreground',
   info: 'bg-next-info text-next-info-foreground',
+  modified: 'bg-next-modified text-next-modified-foreground',
 };
 
 const SUBTLE_CLASS: Record<BadgeVariant, string> = {
@@ -76,6 +79,7 @@ const SUBTLE_CLASS: Record<BadgeVariant, string> = {
   warning: 'bg-next-warning-subtle text-next-warning-subtle-foreground',
   danger: 'bg-next-danger-subtle text-next-danger-subtle-foreground',
   info: 'bg-next-info-subtle text-next-info-subtle-foreground',
+  modified: 'bg-next-modified-subtle text-next-modified-subtle-foreground',
 };
 
 // The dot color for each family (always reads against the chip background).
@@ -86,6 +90,7 @@ const DOT_CLASS: Record<BadgeVariant, string> = {
   warning: 'bg-next-warning',
   danger: 'bg-next-danger',
   info: 'bg-next-info',
+  modified: 'bg-next-modified',
 };
 
 const SIZE_CLASS: Record<BadgeSize, string> = {

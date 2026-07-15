@@ -17,11 +17,16 @@
 // Identity-only: a variable's `id` IS its `path` (the editor directive stores only
 // `data.id`), so the real type is always recoverable from the catalog by path.
 import type { IconName } from '../../ui/primitives/icons';
-import type { VariableDefinition, VariablePrimitive } from '../../ui/editor/extensions/types';
+import type {
+  VariableDefinition,
+  VariableOption,
+  VariablePrimitive,
+} from '../../ui/editor/extensions/types';
 import type {
   CatalogVariable,
   WorkflowCatalog,
   WorkflowStepType,
+  WorkflowTriggerType,
   WorkflowVariableType,
 } from './types';
 
@@ -106,6 +111,93 @@ function positionScopedStepOutputs(steps: StepLike[], position: number): Catalog
   return out;
 }
 
+// --- Trigger SYSTEM variables (mirror of the backend — keep in sync) --------
+//
+// WorkflowVariableCatalogService::triggerSystemVariables exposes the non-field
+// variables a trigger type ALWAYS resolves at runtime, INDEPENDENT of any form/catalog.
+// The editor only fetches a `catalog` for a form_submitted trigger WITH a form selected;
+// a schedule trigger (or "any form") gets a NULL catalog, so those system variables
+// would otherwise be invisible in the step editors even though the engine resolves them
+// (e.g. `trigger.scheduled_at` for a schedule workflow). This static mirror lets the
+// editors offer them BY TRIGGER TYPE when the catalog is absent.
+//
+// LUSTRO BACKENDU — trzymać w zgodzie z
+// WorkflowVariableCatalogService::triggerSystemVariables(). The `name`s mirror the
+// backend's (un-localized) catalog names so a chip inserted here reads identically to
+// one the catalog would have produced when a form IS selected.
+const TRIGGER_SYSTEM_VARIABLES: Record<WorkflowTriggerType, CatalogVariable[]> = {
+  schedule: [
+    { source: 'trigger', path: 'trigger.scheduled_at', name: 'Scheduled at', type: 'date' },
+  ],
+  form_submitted: [
+    { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
+    { source: 'trigger', path: 'trigger.form.id', name: 'Form ID', type: 'text' },
+    { source: 'trigger', path: 'trigger.form.name', name: 'Form name', type: 'text' },
+    { source: 'trigger', path: 'trigger.source', name: 'Source', type: 'enum', enumOptions: ['manual', 'task'] },
+    { source: 'trigger', path: 'trigger.submitted_at', name: 'Submitted at', type: 'date' },
+    { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text', nullable: true },
+  ],
+};
+
+// --- isIdVariable (SF3.2 — drop identifiers from the OFFERED lists) ----------
+//
+// An IDENTIFIER variable (a path ending in `.id` — trigger.submission.id,
+// trigger.form.id, trigger.task.id — or in `_id` — the step outputs task_id /
+// report_id) is a machine key, not something a human wants to drop into a title,
+// a priority, or a deadline. SF3.2 stops OFFERING them: they are stripped from
+// every "which variables can I insert / pick" list. They are NOT stripped from the
+// RESOLVING side (resolveVariableType / resolveVariable / stripVariableDirectives),
+// so a SAVED flow that already references an id still hydrates + renders correctly.
+/**
+ * Whether a variable `path` is an identifier (ends with `.id` or `_id`) — the
+ * dot / underscore boundary avoids false positives (`fields.valid`, `fields.paid`).
+ */
+export function isIdVariable(path: string): boolean {
+  return path.endsWith('.id') || path.endsWith('_id');
+}
+
+/**
+ * The RAW static trigger SYSTEM variables (the unfiltered backend mirror), used by
+ * the RESOLVING helpers so a saved id ref still recovers its type/name. The OFFERED
+ * `triggerSystemVariables` below strips identifiers from this.
+ */
+function rawTriggerSystemVariables(
+  triggerType: WorkflowTriggerType | null | undefined,
+): CatalogVariable[] {
+  if (!triggerType) return [];
+  return TRIGGER_SYSTEM_VARIABLES[triggerType] ?? [];
+}
+
+/**
+ * The static trigger SYSTEM variables OFFERED for a trigger type (a mirror of the
+ * backend), or [] when the type is unknown/absent — with identifier variables
+ * (`*.id` / `*_id`) stripped (SF3.2). Supplements a NULL catalog so a schedule (or
+ * any-form form_submitted) editor still offers the trigger's system variables (§4.7).
+ */
+export function triggerSystemVariables(
+  triggerType: WorkflowTriggerType | null | undefined,
+): CatalogVariable[] {
+  return rawTriggerSystemVariables(triggerType).filter((v) => !isIdVariable(v.path));
+}
+
+/**
+ * The catalog's non-step variables MERGED with the static trigger system variables for
+ * `triggerType`, deduped by path (the catalog is authoritative — its copy wins). When a
+ * catalog is present it already carries the trigger system vars, so the static mirror
+ * only fills the gap for a NULL catalog (schedule / any-form form_submitted).
+ */
+function nonStepVariables(
+  catalog: WorkflowCatalog | null | undefined,
+  triggerType: WorkflowTriggerType | null | undefined,
+): CatalogVariable[] {
+  const catalogNonStep = (catalog?.variables ?? []).filter((v) => v.source !== 'steps');
+  const seen = new Set(catalogNonStep.map((v) => v.path));
+  // Use the RAW mirror for the merge; the OFFERING helpers below apply the id filter
+  // once on the combined list (so both a catalog id var and a system id var drop).
+  const systemExtras = rawTriggerSystemVariables(triggerType).filter((v) => !seen.has(v.path));
+  return [...catalogNonStep, ...systemExtras];
+}
+
 // --- toEditorVariables (§4.7.1) ---------------------------------------------
 
 /**
@@ -118,28 +210,84 @@ function positionScopedStepOutputs(steps: StepLike[], position: number): Catalog
  * the live per-position step outputs replace them.
  *
  * @param catalog  the workflow-catalog (variables + fields); may be null (schedule
- *                 trigger / no form) — then only the step outputs are offered.
+ *                 trigger / no form) — then the trigger SYSTEM variables (by
+ *                 `triggerType`) + the step outputs are offered.
  * @param steps    the full ordered step list (type + key).
  * @param position the field's own step index (earlier-only scoping).
+ * @param triggerType the workflow's trigger type — supplements a null catalog with the
+ *                 trigger's system variables (e.g. `trigger.scheduled_at` for schedule).
  */
 export function toEditorVariables(
   catalog: WorkflowCatalog | null | undefined,
   steps: StepLike[],
   position: number,
+  triggerType?: WorkflowTriggerType | null,
 ): VariableDefinition[] {
-  const catalogVariables = catalog?.variables ?? [];
-
-  // System + field variables carry full paths already; drop the catalog's own
-  // template step outputs (source 'steps') — the live KEY-substituted ones replace them.
-  const nonStep = catalogVariables.filter((v) => v.source !== 'steps');
+  // System + field variables carry full paths already; drop the catalog's own template
+  // step outputs (source 'steps') — the live KEY-substituted ones replace them — and
+  // merge the static trigger system vars so a null catalog still offers them.
+  const nonStep = nonStepVariables(catalog, triggerType);
 
   const stepOutputs = positionScopedStepOutputs(steps, position);
 
-  return [...nonStep, ...stepOutputs].map((variable) => ({
-    id: variable.path, // identity-only: id === path
-    name: variable.name,
-    type: editorPrimitive(variable.type),
-  }));
+  // SF3.2: identifiers (`*.id` / `*_id`) are never OFFERED for insertion.
+  return [...nonStep, ...stepOutputs]
+    .filter((variable) => !isIdVariable(variable.path))
+    .map((variable) => ({
+      id: variable.path, // identity-only: id === path
+      name: variable.name,
+      type: editorPrimitive(variable.type),
+    }));
+}
+
+// --- toEditorVariablesTyped (§4.9 — the TRUE-type + options editor feed) -----
+
+/**
+ * Map a catalog variable's enum options to the editor's `VariableOption[]` (label =
+ * value; the catalog carries option VALUES only, labels are a UI concept). Empty /
+ * absent → undefined so a non-enum definition carries no `options` key.
+ */
+function toVariableOptions(enumOptions: string[] | undefined): VariableOption[] | undefined {
+  if (!enumOptions || enumOptions.length === 0) return undefined;
+  return enumOptions.map((value) => ({ label: value, value }));
+}
+
+/**
+ * The TYPED variant of `toEditorVariables` (SF1): the SAME identity-only definitions
+ * (id = path) + position-scoped KEY-substituted step outputs, but carrying the
+ * variable's TRUE `WorkflowVariableType` (NOT the degraded editor primitive) and its
+ * enum `options`. The editor's variable vocabulary is the same 6-member union
+ * (`VariablePrimitive` ≡ `WorkflowVariableType` after B1), so a chip built from these
+ * definitions offers the RIGHT operations (enum/date/multi) in its pipeline modal and
+ * feeds enum options into `sourceOption(s)` args.
+ *
+ * This is a SEPARATE path from `toEditorVariables` (which stays the degrade-to-primitive
+ * feed other read/summary code relies on) so nothing depending on the primitive shape
+ * breaks. Use this for step MARKDOWN fields where the full operations pipeline is offered.
+ */
+export function toEditorVariablesTyped(
+  catalog: WorkflowCatalog | null | undefined,
+  steps: StepLike[],
+  position: number,
+  triggerType?: WorkflowTriggerType | null,
+): VariableDefinition[] {
+  const nonStep = nonStepVariables(catalog, triggerType);
+  const stepOutputs = positionScopedStepOutputs(steps, position);
+
+  // SF3.2: identifiers (`*.id` / `*_id`) are never OFFERED for insertion.
+  return [...nonStep, ...stepOutputs]
+    .filter((variable) => !isIdVariable(variable.path))
+    .map((variable) => {
+    const options = toVariableOptions(variable.enumOptions);
+    const definition: VariableDefinition = {
+      id: variable.path, // identity-only: id === path
+      name: variable.name,
+      // The TRUE workflow type (VariablePrimitive ≡ WorkflowVariableType) — not degraded.
+      type: variable.type as VariablePrimitive,
+    };
+    if (options) definition.options = options;
+    return definition;
+  });
 }
 
 // --- resolveVariableType (the catalog-by-path type recovery) ----------------
@@ -154,9 +302,15 @@ export function resolveVariableType(
   path: string,
   catalog: WorkflowCatalog | null | undefined,
   steps: StepLike[],
+  triggerType?: WorkflowTriggerType | null,
 ): WorkflowVariableType | null {
   const inCatalog = (catalog?.variables ?? []).find((v) => v.path === path);
   if (inCatalog) return inCatalog.type;
+
+  // A trigger SYSTEM variable (RAW mirror — NOT the offered/filtered list, so a
+  // saved id ref like `trigger.form.id` still recovers its type, SF3.2).
+  const inSystem = rawTriggerSystemVariables(triggerType).find((v) => v.path === path);
+  if (inSystem) return inSystem.type;
 
   // Step outputs (all steps, any position — type recovery is position-agnostic).
   const stepOutput = positionScopedStepOutputs(steps, steps.length).find((v) => v.path === path);
@@ -172,9 +326,13 @@ export function resolveVariable(
   path: string,
   catalog: WorkflowCatalog | null | undefined,
   steps: StepLike[],
+  triggerType?: WorkflowTriggerType | null,
 ): CatalogVariable | null {
   const inCatalog = (catalog?.variables ?? []).find((v) => v.path === path);
   if (inCatalog) return inCatalog;
+  // RAW mirror (unfiltered) so a saved id ref still resolves its full descriptor.
+  const inSystem = rawTriggerSystemVariables(triggerType).find((v) => v.path === path);
+  if (inSystem) return inSystem;
   return positionScopedStepOutputs(steps, steps.length).find((v) => v.path === path) ?? null;
 }
 
@@ -195,13 +353,36 @@ export function variablesOfType(
   steps: StepLike[],
   position: number,
   types: WorkflowVariableType | WorkflowVariableType[],
+  triggerType?: WorkflowTriggerType | null,
 ): CatalogVariable[] {
   const accepted = new Set(Array.isArray(types) ? types : [types]);
 
-  const nonStep = (catalog?.variables ?? []).filter((v) => v.source !== 'steps');
+  const nonStep = nonStepVariables(catalog, triggerType);
   const stepOutputs = positionScopedStepOutputs(steps, position);
 
-  return [...nonStep, ...stepOutputs].filter((v) => accepted.has(v.type));
+  // SF3.2: identifiers (`*.id` / `*_id`) are never OFFERED for a value-or-variable pick.
+  return [...nonStep, ...stepOutputs].filter(
+    (v) => accepted.has(v.type) && !isIdVariable(v.path),
+  );
+}
+
+/** Every type a value-or-variable field may reference. */
+const ALL_VALUE_TYPES: WorkflowVariableType[] = ['text', 'number', 'boolean', 'date', 'enum', 'multi'];
+
+/**
+ * ALL value-or-variable-referenceable variables at `position` — the SF "show-all"
+ * picker feed. A value-or-variable field no longer PRE-FILTERS its picker to the
+ * field's own type(s); the user picks any variable and COERCES it with operations to
+ * the field's terminal (a text → a date via ops, an enum → a choice via enum_to_choice,
+ * etc.). Identifiers (`*.id` / `*_id`) stay stripped (SF3.2 — via `variablesOfType`).
+ */
+export function allValueVariables(
+  catalog: WorkflowCatalog | null | undefined,
+  steps: StepLike[],
+  position: number,
+  triggerType?: WorkflowTriggerType | null,
+): CatalogVariable[] {
+  return variablesOfType(catalog, steps, position, ALL_VALUE_TYPES, triggerType);
 }
 
 // --- variableIcon (§7.5 — the workflow-type → icon map for the add-on chips) -
@@ -265,11 +446,13 @@ function parseDirectivePayload(escaped: string): { id?: string; name?: string } 
  * @param text    the raw title/name string (may contain directives).
  * @param catalog the workflow-catalog (may be null — then the embedded name is used).
  * @param steps   the ordered steps (for resolving step-output variable paths).
+ * @param triggerType the trigger type — resolves system-variable names for a null catalog.
  */
 export function stripVariableDirectives(
   text: string | null | undefined,
   catalog: WorkflowCatalog | null | undefined,
   steps: StepLike[],
+  triggerType?: WorkflowTriggerType | null,
 ): string {
   if (!text) return '';
   return text.replace(DIRECTIVE_RE, (_match, escaped: string) => {
@@ -277,7 +460,7 @@ export function stripVariableDirectives(
     if (!payload) return ''; // an unparseable directive collapses to nothing, never bytes
     // Prefer the catalog's authoritative name (by the directive id = path).
     if (payload.id) {
-      const resolved = resolveVariable(payload.id, catalog, steps);
+      const resolved = resolveVariable(payload.id, catalog, steps, triggerType);
       if (resolved) return resolved.name;
     }
     return payload.name ?? '';

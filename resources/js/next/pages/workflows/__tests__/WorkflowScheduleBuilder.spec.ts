@@ -84,7 +84,7 @@ function mountBuilder(draft: ScheduleDraft, errors: Record<string, string> = {})
 }
 
 type W = VueWrapper;
-const draftOf = (w: W) => w.props('modelValue') as ScheduleDraft;
+const draftOf = (w: W) => (w.props() as { modelValue: ScheduleDraft }).modelValue;
 const radio = (w: W, label: string) => w.findAll('[role="radio"]').find((r) => r.text().includes(label));
 const tab = (w: W, label: string) => w.findAll('[role="tab"]').find((t) => t.text().includes(label));
 
@@ -187,13 +187,19 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
   it('the at[] list caps at the schedule limit (add disabled at 6)', async () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
     const addBtn = () => wrapper.findAll('button').find((b) => b.text().includes(SCH.field.addTime))!;
+    const draftInput = () =>
+      wrapper.findAll('input').find((i) => i.attributes('aria-label') === SCH.field.times)!;
+    // REV5.2: adding goes through the DRAFT picker (a unique time each round).
     for (let i = 0; i < 5; i += 1) {
-      if (addBtn().attributes('disabled') !== undefined) break;
+      await draftInput().setValue(`1${i}:00`);
+      await nextTick();
       await addBtn().trigger('click');
       await nextTick();
     }
     expect((draftOf(wrapper).time as { at: string[] }).at.length).toBe(6);
     expect(addBtn().attributes('disabled')).toBeDefined();
+    // The draft picker itself is disabled at the cap.
+    expect(draftInput().attributes('disabled')).toBeDefined();
     wrapper.unmount();
   });
 
@@ -261,9 +267,12 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
     wrapper.unmount();
   });
 
-  it('REV5 fix: `at` times render in ONE horizontal flex-wrap row (left→right, not stacked)', async () => {
+  it('REV5.2: the `at` editor is ONE wrapping row — the fused draft group + the time chips inline', async () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
-    // Add a 2nd time so there are two pickers to place side by side.
+    // Add a 2nd time through the DRAFT picker so two chips sit side by side.
+    const draftInput = wrapper.findAll('input').find((i) => i.attributes('aria-label') === SCH.field.times)!;
+    await draftInput.setValue('12:00');
+    await nextTick();
     const addBtn = wrapper.findAll('button').find((b) => b.text().includes(SCH.field.addTime))!;
     await addBtn.trigger('click');
     await nextTick();
@@ -271,9 +280,13 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
     const atBody = wrapper.findAll('[role="group"]').find((g) => g.attributes('aria-label') === SCH.time.mode.at)!;
     const row = atBody.find('.flex.flex-wrap');
     expect(row.exists()).toBe(true);
-    // …and BOTH time inputs live inside that single wrapping row (horizontal flow, not stacked).
-    const times = row.findAll(`input[aria-label^="${SCH.field.times}"]`);
-    expect(times.length).toBe(2);
+    // …holding exactly ONE draft picker (the fused entry group) + BOTH times as chips.
+    expect(row.findAll(`input[aria-label="${SCH.field.times}"]`).length).toBe(1);
+    expect(row.text()).toContain('09:00');
+    expect(row.text()).toContain('12:00');
+    // Each chip carries its own remove ✕ (two times → two removable chips).
+    expect(row.find(`button[aria-label="${SCH.field.removeTime} 09:00"]`).exists()).toBe(true);
+    expect(row.find(`button[aria-label="${SCH.field.removeTime} 12:00"]`).exists()).toBe(true);
     wrapper.unmount();
   });
 

@@ -6,10 +6,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   editorPrimitive,
+  isIdVariable,
   resolveVariable,
   resolveVariableType,
   stripVariableDirectives,
   toEditorVariables,
+  toEditorVariablesTyped,
+  triggerSystemVariables,
   variableIcon,
   variablesOfType,
   type StepLike,
@@ -82,14 +85,10 @@ describe('toEditorVariables — system/field vars + position-scoped KEY-substitu
 
   it('a later step sees EARLIER steps only, with the real KEY substituted', () => {
     // Field on step index 2 (`followup`) → outputs of `make` + `report` only.
+    // SF3.2: the `_id` outputs (task_id / report_id) are NOT offered.
     const vars = toEditorVariables(CATALOG, STEPS, 2);
     const stepIds = vars.filter((v) => v.id.startsWith('steps.')).map((v) => v.id);
-    expect(stepIds).toEqual([
-      'steps.make.task_id',
-      'steps.make.title',
-      'steps.report.report_id',
-      'steps.report.report_name',
-    ]);
+    expect(stepIds).toEqual(['steps.make.title', 'steps.report.report_name']);
     // NOT its own outputs, NOT later steps.
     expect(stepIds.some((id) => id.startsWith('steps.followup.'))).toBe(false);
   });
@@ -105,17 +104,149 @@ describe('toEditorVariables — system/field vars + position-scoped KEY-substitu
   });
 
   it('works with a null catalog (schedule trigger) — step outputs only', () => {
+    // SF3.2: the `_id` outputs are filtered out of the OFFERED list.
     const vars = toEditorVariables(null, STEPS, 2);
-    expect(vars.map((v) => v.id)).toEqual([
-      'steps.make.task_id',
-      'steps.make.title',
-      'steps.report.report_id',
-      'steps.report.report_name',
+    expect(vars.map((v) => v.id)).toEqual(['steps.make.title', 'steps.report.report_name']);
+  });
+});
+
+describe('isIdVariable — identifier detection (SF3.2)', () => {
+  it('flags *.id and *_id paths, spares look-alikes', () => {
+    expect(isIdVariable('trigger.submission.id')).toBe(true);
+    expect(isIdVariable('trigger.form.id')).toBe(true);
+    expect(isIdVariable('trigger.task.id')).toBe(true);
+    expect(isIdVariable('steps.make.task_id')).toBe(true);
+    expect(isIdVariable('steps.report.report_id')).toBe(true);
+    // Non-identifiers: a date, a name, and words that merely END in "id".
+    expect(isIdVariable('trigger.submitted_at')).toBe(false);
+    expect(isIdVariable('trigger.form.name')).toBe(false);
+    expect(isIdVariable('fields.valid')).toBe(false);
+  });
+});
+
+describe('SF3.2 — identifiers are OFFERED nowhere, but still RESOLVE', () => {
+  it('toEditorVariables(Typed) never offer an id variable', () => {
+    const ids = toEditorVariables(CATALOG, STEPS, 3, 'form_submitted').map((v) => v.id);
+    expect(ids).not.toContain('trigger.submission.id');
+    expect(ids.some((id) => isIdVariable(id))).toBe(false);
+    const typed = toEditorVariablesTyped(CATALOG, STEPS, 3, 'form_submitted').map((v) => v.id);
+    expect(typed.some((id) => isIdVariable(id))).toBe(false);
+  });
+
+  it('variablesOfType never offers an id variable', () => {
+    const text = variablesOfType(CATALOG, STEPS, 3, 'text').map((v) => v.path);
+    expect(text).not.toContain('trigger.submission.id');
+    expect(text.some((p) => isIdVariable(p))).toBe(false);
+  });
+
+  it('a SAVED id ref still resolves its type (resolving is NOT filtered)', () => {
+    // The catalog carries trigger.submission.id; resolution recovers it.
+    expect(resolveVariableType('trigger.submission.id', CATALOG, STEPS)).toBe('text');
+    // A trigger SYSTEM id (null catalog) resolves from the RAW mirror by trigger type.
+    expect(resolveVariableType('trigger.form.id', null, STEPS, 'form_submitted')).toBe('text');
+    // A step-output id resolves too.
+    expect(resolveVariableType('steps.make.task_id', CATALOG, STEPS)).toBe('text');
+  });
+});
+
+describe('toEditorVariablesTyped — TRUE type + enum options (SF1)', () => {
+  it('carries the REAL workflow type, not the degraded editor primitive', () => {
+    const vars = toEditorVariablesTyped(CATALOG, STEPS, 0);
+    // date/enum/multi survive (the primitive feed would flatten them to text).
+    expect(vars.find((v) => v.id === 'trigger.submitted_at')?.type).toBe('date');
+    expect(vars.find((v) => v.id === 'trigger.source')?.type).toBe('enum');
+    expect(vars.find((v) => v.id === 'trigger.fields.tags')?.type).toBe('multi');
+    expect(vars.find((v) => v.id === 'trigger.fields.age')?.type).toBe('number');
+  });
+
+  it('attaches enum/multi options (label = value) and omits options for non-choice types', () => {
+    const vars = toEditorVariablesTyped(CATALOG, STEPS, 0);
+    expect(vars.find((v) => v.id === 'trigger.source')?.options).toEqual([
+      { label: 'manual', value: 'manual' },
+      { label: 'task', value: 'task' },
     ]);
+    expect(vars.find((v) => v.id === 'trigger.fields.tags')?.options).toEqual([
+      { label: 'a', value: 'a' },
+      { label: 'b', value: 'b' },
+    ]);
+    // A plain date/number carries no `options` key.
+    expect('options' in (vars.find((v) => v.id === 'trigger.submitted_at') ?? {})).toBe(false);
+    expect('options' in (vars.find((v) => v.id === 'trigger.fields.age') ?? {})).toBe(false);
+  });
+
+  it('stays identity-only (id = path) with position-scoped KEY-substituted step outputs', () => {
+    // SF3.2: the `_id` outputs are filtered out; the named outputs remain.
+    const vars = toEditorVariablesTyped(CATALOG, STEPS, 2);
+    const stepIds = vars.filter((v) => v.id.startsWith('steps.')).map((v) => v.id);
+    expect(stepIds).toEqual(['steps.make.title', 'steps.report.report_name']);
+    // Drops the catalog's template step outputs (steps.<TYPE>.*), like the primitive feed.
+    expect(vars.some((v) => v.id === 'steps.create_task.task_id')).toBe(false);
+  });
+});
+
+describe('triggerSystemVariables — the backend mirror (SF2)', () => {
+  it('schedule exposes ONLY trigger.scheduled_at (date)', () => {
+    const vars = triggerSystemVariables('schedule');
+    expect(vars.map((v) => v.path)).toEqual(['trigger.scheduled_at']);
+    expect(vars[0].type).toBe('date');
+  });
+
+  it('form_submitted OFFERS the non-id system vars, but NOT the identifiers (SF3.2)', () => {
+    const paths = triggerSystemVariables('form_submitted').map((v) => v.path);
+    expect(paths).toContain('trigger.form.name');
+    expect(paths).toContain('trigger.source');
+    expect(paths).toContain('trigger.submitted_at');
+    // The identifiers are stripped from the OFFERED list.
+    expect(paths).not.toContain('trigger.submission.id');
+    expect(paths).not.toContain('trigger.form.id');
+    expect(paths).not.toContain('trigger.task.id');
+  });
+
+  it('returns [] for a null / unknown trigger type', () => {
+    expect(triggerSystemVariables(null)).toEqual([]);
+    expect(triggerSystemVariables(undefined)).toEqual([]);
+  });
+});
+
+describe('toEditorVariables — trigger system vars supplement a null catalog (SF2)', () => {
+  it('schedule (null catalog) offers trigger.scheduled_at (date → text) + step outputs', () => {
+    const vars = toEditorVariables(null, STEPS, 2, 'schedule');
+    const scheduled = vars.find((v) => v.id === 'trigger.scheduled_at');
+    // date degrades to the text primitive; id === path (identity-only).
+    expect(scheduled).toEqual({ id: 'trigger.scheduled_at', name: 'Scheduled at', type: 'text' });
+    // The position-scoped step outputs are still present (the non-id ones, SF3.2).
+    expect(vars.some((v) => v.id === 'steps.make.title')).toBe(true);
+  });
+
+  it('does NOT duplicate a system var already carried by the catalog', () => {
+    // CATALOG already has trigger.submitted_at + trigger.source; the mirror must not double them.
+    const vars = toEditorVariables(CATALOG, STEPS, 0, 'form_submitted');
+    expect(vars.filter((v) => v.id === 'trigger.submitted_at')).toHaveLength(1);
+    expect(vars.filter((v) => v.id === 'trigger.source')).toHaveLength(1);
+  });
+
+  it('offers no trigger system vars when no trigger type is passed (back-compat)', () => {
+    const vars = toEditorVariables(null, STEPS, 2);
+    expect(vars.some((v) => v.id.startsWith('trigger.'))).toBe(false);
+  });
+});
+
+describe('variablesOfType — trigger system vars for a null catalog (SF2)', () => {
+  it('offers the schedule system date var when the catalog is null', () => {
+    const dates = variablesOfType(null, STEPS, 3, 'date', 'schedule');
+    expect(dates.map((v) => v.path)).toContain('trigger.scheduled_at');
   });
 });
 
 describe('resolveVariableType / resolveVariable — the by-path type recovery', () => {
+  it('recovers a trigger SYSTEM var type by trigger type when the catalog is null (SF2)', () => {
+    expect(resolveVariableType('trigger.scheduled_at', null, STEPS, 'schedule')).toBe('date');
+    // The wrong trigger type does not expose the path.
+    expect(resolveVariableType('trigger.scheduled_at', null, STEPS, 'form_submitted')).toBeNull();
+    // resolveVariable returns the full descriptor too.
+    expect(resolveVariable('trigger.scheduled_at', null, STEPS, 'schedule')?.name).toBe('Scheduled at');
+  });
+
   it('recovers the TRUE type from the catalog (not the degraded primitive)', () => {
     expect(resolveVariableType('trigger.submitted_at', CATALOG, STEPS)).toBe('date');
     expect(resolveVariableType('trigger.source', CATALOG, STEPS)).toBe('enum');
@@ -148,15 +279,16 @@ describe('variablesOfType — the add-on picker filters (§4.9)', () => {
     const priorityVars = variablesOfType(CATALOG, STEPS, 0, ['enum', 'text']);
     const paths = priorityVars.map((v) => v.path);
     expect(paths).toContain('trigger.source'); // enum
-    expect(paths).toContain('trigger.submission.id'); // text
+    expect(paths).not.toContain('trigger.submission.id'); // id text — never offered (SF3.2)
     expect(paths).not.toContain('trigger.fields.age'); // number excluded
   });
 
   it('respects position scoping for step outputs', () => {
-    // At position 1 only `make`'s outputs are in scope.
+    // At position 1 only `make`'s outputs are in scope (and the `_id` one is filtered).
     const textAt1 = variablesOfType(CATALOG, STEPS, 1, 'text').map((v) => v.path);
-    expect(textAt1).toContain('steps.make.task_id');
-    expect(textAt1).not.toContain('steps.report.report_id');
+    expect(textAt1).toContain('steps.make.title');
+    expect(textAt1).not.toContain('steps.make.task_id'); // id — never offered (SF3.2)
+    expect(textAt1).not.toContain('steps.report.report_name');
   });
 });
 

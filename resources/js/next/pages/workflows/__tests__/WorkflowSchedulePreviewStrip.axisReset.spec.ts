@@ -12,7 +12,6 @@ import { mount } from '@vue/test-utils';
 import { nextTick, h } from 'vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 import { setLocale } from '../../../app/i18n';
-import { en } from '../../../app/i18n/en';
 import type { WorkflowScheduleConfig } from '../types';
 
 const schedulePreview = vi.fn();
@@ -82,10 +81,11 @@ describe('WorkflowSchedulePreviewStrip — reset on config (axis) change', () =>
     await flush();
     expect(tilesWith(wrapper, /08:00/)).toBe(6);
 
-    // Page once so a stale paging anchor (the last shown run = 07-18) is in play.
+    // Page once (a scroll near the right edge — happy-dom geometry is 0/0, so any
+    // scroll qualifies) so a stale paging anchor (the last shown run = 07-18) is in play.
     schedulePreview.mockResolvedValueOnce(page(['2026-07-18T08:00:00Z', '2026-07-19T08:00:00Z', '2026-07-20T08:00:00Z']));
-    const loadMore = wrapper.findAll('button').find((b) => b.text().includes(en.workflows.schedule.preview.loadMore))!;
-    await loadMore.trigger('click');
+    await wrapper.find('ul').trigger('scroll');
+    await Promise.resolve();
     await Promise.resolve();
     await nextTick();
     expect(schedulePreview).toHaveBeenLastCalledWith(CONFIG_A, expect.objectContaining({ anchor: '2026-07-18T08:00:00Z' }));

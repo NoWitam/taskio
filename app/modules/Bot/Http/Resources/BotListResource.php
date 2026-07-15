@@ -20,7 +20,10 @@ class BotListResource extends JsonResource
             'has_text_module' => true,
             'task_execution_enabled' => (bool) ($this->task_execution['enabled'] ?? false),
 
-            'is_owner' => $this->creator_id === $request->user()?->id,
+            // Hot path: ownerUserId() reads creator_type/creator_id without loading the User
+            // (the list query does not eager-load creator). A run/bot creator yields null ->
+            // is_owner=false, matching isOwnedBy without the per-row N+1.
+            'is_owner' => $request->user() !== null && $this->ownerUserId() === $request->user()->id,
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

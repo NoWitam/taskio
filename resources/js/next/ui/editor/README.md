@@ -126,6 +126,41 @@ chip/result icon reflects the final `resultType` (`resolveType`). An **IF/ELSE-I
 condition is only valid when its pipeline resolves to `boolean`** — the condition
 Modal shows a status icon and **blocks saving** an invalid condition.
 
+### Variable value types (extended vocabulary)
+
+`VariablePrimitive` covers six value types. The original trio — `text`, `number`,
+`boolean` — is what the legacy FORMAT ever serialized. Three EXTENDED types exist
+for hosts whose sources are richer (e.g. workflow conditions over form fields):
+
+| Type | Icon | Wire value | Typical source |
+| --- | --- | --- | --- |
+| `date` | calendar | ISO `YYYY-MM-DD` string | date form fields |
+| `enum` | list | ONE of the source's option values | select fields |
+| `multi` | list-checks | `string[]` of option values | multi-select fields |
+
+**The STANDARD catalog** (`extensions/standardOperations.ts`) ships 66 canonical,
+i18n-labelled operations across all six types — transforms within a type,
+conversions between types (`*_to_text` / `*_to_number` / `enum_to_date`…), and
+boolean-terminating comparisons for EVERY type (so any variable can become a
+condition). Hosts should import `standardOperationsCatalog()` (inside a computed —
+labels are locale-reactive) instead of hand-rolling op lists; the ids are the
+stable wire vocabulary the backend condition engine mirrors. Runtime semantics
+(fail-closed conversions, 1-based substring, 0=Sunday weekday, "now"-relative date
+checks) are documented at the top of that module.
+
+An enum/multi `VariableDefinition` carries its `options: {label, value}[]`.
+Operation args gained matching control kinds: `date` (DatePicker) plus the
+SOURCE-DRIVEN `sourceOption` (pick one of the source variable's options) and
+`sourceOptions` (pick many → the arg value is a `string[]`) — their choices come
+from the PICKED VARIABLE, not the operation definition, so comparison values for
+selects always match the field's real options. Pass the picked definition's
+`options` to `VariablePipelineEditor` via its `sourceOptions` prop (VariablePanel
+and IfConditionPanel already do).
+
+**FORMAT note:** the extended types change NO directive bytes by themselves —
+hosts that keep serializing degraded primitives (the workflow markdown fields do)
+stay byte-compatible; only hosts that opt in to richer definitions surface them.
+
 ### If-block branches (inline editing + depth cap)
 
 The `ifBlock` is a CONTAINER whose content is `ifBranch+` nodes. Each branch body
@@ -210,6 +245,17 @@ a **synthetic anchor** (`{ getBoundingClientRect: () => caretRect }`) via
 zero new deps. Loading shows **option-shaped Skeleton rows** (skeleton rule),
 empty shows a muted row; ↑/↓/Enter/Esc are forwarded from the plugin's
 `handleKeyDown`; the listbox is `role="listbox"`/`option` + `aria-activedescendant`.
+
+**SF3.1 — the popup FOLLOWS the caret on scroll, and CLOSES when the caret
+scrolls out of view.** A `window` `scroll` (capture phase, so it fires for any
+scrollable ancestor) / `resize` listener asks the ProseMirror plugin to
+re-measure the caret while the popup is open; the plugin updates
+`suggestionStore.rect`, which the popup re-reads through its STABLE synthetic
+anchor (kept as one object so a rect change always reads fresh coordinates,
+rather than re-creating the anchor per frame) and repositions against. When the
+caret's editor line scrolls fully out of the viewport, the plugin's re-measure
+finds no rect and the store closes the popup instead of leaving it pinned to a
+stale, now-meaningless position.
 
 ## v-model loop prevention
 

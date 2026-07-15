@@ -3,10 +3,17 @@
 // `?run=<id>` overlay and opened from a list row's "Run now" and the detail action
 // bar. **5.1: only two trigger types remain.** The required target differs by the
 // workflow's `trigger_type` (§6.1):
-//   • form_submitted → a FormSubmission id (mono TextInput; no submission picker
-//     component exists — the honest MVP field, flagged §8),
-//   • schedule       → no field, confirm-only.
+//   • form_submitted → a FormSubmission (uuid). B8: replaces the raw id TextInput
+//     with a read-only SELECTED-submission summary + two actions — PICK an existing
+//     submission (SubmissionPickerDrawer) or CREATE one (FormFillView → a real
+//     FormSubmission). Both resolve to a single `target_id` (the submission uuid);
+//     the run contract is UNCHANGED (`store.run(id, target_id)`).
+//   • schedule       → no target, confirm-only.
 // The task/approval target controls of REV 1 are DELETED (no task/approval triggers).
+//
+// Scoping by the trigger's `trigger_config.form_id` (string | null; null = "any
+// form"): when a form is bound, Pick + Create are scoped to it; when null the Pick
+// drawer shows a FormSelect step first, and Create needs a form chosen first.
 //
 // When the workflow is INACTIVE the modal reframes as a TEST RUN (§6.2): a leading
 // warning Alert + the confirm button becomes "Test run". Submit posts {target_id}
@@ -15,26 +22,37 @@
 //
 // 422 surfacing (§6.3): mapped purely by bag KEY via `mapRunNowError` — the bag now
 // has EXACTLY two keys: `target_id` (required/notFound, message-disambiguated) and
-// `workflow` (capReached). "targetRequired" is CLIENT-side only: an empty required
-// target never submits. The result renders as an inline danger Alert + a danger
-// toast, flagging the id field when the error belongs to it; anything else → generic.
+// `workflow` (capReached). "targetRequired" is CLIENT-side only: Run stays disabled
+// until a submission is selected/created (an empty required target never submits).
+// The result renders as an inline danger Alert + a danger toast.
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import Modal from '../../ui/overlay/Modal.vue';
+import Drawer from '../../ui/overlay/Drawer.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import FormField from '../../ui/forms/FormField.vue';
-import TextInput from '../../ui/forms/TextInput.vue';
+import FormSelect from '../../ui/forms/FormSelect.vue';
 import Skeleton from '../../ui/data/Skeleton.vue';
+import EmptyState from '../../ui/data/EmptyState.vue';
+import EntityCard, { type EntityMetaItem } from '../../ui/patterns/EntityCard.vue';
+import CreatorBadge from '../../ui/patterns/CreatorBadge.vue';
+import { creatorLabel } from '../../ui/patterns/creator';
+import SubmissionPickerDrawer from './SubmissionPickerDrawer.vue';
+import FormFillView from '../forms/FormFillView.vue';
 import { useWorkflowsStore } from '../../app/stores/workflows';
 import { useWorkflowRunsStore } from '../../app/stores/workflowRuns';
 import { useToast } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
 import { mapRunNowError, extractErrorBag } from './runNowErrors';
 import type { WorkflowDetail, WorkflowRunFilters, WorkflowTriggerType } from './types';
+import type { FormSubmission } from '../forms/types';
 
 /** Normalize an array/undefined route-query value to a single string. */
 const str = (v: unknown): string => (Array.isArray(v) ? String(v[0] ?? '') : String(v ?? ''));
+/** Normalize a route-query value to a string[] (tolerating a legacy single scalar). */
+const toArr = (v: unknown): string[] =>
+  Array.isArray(v) ? v.map(String) : v != null && v !== '' ? [String(v)] : [];
 
 const props = defineProps<{ workflowId: string }>();
 
@@ -71,12 +89,82 @@ const triggerType = computed<WorkflowTriggerType | null>(() => workflow.value?.t
 const isInactive = computed(() => workflow.value?.status === 'inactive');
 
 // --- Per-trigger-type target field (§6.1 — two cases) ----------------------
+// `targetId` is the resolved FormSubmission uuid sent as `{target_id}` — the run
+// contract is unchanged; only HOW the user arrives at it changed (pick / create).
 const targetId = ref('');
+/** The picked/created submission, kept for the read-only summary card. */
+const selectedSubmission = ref<FormSubmission | null>(null);
 
 /** Which target the trigger needs: a submission id (form_submitted) or none (schedule). */
 const targetKind = computed<'submission' | 'none'>(() =>
   triggerType.value === 'form_submitted' ? 'submission' : 'none',
 );
+
+// The trigger's bound form (string) or null ("any form"). Drives whether Pick /
+// Create are scoped to a form or need one chosen first.
+const boundFormId = computed<string | null>(() => workflow.value?.trigger_config?.form_id ?? null);
+
+/** Run stays disabled until a submission is resolved (schedule needs no target). */
+const canConfirm = computed(() => {
+  if (!workflow.value) return false;
+  if (targetKind.value === 'none') return true;
+  return targetId.value.trim() !== '';
+});
+
+// --- Selected-submission summary -------------------------------------------
+function formatDate(iso: string | null): string {
+  if (!iso) return '';
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
+}
+const summaryTitle = computed(() =>
+  selectedSubmission.value
+    ? creatorLabel(selectedSubmission.value.creator, t, t('forms.submissions.anonymous'))
+    : '',
+);
+const summaryMeta = computed<EntityMetaItem[]>(() => {
+  const s = selectedSubmission.value;
+  if (!s) return [];
+  const sourceLabel = s.source === 'task' ? t('forms.submissions.sourceTask') : t('forms.submissions.sourceForm');
+  return [
+    { icon: 'calendar', label: formatDate(s.approved_at ?? s.created_at) },
+    { icon: 'inbox', label: sourceLabel },
+  ];
+});
+
+function setSelected(submission: FormSubmission): void {
+  selectedSubmission.value = submission;
+  targetId.value = submission.id;
+  formError.value = null;
+  fieldErrored.value = false;
+}
+function clearSelection(): void {
+  selectedSubmission.value = null;
+  targetId.value = '';
+}
+
+// --- Pick drawer -----------------------------------------------------------
+const pickOpen = ref(false);
+function openPick(): void {
+  pickOpen.value = true;
+}
+function onPicked(_submissionId: string, submission: FormSubmission): void {
+  setSelected(submission);
+}
+
+// --- Create drawer (FormViewer via FormFillView → a REAL submission) --------
+const createOpen = ref(false);
+// The form to create a submission for: the bound form, or one chosen inline when
+// the trigger accepts any form (null → a FormSelect step precedes FormFillView).
+const createFormId = ref<string | null>(null);
+function openCreate(): void {
+  createFormId.value = boundFormId.value;
+  createOpen.value = true;
+}
+function onCreated(submission: FormSubmission): void {
+  setSelected(submission);
+  createOpen.value = false;
+}
 
 // --- Confirm copy (test-run framing when inactive, §6.2) -------------------
 const confirmLabel = computed(() =>
@@ -110,13 +198,20 @@ async function onConfirm(): Promise<void> {
     toast.success(t('workflows.run.toasts.started'));
     // Refetch the runs list when the Runs child route is the active detail section
     // so the new run appears immediately (§6.3). The runs filters live in the URL
-    // (state / origin), so honor them on the refetch instead of clobbering them.
+    // (state[] / origin[] + a date range), so honor them on the refetch instead of
+    // clobbering them.
     if (route.name === 'next.workflows.detail.runs' && runsStore.workflowId === workflow.value.id) {
       const filters: WorkflowRunFilters = {};
-      const state = str(route.query.state);
-      const origin = str(route.query.origin);
-      if (state) filters.state = state as WorkflowRunFilters['state'];
-      if (origin) filters.origin = origin as WorkflowRunFilters['origin'];
+      const state = toArr(route.query.state);
+      const origin = toArr(route.query.origin);
+      const dateFrom = str(route.query.date_from);
+      const dateTo = str(route.query.date_to);
+      const datePreset = str(route.query.date_preset);
+      if (state.length) filters.state = state;
+      if (origin.length) filters.origin = origin;
+      if (dateFrom) filters.date_from = dateFrom;
+      if (dateTo) filters.date_to = dateTo;
+      if (datePreset) filters.date_preset = datePreset;
       void runsStore.fetchRuns(workflow.value.id, filters, { reset: true });
     }
     close();
@@ -170,28 +265,55 @@ function close(): void {
           {{ t('workflows.run.testRunNote') }}
         </Alert>
 
-        <!-- Submission-id target (form_submitted). -->
-        <FormField
-          v-if="targetKind === 'submission'"
-          :label="t('workflows.run.submissionIdLabel')"
-          :description="t('workflows.run.submissionIdHint')"
-          :error="fieldErrored ? (formError ?? undefined) : undefined"
-        >
-          <TextInput
-            v-model="targetId"
-            class="font-next-mono"
-            :placeholder="t('workflows.run.submissionIdPlaceholder')"
-            :aria-invalid="fieldErrored"
+        <!-- Submission target (form_submitted): a read-only summary of the picked /
+             created submission + Pick / Create actions. -->
+        <template v-if="targetKind === 'submission'">
+          <EntityCard
+            v-if="selectedSubmission"
+            :title="summaryTitle"
+            :meta="summaryMeta"
+            selected
+          >
+            <template #leading>
+              <CreatorBadge :creator="selectedSubmission.creator" glyph-only size="sm" />
+            </template>
+            <template #actions>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                leading-icon="x"
+                :aria-label="t('workflows.run.clearSelection')"
+                @click="clearSelection"
+              />
+            </template>
+          </EntityCard>
+
+          <EmptyState
+            v-else
+            size="sm"
+            icon="inbox"
+            :title="t('workflows.run.noSubmission')"
+            :description="t('workflows.run.noSubmissionHint')"
           />
-        </FormField>
+
+          <div class="flex gap-next-2">
+            <Button class="flex-1 min-w-0" variant="outline" leading-icon="list" @click="openPick">
+              {{ t('workflows.run.pick') }}
+            </Button>
+            <Button class="flex-1 min-w-0" variant="outline" leading-icon="plus" @click="openCreate">
+              {{ t('workflows.run.create') }}
+            </Button>
+          </div>
+        </template>
 
         <!-- Schedule: no field — confirm-only copy. -->
         <p v-else class="text-next-sm text-next-muted-foreground">
           {{ t('workflows.run.scheduleConfirm') }}
         </p>
 
-        <!-- Inline error not tied to the field (e.g. cap reached / generic). -->
-        <Alert v-if="formError && !fieldErrored" variant="danger" size="sm">
+        <!-- Inline run error (target not found / cap reached / generic). With no id
+             field to pin to, every mapped run error surfaces here. -->
+        <Alert v-if="formError" variant="danger" size="sm">
           {{ formError }}
         </Alert>
       </div>
@@ -204,11 +326,48 @@ function close(): void {
       <Button
         leading-icon="arrow-right"
         :loading="submitting"
-        :disabled="submitting || !workflow"
+        :disabled="submitting || !canConfirm"
         @click="onConfirm"
       >
         {{ confirmLabel }}
       </Button>
     </template>
   </Modal>
+
+  <!-- Pick an existing submission (scoped to the bound form, or a FormSelect step
+       first when the trigger accepts any form). Closes itself on select. -->
+  <SubmissionPickerDrawer
+    v-model:open="pickOpen"
+    :form-id="boundFormId"
+    @select="onPicked"
+  />
+
+  <!-- Create a REAL submission via FormViewer (fill mode, reused through
+       FormFillView). When the trigger accepts any form, a FormSelect step precedes
+       the form; on submit the returned submission id becomes the run target. -->
+  <Drawer
+    v-model:open="createOpen"
+    side="right"
+    size="xl"
+    :aria-label="t('workflows.run.createDrawer.title')"
+  >
+    <template #title>{{ t('workflows.run.createDrawer.title') }}</template>
+
+    <div v-if="!createFormId" class="flex flex-col gap-next-4">
+      <p class="text-next-sm text-next-muted-foreground">
+        {{ t('workflows.run.createDrawer.chooseFormHint') }}
+      </p>
+      <FormField :label="t('workflows.run.createDrawer.chooseForm')">
+        <FormSelect v-model="createFormId" :aria-label="t('workflows.run.createDrawer.chooseForm')" />
+      </FormField>
+    </div>
+
+    <FormFillView
+      v-else
+      :key="createFormId"
+      :form-id="createFormId"
+      @submitted="onCreated"
+      @close="createOpen = false"
+    />
+  </Drawer>
 </template>

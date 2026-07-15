@@ -68,7 +68,13 @@ const isActive = computed(() => workflow.value?.status === 'active');
 const triggerType = computed<'form_submitted' | 'schedule'>(
   () => workflow.value?.trigger_type ?? 'form_submitted',
 );
-const conditions = computed<WorkflowCondition[]>(() => workflow.value?.conditions ?? []);
+// B3 widened `conditions` to `WorkflowCondition[] | WireConditionGroup`. This read-only
+// overview renders the LEGACY flat rows only; a TREE-shaped value degrades to "always
+// runs" here (the tree read-side view is a follow-up). The guard keeps it from
+// iterating a group object's keys as if they were rows.
+const conditions = computed<WorkflowCondition[]>(() =>
+  Array.isArray(workflow.value?.conditions) ? (workflow.value!.conditions as WorkflowCondition[]) : [],
+);
 const steps = computed<WorkflowStep[]>(() => workflow.value?.steps ?? []);
 
 /**

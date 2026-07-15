@@ -127,11 +127,24 @@ the magenta primary (so "danger" never reads as "brand").
 | Warning | `hsl(36 92% 42%)` | `hsl(38 88% 54%)` | `hsl(40 90% 94%)` | `hsl(30 80% 28%)` |
 | Danger | `hsl(356 70% 48%)` | `hsl(356 72% 58%)` | `hsl(356 76% 96%)` | `hsl(356 64% 36%)` |
 | Info | `hsl(214 78% 47%)` | `hsl(214 80% 60%)` | `hsl(214 80% 96%)` | `hsl(216 70% 34%)` |
+| Modified | `hsl(265 60% 48%)` | `hsl(265 72% 70%)` | `hsl(266 78% 96%)` | `hsl(266 55% 40%)` |
 
 > Danger is intentionally pushed toward red-`356` (away from the magenta-`325`
 > primary) so destructive actions are unmistakable. All solids hit AA against
 > their `-foreground` text. **Never rely on color alone** — pair status with an
 > icon and/or label (see StatusBadge in the state matrix).
+>
+> **Modified** is a fifth, PROJECT-WIDE family (`--color-next-modified` +
+> `-foreground`/`-subtle`/`-subtle-foreground`, `Badge variant="modified"`) — not
+> a status in the success/warning/danger/info sense, but a distinct semantic for
+> "this value has drifted from a captured snapshot" (a diff highlight, an
+> unsaved-change marker, a "changed since X" badge). A dedicated violet
+> (hue `265`), kept clear of both the magenta primary (`325`) and the blue info
+> (`214`) so a "changed" signal never reads as brand or informational. First
+> consumer: `SubmissionPreviewDrawer`'s `diff` mode (Workflows run detail →
+> form-submission snapshot vs. current). Reach for `warning` for an actual
+> caution/attention state, and `modified` only for "this differs from a
+> reference value" — the two are not interchangeable.
 
 ---
 

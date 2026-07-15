@@ -6,6 +6,7 @@ use App\Modules\Forms\DTOs\FormDTO;
 use App\Modules\Forms\Jobs\IndexFormJob;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormContentVersion;
+use App\Modules\Workflows\Models\WorkflowRun;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
@@ -288,7 +289,9 @@ class FormService
     protected function listQuery(Request $request): Builder
     {
         return Form::query()
-            ->with('creator')
+            // creator is polymorphic (User|WorkflowRun|Bot); load a run's workflow so
+            // CreatorResource renders the automation name without an N+1 per row.
+            ->with(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
             ->withCount('submissions')
             ->where('is_anonymous', false)
             ->when(

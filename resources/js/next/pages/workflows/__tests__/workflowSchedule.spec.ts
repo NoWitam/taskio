@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setLocale, translate } from '../../../app/i18n';
 import {
   configToDraft,
+  describeOccurrence,
   describeSchedule,
   draftToConfig,
   emptyScheduleDraft,
@@ -354,6 +355,82 @@ describe('strip helpers', () => {
     expect(parts.time).toBe('09:00');
     expect(parts.weekday.length).toBeGreaterThan(0);
     expect(parts.date.length).toBeGreaterThan(0);
+  });
+});
+
+// describeOccurrence — the run-detail "reason" (§5.4 B6). NAMES the matched fire
+// instant against the schedule descriptor (tz UTC here). Dates verified: 2026-07-02
+// is the FIRST Thursday of July; 2026-07-06 is a Monday; 2026-07-15 a Wednesday (15th);
+// 2026-07-31 the last working day (Friday).
+describe('describeOccurrence — semantic run "reason" (B6)', () => {
+  const reason = (iso: string, cfg: WorkflowScheduleConfig | null, locale: 'pl' | 'en'): string => {
+    setLocale(locale);
+    return describeOccurrence(iso, cfg, translate);
+  };
+
+  it('nth_weekday → "1. czwartek o 14:00 w lipcu" / "the 1st Thursday at 14:00 in July"', () => {
+    const cfg: WorkflowScheduleConfig = {
+      time: { mode: 'at', at: ['14:00'] },
+      day: { mode: 'special', special: 'nth_weekday', ordinal: 1, weekday: 4 },
+    };
+    expect(reason('2026-07-02T14:00:00Z', cfg, 'pl')).toBe('1. czwartek o 14:00 w lipcu');
+    expect(reason('2026-07-02T14:00:00Z', cfg, 'en')).toBe('the 1st Thursday at 14:00 in July');
+  });
+
+  it('weekly weekday → "poniedziałek o 12:00" / "Monday at 12:00"', () => {
+    const cfg: WorkflowScheduleConfig = {
+      time: { mode: 'at', at: ['12:00'] },
+      day: { mode: 'weekdays', weekdays: [1] },
+    };
+    expect(reason('2026-07-06T12:00:00Z', cfg, 'pl')).toBe('poniedziałek o 12:00');
+    expect(reason('2026-07-06T12:00:00Z', cfg, 'en')).toBe('Monday at 12:00');
+  });
+
+  it('monthly day-of-month → "15. dnia miesiąca o 09:00" / "on the 15th …"', () => {
+    const cfg: WorkflowScheduleConfig = {
+      time: { mode: 'at', at: ['09:00'] },
+      day: { mode: 'month_days', days: [15] },
+    };
+    expect(reason('2026-07-15T09:00:00Z', cfg, 'pl')).toBe('15. dnia miesiąca o 09:00');
+    expect(reason('2026-07-15T09:00:00Z', cfg, 'en')).toBe('on the 15th of the month at 09:00');
+  });
+
+  it('last_working_day → "ostatni dzień roboczy miesiąca o 17:00"', () => {
+    const cfg: WorkflowScheduleConfig = {
+      time: { mode: 'at', at: ['17:00'] },
+      day: { mode: 'special', special: 'last_working_day' },
+    };
+    expect(reason('2026-07-31T17:00:00Z', cfg, 'pl')).toBe('ostatni dzień roboczy miesiąca o 17:00');
+    expect(reason('2026-07-31T17:00:00Z', cfg, 'en')).toBe('the last working day of the month at 17:00');
+  });
+
+  it('compound multi-axis → Tier-A timestamp fallback (never a semantic clause)', () => {
+    const cfg: WorkflowScheduleConfig = {
+      time: { mode: 'at', at: ['14:00'] },
+      day: { mode: 'weekdays', weekdays: [4] },
+      month: { mode: 'months', months: [7] },
+    };
+    const out = reason('2026-07-02T14:00:00Z', cfg, 'pl');
+    expect(out).toContain('14:00'); // the fire instant, formatted
+    expect(out).toContain('lip'); // short month name → a timestamp, not "w lipcu"
+    expect(out).not.toContain('w lipcu'); // NOT the semantic clause
+  });
+
+  it('missing descriptor → Tier-A timestamp, never blank', () => {
+    const out = reason('2026-07-02T14:00:00Z', null, 'pl');
+    expect(out).not.toBe('');
+    expect(out).toContain('14:00');
+  });
+
+  it('exclusion-shifted descriptor → Tier-A fallback', () => {
+    const cfg: WorkflowScheduleConfig = {
+      time: { mode: 'at', at: ['12:00'] },
+      day: { mode: 'weekdays', weekdays: [1] },
+      exclusions: { dates: ['2026-07-13'] },
+    };
+    const out = reason('2026-07-06T12:00:00Z', cfg, 'en');
+    expect(out).toContain('12:00');
+    expect(out).not.toBe('Monday at 12:00'); // exclusions → not cleanly named
   });
 });
 

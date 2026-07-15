@@ -13,6 +13,7 @@ use App\Modules\Workflows\Http\Resources\WorkflowListResource;
 use App\Modules\Workflows\Http\Resources\WorkflowResource;
 use App\Modules\Workflows\Http\Resources\WorkflowRunResource;
 use App\Modules\Workflows\Models\Workflow;
+use App\Modules\Workflows\Models\WorkflowRun;
 use App\Modules\Workflows\Services\WorkflowManualRunService;
 use App\Modules\Workflows\Services\WorkflowService;
 use Illuminate\Http\JsonResponse;
@@ -39,7 +40,7 @@ class WorkflowController extends Controller
     {
         return WorkflowResource::make(
             $this->service->create(WorkflowDTO::fromRequest($request))
-                ->loadMissing('creator')
+                ->loadMissing(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
         );
     }
 
@@ -47,14 +48,14 @@ class WorkflowController extends Controller
     {
         $this->authorize('view', $workflow);
 
-        return WorkflowResource::make($workflow->loadMissing('creator'));
+        return WorkflowResource::make($workflow->loadMissing(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])]));
     }
 
     public function update(UpdateWorkflowRequest $request, Workflow $workflow): WorkflowResource
     {
         return WorkflowResource::make(
             $this->service->update($workflow, WorkflowDTO::fromRequest($request))
-                ->loadMissing('creator')
+                ->loadMissing(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
         );
     }
 
@@ -62,7 +63,7 @@ class WorkflowController extends Controller
     {
         return WorkflowResource::make(
             $this->service->changeStatus($workflow, $request->enum('status', WorkflowStatus::class))
-                ->loadMissing('creator')
+                ->loadMissing(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
         );
     }
 
@@ -102,7 +103,7 @@ class WorkflowController extends Controller
         $this->authorize('restore', $workflow);
 
         return WorkflowResource::make(
-            $this->service->restore($workflow)->loadMissing('creator')
+            $this->service->restore($workflow)->loadMissing(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
         );
     }
 }

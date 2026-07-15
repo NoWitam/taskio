@@ -6,9 +6,11 @@
 import type { IconName } from '../../primitives/Icon.vue';
 import { translate } from '../../../app/i18n';
 import type {
+  ChoiceRule,
   VariableOperationArgumentDefinition,
   VariableOperationArgumentType,
   VariableOperationDefinition,
+  VariableOption,
   VariablePipelineStep,
   VariablePrimitive,
 } from './types';
@@ -19,6 +21,11 @@ const VARIABLE_TYPE_ICON: Record<VariablePrimitive, IconName> = {
   text: 'type',
   number: 'hash',
   boolean: 'check-circle',
+  // The extended vocabulary mirrors the workflow add-on chips (§7.5) so a type
+  // reads with the SAME glyph everywhere.
+  date: 'calendar',
+  enum: 'list',
+  multi: 'list-checks',
 };
 
 export function getVariableIconName(type: VariablePrimitive): IconName {
@@ -36,6 +43,12 @@ export function getVariableIconLabel(type: VariablePrimitive): string {
       return translate('editor.types.number', 'Number');
     case 'boolean':
       return translate('editor.types.boolean', 'Condition');
+    case 'date':
+      return translate('editor.types.date', 'Date');
+    case 'enum':
+      return translate('editor.types.enum', 'Choice');
+    case 'multi':
+      return translate('editor.types.multi', 'Multi-choice');
     case 'text':
     default:
       return translate('editor.types.text', 'Text');
@@ -47,19 +60,52 @@ export function getArgumentIconName(type: VariableOperationArgumentType): IconNa
     text: 'type',
     number: 'hash',
     boolean: 'check-circle',
+    date: 'calendar',
     select: 'list',
+    sourceOption: 'list',
+    sourceOptions: 'list-checks',
+    sourceMap: 'arrow-right',
+    choiceRules: 'list-checks',
+    choiceFallback: 'list',
   };
   return map[type] ?? 'help-circle';
 }
 
-/** Build the default arg map for an operation (legacy parity). */
+/**
+ * Whether an operation PRODUCES a destination choice — the FE mirror of the backend's
+ * `producesChoice()` terminal rule. A choice-producing op targets a specific option
+ * set: it carries a `choiceRules` / `choiceFallback` arg, or a `sourceMap` arg whose
+ * `mapType` is `enum`. Such ops are only offered when a `targetOptions` set exists
+ * (a value-or-variable field over a "choice"/enum destination), never in the
+ * conditions editor or markdown variable builder.
+ */
+export function isChoiceProducingOp(op: VariableOperationDefinition | undefined): boolean {
+  if (!op?.args) return false;
+  return op.args.some(
+    (arg) =>
+      arg.type === 'choiceRules' ||
+      arg.type === 'choiceFallback' ||
+      (arg.type === 'sourceMap' && arg.mapType === 'enum'),
+  );
+}
+
+type ArgValue = string | number | boolean | string[] | Record<string, string | number> | ChoiceRule[];
+
+/**
+ * Build the default arg map for an operation (sourceOptions / choiceRules → [],
+ * sourceMap → {}, everything else → '' unless a `defaultValue` is declared).
+ */
 export function buildDefaultArgs(
   args?: VariableOperationArgumentDefinition[],
-): Record<string, string | number | boolean> {
+): Record<string, ArgValue> {
   if (!args) return {};
-  return args.reduce<Record<string, string | number | boolean>>((acc, arg) => {
+  return args.reduce<Record<string, ArgValue>>((acc, arg) => {
     if (arg.defaultValue !== undefined) acc[arg.id] = arg.defaultValue;
-    else acc[arg.id] = arg.type === 'boolean' ? false : '';
+    else if (arg.type === 'boolean') acc[arg.id] = false;
+    else if (arg.type === 'sourceOptions') acc[arg.id] = [];
+    else if (arg.type === 'choiceRules') acc[arg.id] = [];
+    else if (arg.type === 'sourceMap') acc[arg.id] = {};
+    else acc[arg.id] = '';
     return acc;
   }, {});
 }
@@ -85,6 +131,34 @@ export function resolveType(
     current = def.outputType;
   }
   return current;
+}
+
+/**
+ * Whether a pipeline SATISFIES a value-or-variable field's terminal contract — the
+ * FE mirror of the backend's terminal rule. Two gates:
+ *   1. the pipeline's resolved result type is one of `resultTypes` (empty ⇒ no gate);
+ *   2. when a `targetOptions` destination set exists (a "choice"/enum field like task
+ *      priority), the pipeline must ALSO be NON-empty and END on a CHOICE-producing op
+ *      (`producesChoice()` — a `choiceRules`/`choiceFallback` arg or a `sourceMap` arg
+ *      with `mapType:'enum'`). This rejects an identity ref or a plain enum terminal
+ *      that never targeted the destination's option set.
+ */
+export function pipelineSatisfies(
+  catalog: VariableOperationDefinition[],
+  baseType: VariablePrimitive,
+  pipeline: VariablePipelineStep[],
+  resultTypes: VariablePrimitive[],
+  targetOptions?: VariableOption[],
+): boolean {
+  const typeOk =
+    resultTypes.length === 0 || resultTypes.includes(resolveType(catalog, baseType, pipeline));
+  if (!typeOk) return false;
+  if ((targetOptions ?? []).length) {
+    if (pipeline.length === 0) return false;
+    const lastOp = catalog.find((op) => op.id === pipeline[pipeline.length - 1].operationId);
+    if (!isChoiceProducingOp(lastOp)) return false;
+  }
+  return true;
 }
 
 /** The INPUT type for the step at `stepIndex` (i.e. output of all prior steps). */

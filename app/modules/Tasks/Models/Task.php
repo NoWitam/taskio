@@ -26,6 +26,7 @@ use App\Modules\Labels\Traits\HasLabels;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Observers\TaskObserver;
+use App\Modules\Workflows\Models\WorkflowRun;
 use App\Traits\Archiving;
 use App\Traits\HasCreator;
 use App\Traits\TenantAware;
@@ -42,24 +43,33 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
     protected $table = 'tasks';
 
     /**
-     * Relations eager-loaded whenever a single Task is returned as a TaskResource,
-     * so every detail endpoint produces a shape-stable response.
+     * Relations eager-loaded whenever a single Task is returned as a TaskResource, so every
+     * detail endpoint produces a shape-stable response.
+     *
+     * `creator` is a polymorphic morphTo (User | WorkflowRun | Bot). Its WorkflowRun branch
+     * also loads `workflow`, so CreatorResource can render a run's automation name without a
+     * lazy load (a closure eager-load — hence a method, not a const array).
+     *
+     * @return array<int|string, mixed>
      */
-    public const DETAIL_RELATIONS = [
-        'assigned',
-        'assignee',
-        'creator',
-        'labels',
-        'files',
-        'form',
-        'formSubmission',
-        'approvalPipeline.stages.approver',
-        'approvalPipeline.stages.approverBot',
-        'pendingApprovalProcess.stage',
-        'pendingApprovalProcess.approver',
-        'pendingApprovalProcess.approverBot',
-        'pendingApprovalProcess.pipeline',
-    ];
+    public static function detailRelations(): array
+    {
+        return [
+            'assigned',
+            'assignee',
+            'creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']]),
+            'labels',
+            'files',
+            'form',
+            'formSubmission',
+            'approvalPipeline.stages.approver',
+            'approvalPipeline.stages.approverBot',
+            'pendingApprovalProcess.stage',
+            'pendingApprovalProcess.approver',
+            'pendingApprovalProcess.approverBot',
+            'pendingApprovalProcess.pipeline',
+        ];
+    }
 
     protected $fillable = [
         'title',
@@ -285,12 +295,17 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
         app(\App\Modules\Bot\Services\BotTaskExecutionService::class)
             ->recordMarkedDoneFromContext($this, $process->context ?? []);
 
-        // A completed task returns to its (human) creator.
-        $this->update([
-            'status' => TaskStatus::DONE,
-            'assignee_type' => 'user',
-            'assignee_id' => $this->creator_id,
-        ]);
+        // A completed task returns to its HUMAN creator. A run/bot creator (creatorUser() null)
+        // is a system record owned by nobody — it must NEVER become a user assignee (that would
+        // corrupt the assignee morph), so skip the reassignment and only move the status.
+        $update = ['status' => TaskStatus::DONE];
+
+        if (($creatorUserId = $this->creatorUser()?->id) !== null) {
+            $update['assignee_type'] = 'user';
+            $update['assignee_id'] = $creatorUserId;
+        }
+
+        $this->update($update);
     }
 
     public function onApprovalRejected(ApprovalProcess $process): void
@@ -298,23 +313,34 @@ class Task extends AbstractModel implements Approvable, InterfacesHasChangelog
         $context = $process->context ?? [];
 
         // Restore the polymorphic original assignee (User OR Bot) snapshotted when the
-        // approval started. Falls back to the legacy user-only key, then the creator.
-        $originalType = $context['original_assignee_type']
+        // approval started. Falls back to the legacy user-only key, then the HUMAN creator.
+        $assigneeType = $context['original_assignee_type']
             ?? (($context['original_assigned_id'] ?? null) ? 'user' : null);
-        $originalId = $context['original_assignee_id']
+        $assigneeId = $context['original_assignee_id']
             ?? $context['original_assigned_id']
             ?? null;
 
-        $this->update([
-            'status' => TaskStatus::TO_DO,
-            'assignee_type' => $originalType ?? 'user',
-            'assignee_id' => $originalId ?? $this->creator_id,
-        ]);
+        // No snapshot: fall back to the human creator. A run/bot creator (creatorUser() null)
+        // must NEVER become a user assignee, so when neither a snapshot nor a human creator
+        // exists we move the status only and leave the current assignee untouched.
+        if ($assigneeId === null && ($creatorUserId = $this->creatorUser()?->id) !== null) {
+            $assigneeType = 'user';
+            $assigneeId = $creatorUserId;
+        }
+
+        $update = ['status' => TaskStatus::TO_DO];
+
+        if ($assigneeId !== null) {
+            $update['assignee_type'] = $assigneeType ?? 'user';
+            $update['assignee_id'] = $assigneeId;
+        }
+
+        $this->update($update);
 
         // If the restored assignee is a bot, kick off a REVISION run so it addresses the
         // rejection reasons (surfaced from the approval history in the run context).
         // Deferred to afterCommit so a sync job sees the committed reject state.
-        if (($originalType ?? 'user') === 'bot') {
+        if (($assigneeType ?? 'user') === 'bot') {
             $task = $this->fresh() ?? $this;
             \Illuminate\Support\Facades\DB::afterCommit(function () use ($task) {
                 app(\App\Modules\Bot\Services\BotTaskExecutionService::class)->reviseAfterReject($task);

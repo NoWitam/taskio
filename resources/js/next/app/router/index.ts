@@ -189,6 +189,15 @@ const routes: RouteRecordRaw[] = [
             meta: { requiresAuth: true, titleKey: 'nav.workflows' },
           },
           {
+            // Global cross-workflow runs feed. DECLARED BEFORE the dynamic `:id`
+            // record so the static segment wins (Vue Router 4 ranks static above
+            // dynamic regardless of order, but declaring it first keeps intent clear).
+            path: 'runs',
+            name: 'next.workflows.runs',
+            component: () => import('../../pages/workflows/WorkflowRunsListView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+          },
+          {
             // Detail sections are CHILD ROUTES of the detail SHELL (the shell
             // owns the fetch + action bar and renders the section through its
             // own <RouterView> — Runs needs its own lifecycle). The bare path

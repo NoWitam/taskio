@@ -5,6 +5,7 @@ namespace App\Modules\Workflows;
 use App\Modules\Workflows\Console\ReapStaleWorkflowRunsCommand;
 use App\Modules\Workflows\Console\RunScheduledWorkflowsCommand;
 use App\Modules\Workflows\Models\Workflow;
+use App\Modules\Workflows\Models\WorkflowRun;
 use App\Modules\Workflows\Policies\WorkflowPolicy;
 use App\Modules\Workflows\Services\WorkflowRunContext;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -34,8 +35,12 @@ class WorkflowsModuleServiceProvider extends ServiceProvider
 
         Gate::policy(Workflow::class, WorkflowPolicy::class);
 
+        // `workflow_run` MUST be registered: HasCreator now stamps a workflow-run creator
+        // polymorphically (creator_type = $run->getMorphClass()), and the repo enforces the
+        // morph map — an unregistered class throws ClassMorphViolationException at write time.
         Relation::enforceMorphMap([
             'workflow' => Workflow::class,
+            'workflow_run' => WorkflowRun::class,
         ]);
     }
 }

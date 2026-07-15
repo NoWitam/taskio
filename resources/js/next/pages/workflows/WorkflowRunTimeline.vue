@@ -5,8 +5,9 @@
 // workflow, so a foreign run 404s → the error state).
 //
 // Layout (the drawer chrome is off — this body owns its header + close + scroll):
-//   • Header       — state badge (6-state, icon + label) + origin + trigger type +
-//                    duration; a nested-run line when depth > 0 / origin_run_id set.
+//   • Header       — state badge (6-state, icon + label) + a single SOURCE badge (the
+//                    relabelled origin; B3 collapsed origin + trigger_type) + duration;
+//                    a nested-run line when depth > 0 / origin_run_id set.
 //   • Trigger      — `trigger_payload` flattened to labelled key→value rows (mono
 //                    keys), NOT raw JSON.
 //   • Step timeline — the shared Timeline pattern, one item per audit step ordered
@@ -16,6 +17,7 @@
 // Four states: loading (Timeline's own skeleton items), error (Alert + retry),
 // empty (a run with zero recorded steps), success. All strings localized.
 import { computed, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import Button from '../../ui/primitives/Button.vue';
 import Badge from '../../ui/primitives/Badge.vue';
 import Icon from '../../ui/primitives/Icon.vue';
@@ -23,18 +25,24 @@ import Alert from '../../ui/feedback/Alert.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Timeline from '../../ui/patterns/Timeline.vue';
 import TimelineItem from '../../ui/patterns/TimelineItem.vue';
+import EntityCard, { type EntityMetaItem } from '../../ui/patterns/EntityCard.vue';
+import StatusBadge from '../../ui/data/StatusBadge.vue';
+import SubmissionPreviewDrawer from '../forms/SubmissionPreviewDrawer.vue';
+import { resolveFormIcon } from '../../ui/forms/formIcon';
 import {
   runStateIcon,
   originIcon,
   originLabel,
-  triggerShort,
   stepIcon,
   stepLabel,
   toneToVariant,
 } from './workflowMeta';
+import { describeOccurrence, formatScheduledAt } from './workflowSchedule';
 import { formatDuration, formatTimestamp } from './runFormat';
 import { useWorkflowRunsStore } from '../../app/stores/workflowRuns';
+import { useToast } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
+import type { IconName } from '../../ui/primitives/icons';
 import type { WorkflowRun, WorkflowRunStep, WorkflowTone } from './types';
 
 const props = defineProps<{
@@ -42,10 +50,16 @@ const props = defineProps<{
   runId: string;
 }>();
 
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  /** A FAILED run was retried → the NEW run (state `pending`); the host opens/refreshes it. */
+  (e: 'retried', run: WorkflowRun): void;
+}>();
 
 const { t } = useI18n();
+const router = useRouter();
 const store = useWorkflowRunsStore();
+const toast = useToast();
 
 const run = ref<WorkflowRun | null>(null);
 const loading = ref(false);
@@ -56,8 +70,11 @@ async function load(): Promise<void> {
   loadError.value = false;
   const result = await store.fetchRun(props.workflowId, props.runId);
   loading.value = false;
-  if (result) run.value = result;
-  else loadError.value = true;
+  if (result) {
+    run.value = result;
+  } else {
+    loadError.value = true;
+  }
 }
 
 onMounted(load);
@@ -96,14 +113,119 @@ function toRows(payload: Record<string, unknown> | null | undefined): KeyValue[]
   }));
 }
 
+// An ISO-8601 date-time (with a Z or ±hh:mm offset) — the shape a raw payload value
+// would otherwise dump as an unreadable machine timestamp.
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/;
+
 function stringifyValue(value: unknown): string {
   if (value == null) return '—';
   if (Array.isArray(value)) return value.map((v) => stringifyValue(v)).join(', ');
   if (typeof value === 'object') return JSON.stringify(value);
+  // Format a lone ISO timestamp (e.g. a step payload date) so the generic dump never
+  // shows a raw machine string; non-ISO strings pass through untouched.
+  if (typeof value === 'string' && ISO_DATETIME_RE.test(value)) return formatTimestamp(value);
   return String(value);
 }
 
-const triggerRows = computed<KeyValue[]>(() => toRows(run.value?.trigger_payload));
+// The generic key→value dump for a payload that isn't a form/schedule trigger. `scheduled_at`
+// is EXCLUDED — it is the schedule reason's domain (shown there for a real schedule run) and
+// pure noise on a manual run, so it must never appear as a raw row.
+const triggerRows = computed<KeyValue[]>(() =>
+  toRows(run.value?.trigger_payload).filter((row) => row.key !== 'scheduled_at'),
+);
+
+// --- Schedule "reason" (B6): NAME the matched occurrence semantically ---------
+// The "reason" answers WHY the SCHEDULE fired this run, so it is shown ONLY for a run
+// the schedule ACTUALLY triggered (origin === 'schedule'). A MANUAL run — even of a
+// schedule-type workflow — was started by a person clicking "Run now", NOT by a matched
+// occurrence, so it carries no meaningful reason (its `scheduled_at` is just ~now) and
+// must never show one. `scheduled_at` is also filtered out of the generic payload dump
+// (below), so a manual run never leaks it as a raw ISO row either. The descriptor lets
+// `describeOccurrence` name the slot in the schedule's own zone; it falls back to a
+// Tier-A timestamp, never blank.
+const scheduledAt = computed<string | null>(() => {
+  const v = (run.value?.trigger_payload as Record<string, unknown> | null | undefined)?.scheduled_at;
+  return typeof v === 'string' ? v : null;
+});
+const isScheduleRun = computed(
+  () => run.value?.origin === 'schedule' && !!scheduledAt.value,
+);
+const scheduleReason = computed<string | null>(() => {
+  if (!isScheduleRun.value || !scheduledAt.value) return null;
+  return describeOccurrence(scheduledAt.value, run.value?.schedule_descriptor ?? null, t);
+});
+// The human-formatted fire instant (long weekday + date + HH:mm in the schedule's tz) —
+// the companion to the semantic reason. When the reason ITSELF fell back to this same
+// timestamp (a descriptor that can't be cleanly named), the two strings are equal and
+// the template drops the duplicate row.
+const scheduledAtText = computed<string | null>(() => {
+  if (!scheduledAt.value) return null;
+  return formatScheduledAt(scheduledAt.value, run.value?.schedule_descriptor ?? null, t);
+});
+
+// --- Form submission trigger (B7): a LEAN form item + submission card + diff drawer -
+// The form item is composed ENTIRELY from the ONE run-show response — NO second API
+// call. The `run.form` block (name + description + icon) is resolved LIVE server-side;
+// when it is absent (the trigger form was deleted/foreign) we fall back to the
+// name-only `trigger_payload.form` snapshot. Never fetch, never crash.
+interface FormSubmittedPayload {
+  form?: { id?: string | number; name?: string | null; is_anonymous?: boolean } | null;
+  submission?: { id?: string | number } | null;
+  source?: string | null;
+  submitted_at?: string | null;
+  fields?: Record<string, unknown> | null;
+}
+const formPayload = computed<FormSubmittedPayload | null>(() => {
+  const p = run.value?.trigger_payload;
+  if (!p || typeof p !== 'object') return null;
+  return p as FormSubmittedPayload;
+});
+// The resolved form block carried in the run-show body (absent → fall back to payload).
+const resolvedForm = computed(() => run.value?.form ?? null);
+const isFormRun = computed(
+  () => run.value?.trigger_type === 'form_submitted' && !!formPayload.value?.form,
+);
+const formId = computed<string | null>(() => {
+  const id = resolvedForm.value?.id ?? formPayload.value?.form?.id;
+  return id != null ? String(id) : null;
+});
+const formName = computed(
+  () =>
+    resolvedForm.value?.name ||
+    formPayload.value?.form?.name ||
+    t('workflows.runs.detail.formTrigger.untitledForm'),
+);
+// The form's OWN icon (resolved block only); a generic file glyph when missing/absent.
+const formIcon = computed<IconName>(() => resolveFormIcon(resolvedForm.value?.icon));
+// The live form description — rendered as the item subtitle ONLY when present.
+const formDescription = computed<string | null>(() => {
+  const d = resolvedForm.value?.description;
+  return typeof d === 'string' && d.trim() !== '' ? d : null;
+});
+const formIsAnonymous = computed(() => !!formPayload.value?.form?.is_anonymous);
+const submissionId = computed<string | null>(() => {
+  const id = formPayload.value?.submission?.id;
+  return id != null ? String(id) : null;
+});
+const submittedAt = computed<string | null>(() => formPayload.value?.submitted_at ?? null);
+const submissionSource = computed<string | null>(() => formPayload.value?.source ?? null);
+const submissionApproved = computed(() => !!submittedAt.value);
+// Opens the form's detail route (→ submissions) in a NEW TAB (EntityCard adds rel).
+const formHref = computed<string | null>(() =>
+  formId.value ? router.resolve({ name: 'next.forms.detail', params: { id: formId.value } }).href : null,
+);
+const submissionSourceLabel = computed(() =>
+  submissionSource.value === 'task'
+    ? t('workflows.runs.detail.formTrigger.sourceTask')
+    : t('workflows.runs.detail.formTrigger.sourceManual'),
+);
+const submissionMeta = computed<EntityMetaItem[]>(() => {
+  const meta: EntityMetaItem[] = [];
+  if (submittedAt.value) meta.push({ icon: 'calendar', label: formatTimestamp(submittedAt.value) });
+  meta.push({ icon: 'inbox', label: submissionSourceLabel.value });
+  return meta;
+});
+const submissionDrawerOpen = ref(false);
 
 // --- Steps (ordered by position) -------------------------------------------
 const steps = computed<WorkflowRunStep[]>(() =>
@@ -119,6 +241,109 @@ function stepTone(tone: WorkflowTone | string): 'neutral' | 'primary' | 'success
 }
 function stepStatusLabel(step: WorkflowRunStep): string {
   return t(`workflows.runs.stepStatus.${step.status}`, step.status_label);
+}
+
+// --- Step OUTPUT → resource item (task / report) ----------------------------
+// A succeeded step publishes the resource it produced as its `payload` (the audit
+// output, WorkflowRunStepResource): create_task → {task_id, title}; create_form_report
+// → {report_id, report_name}. We render that as a thin EntityCard (mirroring the
+// form/submission cards) instead of raw key→value rows. A step with no recognized
+// output (a FAILED step's null payload, or an unexpected shape) falls back to the
+// readable key→value summary + the error Alert — never a raw JSON dump.
+interface StepResource {
+  kind: 'task' | 'report';
+  icon: IconName;
+  title: string;
+  /** Whole-card open target (a real deep-link) when one exists; absent → static card. */
+  href?: string;
+  actionLabel?: string;
+}
+
+function computeStepResource(step: WorkflowRunStep): StepResource | null {
+  const p = step.payload;
+  if (!p || typeof p !== 'object') return null;
+
+  if (step.type === 'create_task' && p.task_id != null) {
+    const title =
+      typeof p.title === 'string' && p.title.trim() !== ''
+        ? p.title
+        : t('workflows.runs.detail.stepResult.untitledTask');
+    // Tasks honor `?task=<id>` (TasksView opens its detail Drawer) — a real deep-link,
+    // opened in a NEW TAB so the run drawer stays put (mirroring the form card).
+    return {
+      kind: 'task',
+      icon: 'list-checks',
+      title,
+      href: router.resolve({ name: 'next.tasks', query: { task: String(p.task_id) } }).href,
+      actionLabel: t('workflows.runs.detail.stepResult.openTask', '', { name: title }),
+    };
+  }
+
+  if (step.type === 'create_form_report' && p.report_id != null) {
+    const title =
+      typeof p.report_name === 'string' && p.report_name.trim() !== ''
+        ? p.report_name
+        : t('workflows.runs.detail.stepResult.untitledReport');
+    // The report step output now carries `form_id` (alongside report_id/report_name), so
+    // the card deep-links to the form's reports view honoring `?report=<id>` — which
+    // FormReportsView auto-opens, mirroring FormSubmissionsView's `?submission=`. Opened
+    // in a NEW TAB like the task/form cards so the run drawer stays put. An OLDER run
+    // whose output predates `form_id` degrades to a static card (no link, no crash).
+    const reportFormId = p.form_id != null ? String(p.form_id) : null;
+    const href = reportFormId
+      ? router.resolve({
+          name: 'next.forms.reports',
+          params: { id: reportFormId },
+          query: { report: String(p.report_id) },
+        }).href
+      : undefined;
+    return {
+      kind: 'report',
+      icon: 'file-text',
+      title,
+      href,
+      actionLabel: href
+        ? t('workflows.runs.detail.stepResult.openReport', '', { name: title })
+        : undefined,
+    };
+  }
+
+  return null;
+}
+
+const stepResources = computed<Record<string, StepResource | null>>(() => {
+  const map: Record<string, StepResource | null> = {};
+  for (const step of steps.value) map[step.id] = computeStepResource(step);
+  return map;
+});
+
+// --- Retry (E): a FAILED run offers "run again" → a NEW run -----------------
+const retrying = ref(false);
+const isFailed = computed(() => run.value?.state === 'failed');
+
+/** Map the 202/422 outcome to our own localized copy (never echo server prose). */
+function retryErrorMessage(err: unknown): string {
+  const errors = (err as { response?: { data?: { errors?: Record<string, unknown> } } })?.response
+    ?.data?.errors;
+  if (errors && 'run' in errors) return t('workflows.runs.detail.retry.errorRun');
+  if (errors && 'workflow' in errors) return t('workflows.runs.detail.retry.errorWorkflow');
+  return t('workflows.runs.detail.retry.error');
+}
+
+async function onRetry(): Promise<void> {
+  if (retrying.value || !isFailed.value) return;
+  retrying.value = true;
+  try {
+    const newRun = await store.retryRun(props.workflowId, props.runId);
+    toast.success(t('workflows.runs.detail.retry.success'));
+    // The host opens/refreshes the new run (per-workflow → `?run_detail=`; global →
+    // the local selectedRun ref).
+    emit('retried', newRun);
+  } catch (err: unknown) {
+    toast.danger(retryErrorMessage(err));
+  } finally {
+    retrying.value = false;
+  }
 }
 </script>
 
@@ -137,11 +362,10 @@ function stepStatusLabel(step: WorkflowRunStep): string {
           >
             {{ stateLabel }}
           </Badge>
+          <!-- Source (the relabelled origin — B3 collapsed origin + trigger_type into
+               this single badge, mirroring the run row). -->
           <Badge variant="neutral" tone="subtle" size="sm" :icon="originIcon(run.origin)">
             {{ originLabel(run.origin, t) }}
-          </Badge>
-          <Badge variant="info" tone="subtle" size="sm">
-            {{ triggerShort(run.trigger_type, t) }}
           </Badge>
           <Badge v-if="run.depth > 0" variant="neutral" tone="subtle" size="sm" icon="git-branch">
             {{ t('workflows.runs.nestedBadge', '', { depth: run.depth }) }}
@@ -157,15 +381,29 @@ function stepStatusLabel(step: WorkflowRunStep): string {
           <span>{{ durationText ? t('workflows.runs.duration', '', { value: durationText }) : '—' }}</span>
         </div>
       </div>
-      <Button
-        variant="outline"
-        size="icon-sm"
-        class="-mr-next-1 -mt-next-1 shrink-0"
-        :aria-label="t('drawer.close', 'Close panel')"
-        @click="emit('close')"
-      >
-        <Icon name="x" class="text-next-xl" />
-      </Button>
+      <div class="-mt-next-1 flex shrink-0 items-center gap-next-2">
+        <!-- Retry (E): only a FAILED run can be re-run; starts a NEW run. -->
+        <Button
+          v-if="isFailed"
+          variant="outline"
+          size="sm"
+          leading-icon="rotate-ccw"
+          :loading="retrying"
+          :disabled="retrying"
+          @click="onRetry"
+        >
+          {{ t('workflows.runs.detail.retry.button') }}
+        </Button>
+        <Button
+          variant="outline"
+          size="icon-sm"
+          class="-mr-next-1"
+          :aria-label="t('drawer.close', 'Close panel')"
+          @click="emit('close')"
+        >
+          <Icon name="x" class="text-next-xl" />
+        </Button>
+      </div>
     </header>
 
     <!-- Body (own scroll). -->
@@ -190,8 +428,87 @@ function stepStatusLabel(step: WorkflowRunStep): string {
 
       <template v-else-if="run">
         <div class="flex flex-col gap-next-6">
-          <!-- Trigger payload: key→value rows (mono keys), not raw JSON. -->
-          <section v-if="triggerRows.length" class="flex flex-col gap-next-2">
+          <!-- Trigger context. Schedule runs → a semantic "reason"; form_submitted
+               runs → form + submission cards; anything else → the raw payload rows. -->
+          <section v-if="isScheduleRun && scheduleReason" class="flex flex-col gap-next-2">
+            <h3 class="text-next-sm font-next-semibold text-next-fg">{{ t('workflows.runs.detail.reason.heading') }}</h3>
+            <dl class="flex flex-col divide-y divide-next-border rounded-next-md border border-next-border">
+              <div class="grid grid-cols-[minmax(8rem,_1fr)_2fr] items-baseline gap-next-3 px-next-3 py-next-2">
+                <dt class="min-w-0 truncate font-next-mono text-next-xs text-next-muted-foreground">{{ t('workflows.runs.detail.reason.label') }}</dt>
+                <dd class="min-w-0 break-words text-next-sm text-next-fg">{{ scheduleReason }}</dd>
+              </div>
+              <!-- The formatted fire instant (in the schedule tz). Dropped when it equals
+                   the reason (a descriptor whose reason itself fell back to this stamp). -->
+              <div
+                v-if="scheduledAtText && scheduledAtText !== scheduleReason"
+                class="grid grid-cols-[minmax(8rem,_1fr)_2fr] items-baseline gap-next-3 px-next-3 py-next-2"
+              >
+                <dt class="min-w-0 truncate font-next-mono text-next-xs text-next-muted-foreground">{{ t('workflows.runs.detail.reason.scheduledLabel') }}</dt>
+                <dd class="min-w-0 break-words text-next-sm text-next-fg">{{ scheduledAtText }}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section v-else-if="isFormRun" class="flex flex-col gap-next-3">
+            <h3 class="text-next-sm font-next-semibold text-next-fg">{{ t('workflows.runs.detail.formTrigger.heading') }}</h3>
+            <!-- STACK the cards vertically (the drawer is narrow — side-by-side truncated
+                 the form/submission names). Each card is full-width, one below the other. -->
+            <div class="flex flex-col gap-next-3">
+              <!-- Form: a LEAN item composed from the run-show response's resolved
+                   `run.form` block (icon + name + description) — NO extra fetch. The
+                   description shows only when present; the whole card opens the form in
+                   a NEW TAB. Falls back to the name-only `trigger_payload.form` when the
+                   resolved block is absent (deleted/foreign form). -->
+              <EntityCard
+                :title="formName"
+                :subtitle="formDescription ?? undefined"
+                :href="formHref ?? undefined"
+                target="_blank"
+                :action-label="t('workflows.runs.detail.formTrigger.openForm', '', { name: formName })"
+              >
+                <template #leading>
+                  <span class="flex h-10 w-10 items-center justify-center rounded-next-lg bg-next-muted text-next-muted-foreground" aria-hidden="true">
+                    <Icon :name="formIcon" class="text-next-lg" />
+                  </span>
+                </template>
+                <template #status>
+                  <Icon name="external-link" class="text-next-muted-foreground" aria-hidden="true" />
+                </template>
+                <template v-if="formIsAnonymous" #meta>
+                  <span class="inline-flex items-center gap-next-1">
+                    <Icon name="eye-off" class="text-next-sm" />
+                    {{ t('workflows.runs.detail.formTrigger.anonymousForm') }}
+                  </span>
+                </template>
+              </EntityCard>
+
+              <!-- Submission card: opens the diff preview drawer. -->
+              <EntityCard
+                :title="t('workflows.runs.detail.formTrigger.submissionTitle')"
+                :meta="submissionMeta"
+                @click="submissionDrawerOpen = true"
+              >
+                <template #leading>
+                  <span class="flex h-10 w-10 items-center justify-center rounded-next-full bg-next-muted text-next-muted-foreground" aria-hidden="true">
+                    <Icon :name="formIsAnonymous ? 'eye-off' : 'user'" class="text-next-lg" />
+                  </span>
+                </template>
+                <template #status>
+                  <StatusBadge
+                    :status="submissionApproved ? 'approved' : 'pending'"
+                    :label="submissionApproved ? t('forms.submissions.approved') : t('forms.submissions.pending')"
+                    :status-map="{
+                      approved: { label: t('forms.submissions.approved'), variant: 'success', tone: 'subtle', icon: 'check-circle' },
+                      pending: { label: t('forms.submissions.pending'), variant: 'warning', tone: 'subtle', icon: 'clock' },
+                    }"
+                    size="sm"
+                  />
+                </template>
+              </EntityCard>
+            </div>
+          </section>
+
+          <section v-else-if="triggerRows.length" class="flex flex-col gap-next-2">
             <h3 class="text-next-sm font-next-semibold text-next-fg">{{ t('workflows.runs.detail.triggerPayload') }}</h3>
             <dl class="flex flex-col divide-y divide-next-border rounded-next-md border border-next-border">
               <div
@@ -237,10 +554,29 @@ function stepStatusLabel(step: WorkflowRunStep): string {
                   </Badge>
                 </template>
 
-                <!-- Step payload (key→value) + error. -->
+                <!-- Step OUTPUT as a resource ITEM (task / report) — same card language
+                     as the form/submission cards. An unrecognized output falls back to a
+                     readable key→value summary; the error (if any) always shows. -->
                 <div class="flex flex-col gap-next-2">
+                  <EntityCard
+                    v-if="stepResources[step.id]"
+                    :title="stepResources[step.id]!.title"
+                    :href="stepResources[step.id]!.href"
+                    :target="stepResources[step.id]!.href ? '_blank' : undefined"
+                    :action-label="stepResources[step.id]!.actionLabel"
+                  >
+                    <template #leading>
+                      <span class="flex h-10 w-10 items-center justify-center rounded-next-lg bg-next-muted text-next-muted-foreground" aria-hidden="true">
+                        <Icon :name="stepResources[step.id]!.icon" class="text-next-lg" />
+                      </span>
+                    </template>
+                    <template v-if="stepResources[step.id]!.href" #status>
+                      <Icon name="external-link" class="text-next-muted-foreground" aria-hidden="true" />
+                    </template>
+                  </EntityCard>
+
                   <dl
-                    v-if="stepRows(step).length"
+                    v-else-if="stepRows(step).length"
                     class="flex flex-col divide-y divide-next-border rounded-next-md border border-next-border"
                   >
                     <div
@@ -252,6 +588,7 @@ function stepStatusLabel(step: WorkflowRunStep): string {
                       <dd class="min-w-0 break-words text-next-xs text-next-fg">{{ row.value }}</dd>
                     </div>
                   </dl>
+
                   <Alert v-if="step.error" variant="danger" size="sm">
                     {{ step.error }}
                   </Alert>
@@ -262,5 +599,17 @@ function stepStatusLabel(step: WorkflowRunStep): string {
         </div>
       </template>
     </div>
+
+    <!-- Diff preview of the run's form submission (B7): snapshot vs current. -->
+    <SubmissionPreviewDrawer
+      v-model:open="submissionDrawerOpen"
+      mode="diff"
+      :snapshot-fields="formPayload?.fields ?? null"
+      :submission-id="submissionId"
+      :form-id="formId"
+      :submitted-at="submittedAt"
+      :source="submissionSource"
+      :is-anonymous="formIsAnonymous"
+    />
   </div>
 </template>

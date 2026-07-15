@@ -1,8 +1,19 @@
 # ADR-0009 — Workflows 5.1 re-scope: typed variables, 2 triggers, 2 steps, AI schedule assist
 
 **Date:** 2026-07-09 (created)
-**Status:** Accepted
+**Status:** Accepted (see supersession note below)
 **Module:** Workflows (`app/modules/Workflows/`), Forms, Tasks
+
+> **Partially superseded by ADR-0013 (2026-07-14, step operations/if-blocks/AI text).** §2's
+> "Consequence — PLANNED, not built: an operations pipeline… is explicitly deferred" is
+> **REVERSED** — a step's directive/value-or-variable references now build and execute an
+> operations pipeline at run time, and a step's multi-line text fields additionally support
+> conditional `if-block`s and `@[ai-text]` AI-generated text. **The REST of §2 is UNCHANGED and
+> remains authoritative**: the ONE canonical identity (`{source, path, type}`), the TWO
+> serializations (directive vs. `{kind}` union), the identity-only DIRECTIVE PAYLOAD shape (no
+> embedded `wfType`-style type field — a pipeline's base type is still recovered from the
+> catalog/type-map, never trusted from the directive), and the wfType-rejection incident record.
+> See **ADR-0013** for the full reasoning and what changed.
 
 ---
 
@@ -112,7 +123,9 @@ considered and rejected, not merely forgotten.
 - **Building an operations pipeline now** (format-date, concatenate, etc.) — rejected as scope
   the re-scope was explicitly trying to shed. The MVP need is "reference a value, optionally
   literal-or-variable" — no user-facing requirement for computed transformations existed at
-  design time.
+  design time. `[SUPERSEDED — see ADR-0013]` A pipeline WAS later built (reusing the condition
+  side's operations engine), once concrete authoring needs surfaced and that engine existed to
+  reuse — see ADR-0013 for the reversal and its reasoning.
 
 **Rationale:** ONE canonical identity means the catalog, the resolver, and both serializations
 can never independently drift on what a given `path` means or what type it carries — there is
@@ -126,7 +139,11 @@ because both ultimately resolve through the same `Arr::get`-against-context mech
 concatenation, date formatting, conditional value selection) is explicitly deferred. If a real
 need arises, it should be added as explicit, individually-reviewed whitelisted FUNCTIONS on top
 of the existing resolver (per ADR-0008 #4's same guidance), not by generalizing either
-serialization into an expression language.
+serialization into an expression language. `[SUPERSEDED — see ADR-0013]` **This consequence is
+REVERSED**: `WorkflowVariableResolver` now executes a directive/value-or-variable pipeline
+through the shared, closed-vocabulary `WorkflowOperationExecutor` (the exact "explicit,
+individually-reviewed whitelisted FUNCTIONS" shape this paragraph anticipated, not an expression
+language) — see ADR-0013 §§1–2 for the mechanics and rationale.
 
 ---
 

@@ -69,6 +69,13 @@ const props = withDefaults(
      * stays a fixed-height, non-scrolling flex container.
      */
     scrollBody?: boolean;
+    /**
+     * Whether the body carries the default p-next-4 padding. Set to false when
+     * the slotted content is SELF-CHROMED (owns its own header/footer/padding —
+     * e.g. the workflow/bot editors): the extra body padding would otherwise
+     * stack with the content's own and read as asymmetric spacing.
+     */
+    padded?: boolean;
   }>(),
   {
     side: 'right',
@@ -80,6 +87,7 @@ const props = withDefaults(
     // the Tasks detail drawer; pass `:floating="false"` for an edge-pinned sheet.
     floating: true,
     scrollBody: true,
+    padded: true,
   },
 );
 
@@ -330,8 +338,11 @@ onBeforeUnmount(() => {
 
           <!-- Body -->
           <div
-            class="min-w-0 flex-1 p-next-4"
-            :class="scrollBody ? 'overflow-y-auto' : 'flex min-h-0 flex-col overflow-hidden'"
+            class="min-w-0 flex-1"
+            :class="[
+              padded ? 'p-next-4' : '',
+              scrollBody ? 'overflow-y-auto' : 'flex min-h-0 flex-col overflow-hidden',
+            ]"
           >
             <div v-if="$slots.description" :id="descId" data-drawer-desc class="mb-next-3 text-next-sm text-next-muted-foreground">
               <slot name="description" />

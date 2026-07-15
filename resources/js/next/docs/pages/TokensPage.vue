@@ -58,6 +58,13 @@ const COLOR_TOKENS: string[] = [
   'info-foreground',
   'info-subtle',
   'info-subtle-foreground',
+  // Project-wide "value drifted from a snapshot" semantic (diff highlight,
+  // unsaved-change marker) — drives `Badge variant="modified"`. See
+  // docs/next/design-foundations.md's Semantic status section.
+  'modified',
+  'modified-foreground',
+  'modified-subtle',
+  'modified-subtle-foreground',
 ];
 
 const NEUTRAL_STEPS = ['0', '50', '100', '200', '300', '400', '500', '600', '700', '800', '900', '950'];

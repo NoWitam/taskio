@@ -101,6 +101,19 @@
   --color-next-info-subtle:              hsl(214 80% 96%);
   --color-next-info-subtle-foreground:   hsl(216 70% 34%);
 
+  /* "Modified / dirty" — a PROJECT-WIDE semantic for a value that has drifted from
+     a captured snapshot (diff highlight, unsaved-change marker, "changed since").
+     A distinct violet, kept clear of the magenta primary (325) and the blue info
+     (214) so a "changed" signal never reads as brand or informational. Same
+     solid/foreground + subtle-surface/foreground quartet as the other families, so
+     it drives Badges (`variant="modified"`), field highlights (`bg-next-modified-subtle`),
+     and dots without per-component color math. NEVER used color-only — always paired
+     with an icon/label. */
+  --color-next-modified:                  hsl(265 60% 48%);
+  --color-next-modified-foreground:       hsl(0 0% 100%);
+  --color-next-modified-subtle:           hsl(266 78% 96%);
+  --color-next-modified-subtle-foreground: hsl(266 55% 40%);
+
   /* ---------------------------------------------------------------------------
      SPACING / PADDING — 4px base scale (--spacing-next-*)
      Utilities: p-next-4, gap-next-2, m-next-6, etc.
@@ -284,6 +297,11 @@
   --color-next-info-foreground:          hsl(216 50% 8%);
   --color-next-info-subtle:              hsl(214 60% 20%);
   --color-next-info-subtle-foreground:   hsl(212 90% 82%);
+
+  --color-next-modified:                  hsl(265 72% 70%);
+  --color-next-modified-foreground:       hsl(266 40% 10%);
+  --color-next-modified-subtle:           hsl(266 42% 22%);
+  --color-next-modified-subtle-foreground: hsl(266 85% 86%);
 
   --color-next-ring: hsl(325 64% 62%);
 }

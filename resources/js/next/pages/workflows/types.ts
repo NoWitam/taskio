@@ -27,6 +27,10 @@
 // DELETED by B7e once TargetPickerModal + WorkflowDetailView + workflowMeta stopped
 // leaning on the widened enums — this file now mirrors the strict 2+2 unions only.
 
+// The polymorphic `creator` union (user | workflow_run | bot) is shared across
+// every resource that emits it — imported, never redefined.
+import type { Creator } from '../../ui/patterns/creator';
+
 // --- Enums (mirror the backend enums verbatim) -----------------------------
 
 /**
@@ -198,13 +202,28 @@ export interface WorkflowVariableRef {
 }
 
 /**
+ * One operation on a value-or-variable field's OPTIONAL pipeline (§4.9 / SB1). The
+ * wire is `{op, args}` — the SAME shape a condition pipeline uses
+ * (`WireConditionPipelineStep`). The editor's richer `VariablePipelineStep`
+ * (stepId/operationId/args/outputType) is projected onto this on save and rehydrated
+ * from it on load (ValueOrVariableField). The backend type-flows the ops from the
+ * ref's declared type to the field's accepted terminals (priority → enum|text;
+ * deadline / submission windows → date) and 422s under `<field>.pipeline.M…`.
+ */
+export interface WorkflowFieldPipelineStep {
+  op: string;
+  args: Record<string, unknown>;
+}
+
+/**
  * A structured field that is EITHER a literal OR a variable reference (§4.9). Bare
  * scalars are also accepted as literals by the backend; this is the canonical
- * emitted union.
+ * emitted union. The variable arm may carry an OPTIONAL operations `pipeline` that
+ * reshapes the referenced value at run time (omitted for a plain identity ref).
  */
 export type WorkflowFieldValue<T = unknown> =
   | { kind: 'literal'; value: T }
-  | { kind: 'variable'; ref: WorkflowVariableRef };
+  | { kind: 'variable'; ref: WorkflowVariableRef; pipeline?: WorkflowFieldPipelineStep[] };
 
 // --- trigger_config (per-type wire shapes, §4.4) ---------------------------
 
@@ -293,10 +312,15 @@ export interface WorkflowTriggerConfig {
 // --- Conditions + steps ----------------------------------------------------
 
 /**
- * One TYPED gate condition (§4.8). `field` is a `fields.<id>` path; `field_type`
- * drives the operator set + value shape; `value` is shaped by (field_type,
- * operator) — a scalar, `[from,to]` for between, `string[]` for in, omitted for
- * is_true/is_false. Mirrors `{field, field_type, operator, value}`.
+ * One TYPED gate condition (§4.8, LEGACY flat shape). `field` is a `fields.<id>`
+ * path; `field_type` drives the operator set + value shape; `value` is shaped by
+ * (field_type, operator) — a scalar, `[from,to]` for between, `string[]` for in,
+ * omitted for is_true/is_false. Mirrors `{field, field_type, operator, value}`.
+ *
+ * B3 SUPERSEDES this on WRITE with the condition TREE (`WireConditionGroup`) — the
+ * backend still accepts the flat list, so a saved OLD workflow reads back as either
+ * shape (see `WorkflowDetail.conditions`). The editor converts a flat list to a tree
+ * on hydration (`wireToDraft`, workflowConditions.ts).
  */
 export interface WorkflowCondition {
   field: string;
@@ -304,6 +328,47 @@ export interface WorkflowCondition {
   operator: WorkflowConditionOperator;
   value?: unknown;
 }
+
+// --- Condition TREE wire (B3 — groups of AND/OR + pipeline conditions) ---------
+
+/** How a group combines its children (mirrors the backend `logic` enum). */
+export type ConditionLogic = 'and' | 'or';
+
+/**
+ * One pipeline step on the wire: an operation `op` (a standardOperations id) plus
+ * its `args` map. NOTE the WIRE keys are `op`/`args` — the editor's richer
+ * `VariablePipelineStep` (stepId/operationId/args/outputType) is projected onto this
+ * on save and rehydrated from it on load (workflowConditions.ts).
+ */
+export interface WireConditionPipelineStep {
+  op: string;
+  args: Record<string, unknown>;
+}
+
+/**
+ * A leaf condition: a form-field `source` (`fields.<id>`) of `source_type`, run
+ * through a `pipeline` that MUST end on a boolean. Mirrors the backend
+ * `{kind:'condition', source, source_type, pipeline}`.
+ */
+export interface WireCondition {
+  kind: 'condition';
+  source: string;
+  source_type: WorkflowVariableType;
+  pipeline: WireConditionPipelineStep[];
+}
+
+/**
+ * A group node: `logic` (and/or) over `children` (min 1). The ROOT is emitted
+ * WITHOUT `kind` (the backend treats the top node as the group root); nested groups
+ * carry `kind:'group'`. Depth ≤ 5 (root = 1), children ≤ 10 per group.
+ */
+export interface WireConditionGroup {
+  kind?: 'group';
+  logic: ConditionLogic;
+  children: WireConditionNode[];
+}
+
+export type WireConditionNode = WireCondition | WireConditionGroup;
 
 /**
  * One ordered step. `key` is the distinct reference id used by later steps
@@ -415,10 +480,65 @@ export interface CatalogField {
   operators: string[];
 }
 
-/** The catalog payload `{variables, fields}`. */
+/**
+ * The control type of one operation argument (mirrors the editor's
+ * `VariableOperationArgumentType`). `sourceOption(s)` / `sourceMap` draw their choices
+ * from the SOURCE field's options; the CHOICE-producing kinds (`choiceRules` /
+ * `choiceFallback`, and a `sourceMap` with `mapType:'enum'`) draw from the DESTINATION
+ * field's option set (a value-or-variable "choice"/enum field).
+ */
+export type CatalogOperationArgType =
+  | 'text'
+  | 'number'
+  | 'boolean'
+  | 'date'
+  | 'select'
+  | 'sourceOption'
+  | 'sourceOptions'
+  | 'sourceMap'
+  | 'choiceRules'
+  | 'choiceFallback';
+
+/** One operation-argument descriptor (backend `operations[].args[]`). */
+export interface CatalogOperationArg {
+  id: string;
+  type: CatalogOperationArgType;
+  mapType?: 'text' | 'number' | 'date' | 'enum';
+}
+
+/**
+ * One operation DESCRIPTOR from the catalog (B2 added `operations[]`): the id + its
+ * single `input` type, `output` type and `args`. These 66 ids are the authoritative
+ * SET the backend condition engine implements; the FE attaches human labels by id
+ * from `standardOperationsCatalog()` (a descriptor without a known label falls back
+ * to its id). NO labels ship on the wire.
+ */
+export interface CatalogOperation {
+  id: string;
+  input: WorkflowVariableType;
+  output: WorkflowVariableType;
+  args: CatalogOperationArg[];
+}
+
+/**
+ * One AI-text persona descriptor (SB2). Label-LESS on the wire (`{id}`), mirroring
+ * the `operations` "descriptors without labels" pattern — the FE localizes the label
+ * from `workflows.aiPersona.<id>`. The closed set is neutral|friendly|formal|concise.
+ */
+export interface CatalogAiPersona {
+  id: string;
+}
+
+/**
+ * The catalog payload `{variables, fields, operations?, ai_personas?}`. `operations`
+ * (B3) + `ai_personas` (SB2) are additive — older responses may omit them, so the FE
+ * falls back to the full standard catalog / the closed persona set respectively.
+ */
 export interface WorkflowCatalog {
   variables: CatalogVariable[];
   fields: CatalogField[];
+  operations?: CatalogOperation[];
+  ai_personas?: CatalogAiPersona[];
 }
 
 /** The catalog response wrapper `{ data: WorkflowCatalog }`. */
@@ -454,13 +574,18 @@ export interface WorkflowDetail {
   icon: string | null;
   trigger_type: WorkflowTriggerType;
   trigger_config: WorkflowTriggerConfig;
-  conditions: WorkflowCondition[];
+  /**
+   * Either the LEGACY flat list (older workflows) or the B3 condition TREE
+   * (`WireConditionGroup`). Read consumers must branch on the shape; the editor
+   * normalizes both via `wireToDraft`.
+   */
+  conditions: WorkflowCondition[] | WireConditionGroup;
   steps: WorkflowStep[];
   /** Scheduling — populated by the scheduler; may be null. */
   last_scheduled_run_at: string | null;
   next_due_at: string | null;
-  /** `whenLoaded('creator')`. */
-  creator?: { id: string | number; name: string; email?: string | null; avatar?: string | null } | null;
+  /** `whenLoaded('creator')` — polymorphic (Phase 3): user | workflow_run | bot | null. */
+  creator?: Creator | null;
   // Capability flags — ALWAYS present as booleans (never absent).
   is_owner: boolean;
   can_be_edited: boolean;
@@ -512,7 +637,12 @@ export interface WorkflowWritePayload {
   icon?: string | null;
   trigger_type: WorkflowTriggerType;
   trigger_config?: WorkflowTriggerConfig;
-  conditions?: WorkflowCondition[];
+  /**
+   * The condition TREE (`WireConditionGroup`, B3). OMITTED entirely when the tree is
+   * empty (emit-or-omit). The flat `WorkflowCondition[]` remains accepted by the
+   * backend for compatibility, but the editor always emits the tree.
+   */
+  conditions?: WireConditionGroup | WorkflowCondition[];
   steps: WorkflowStep[];
 }
 
@@ -558,8 +688,40 @@ export interface WorkflowRun {
   steps_count?: number;
   /** Detail only. */
   trigger_payload?: Record<string, unknown> | null;
+  /**
+   * Detail only, SCHEDULE runs only — the workflow's full v2 schedule descriptor
+   * (incl. `tz`), upgraded on the way out. Lets the run drawer name a schedule run's
+   * matched occurrence semantically (`describeOccurrence`) without a workflow loaded.
+   */
+  schedule_descriptor?: WorkflowScheduleConfig | null;
+  /**
+   * Detail only, form_submitted runs only — the trigger form RESOLVED LIVE
+   * server-side (name + description + icon come from the current form, NOT the
+   * payload snapshot). Carried IN the run-show response so the drawer renders a lean
+   * form item with NO extra fetch. ABSENT when the trigger form was deleted/foreign —
+   * then fall back to the name-only `trigger_payload.form`.
+   */
+  form?: { id: string; name: string; description: string | null; icon: string | null } | null;
   /** Detail only — the ordered per-step audit timeline. */
   steps?: WorkflowRunStep[];
+  /**
+   * GLOBAL feed only (`whenLoaded('workflow')`) — the parent workflow's identity so
+   * the cross-workflow runs list can render a workflow column + resolve the run's
+   * nested detail route. ABSENT on the per-workflow feed and on the run SHOW body.
+   */
+  workflow?: WorkflowRunWorkflow | null;
+}
+
+/**
+ * The compact workflow identity attached to a GLOBAL runs-feed row
+ * (`whenLoaded('workflow')`). Mirrors the backend's index-only nested object.
+ */
+export interface WorkflowRunWorkflow {
+  id: string;
+  name: string;
+  icon: string | null;
+  status: WorkflowStatus;
+  trigger_type: WorkflowTriggerType;
 }
 
 /** One executed step within a run (audit row) — the run-detail timeline. */
@@ -576,10 +738,23 @@ export interface WorkflowRunStep {
   created_at: string | null;
 }
 
-/** The runs list-screen filter state. Mirrors `/runs` query params (both optional). */
+/**
+ * The runs list-screen filter state. Mirrors the `/runs` query params (all optional):
+ * `state[]` / `origin[]` / `trigger_type[]` / `workflow_id[]` are REPEATED array params
+ * (a single legacy scalar is tolerated on restore for each); `workflow_id[]` is honored
+ * ONLY by the global feed (backend accepts the array + tolerates a legacy single scalar);
+ * `date_from` / `date_to` (ISO `yyyy-mm-dd`) + `date_preset`
+ * (today|this_week|last_week|this_month) share the DateRangeFilter. Both feeds
+ * (per-workflow `/workflows/{id}/runs` + global `/workflows/runs`) accept the same set.
+ */
 export interface WorkflowRunFilters {
-  state?: WorkflowRunState;
-  origin?: WorkflowRunOrigin;
+  state?: string[];
+  origin?: string[];
+  trigger_type?: string[];
+  workflow_id?: string[];
+  date_from?: string;
+  date_to?: string;
+  date_preset?: string;
 }
 
 /** Cursor-paginated runs envelope. */

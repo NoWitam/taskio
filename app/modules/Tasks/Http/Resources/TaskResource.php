@@ -2,6 +2,7 @@
 
 namespace App\Modules\Tasks\Http\Resources;
 
+use App\Http\Resources\CreatorResource;
 use App\Models\User;
 use App\Modules\Approvals\Http\Resources\ApprovalPipelineResource;
 use App\Modules\Approvals\Http\Resources\ApprovalProcessResource;
@@ -31,7 +32,7 @@ class TaskResource extends JsonResource
             'is_overdue' => $this->isDeadlineOverdue(),
             'is_at_risk' => $this->isDeadlineAtRisk(),
             'attachments' => FileResource::collection($this->files),
-            'creator' => UserResource::make($this->creator),
+            'creator' => CreatorResource::make($this->whenLoaded('creator')),
             // Back-compat: user-only assignee (null when assigned to a bot).
             'assigned' => UserResource::make($this->assigned),
             // New polymorphic assignee (User|Bot) — see TaskAssigneeResource.

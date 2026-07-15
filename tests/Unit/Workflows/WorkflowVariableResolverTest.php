@@ -3,8 +3,11 @@
 namespace Tests\Unit\Workflows;
 
 use App\Modules\Workflows\Enums\WorkflowVariableType;
+use App\Modules\Workflows\Services\WorkflowOperationExecutor;
 use App\Modules\Workflows\Services\WorkflowVariableResolver;
-use PHPUnit\Framework\TestCase;
+use Illuminate\Support\Carbon;
+use Tests\Support\ScriptedWorkflowAiTextService;
+use Tests\TestCase;
 
 /**
  * The workflow variable resolver: understands the next editor's `@[variable]("…")` directive,
@@ -19,7 +22,15 @@ class WorkflowVariableResolverTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->resolver = new WorkflowVariableResolver;
+        // SB1 tests never emit an ai-text directive, so the (default) double is never called.
+        $this->resolver = new WorkflowVariableResolver(new WorkflowOperationExecutor, new ScriptedWorkflowAiTextService);
+        Carbon::setTestNow('2026-07-14 12:00:00');
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
     }
 
     private function context(): array
@@ -29,7 +40,12 @@ class WorkflowVariableResolverTest extends TestCase
                 'task_id' => 'trigger-task-uuid',
                 'title' => 'Trigger title',
                 'meta' => ['count' => 7],
-                'fields' => ['priority' => 'high', 'tags' => ['a', 'b']],
+                'fields' => [
+                    'priority' => 'high',
+                    'tags' => ['a', 'b'],
+                    // An UNTRUSTED form value that literally contains a token (second-order probe).
+                    'injection' => '{{trigger.fields.priority}}',
+                ],
                 'submitted_at' => '2026-01-02T03:04:05+00:00',
             ],
             'steps' => [
@@ -177,13 +193,26 @@ class WorkflowVariableResolverTest extends TestCase
         );
     }
 
-    public function test_standalone_directive_returns_array_value_untouched(): void
+    public function test_standalone_directive_stringifies_non_text_value(): void
     {
-        // A multi field degrades to text in the directive but the resolved value stays an array.
+        // REGRESSION (reviewer B1): a directive ONLY lives in a text field, so a standalone chip
+        // that IS the whole field must STRINGIFY its value (parity with the embedded path) — a bare
+        // multi/number/boolean chip in a task title must NOT arrive as a raw array (which would
+        // hard-fail requireString('title') with a misleading "requires a title").
         $this->assertSame(
-            ['a', 'b'],
+            'a, b',
             $this->resolver->resolve($this->directive('trigger.fields.tags'), $this->context()),
         );
+    }
+
+    public function test_directive_substituted_value_is_not_re_scanned_as_a_flat_token(): void
+    {
+        // REGRESSION (reviewer S3): an (untrusted) form value that literally contains a `{{…}}`
+        // token, once substituted by the directive pass, must NOT be re-resolved by the flat pass.
+        // `trigger.fields.injection` holds the literal string "{{trigger.fields.priority}}".
+        $md = 'Value: ' . $this->directive('trigger.fields.injection');
+
+        $this->assertSame('Value: {{trigger.fields.priority}}', $this->resolver->resolve($md, $this->context()));
     }
 
     public function test_embedded_directive_stringifies_scalar_and_joins_array(): void
@@ -212,21 +241,224 @@ class WorkflowVariableResolverTest extends TestCase
         $this->assertNull($this->resolver->resolve('@[variable]("not-json")', $this->context()));
     }
 
-    public function test_directive_ignores_pipeline_and_resolves_identity(): void
+    /**
+     * A directive whose `data.pipeline` carries editor pipeline steps
+     * ({stepId, operationId, args, outputType}). SB1 EXECUTES it (it used to be ignored).
+     */
+    private function directiveWithPipeline(string $path, string $type, array $pipeline): string
     {
-        // A non-empty pipeline in the directive is IGNORED — identity refs only in the MVP.
         $payload = json_encode([
             'v' => 1,
             'data' => [
-                'id' => 'trigger.fields.priority',
-                'name' => 'Priority',
-                'type' => 'text',
-                'pipeline' => [['stepId' => 's1', 'operationId' => 'upper', 'args' => [], 'outputType' => 'text']],
+                'id' => $path,
+                'name' => $path,
+                'type' => $type,
+                'locked' => false,
+                'pipeline' => $pipeline,
+                'resultType' => $type,
             ],
         ]);
-        $directive = '@[variable]("' . str_replace('"', '\\"', $payload) . '")';
 
-        $this->assertSame('high', $this->resolver->resolve($directive, $this->context()));
+        return '@[variable]("' . str_replace('"', '\\"', $payload) . '")';
+    }
+
+    /** One editor-shaped pipeline step (operationId, not op). */
+    private function step(string $operationId, array $args = []): array
+    {
+        return ['stepId' => 's_' . $operationId, 'operationId' => $operationId, 'args' => $args, 'outputType' => 'text'];
+    }
+
+    public function test_directive_pipeline_transforms_text_standalone(): void
+    {
+        // Standalone directive in a text field: uppercase → the STRINGIFIED transformed result.
+        $directive = $this->directiveWithPipeline('trigger.fields.priority', 'text', [$this->step('text_uppercase')]);
+
+        $this->assertSame('HIGH', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    public function test_directive_pipeline_transforms_embedded(): void
+    {
+        $md = 'Priority is ' . $this->directiveWithPipeline('trigger.fields.priority', 'text', [
+            $this->step('text_uppercase'),
+            $this->step('text_append', ['value' => '!']),
+        ]);
+
+        $this->assertSame('Priority is HIGH!', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_directive_pipeline_number_multiply_to_text_uses_true_type_from_map(): void
+    {
+        // The directive degrades a number field to primitive 'number'; the type map supplies the real
+        // type so a number pipeline (×2 → to_text) runs against the numeric field value.
+        $context = ['trigger' => ['fields' => ['count' => 21]], 'steps' => []];
+        $typeMap = ['trigger.fields.count' => WorkflowVariableType::NUMBER];
+
+        $directive = $this->directiveWithPipeline('trigger.fields.count', 'number', [
+            $this->step('num_multiply', ['value' => 2]),
+            $this->step('num_to_text'),
+        ]);
+
+        $this->assertSame('42', $this->resolver->resolve($directive, $context, $typeMap));
+    }
+
+    public function test_directive_pipeline_date_formats_with_true_type_from_map(): void
+    {
+        // A date field: add 5 days, then a DATE terminal is stringified as Y-m-d.
+        $context = ['trigger' => ['fields' => ['due' => '2026-01-10']], 'steps' => []];
+        $typeMap = ['trigger.fields.due' => WorkflowVariableType::DATE];
+
+        $directive = $this->directiveWithPipeline('trigger.fields.due', 'text', [$this->step('date_add_days', ['value' => 5])]);
+
+        $this->assertSame('2026-01-15', $this->resolver->resolve($directive, $context, $typeMap));
+    }
+
+    public function test_directive_pipeline_failure_resolves_to_empty_string(): void
+    {
+        // 'high' is not numeric → text_to_number fails → the fail-closed doctrine yields ''.
+        $directive = $this->directiveWithPipeline('trigger.fields.priority', 'number', [$this->step('text_to_number')]);
+
+        $this->assertSame('', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    // ---- if-blocks ------------------------------------------------------------
+
+    /** Build a boolean if-condition on $variableId with an editor-shaped pipeline. */
+    private function condition(string $variableId, array $pipeline): array
+    {
+        return ['variableId' => $variableId, 'pipeline' => $pipeline, 'resultType' => 'boolean'];
+    }
+
+    /** Serialize one branch marker + body. */
+    private function branch(string $keyword, ?array $condition, string $body): string
+    {
+        $meta = $condition !== null ? ['id' => 'b', 'condition' => $condition] : ['id' => 'b'];
+
+        return '[[' . $keyword . ' ' . json_encode($meta) . ']]' . "\n" . $body;
+    }
+
+    /** Wrap branch strings in the fenced if-block container. */
+    private function ifBlock(string ...$branches): string
+    {
+        return '```if-block ' . json_encode(['id' => 'if_1', 'v' => 1]) . "\n" . implode("\n", $branches) . "\n```";
+    }
+
+    public function test_if_block_picks_the_true_if_branch(): void
+    {
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.priority', [$this->step('text_equals', ['value' => 'high'])]), 'Urgent path'),
+            $this->branch('ELSE', null, 'Normal path'),
+        );
+
+        $this->assertSame('Urgent path', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_if_block_falls_through_to_else(): void
+    {
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.priority', [$this->step('text_equals', ['value' => 'low'])]), 'Urgent path'),
+            $this->branch('ELSE', null, 'Normal path'),
+        );
+
+        $this->assertSame('Normal path', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_if_block_selects_matching_else_if(): void
+    {
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.priority', [$this->step('text_equals', ['value' => 'low'])]), 'A'),
+            $this->branch('ELSE_IF', $this->condition('trigger.fields.priority', [$this->step('text_equals', ['value' => 'high'])]), 'B'),
+            $this->branch('ELSE', null, 'C'),
+        );
+
+        $this->assertSame('B', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_if_block_no_match_and_no_else_is_empty(): void
+    {
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.priority', [$this->step('text_equals', ['value' => 'nope'])]), 'Body'),
+        );
+
+        $this->assertSame('', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_if_block_winning_branch_resolves_inner_directive(): void
+    {
+        // The winning branch body carries a directive with a pipeline — it must be resolved
+        // recursively (an if-block fence must start a line, so the prefix lives in the body).
+        $inner = $this->directiveWithPipeline('trigger.fields.priority', 'text', [$this->step('text_uppercase')]);
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.priority', [$this->step('text_is_not_empty')]), 'value=' . $inner),
+            $this->branch('ELSE', null, 'none'),
+        );
+
+        $this->assertSame('value=HIGH', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_nested_if_block_resolves_the_inner_winner(): void
+    {
+        $innerBlock = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.priority', [$this->step('text_equals', ['value' => 'high'])]), 'inner-high'),
+            $this->branch('ELSE', null, 'inner-other'),
+        );
+
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.priority', [$this->step('text_is_not_empty')]), $innerBlock),
+            $this->branch('ELSE', null, 'outer-else'),
+        );
+
+        $this->assertSame('inner-high', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_if_block_condition_failure_is_treated_as_false(): void
+    {
+        // A missing variable path → the branch condition is fail-closed to false → ELSE wins.
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.missing', [$this->step('text_is_not_empty')]), 'yes'),
+            $this->branch('ELSE', null, 'no'),
+        );
+
+        $this->assertSame('no', $this->resolver->resolve($md, $this->context()));
+    }
+
+    // ---- value-or-variable pipeline (C) --------------------------------------
+
+    public function test_value_or_variable_pipeline_transforms_date(): void
+    {
+        // deadline = the submitted date + 3 days, coerced back to an ISO string.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+            'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => 3]]],
+        ];
+        $context = ['trigger' => ['fields' => ['due' => '2026-01-10']], 'steps' => []];
+
+        $resolved = $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::DATE);
+
+        $this->assertSame('2026-01-13', Carbon::parse($resolved)->format('Y-m-d'));
+    }
+
+    public function test_value_or_variable_pipeline_maps_enum_to_text(): void
+    {
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_to_text', 'args' => ['mapping' => ['high' => 'urgent', 'low' => 'medium']]]],
+        ];
+
+        $this->assertSame('urgent', $this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::TEXT));
+    }
+
+    public function test_value_or_variable_pipeline_failure_soft_resolves_to_null(): void
+    {
+        // 'high' is not numeric → the number pipeline fails → the field soft-defaults (null).
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'number'],
+            'pipeline' => [['op' => 'num_add', 'args' => ['value' => 1]]],
+        ];
+
+        $this->assertNull($this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::NUMBER));
     }
 
     // ---- Structured union + coercion -----------------------------------------

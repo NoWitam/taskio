@@ -61,6 +61,7 @@ const channelOptions: SegmentOption[] = [
   { value: 'sms', label: t('story.seg.sms', 'SMS'), icon: 'inbox' },
 ];
 const channels = ref<string[]>(['email', 'bell']);
+const channelsVertical = ref<string[]>(['email']);
 
 const equalView = ref<string | null>('board');
 const smView = ref<string | null>('list');
@@ -71,8 +72,10 @@ const propRows: ApiRow[] = [
   { name: 'v-model', type: 'string | null | string[]', default: 'null', description: 'Selected value (single). In `multiple` mode it is a string[].' },
   { name: 'size', type: "'sm' | 'md'", default: "'md'", description: 'Card scale (sm = compact tiles, md = comfortable cards).' },
   { name: 'multiple', type: 'boolean', default: 'false', description: 'Checkbox cards; v-model becomes an array (toggle-select).' },
+  { name: 'selectAll', type: 'boolean', default: 'false', description: 'Multiple mode: prepend a tri-state "Select all" card (checked / mixed / empty) toggling every enabled option.' },
+  { name: 'selectAllLabel', type: 'string', default: '—', description: 'Override the "Select all" card label (defaults to the i18n segmented.selectAll).' },
   { name: 'equalWidth', type: 'boolean', default: 'false', description: 'Each card takes an equal share of the row (flex-1).' },
-  { name: 'columns', type: 'number', default: '—', description: 'Lay the cards out in a CSS grid with this many columns.' },
+  { name: 'columns', type: 'number', default: '—', description: 'Lay the cards out in a CSS grid with this many columns; columns=1 stacks them vertically (top→bottom).' },
   { name: 'iconOnly', type: 'boolean', default: 'false', description: 'Hide labels + the indicator; the card carries selection (label → aria-label).' },
   { name: 'allowNone', type: 'boolean', default: 'false', description: 'Single mode: permit a genuinely empty selection (no fallback).' },
   { name: 'disabled', type: 'boolean', default: 'false', description: 'Disable the whole control.' },
@@ -130,6 +133,23 @@ const propRows: ApiRow[] = [
         :aria-label="t('story.seg.channels', 'Notification channels')"
       />
       <p class="mt-next-3 font-next-mono text-next-xs text-next-muted-foreground">value: {{ channels.join(', ') || '—' }}</p>
+    </StorySection>
+
+    <StorySection
+      :title="t('story.seg.selectAll', 'Select all + vertical stack')"
+      :description="t('story.seg.selectAllDesc', 'With `select-all`, a tri-state leading card toggles every enabled option at once (checked / mixed / empty). `columns=1` stacks the cards top→bottom.')"
+    >
+      <div class="max-w-md">
+        <SegmentedControl
+          v-model="channelsVertical"
+          :options="channelOptions"
+          multiple
+          select-all
+          :columns="1"
+          :aria-label="t('story.seg.channels', 'Notification channels')"
+        />
+      </div>
+      <p class="mt-next-3 font-next-mono text-next-xs text-next-muted-foreground">value: {{ channelsVertical.join(', ') || '—' }}</p>
     </StorySection>
 
     <StorySection :title="t('story.seg.sizes', 'Sizes')">

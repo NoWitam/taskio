@@ -14,6 +14,10 @@ use Illuminate\Http\Request;
  * trigger_config / conditions / steps arrive already validated per trigger_type by the
  * FormRequest, so the DTO only cleans up shape (missing arrays become []) and normalizes
  * the trigger_type into its enum.
+ *
+ * conditions is polymorphic: EITHER the legacy flat clause LIST (reindexed) OR the new logic
+ * TREE object ({logic, children}). A list is reindexed with array_values; the tree's associative
+ * shape is preserved verbatim so it round-trips through the json-cast column unchanged.
  */
 class WorkflowDTO
 {
@@ -24,7 +28,7 @@ class WorkflowDTO
         public readonly WorkflowTriggerType $triggerType,
         /** @var array<string, mixed> */
         public readonly array $triggerConfig,
-        /** @var array<int, array{field: string, field_type: string, operator: string, value?: mixed}> */
+        /** @var array<int|string, mixed> a legacy clause list OR a logic tree */
         public readonly array $conditions,
         /** @var array<int, array{type: string, key: string, config: array<string, mixed>}> */
         public readonly array $steps,
@@ -32,13 +36,16 @@ class WorkflowDTO
 
     public static function fromRequest(Request $request): self
     {
+        $conditions = $request->array('conditions');
+
         return new self(
             name: $request->string('name')->value(),
             description: $request->string('description')->value() ?: null,
             icon: $request->string('icon')->value() ?: null,
             triggerType: $request->enum('trigger_type', WorkflowTriggerType::class),
             triggerConfig: $request->array('trigger_config'),
-            conditions: array_values($request->array('conditions')),
+            // Reindex a clause LIST; preserve the associative TREE object as-is.
+            conditions: array_is_list($conditions) ? array_values($conditions) : $conditions,
             steps: array_values($request->array('steps')),
         );
     }

@@ -17,6 +17,9 @@ import type { FormElement } from '../forms/types';
 // ApprovalProcessResource shapes, so we import rather than redefine them.
 import type { ApprovalPipeline } from '../approvals/types';
 import type { ApprovalProcess } from '../approvals/queue-types';
+// The polymorphic `creator` union (user | workflow_run | bot) is shared across
+// every resource that emits it — imported, never redefined.
+import type { Creator } from '../../ui/patterns/creator';
 
 /**
  * A task `description` as the backend returns it: a ProseMirror/Tiptap doc OBJECT
@@ -205,7 +208,13 @@ export interface TaskDetail {
   is_overdue: boolean;
   is_at_risk: boolean;
   attachments: TaskAttachment[];
-  creator: TaskUser;
+  /**
+   * The polymorphic creator (Phase 3): a User, a workflow_run (automation), or a
+   * Bot — or null (relation loaded but empty) / omitted (relation not loaded).
+   * Only the Task DETAIL resource emits it (the list resource does NOT). Render
+   * via `CreatorBadge` (switch on `creator.type`).
+   */
+  creator?: Creator | null;
   /** Legacy user-assignee (UserResource; null when a bot is assigned). Back-compat. */
   assigned: TaskUser;
   /**

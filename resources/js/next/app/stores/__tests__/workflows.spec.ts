@@ -59,7 +59,7 @@ function detail(overrides: Partial<WorkflowDetail> = {}): WorkflowDetail {
     steps: [{ type: 'create_task', key: 'make', config: { title: 'Hi' } }],
     last_scheduled_run_at: null,
     next_due_at: null,
-    creator: { id: 'u1', name: 'Ada' },
+    creator: { type: 'user', id: 'u1', name: 'Ada', email: 'ada@example.com', avatar: null },
     is_owner: true,
     can_be_edited: true,
     can_be_deleted: true,

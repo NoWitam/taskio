@@ -4,9 +4,12 @@ namespace App\Modules\Workflows\Services;
 
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Traits\InteractsWithFormSchema;
+use App\Modules\Workflows\Enums\WorkflowAiPersona;
+use App\Modules\Workflows\Enums\WorkflowOperation;
 use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
 use App\Modules\Workflows\Enums\WorkflowVariableType;
+use App\Modules\Workflows\Models\Workflow;
 
 /**
  * Builds the TYPED variable catalog the workflow editor (B6/B7) and AI-assist (B5) consume: the
@@ -43,9 +46,11 @@ class WorkflowVariableCatalogService
 
     /**
      * The full catalog for a form_submitted trigger + a selected Form: system trigger vars,
-     * per-form field vars, and step-output vars, plus the condition field descriptors.
+     * per-form field vars, and step-output vars, the condition field descriptors, the global
+     * label-less operation catalog the condition-pipeline builder consumes, plus the label-less
+     * ai-text persona catalog (SB2) the ai-text editor's persona picker consumes.
      *
-     * @return array{variables: array<int, array<string, mixed>>, fields: array<int, array<string, mixed>>}
+     * @return array{variables: array<int, array<string, mixed>>, fields: array<int, array<string, mixed>>, operations: array<int, array<string, mixed>>, ai_personas: array<int, array{id: string}>}
      */
     public function forForm(Form $form): array
     {
@@ -60,7 +65,133 @@ class WorkflowVariableCatalogService
         return [
             'variables' => $variables,
             'fields' => $this->conditionFields($fieldVariables),
+            'operations' => WorkflowOperation::catalog(),
+            'ai_personas' => WorkflowAiPersona::catalog(),
         ];
+    }
+
+    /**
+     * The CONDITION field descriptors for a form — the valid condition sources ({path, field_id,
+     * label, type, operators, enumOptions?}). Exposed for the condition-tree write-validator, which
+     * checks a condition's `source`/`source_type` against this same set (so the builder and the
+     * validator can never disagree on which fields are conditionable).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function conditionFieldsFor(Form $form): array
+    {
+        return $this->conditionFields($this->formFieldVariables($form));
+    }
+
+    /**
+     * The RUNTIME path → WorkflowVariableType map the step runner hands the resolver so a directive
+     * or if-block pipeline executes against each reference's REAL type (recovered here, never from
+     * the degraded editor primitive on the wire). It covers the trigger's system variables, its
+     * form-field variables (when a form_submitted workflow selected a resolvable form), and every
+     * step's outputs keyed by the workflow's actual step KEYS (`steps.<key>.<output>`).
+     *
+     * @return array<string, WorkflowVariableType>
+     */
+    public function runtimeTypeMap(Workflow $workflow): array
+    {
+        $map = [];
+        $triggerType = $workflow->trigger_type;
+
+        if ($triggerType instanceof WorkflowTriggerType) {
+            foreach ($this->triggerSystemVariables($triggerType) as $variable) {
+                $map[$variable['path']] = WorkflowVariableType::from($variable['type']);
+            }
+
+            if ($triggerType === WorkflowTriggerType::FORM_SUBMITTED) {
+                $triggerConfig = is_array($workflow->trigger_config) ? $workflow->trigger_config : [];
+                $form = $this->resolveForm($triggerConfig['form_id'] ?? null);
+
+                if ($form !== null) {
+                    foreach ($this->formFieldVariables($form) as $variable) {
+                        $map[$variable['path']] = WorkflowVariableType::from($variable['type']);
+                    }
+                }
+            }
+        }
+
+        return array_merge($map, $this->stepOutputTypeMap($workflow->steps ?? []));
+    }
+
+    /**
+     * The reference INDEX a value-or-variable ref is write-validated against: full path →
+     * {type, enumOptions?}. Trigger system vars + (when the form resolves) its field vars + the
+     * outputs of the given PRIOR steps (so a step may only reference earlier steps). Mirrors the
+     * runtime map but carries option lists for the pipeline's sourceOption/sourceMap arg checks.
+     *
+     * @param  array<int, array<string, mixed>>  $priorSteps
+     * @return array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>
+     */
+    public function referenceIndex(?WorkflowTriggerType $triggerType, ?Form $form, array $priorSteps): array
+    {
+        $index = [];
+
+        if ($triggerType !== null) {
+            foreach ($this->triggerSystemVariables($triggerType) as $variable) {
+                $index[$variable['path']] = [
+                    'type' => WorkflowVariableType::from($variable['type']),
+                    'enumOptions' => $variable['enumOptions'] ?? null,
+                ];
+            }
+        }
+
+        if ($form !== null) {
+            foreach ($this->formFieldVariables($form) as $variable) {
+                $index[$variable['path']] = [
+                    'type' => WorkflowVariableType::from($variable['type']),
+                    'enumOptions' => $variable['enumOptions'] ?? null,
+                ];
+            }
+        }
+
+        foreach ($this->stepOutputTypeMap($priorSteps) as $path => $type) {
+            $index[$path] = ['type' => $type, 'enumOptions' => null];
+        }
+
+        return $index;
+    }
+
+    /**
+     * Step-output variables keyed by the workflow's ACTUAL step keys (`steps.<key>.<output>` → type),
+     * from each step class's static output descriptors. A step with an unknown type / missing key is
+     * skipped. This is the runtime/validation counterpart to stepOutputVariables() (which keys by
+     * step TYPE for the editor catalog).
+     *
+     * @param  array<int, mixed>  $steps
+     * @return array<string, WorkflowVariableType>
+     */
+    public function stepOutputTypeMap(array $steps): array
+    {
+        $map = [];
+
+        foreach ($steps as $step) {
+            if (!is_array($step)) {
+                continue;
+            }
+
+            $key = $step['key'] ?? null;
+            $type = WorkflowStepType::tryFrom((string) ($step['type'] ?? ''));
+
+            if (!is_string($key) || $key === '' || $type === null) {
+                continue;
+            }
+
+            foreach ($this->steps->stepClass($type)::outputDescriptors() as $descriptor) {
+                $map['steps.' . $key . '.' . $descriptor['name']] = $descriptor['type'];
+            }
+        }
+
+        return $map;
+    }
+
+    /** Resolve a (tenant-scoped) Form from a raw id, or null when absent/foreign. */
+    private function resolveForm(mixed $formId): ?Form
+    {
+        return is_string($formId) && $formId !== '' ? Form::find($formId) : null;
     }
 
     /**

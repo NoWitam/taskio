@@ -39,10 +39,22 @@ Route::middleware('auth:sanctum')->group(function () {
     // index/show read-APIs.
     Route::post('workflows/{workflow}/run', [WorkflowController::class, 'run'])->name('workflows.run');
 
+    // GLOBAL runs feed: every run in the active workspace (workspace-member read). DECLARED
+    // BEFORE the apiResource `workflows/{workflow}` below so the static `runs` segment wins —
+    // otherwise `GET workflows/runs` would bind {workflow}="runs" and hit WorkflowController@show
+    // (Laravel matches routes in declaration order).
+    Route::get('workflows/runs', [WorkflowRunController::class, 'global'])->name('workflows.runs.global');
+
     // Run monitoring (read-only): a workflow's runs list + a single run with its step timeline.
     // The controller enforces that {run} belongs to {workflow} (a foreign run 404s).
     Route::get('workflows/{workflow}/runs', [WorkflowRunController::class, 'index'])->name('workflows.runs.index');
     Route::get('workflows/{workflow}/runs/{run}', [WorkflowRunController::class, 'show'])->name('workflows.runs.show');
+
+    // Retry a FAILED run: user-initiated re-execution that STARTS A NEW run for {workflow}
+    // reusing {run}'s stored trigger_payload (the engine has no mid-run resume). Authorized like
+    // run-now (WorkflowPolicy::run); {run} must belong to {workflow} (else 404); only a terminal
+    // FAILED run is retryable (else 422); honors the same run budget as run-now.
+    Route::post('workflows/{workflow}/runs/{run}/retry', [WorkflowRunController::class, 'retry'])->name('workflows.runs.retry');
 
     Route::apiResource('workflows', WorkflowController::class)
         ->only(['index', 'show', 'store', 'update', 'destroy']);

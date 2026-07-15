@@ -10,8 +10,9 @@ use Illuminate\Http\JsonResponse;
 /**
  * GET /forms/{form}/workflow-catalog — the TYPED variable catalog for a form_submitted workflow
  * built on {form}: the reference-able variables (trigger system vars + per-form field vars +
- * step outputs) and the condition field descriptors. This is the contract the workflow editor
- * (B6/B7) and AI-assist (B5) consume.
+ * step outputs), the condition field descriptors, the global label-less operation catalog the
+ * condition-pipeline builder consumes, and the label-less ai-text persona catalog (SB2). This is
+ * the contract the workflow editor (B6/B7) and AI-assist (B5) consume.
  *
  * HOME: the WORKFLOWS module owns the "variable catalog" concept, so the route lives in this
  * module even though it binds a Form (cross-module model + policy references are already normal
@@ -39,6 +40,8 @@ class WorkflowVariableCatalogController extends Controller
             'data' => [
                 'variables' => array_map($this->shapeVariable(...), $catalog['variables']),
                 'fields' => $catalog['fields'],
+                'operations' => $catalog['operations'],
+                'ai_personas' => $catalog['ai_personas'],
             ],
         ]);
     }

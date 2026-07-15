@@ -61,7 +61,7 @@ function detail(overrides: Partial<ApprovalPipeline> = {}): ApprovalPipeline {
     stages: [
       { id: 's1', name: 'Stage 1', icon: null, description: null, approver_type: 'ai', order: 0 },
     ],
-    creator: { id: 'u1', name: 'Ada' },
+    creator: { type: 'user', id: 'u1', name: 'Ada', email: 'ada@example.com', avatar: null },
     is_owner: true,
     can_be_edited: true,
     can_be_deleted: true,

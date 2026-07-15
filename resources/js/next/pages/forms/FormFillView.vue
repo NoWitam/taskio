@@ -10,10 +10,15 @@ import FormViewer from './FormViewer.vue';
 import { useFormsStore } from '../../app/stores/forms';
 import { useToast } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
-import type { FormDetail } from './types';
+import type { FormDetail, FormSubmission } from './types';
 
 const props = defineProps<{ formId: string }>();
-const emit = defineEmits<{ (e: 'close'): void; (e: 'submitted'): void }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  // The created submission is passed so callers that need its id (e.g. the
+  // workflow run-now Create flow) can use it; existing callers ignore the arg.
+  (e: 'submitted', submission: FormSubmission): void;
+}>();
 
 const store = useFormsStore();
 const toast = useToast();
@@ -41,9 +46,9 @@ onMounted(async () => {
 async function onSubmit(data: Record<string, unknown>): Promise<void> {
   submitting.value = true;
   try {
-    await store.createSubmission({ form_id: props.formId, data });
+    const submission = await store.createSubmission({ form_id: props.formId, data });
     toast.success(t('forms.fill.submitted'));
-    emit('submitted');
+    emit('submitted', submission);
   } catch (err: unknown) {
     const e = err as { response?: { data?: { message?: string } } };
     toast.danger(e.response?.data?.message ?? t('forms.fill.submitError'));

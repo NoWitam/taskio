@@ -11,7 +11,9 @@ use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
 use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\Workflow;
+use App\Modules\Workflows\Services\WorkflowConditionTreeValidator;
 use App\Modules\Workflows\Services\WorkflowScheduleRulesValidator;
+use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
 use App\Rules\ScopedExists;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
@@ -55,12 +57,22 @@ class StoreWorkflowRequest extends FormRequest
     }
 
     /**
+     * @return array<string, string>
+     */
+    public function messages(): array
+    {
+        return [
+            'steps.*.key.regex' => 'A step key may contain only letters, digits and underscores.',
+        ];
+    }
+
+    /**
      * Definition rules shared by every trigger type: identity, the ordered step list
      * (with distinct keys for {{steps.<key>.*}} references) and optional conditions.
      */
     private function baseRules(): array
     {
-        return [
+        return array_merge([
             'name' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:2500'],
             'icon' => ['nullable', 'string', 'max:100'],
@@ -71,15 +83,38 @@ class StoreWorkflowRequest extends FormRequest
             // {{steps.<key>.*}} references from later steps, so it must be unique.
             'steps' => ['required', 'array', 'min:1', 'max:50'],
             'steps.*.type' => ['required', Rule::enum(WorkflowStepType::class)],
-            'steps.*.key' => ['required', 'string', 'max:100', 'distinct'],
+            // Safe charset: the key is substituted into `steps.<key>.<output>` dotted paths and read
+            // via Arr::get (a dot means nesting), so a dot/space would silently break every reference
+            // to the step. Mirrors the FE `sanitizeStepKey` guard for non-FE / API callers.
+            'steps.*.key' => ['required', 'string', 'max:100', 'distinct', 'regex:/^[A-Za-z0-9_]+$/'],
             'steps.*.config' => ['nullable', 'array'],
 
-            // Optional TYPED gate conditions: {field, field_type, operator, value}. `field` is a
-            // `fields.<id>` path (validated in withValidator, NOT against the form schema — see
-            // there). operator∈field_type's set and the per-type value shape are enforced in
-            // withValidator where the whole clause is visible. `value` is `present` unless the
-            // operator is value-less (is_true/is_false), also checked there.
+            // Optional gate conditions — polymorphic (see withValidator::validateConditions):
+            //   LEGACY: a flat LIST of {field, field_type, operator, value} clauses.
+            //   NEW:    a logic TREE object {logic, children[]} of groups + typed pipelines.
+            // A null/absent/empty conditions is no gate. The per-clause LIST rules are added only
+            // for the list shape (flatConditionRules) so they never fire on the tree object; the
+            // tree's recursive shape is validated in withValidator via WorkflowConditionTreeValidator.
             'conditions' => ['nullable', 'array', 'max:50'],
+        ], $this->flatConditionRules());
+    }
+
+    /**
+     * The per-clause rules for the LEGACY flat conditions LIST — included ONLY when the submitted
+     * `conditions` is a non-empty list. Omitting them for the tree object keeps `conditions.*.field`
+     * (and friends) from firing spuriously against the tree's {logic, children} keys.
+     *
+     * @return array<string, array<int, mixed>>
+     */
+    private function flatConditionRules(): array
+    {
+        $conditions = $this->input('conditions');
+
+        if (!is_array($conditions) || $conditions === [] || !array_is_list($conditions)) {
+            return [];
+        }
+
+        return [
             'conditions.*.field' => ['required', 'string', 'max:255'],
             'conditions.*.field_type' => ['required', Rule::enum(WorkflowVariableType::class)],
             'conditions.*.operator' => ['required', Rule::enum(WorkflowConditionOperator::class)],
@@ -175,18 +210,18 @@ class StoreWorkflowRequest extends FormRequest
     }
 
     /**
-     * Second-pass condition checks the per-clause rules can't express:
+     * Second-pass condition checks the per-clause rules can't express. The shared gates apply to
+     * BOTH shapes, then validation forks by shape:
      *   - TRIGGER GATE: conditions are ONLY valid for form_submitted. A schedule run has no
      *     field source in the MVP, so any condition on a schedule trigger is rejected.
      *   - FORM REQUIRED: field conditions read one form's answer map, so when any condition is
      *     present `trigger_config.form_id` MUST be set (accepted decision Q2).
-     *   - FIELD SHAPE: `field` must be a `fields.<id>` path. We deliberately do NOT load the
-     *     form schema to check the id exists — that would couple write-validation to form
-     *     content and race with form edits; a stale/wrong id is handled honestly at evaluation
-     *     time by the missing-path semantics (absent field fails except the absence operators).
-     *   - OPERATOR/VALUE: operator∈field_type's allow-list, and the value shape per type
-     *     (between=[from,to] date pair, in=string array, boolean value-less, date parseable,
-     *     number numeric, enum/multi/text scalar-or-array as appropriate).
+     *   - LEGACY LIST: `field` is a `fields.<id>` path (NOT checked against the form schema — a
+     *     stale/wrong id is handled honestly at evaluation time), operator∈field_type's allow-list,
+     *     and the value shape per type (see validateConditionClause).
+     *   - NEW TREE: the recursive {logic, children} structure, its hard limits, source/type against
+     *     the form's condition catalog, and the pipeline type-flow are delegated to
+     *     WorkflowConditionTreeValidator (see validateConditionTree).
      */
     private function validateConditions(Validator $validator, WorkflowTriggerType $type): void
     {
@@ -209,9 +244,33 @@ class StoreWorkflowRequest extends FormRequest
             );
         }
 
+        // NEW logic-TREE object → the shared recursive validator.
+        if (!array_is_list($conditions)) {
+            $this->validateConditionTree($validator, $conditions);
+
+            return;
+        }
+
+        // LEGACY flat clause LIST.
         foreach ($conditions as $index => $condition) {
             $this->validateConditionClause($validator, (int) $index, is_array($condition) ? $condition : []);
         }
+    }
+
+    /**
+     * Delegate the NEW logic-tree shape to WorkflowConditionTreeValidator, resolving the trigger form
+     * so the validator can check each condition's source/source_type + option args against the form's
+     * condition catalog. A missing/foreign form (already reported on trigger_config.form_id) resolves
+     * to null, and the validator then validates every catalog-independent rule and skips the rest.
+     *
+     * @param  array<string, mixed>  $tree
+     */
+    private function validateConditionTree(Validator $validator, array $tree): void
+    {
+        $formId = $this->input('trigger_config.form_id');
+        $form = is_string($formId) && $formId !== '' ? Form::find($formId) : null;
+
+        app(WorkflowConditionTreeValidator::class)->validate($validator, $tree, 'conditions', $form);
     }
 
     /**
@@ -374,24 +433,91 @@ class StoreWorkflowRequest extends FormRequest
             return; // base rules already reported a missing/invalid steps array
         }
 
+        // A value-or-variable pipeline is validated against the variable catalog (ref type/existence
+        // + the source's option list). Building it costs one Form lookup + schema walk, so we do it
+        // ONLY when some step actually carries such a pipeline — the common (pipeline-less) create
+        // path stays exactly as cheap as before.
+        [$catalog, $triggerType, $form] = $this->referenceCatalogContext($steps);
+
+        $priorSteps = [];
+
         foreach ($steps as $index => $step) {
             $step = is_array($step) ? $step : [];
             $type = WorkflowStepType::tryFrom((string) ($step['type'] ?? ''));
 
             if ($type === null) {
+                $priorSteps[] = $step; // keep the slot so later step-output scope stays aligned
+
                 continue; // base steps.*.type enum rule already reported it
             }
 
             $config = is_array($step['config'] ?? null) ? $step['config'] : [];
             $prefix = 'steps.' . $index . '.config';
 
+            // The references THIS step may target: trigger vars, form fields, and PRIOR steps' outputs.
+            $refCtx = $catalog !== null
+                ? ['index' => $catalog->referenceIndex($triggerType, $form, $priorSteps), 'fields_available' => $form !== null]
+                : null;
+
             match ($type) {
-                WorkflowStepType::CREATE_TASK => $this->validateCreateTaskConfig($validator, $prefix, $config),
-                WorkflowStepType::CREATE_FORM_REPORT => $this->validateCreateFormReportConfig($validator, $prefix, $config),
+                WorkflowStepType::CREATE_TASK => $this->validateCreateTaskConfig($validator, $prefix, $config, $refCtx),
+                WorkflowStepType::CREATE_FORM_REPORT => $this->validateCreateFormReportConfig($validator, $prefix, $config, $refCtx),
             };
 
             $this->rejectForeignStepKeys($validator, $prefix, $config, $this->allowedStepKeys($type));
+            $priorSteps[] = $step;
         }
+    }
+
+    /**
+     * The catalog + resolved trigger form used to write-validate value-or-variable pipelines — or a
+     * null catalog when NO step carries such a pipeline (so no work is done on the common path).
+     *
+     * @param  array<int, mixed>  $steps
+     * @return array{0: ?WorkflowVariableCatalogService, 1: ?WorkflowTriggerType, 2: ?Form}
+     */
+    private function referenceCatalogContext(array $steps): array
+    {
+        if (!$this->stepsHaveValuePipelines($steps)) {
+            return [null, null, null];
+        }
+
+        $triggerType = WorkflowTriggerType::tryFrom((string) $this->input('trigger_type'));
+        $form = null;
+
+        if ($triggerType === WorkflowTriggerType::FORM_SUBMITTED) {
+            $formId = $this->input('trigger_config.form_id');
+            $form = is_string($formId) && $formId !== '' ? Form::find($formId) : null;
+        }
+
+        return [app(WorkflowVariableCatalogService::class), $triggerType, $form];
+    }
+
+    /**
+     * Whether any step's structured value-or-variable field carries a non-empty pipeline — the
+     * trigger for building the (otherwise skipped) reference catalog.
+     *
+     * @param  array<int, mixed>  $steps
+     */
+    private function stepsHaveValuePipelines(array $steps): bool
+    {
+        foreach ($steps as $step) {
+            $config = is_array($step) ? ($step['config'] ?? null) : null;
+
+            if (!is_array($config)) {
+                continue;
+            }
+
+            foreach (['priority', 'deadline', 'submissions_from', 'submissions_to'] as $field) {
+                $value = $config[$field] ?? null;
+
+                if (is_array($value) && ($value['kind'] ?? null) === 'variable' && !empty($value['pipeline'])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -401,8 +527,9 @@ class StoreWorkflowRequest extends FormRequest
      * assignee_id uuid both-or-neither, form_id / approval_pipeline_id nullable scoped uuids.
      *
      * @param  array<string, mixed>  $config
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
-    private function validateCreateTaskConfig(Validator $validator, string $prefix, array $config): void
+    private function validateCreateTaskConfig(Validator $validator, string $prefix, array $config, ?array $refCtx = null): void
     {
         $title = $config['title'] ?? null;
         if (!is_string($title) || trim($title) === '') {
@@ -413,12 +540,18 @@ class StoreWorkflowRequest extends FormRequest
             $validator->errors()->add($prefix . '.description', 'The description must be a string.');
         }
 
+        // priority is a CHOICE field: a literal must be a TaskPriority, and a variable must run a
+        // pipeline that maps the value into the priority option set (targetOptions = TaskPriority::ids()).
+        // The target options are injected here per-field — they are NOT part of the static op descriptor.
         $this->validateUnionOrLiteral(
             $validator,
             $prefix . '.priority',
             $config['priority'] ?? null,
-            fn (mixed $value) => TaskPriority::tryFrom((string) $value) !== null,
+            fn (mixed $value) => is_scalar($value) && TaskPriority::tryFrom((string) $value) !== null,
             'a valid priority (' . implode(', ', TaskPriority::ids()) . ')',
+            $refCtx,
+            [WorkflowVariableType::ENUM],
+            TaskPriority::ids(),
         );
 
         $this->validateUnionOrLiteral(
@@ -427,6 +560,8 @@ class StoreWorkflowRequest extends FormRequest
             $config['deadline'] ?? null,
             fn (mixed $value) => $this->isParsableDate($value),
             'a valid date',
+            $refCtx,
+            [WorkflowVariableType::DATE],
         );
 
         $this->validateLabelIds($validator, $prefix, $config['labels'] ?? null);
@@ -441,8 +576,9 @@ class StoreWorkflowRequest extends FormRequest
      * / submissions_to (nullable date string OR union).
      *
      * @param  array<string, mixed>  $config
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
-    private function validateCreateFormReportConfig(Validator $validator, string $prefix, array $config): void
+    private function validateCreateFormReportConfig(Validator $validator, string $prefix, array $config, ?array $refCtx = null): void
     {
         $formId = $config['form_id'] ?? null;
         if (!is_string($formId) || $formId === '') {
@@ -469,6 +605,8 @@ class StoreWorkflowRequest extends FormRequest
                 $config[$key] ?? null,
                 fn (mixed $value) => $this->isParsableDate($value),
                 'a valid date',
+                $refCtx,
+                [WorkflowVariableType::DATE],
             );
         }
     }
@@ -481,6 +619,9 @@ class StoreWorkflowRequest extends FormRequest
      * be known at write time, so only the ref SHAPE is validated.
      *
      * @param  callable(mixed): bool  $literalValid  predicate the resolved literal must satisfy
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @param  array<int, WorkflowVariableType>  $allowedTerminals  the field's accepted pipeline output types
+     * @param  array<int, string>|null  $targetOptions  a CHOICE field's allowed option VALUES (null for a plain value field)
      */
     private function validateUnionOrLiteral(
         Validator $validator,
@@ -488,6 +629,9 @@ class StoreWorkflowRequest extends FormRequest
         mixed $field,
         callable $literalValid,
         string $expectation,
+        ?array $refCtx = null,
+        array $allowedTerminals = [],
+        ?array $targetOptions = null,
     ): void {
         if ($field === null) {
             return;
@@ -499,6 +643,7 @@ class StoreWorkflowRequest extends FormRequest
 
             if ($kind === 'variable') {
                 $this->validateVariableRef($validator, $key, $field['ref'] ?? null);
+                $this->validateVariablePipeline($validator, $key, $field, $refCtx, $allowedTerminals, $targetOptions);
 
                 return;
             }
@@ -549,6 +694,134 @@ class StoreWorkflowRequest extends FormRequest
         if (!in_array($type, WorkflowVariableType::ids(), true)) {
             $validator->errors()->add($key . '.ref.type', 'The reference type is invalid.');
         }
+    }
+
+    /**
+     * Validate a value-or-variable field's OPTIONAL pipeline (SB1): type-flow from the ref's declared
+     * type through the ops to the target field's accepted type ($allowedTerminals), with args checked
+     * exactly like a condition pipeline. The source variable's option list (for sourceOption/sourceMap
+     * args) and its catalog type are resolved from $refCtx; errors land under indexed
+     * `<key>.pipeline.M...` keys. An absent pipeline / invalid ref.type is a no-op (already handled).
+     *
+     * CHOICE FIELDS ($targetOptions !== null, e.g. priority → TaskPriority::ids()): an identity ref
+     * (no/empty pipeline) is REJECTED — a choice field can only be set by a mapping pipeline that ends
+     * in a choice-producing op — and $targetOptions is threaded to the value-pipeline validator so the
+     * choice args' option values are checked against the destination field's own option set.
+     *
+     * @param  array<string, mixed>  $field
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @param  array<int, WorkflowVariableType>  $allowedTerminals
+     * @param  array<int, string>|null  $targetOptions
+     */
+    private function validateVariablePipeline(Validator $validator, string $key, array $field, ?array $refCtx, array $allowedTerminals, ?array $targetOptions = null): void
+    {
+        $pipeline = $field['pipeline'] ?? null;
+
+        // An identity/empty pipeline is fine for a plain value field, but a CHOICE field must map the
+        // value into its option set — so a choice field with no pipeline is a granular error.
+        if ($pipeline === null || $pipeline === []) {
+            if ($targetOptions !== null) {
+                $validator->errors()->add($key . '.pipeline', 'A choice field requires a mapping pipeline.');
+            }
+
+            return;
+        }
+
+        if (!is_array($pipeline)) {
+            $validator->errors()->add($key . '.pipeline', 'The pipeline must be an array of operations.');
+
+            return;
+        }
+
+        if ($allowedTerminals === []) {
+            return; // no target types means no field opted in
+        }
+
+        $ref = is_array($field['ref'] ?? null) ? $field['ref'] : [];
+        $sourceType = WorkflowVariableType::tryFrom((string) ($ref['type'] ?? ''));
+
+        if ($sourceType === null) {
+            return; // validateVariableRef already reported the bad ref.type
+        }
+
+        $sourceEnumOptions = $this->resolveRefEnumOptions($validator, $key, $ref, $refCtx);
+
+        app(WorkflowConditionTreeValidator::class)->validateValuePipeline(
+            $validator,
+            $pipeline,
+            $key . '.pipeline',
+            $sourceType,
+            $allowedTerminals,
+            $sourceEnumOptions,
+            $targetOptions,
+        );
+    }
+
+    /**
+     * Resolve the source variable's option list for the pipeline's option-arg checks, and — as a side
+     * effect — reject a ref whose type disagrees with the catalog or that points at an unknown
+     * variable. Form-field membership is skipped when the trigger form is unresolved (already
+     * reported); step-output and trigger-system refs are always checked (so a step can only target a
+     * real, earlier reference).
+     *
+     * @param  array<string, mixed>  $ref
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @return array<int, string>|null
+     */
+    private function resolveRefEnumOptions(Validator $validator, string $key, array $ref, ?array $refCtx): ?array
+    {
+        if ($refCtx === null) {
+            return null;
+        }
+
+        $fullPath = $this->refFullPath($ref);
+
+        if ($fullPath === null) {
+            return null; // validateVariableRef already reported the missing path
+        }
+
+        if (array_key_exists($fullPath, $refCtx['index'])) {
+            $descriptor = $refCtx['index'][$fullPath];
+            $refType = $ref['type'] ?? null;
+
+            if (is_string($refType) && $descriptor['type']->value !== $refType) {
+                $validator->errors()->add($key . '.ref.type', 'The reference type does not match the variable type in the catalog.');
+            }
+
+            return $descriptor['enumOptions'];
+        }
+
+        // Unknown reference. A form field is only skippable when the form itself is unresolved.
+        if (str_starts_with($fullPath, 'trigger.fields.') && !$refCtx['fields_available']) {
+            return null;
+        }
+
+        $validator->errors()->add($key . '.ref.path', 'The reference is not a known variable for this step.');
+
+        return null;
+    }
+
+    /**
+     * The full dotted path a ref resolves against (`trigger` + `fields.abc` → `trigger.fields.abc`),
+     * mirroring the resolver — a path already carrying its root is used as-is.
+     *
+     * @param  array<string, mixed>  $ref
+     */
+    private function refFullPath(array $ref): ?string
+    {
+        $path = $ref['path'] ?? null;
+
+        if (!is_string($path) || $path === '') {
+            return null;
+        }
+
+        $source = $ref['source'] ?? null;
+
+        if (is_string($source) && $source !== '' && !str_starts_with($path, $source . '.') && $path !== $source) {
+            return $source . '.' . $path;
+        }
+
+        return $path;
     }
 
     /**

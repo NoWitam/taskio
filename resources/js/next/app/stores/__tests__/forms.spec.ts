@@ -51,7 +51,7 @@ function summary(overrides: Partial<FormSummary> = {}): FormSummary {
     can_restore_index: false,
     has_index_backup: false,
     is_draft: true,
-    creator: { id: 'u1', name: 'Ada' },
+    creator: { type: 'user', id: 'u1', name: 'Ada', email: 'ada@example.com', avatar: null },
     submissions_count: 0,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',

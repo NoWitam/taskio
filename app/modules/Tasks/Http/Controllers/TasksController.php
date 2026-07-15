@@ -42,7 +42,7 @@ class TasksController extends Controller
         $task = Task::withTrashed()->findOrFail($id);
 
         return TaskResource::make(
-            $task->loadMissing(Task::DETAIL_RELATIONS)
+            $task->loadMissing(Task::detailRelations())
         );
     }
 
@@ -51,7 +51,7 @@ class TasksController extends Controller
         return TaskResource::make(
             $this->service->create(
                 TaskDTO::fromRequest($request)
-            )->loadMissing(Task::DETAIL_RELATIONS)
+            )->loadMissing(Task::detailRelations())
         );
     }
 
@@ -63,7 +63,7 @@ class TasksController extends Controller
         );
 
         return TaskResource::make(
-            $task->loadMissing(Task::DETAIL_RELATIONS)
+            $task->loadMissing(Task::detailRelations())
         );
     }
 
@@ -81,7 +81,7 @@ class TasksController extends Controller
         $this->service->removeAttachment($task, $file);
 
         return TaskResource::make(
-            $task->loadMissing(Task::DETAIL_RELATIONS)
+            $task->loadMissing(Task::detailRelations())
         );
     }
 
@@ -99,7 +99,7 @@ class TasksController extends Controller
         $task = Task::withTrashed()->findOrFail($id);
 
         return TaskResource::make(
-            $this->service->restore($task)->loadMissing(Task::DETAIL_RELATIONS)
+            $this->service->restore($task)->loadMissing(Task::detailRelations())
         );
     }
 
@@ -114,7 +114,7 @@ class TasksController extends Controller
         $task = $this->service->changeStatus($task, $status);
 
         return TaskResource::make(
-            $task->load(Task::DETAIL_RELATIONS)
+            $task->load(Task::detailRelations())
         );
     }
 

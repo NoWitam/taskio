@@ -4,17 +4,20 @@
 // NO FilterBar / Saved Views (the §5.1 exemption, mirroring the Approvals Queue +
 // Bot inbox nested lists).
 //
-// Filters are two SegmentedControls — state + origin (§5.2) — driving `?state=` /
-// `?origin=` on GET /workflows/{id}/runs, plus a manual Refresh Button (the honest
-// MVP polling affordance; no invented websockets). The list is cursor-paginated
-// (15/page) through the workflowRuns store; all four states are covered
-// (multi-skeleton rows / error + retry / empty / success) with load-more via
-// useInfiniteScroll + a retryable append (module convention).
+// Filters (B4): two `SegmentedControl multiple` — state + source (origin) — plus one
+// shared DateRangeFilter, driving `?state[]=` / `?origin[]=` / `date_from` / `date_to` /
+// `date_preset` on GET /workflows/{id}/runs, plus a manual Refresh Button (the honest
+// MVP polling affordance; no invented websockets). When the workflow's trigger is
+// `form_submitted` the SOURCE filter drops the "schedule" option (a form workflow
+// never has a schedule run). The list is cursor-paginated (15/page) through the
+// workflowRuns store (per-workflow scope); all four states are covered (multi-skeleton
+// rows / error + retry / empty / success) with load-more via useInfiniteScroll + a
+// retryable append (module convention).
 //
 // A run row opens the run-detail DRAWER, hosted HERE and driven by the
 // `?run_detail=<runId>` query key on the detail route (§5.4), so the Runs list
 // stays mounted behind it.
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Surface from '../../ui/layout/Surface.vue';
 import Icon from '../../ui/primitives/Icon.vue';
@@ -23,6 +26,10 @@ import Skeleton from '../../ui/data/Skeleton.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedControl.vue';
+import DateRangeFilter, {
+  type DateRangeFilterPreset,
+  type DateRangeFilterValue,
+} from '../../ui/forms/DateRangeFilter.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import WorkflowRunRow from './WorkflowRunRow.vue';
 import WorkflowRunTimeline from './WorkflowRunTimeline.vue';
@@ -35,66 +42,69 @@ import {
   RUN_ORIGINS,
   type WorkflowRun,
   type WorkflowRunFilters,
-  type WorkflowRunOrigin,
-  type WorkflowRunState,
+  type WorkflowTriggerType,
 } from './types';
 
-const props = defineProps<{ workflowId: string }>();
+const props = defineProps<{
+  workflowId: string;
+  /**
+   * The workflow's trigger type (threaded down so the SOURCE filter can drop the
+   * "schedule" option for a `form_submitted` workflow). Null until the detail loads.
+   */
+  triggerType?: WorkflowTriggerType | null;
+}>();
 
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const store = useWorkflowRunsStore();
 
-// --- Filter state (URL-synced) --------------------------------------------
 const str = (v: unknown): string => (Array.isArray(v) ? String(v[0] ?? '') : String(v ?? ''));
+const toArr = (v: unknown): string[] =>
+  Array.isArray(v) ? v.map(String) : v != null && v !== '' ? [String(v)] : [];
 
-/** `''` = the "All" pseudo-value the SegmentedControl uses for no filter. */
-const stateFilter = computed<WorkflowRunState | '' >({
-  get: () => (str(route.query.state) as WorkflowRunState) || '',
-  set: (value) => setQuery('state', value),
+// --- Filter state (URL-synced local refs) ---------------------------------
+const stateFilter = ref<string[]>([]);
+const originFilter = ref<string[]>([]);
+const dateRange = ref<DateRangeFilterValue>({ preset: '', from: null, to: null, hide_without_deadline: false });
+
+// --- Segmented options (each enum, icon + label; no "All" — empty = all) ----
+const stateOptions = computed<SegmentOption[]>(() =>
+  RUN_STATES.map((s) => ({ value: s, label: t(`workflows.runs.state.${s}`), icon: runStateIcon(s) })),
+);
+// A form_submitted workflow never produces a schedule run → drop that option.
+const originOptions = computed<SegmentOption[]>(() => {
+  const origins = props.triggerType === 'form_submitted'
+    ? RUN_ORIGINS.filter((o) => o !== 'schedule')
+    : RUN_ORIGINS;
+  return origins.map((o) => ({ value: o, label: t(`workflows.runs.origin.${o}`), icon: originIcon(o) }));
 });
-const originFilter = computed<WorkflowRunOrigin | ''>({
-  get: () => (str(route.query.origin) as WorkflowRunOrigin) || '',
-  set: (value) => setQuery('origin', value),
-});
+const datePresets = computed<DateRangeFilterPreset[]>(() =>
+  (['today', 'this_week', 'last_week', 'this_month'] as const).map((p) => ({ id: p, label: t(`tasks.datePresets.${p}`) })),
+);
 
-function setQuery(key: 'state' | 'origin', value: string): void {
-  const query = { ...route.query };
-  if (value) query[key] = value;
-  else delete query[key];
-  void router.replace({ query });
-}
-
+// --- Aggregated filter object (mirrors the query params) -------------------
 const filters = computed<WorkflowRunFilters>(() => {
   const f: WorkflowRunFilters = {};
-  if (stateFilter.value) f.state = stateFilter.value;
-  if (originFilter.value) f.origin = originFilter.value;
+  if (stateFilter.value.length) f.state = [...stateFilter.value];
+  if (originFilter.value.length) f.origin = [...originFilter.value];
+  if (dateRange.value.from) f.date_from = dateRange.value.from;
+  if (dateRange.value.to) f.date_to = dateRange.value.to;
+  if (dateRange.value.preset) f.date_preset = dateRange.value.preset;
   return f;
 });
-
-// --- SegmentedControl options (All + each enum, icon + label) --------------
-const stateOptions = computed<SegmentOption<string>[]>(() => [
-  { value: '', label: t('workflows.runs.filters.allStates') },
-  ...RUN_STATES.map((s) => ({
-    value: s,
-    label: t(`workflows.runs.state.${s}`),
-    icon: runStateIcon(s),
-  })),
-]);
-const originOptions = computed<SegmentOption<string>[]>(() => [
-  { value: '', label: t('workflows.runs.filters.allOrigins') },
-  ...RUN_ORIGINS.map((o) => ({
-    value: o,
-    label: t(`workflows.runs.origin.${o}`),
-    icon: originIcon(o),
-  })),
-]);
 
 // --- Fetch orchestration ---------------------------------------------------
 const items = computed(() => store.items);
 const initialLoading = computed(() => store.loading && items.value.length === 0);
-const hasActiveFilters = computed(() => !!stateFilter.value || !!originFilter.value);
+const hasActiveFilters = computed(
+  () =>
+    stateFilter.value.length > 0 ||
+    originFilter.value.length > 0 ||
+    !!dateRange.value.preset ||
+    !!dateRange.value.from ||
+    !!dateRange.value.to,
+);
 const isEmpty = computed(
   () =>
     !store.loading &&
@@ -111,7 +121,45 @@ function refresh(): void {
   load();
 }
 
-onMounted(load);
+// --- URL sync (state[]/origin[]/date_*; preserve the ?run_detail overlay key) -
+let hydrating = false;
+
+function hydrateFromQuery(): void {
+  hydrating = true;
+  stateFilter.value = toArr(route.query.state);
+  originFilter.value = toArr(route.query.origin);
+  dateRange.value = {
+    preset: str(route.query.date_preset),
+    from: str(route.query.date_from) || null,
+    to: str(route.query.date_to) || null,
+    hide_without_deadline: false,
+  };
+  hydrating = false;
+}
+
+function syncQuery(): void {
+  if (hydrating) return;
+  const query: Record<string, string | string[]> = {};
+  const rd = route.query.run_detail;
+  if (rd != null && rd !== '') query.run_detail = str(rd);
+  if (stateFilter.value.length) query.state = [...stateFilter.value];
+  if (originFilter.value.length) query.origin = [...originFilter.value];
+  if (dateRange.value.from) query.date_from = dateRange.value.from;
+  if (dateRange.value.to) query.date_to = dateRange.value.to;
+  if (dateRange.value.preset) query.date_preset = dateRange.value.preset;
+  void router.replace({ query });
+}
+
+// `ready` gates the filters watch so the hydrate-induced change during mount doesn't
+// double-fetch: the pending watch job flushes (skipped) inside the nextTick BEFORE we
+// arm it, so only genuine user filter changes refetch + sync the URL afterwards.
+let ready = false;
+onMounted(async () => {
+  hydrateFromQuery();
+  load();
+  await nextTick();
+  ready = true;
+});
 watch(
   () => props.workflowId,
   () => {
@@ -119,8 +167,16 @@ watch(
     load();
   },
 );
-// Re-fetch when either filter changes.
-watch(filters, () => load(), { deep: true });
+// Re-fetch + mirror to the URL when any filter changes (after mount).
+watch(
+  filters,
+  () => {
+    if (!ready) return;
+    syncQuery();
+    load();
+  },
+  { deep: true },
+);
 onUnmounted(() => store.resetAll());
 
 // --- Infinite scroll -------------------------------------------------------
@@ -152,6 +208,16 @@ const detailOpen = computed<boolean>({
 function openRun(run: WorkflowRun): void {
   void router.push({ query: { ...route.query, run_detail: run.id } });
 }
+
+/**
+ * A FAILED run was retried (WorkflowRunTimeline `@retried`) → a NEW run on THIS workflow.
+ * Refresh the list so it surfaces, and swap the drawer to the new run (`?run_detail=`); the
+ * timeline re-keys on the id and fetches the pending run's detail.
+ */
+function onRetried(newRun: WorkflowRun): void {
+  load();
+  void router.replace({ query: { ...route.query, run_detail: newRun.id } });
+}
 </script>
 
 <template>
@@ -178,29 +244,37 @@ function openRun(run: WorkflowRun): void {
       </Button>
     </header>
 
-    <!-- Filters: state + origin segmented controls (no FilterBar — §5.1). -->
-    <div class="flex flex-col gap-next-3">
-      <div class="flex flex-col gap-next-1_5">
+    <!-- Filters: state + source segmented multi-select + a date range (no FilterBar — §5.1). -->
+    <div class="flex flex-col gap-next-3 next-sm:flex-row next-sm:flex-wrap">
+      <div class="flex min-w-0 flex-1 basis-48 flex-col gap-next-1_5">
         <span class="text-next-xs font-next-medium text-next-muted-foreground">{{ t('workflows.runs.filters.stateLabel') }}</span>
-        <div class="overflow-x-auto">
-          <SegmentedControl
-            v-model="stateFilter"
-            :options="stateOptions"
-            size="sm"
-            :aria-label="t('workflows.runs.filters.stateLabel')"
-          />
-        </div>
+        <SegmentedControl
+          v-model="stateFilter"
+          multiple
+          size="sm"
+          :options="stateOptions"
+          :aria-label="t('workflows.runs.filters.stateLabel')"
+        />
       </div>
-      <div class="flex flex-col gap-next-1_5">
+      <div class="flex min-w-0 flex-1 basis-48 flex-col gap-next-1_5">
         <span class="text-next-xs font-next-medium text-next-muted-foreground">{{ t('workflows.runs.filters.originLabel') }}</span>
-        <div class="overflow-x-auto">
-          <SegmentedControl
-            v-model="originFilter"
-            :options="originOptions"
-            size="sm"
-            :aria-label="t('workflows.runs.filters.originLabel')"
-          />
-        </div>
+        <SegmentedControl
+          v-model="originFilter"
+          multiple
+          size="sm"
+          :options="originOptions"
+          :aria-label="t('workflows.runs.filters.originLabel')"
+        />
+      </div>
+      <div class="flex min-w-0 flex-1 basis-48 flex-col gap-next-1_5">
+        <span class="text-next-xs font-next-medium text-next-muted-foreground">{{ t('workflows.runs.filters.dateLabel') }}</span>
+        <DateRangeFilter
+          v-model="dateRange"
+          size="sm"
+          :presets="datePresets"
+          :placeholder="t('workflows.runs.filters.dateAny')"
+          :aria-label="t('workflows.runs.filters.dateLabel')"
+        />
       </div>
     </div>
 
@@ -285,6 +359,7 @@ function openRun(run: WorkflowRun): void {
       :workflow-id="workflowId"
       :run-id="runDetailId"
       @close="detailOpen = false"
+      @retried="onRetried"
     />
   </Drawer>
 </template>

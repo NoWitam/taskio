@@ -273,7 +273,7 @@ if (el.type === 'select' && el.config.multiple) {
   >
     <Select
       v-if="element.config.multiple"
-      v-model="(formData[element.id] as any)"
+      v-model:values="(formData[element.id] as any)"
       multiple
       :options="selectOptions(element.config.options)"
       :placeholder="element.config.placeholder"

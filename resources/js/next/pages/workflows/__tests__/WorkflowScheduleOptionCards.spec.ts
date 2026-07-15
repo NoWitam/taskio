@@ -40,7 +40,7 @@ function mountCards(modelValue = 'a', options = OPTIONS) {
 const radios = (w: VueWrapper) => w.findAll('[role="radio"]');
 const radioBy = (w: VueWrapper, title: string) => radios(w).find((r) => r.text().includes(title));
 const group = (w: VueWrapper) => w.find('[role="radiogroup"]');
-const model = (w: VueWrapper) => w.props('modelValue') as string;
+const model = (w: VueWrapper) => (w.props() as { modelValue: string }).modelValue;
 
 async function arrow(w: VueWrapper, key: string): Promise<void> {
   await group(w).trigger('keydown', { key });
