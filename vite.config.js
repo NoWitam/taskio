@@ -14,11 +14,8 @@ export default defineConfig({
         tailwindcss(),
         laravel({
             input: [
-                'resources/css/app.css',
-                'resources/js/app.js',
-                // The isolated "next" SPA (served at /next via next.blade.php).
-                // Without this entry the built manifest lacks it and /next 500s
-                // whenever the Vite dev server isn't running.
+                // The "next" SPA is the whole frontend now (served at /next via
+                // next.blade.php; the legacy /app bundle was decommissioned).
                 'resources/js/next/main.ts',
             ],
             refresh: true,

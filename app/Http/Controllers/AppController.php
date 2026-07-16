@@ -7,15 +7,10 @@ use Illuminate\Http\Request;
 class AppController extends Controller
 {
     /**
-     * Wyświetla główny widok aplikacji z wstrzykniętymi danymi użytkownika i uprawnień
-     *
-     * @return \Illuminate\View\View
+     * Serve the "next" SPA shell. This is the only frontend entry point — the
+     * legacy `/app` bundle was decommissioned (its `/app` route now redirects
+     * here for old bookmarks).
      */
-    public function index(Request $request)
-    {
-        return view('app');
-    }
-
     public function next(Request $request)
     {
         return view('next');
