@@ -12,6 +12,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 use Throwable;
 
 /**
@@ -51,7 +52,15 @@ class WorkflowRunJob implements ShouldQueue
             return;
         }
 
-        $runner->run($run->fresh());
+        $previousConnection = Queue::getDefaultDriver();
+
+        try {
+            Queue::setDefaultDriver('sync');
+
+            $runner->run($run->fresh());
+        } finally {
+            Queue::setDefaultDriver($previousConnection);
+        }
     }
 
     /**
