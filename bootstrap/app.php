@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\FlushChangelogMiddleware;
 use App\Http\Middleware\LogMiddleware;
+use App\Http\Middleware\RequireWorkspace;
 use App\Http\Middleware\ResolveWorkspace;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -30,6 +31,15 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prependToPriorityList(
             before: SubstituteBindings::class,
             prepend: ResolveWorkspace::class,
+        );
+
+        // Route-scoped fail-closed tenancy gate (attached per route, e.g. the Disk binaries).
+        // Slotted between the two above — after ResolveWorkspace has filled the context, still
+        // before SubstituteBindings — so a context-less request is refused BEFORE a foreign id
+        // can bind. Both orderings are pinned by ApiMiddlewarePriorityTest.
+        $middleware->prependToPriorityList(
+            before: SubstituteBindings::class,
+            prepend: RequireWorkspace::class,
         );
     })
     ->withExceptions(function (Exceptions $exceptions): void {

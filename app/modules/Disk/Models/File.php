@@ -8,12 +8,13 @@ use App\Traits\HasCreator;
 use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class File extends AbstractModel
 {
-    use HasCreator, HasUuids, SoftDeletes, TenantAware;
+    use HasCreator, HasFactory, HasUuids, SoftDeletes, TenantAware;
 
     protected const CREATOR_ID_COLUMN = 'uploader_id';
 
@@ -48,5 +49,15 @@ class File extends AbstractModel
     public function scopeTemp(Builder $query): void
     {
         $query->whereNull('fileable_type');
+    }
+
+    /**
+     * The default resolver looks for Database\Factories\Modules\Disk\Models\FileFactory
+     * (it derives the namespace from the model's), which does not exist — every module
+     * model points at its flat Database\Factories class explicitly.
+     */
+    protected static function newFactory()
+    {
+        return \Database\Factories\FileFactory::new();
     }
 }

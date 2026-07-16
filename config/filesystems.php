@@ -33,7 +33,12 @@ return [
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),
-            'serve' => true,
+            // Disk binaries live here. 'serve' => true would register a middleware-less
+            // storage.local route straight over this root — an auth-free, workspace-blind
+            // byte path guarded only by an APP_KEY signature. Every read goes through
+            // GET /api/disk/{file}, which is authenticated, workspace-gated and policy-aware.
+            // Nothing mints Storage::url()/temporaryUrl() for this disk (verified by grep).
+            'serve' => false,
             'throw' => false,
             'report' => false,
         ],
@@ -41,7 +46,7 @@ return [
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),
-            'url' => env('APP_URL').'/storage',
+            'url' => env('APP_URL') . '/storage',
             'visibility' => 'public',
             'throw' => false,
             'report' => false,
