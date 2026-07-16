@@ -2,13 +2,15 @@
 
 namespace App\Models;
 
-use Carbon\Carbon;
+use App\Models\Concerns\Searchable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 
 class AbstractModel extends Model
 {
+    use Searchable;
+
     public function scopeFilterByDate(Builder $query, string $column, ?Request $request = null, string $queryParam = 'date'): void
     {
         $request ??= request();

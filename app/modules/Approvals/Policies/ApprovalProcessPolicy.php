@@ -3,7 +3,6 @@
 namespace App\Modules\Approvals\Policies;
 
 use App\Models\User;
-use App\Modules\Approvals\Enums\ApproverType;
 use App\Modules\Approvals\Models\ApprovalProcess;
 
 class ApprovalProcessPolicy
@@ -19,7 +18,10 @@ class ApprovalProcessPolicy
             return false;
         }
 
-        if ($process->approver_type === ApproverType::Ai) {
+        // Automated approvers (generic AI or a named bot) are decided by the AI
+        // evaluation job, never by a human over HTTP — exclude them by intent, not by
+        // relying on user/bot id non-collision.
+        if ($process->isAutomatedApprover()) {
             return false;
         }
 

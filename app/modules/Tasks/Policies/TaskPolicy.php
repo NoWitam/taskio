@@ -5,9 +5,12 @@ namespace App\Modules\Tasks\Policies;
 use App\Models\User;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Models\Task;
+use App\Policies\Concerns\ChecksRecordOwnership;
 
 class TaskPolicy
 {
+    use ChecksRecordOwnership;
+
     /**
      * Determine whether the user can view any models.
      */
@@ -41,7 +44,9 @@ class TaskPolicy
             return false;
         }
 
-        return $task->creator_id === $user->id || $task->assigned_id === $user->id;
+        // Owner (or the workspace owner for a run/bot-created system task) or the assignee.
+        return $this->ownsOrManagesSystemRecord($task, $user)
+            || ($user !== null && $task->assigned_id === $user->id);
     }
 
     /**
@@ -49,8 +54,8 @@ class TaskPolicy
      */
     public function delete(?User $user, Task $task): bool
     {
-        // Tylko creator może usunąć zadanie
-        return $task->creator_id === $user->id;
+        // Owner, or the workspace owner for a run/bot-created system task.
+        return $this->ownsOrManagesSystemRecord($task, $user);
     }
 
     /**
@@ -58,8 +63,8 @@ class TaskPolicy
      */
     public function forceDelete(?User $user, Task $task): bool
     {
-        // Tylko creator może permanentnie usunąć zadanie
-        return $task->creator_id === $user->id;
+        // Owner, or the workspace owner for a run/bot-created system task.
+        return $this->ownsOrManagesSystemRecord($task, $user);
     }
 
     /**
@@ -67,8 +72,8 @@ class TaskPolicy
      */
     public function restore(?User $user, Task $task): bool
     {
-        // Tylko creator może przywrócić zadanie
-        return $task->creator_id === $user->id;
+        // Owner, or the workspace owner for a run/bot-created system task.
+        return $this->ownsOrManagesSystemRecord($task, $user);
     }
 
     /**

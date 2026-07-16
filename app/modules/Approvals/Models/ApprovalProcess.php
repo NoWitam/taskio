@@ -6,14 +6,16 @@ use App\Models\AbstractModel;
 use App\Models\User;
 use App\Modules\Approvals\Enums\ApprovalProcessStatus;
 use App\Modules\Approvals\Enums\ApproverType;
+use App\Modules\Bot\Models\Bot;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 class ApprovalProcess extends AbstractModel
 {
-    use HasCreator, HasUuids;
+    use HasCreator, HasUuids, TenantAware;
 
     protected $table = 'approval_processes';
 
@@ -61,6 +63,12 @@ class ApprovalProcess extends AbstractModel
         return $this->belongsTo(User::class, 'approver_id');
     }
 
+    /** The Bot approver for a `bot` process (null otherwise). */
+    public function approverBot(): BelongsTo
+    {
+        return $this->belongsTo(Bot::class, 'approver_id');
+    }
+
     public function isPending(): bool
     {
         return $this->status === ApprovalProcessStatus::Pending;
@@ -79,6 +87,18 @@ class ApprovalProcess extends AbstractModel
     public function isAiApprover(): bool
     {
         return $this->approver_type === ApproverType::Ai;
+    }
+
+    /** A named bot approver (its persona colors the AI verdict). */
+    public function isBotApprover(): bool
+    {
+        return $this->approver_type === ApproverType::Bot;
+    }
+
+    /** Evaluated automatically by the AI pipeline (generic AI or a named bot). */
+    public function isAutomatedApprover(): bool
+    {
+        return $this->approver_type->isAutomated();
     }
 
     public function scopeOnlyPending($query)

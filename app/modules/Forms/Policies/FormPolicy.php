@@ -4,9 +4,12 @@ namespace App\Modules\Forms\Policies;
 
 use App\Models\User;
 use App\Modules\Forms\Models\Form;
+use App\Policies\Concerns\ChecksRecordOwnership;
 
 class FormPolicy
 {
+    use ChecksRecordOwnership;
+
     /**
      * Determine whether the user can view any forms.
      */
@@ -36,7 +39,7 @@ class FormPolicy
      */
     public function update(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
@@ -44,7 +47,7 @@ class FormPolicy
      */
     public function delete(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
@@ -52,7 +55,7 @@ class FormPolicy
      */
     public function restore(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
@@ -60,7 +63,7 @@ class FormPolicy
      */
     public function forceDelete(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
@@ -68,7 +71,7 @@ class FormPolicy
      */
     public function enable(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
@@ -76,7 +79,7 @@ class FormPolicy
      */
     public function disable(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
@@ -84,7 +87,7 @@ class FormPolicy
      */
     public function index(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
@@ -92,20 +95,15 @@ class FormPolicy
      */
     public function unindex(?User $user, Form $form): bool
     {
-        return $user !== null && $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
 
     /**
      * Determine whether the user can create form reports.
-     * Only the creator of the form can create reports for it.
+     * Only the creator of the form (or the workspace owner for a system form) can create reports.
      */
     public function createReport(?User $user, Form $form): bool
     {
-        if ($user === null) {
-            return false;
-        }
-
-        return $form->creator_id === $user->id;
+        return $this->ownsOrManagesSystemRecord($form, $user);
     }
-
 }

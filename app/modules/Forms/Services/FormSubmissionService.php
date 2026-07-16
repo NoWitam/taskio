@@ -5,6 +5,7 @@ namespace App\Modules\Forms\Services;
 use App\Modules\Forms\DTOs\FormSubmissionDTO;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
+use App\Modules\Workflows\Models\WorkflowRun;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -15,7 +16,7 @@ class FormSubmissionService
     {
         // Validate that the form exists and is enabled
         $form = Form::findOrFail($dto->form_id);
-        
+
         if (!$form->canBeFilled()) {
             throw ValidationException::withMessages([
                 'form_id' => ['Formularz musi być włączony przed dodaniem uzupełnień.'],
@@ -57,32 +58,29 @@ class FormSubmissionService
     public function indexByForm(Request $request, string $formId)
     {
         return FormSubmission::query()
-            ->with('creator', 'submittable')
+            // creator is polymorphic (User|WorkflowRun|Bot); load a run's workflow so
+            // CreatorResource renders the automation name without an N+1 per row.
+            ->with(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']]), 'submittable'])
             ->where('form_id', $formId)
             ->whereNotNull('approved_at')
             ->when(
                 $request->boolean('trashed'),
-                fn(Builder $query) => $query->onlyTrashed()
+                fn (Builder $query) => $query->onlyTrashed()
             )
             ->when(
                 request()->array('sources'),
-                fn(Builder $query, $sources) => $query->whereIn('submittable_type', $sources)
+                fn (Builder $query, $sources) => $query->whereIn('submittable_type', $sources)
             )
             ->when(
                 $request->filled('indexed'),
-                fn(Builder $query) => $request->boolean('indexed')
+                fn (Builder $query) => $request->boolean('indexed')
                     ? $query->whereNotNull('indexed_at')
                     : $query->whereNull('indexed_at')
             )
-            ->when(
-                $request->has('search'),
-                fn(Builder $query) => $query->where(fn(Builder $sq) => 
-                    $sq->where('data', 'like', '%' . $request->get('search') . '%')
-                )
-            )
+            ->search('data', $request->get('search'))
             ->filterByDate('approved_at', $request)
             ->orderBy(
-                'approved_at', 
+                'approved_at',
                 $request->get('sort', 'newest') === 'oldest' ? 'asc' : 'desc'
             )
             ->cursorPaginate(12);
@@ -91,7 +89,7 @@ class FormSubmissionService
     public function findBySubmittable(string $submittableType, string $submittableId): ?FormSubmission
     {
         return FormSubmission::query()
-            ->with('form', 'creator')
+            ->with(['form', 'creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
             ->where('submittable_type', $submittableType)
             ->where('submittable_id', $submittableId)
             ->first();

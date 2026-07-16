@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Tenancy\QueueTenancy;
+use App\Tenancy\TenantContext;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -11,7 +13,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(TenantContext::class);
     }
 
     /**
@@ -19,6 +21,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // Carry the active workspace across the queue boundary for ALL jobs, so
+        // tenant-aware models created in a worker get the correct workspace_id.
+        QueueTenancy::register();
     }
 }

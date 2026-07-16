@@ -5,6 +5,7 @@ namespace App\Modules\Forms\Models;
 use App\Models\AbstractModel;
 use App\Modules\Forms\Observers\FormSubmissionObserver;
 use App\Traits\HasCreator;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -16,7 +17,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 #[ObservedBy(FormSubmissionObserver::class)]
 class FormSubmission extends AbstractModel
 {
-    use HasCreator, HasUuids, HasFactory, SoftDeletes;
+    use HasCreator, HasFactory, HasUuids, SoftDeletes, TenantAware;
 
     protected $table = 'form_submissions';
 

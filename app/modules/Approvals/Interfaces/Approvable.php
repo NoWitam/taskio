@@ -19,6 +19,15 @@ interface Approvable
 
     public function toApprovalQueueItem(): ApprovalQueueItem;
 
+    /**
+     * Relations the approvable needs hydrated to build its queue item. Lets the
+     * approval queue batch-load them grouped by type instead of lazy-loading per
+     * row (N+1), without coupling the Approvals module to concrete approvables.
+     *
+     * @return array<int, string>
+     */
+    public function approvalQueueRelations(): array;
+
     public function isInApproval(): bool;
 
     public function getApprovalContext(): array;

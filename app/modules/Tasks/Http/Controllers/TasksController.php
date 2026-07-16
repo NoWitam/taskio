@@ -3,14 +3,17 @@
 namespace App\Modules\Tasks\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Modules\Disk\Models\File;
 use App\Modules\Tasks\DTOs\TaskDTO;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Http\Requests\ChangeTaskStatusRequest;
+use App\Modules\Tasks\Http\Requests\DeleteTaskAttachmentRequest;
 use App\Modules\Tasks\Http\Requests\DeleteTaskRequest;
 use App\Modules\Tasks\Http\Requests\ForceDeleteTaskRequest;
 use App\Modules\Tasks\Http\Requests\RestoreTaskRequest;
 use App\Modules\Tasks\Http\Requests\StoreTasksRequest;
 use App\Modules\Tasks\Http\Requests\SubmitTaskFormRequest;
+use App\Modules\Tasks\Http\Resources\TaskCountsResource;
 use App\Modules\Tasks\Http\Resources\TaskListResource;
 use App\Modules\Tasks\Http\Resources\TaskResource;
 use App\Modules\Tasks\Models\Task;
@@ -29,10 +32,19 @@ class TasksController extends Controller
         $paginator = $this->service->index($request);
 
         return TaskListResource::collection($paginator)->additional(['meta' => [
-            'total' => !$request->has('cursor') 
-                ? $this->service->count($request) 
-                : null
+            'total' => !$request->has('cursor')
+                ? $this->service->count($request)
+                : null,
         ]]);
+    }
+
+    public function counts(Request $request): TaskCountsResource
+    {
+        $this->authorize('viewAny', Task::class);
+
+        return TaskCountsResource::make(
+            $this->service->counts($request)
+        );
     }
 
     public function show(Request $request, string $id): TaskResource
@@ -40,7 +52,7 @@ class TasksController extends Controller
         $task = Task::withTrashed()->findOrFail($id);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
+            $task->loadMissing(Task::detailRelations())
         );
     }
 
@@ -49,7 +61,7 @@ class TasksController extends Controller
         return TaskResource::make(
             $this->service->create(
                 TaskDTO::fromRequest($request)
-            )
+            )->loadMissing(Task::detailRelations())
         );
     }
 
@@ -59,10 +71,10 @@ class TasksController extends Controller
             $task,
             TaskDTO::fromRequest($request)
         );
-        
+
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'])
-        ); 
+            $task->loadMissing(Task::detailRelations())
+        );
     }
 
     public function destroy(DeleteTaskRequest $request, Task $task): \Illuminate\Http\JsonResponse
@@ -70,8 +82,17 @@ class TasksController extends Controller
         $this->service->delete($task);
 
         return response()->json([
-            'message' => 'Task moved to trash successfully'
+            'message' => 'Task moved to trash successfully',
         ]);
+    }
+
+    public function removeAttachment(DeleteTaskAttachmentRequest $request, Task $task, File $file): TaskResource
+    {
+        $this->service->removeAttachment($task, $file);
+
+        return TaskResource::make(
+            $task->loadMissing(Task::detailRelations())
+        );
     }
 
     public function forceDestroy(ForceDeleteTaskRequest $request, Task $task): \Illuminate\Http\JsonResponse
@@ -79,7 +100,7 @@ class TasksController extends Controller
         $task->forceDelete();
 
         return response()->json([
-            'message' => 'Task permanently deleted'
+            'message' => 'Task permanently deleted',
         ]);
     }
 
@@ -88,9 +109,7 @@ class TasksController extends Controller
         $task = Task::withTrashed()->findOrFail($id);
 
         return TaskResource::make(
-            $this->service->restore($task)->loadMissing([
-                'assigned', 'creator', 'labels', 'files', 'form', 'formSubmission'
-            ])
+            $this->service->restore($task)->loadMissing(Task::detailRelations())
         );
     }
 
@@ -98,14 +117,14 @@ class TasksController extends Controller
     {
         if ($status === TaskStatus::TRASH) {
             throw \Illuminate\Validation\ValidationException::withMessages([
-                'status' => ['Use DELETE endpoint for moving task to trash']
+                'status' => ['Use DELETE endpoint for moving task to trash'],
             ]);
         }
 
         $task = $this->service->changeStatus($task, $status);
 
         return TaskResource::make(
-            $task->loadMissing(['assigned', 'creator', 'labels', 'files', 'form', 'formSubmission', 'pendingApprovalProcess'])
+            $task->load(Task::detailRelations())
         );
     }
 

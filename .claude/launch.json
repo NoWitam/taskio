@@ -1,0 +1,21 @@
+{
+  "version": "0.0.1",
+  "autoPort": true,
+  "configurations": [
+    {
+      "name": "taskio",
+      "port": 8123,
+      "runtimeExecutable": "cmd.exe",
+      "runtimeArgs": [
+        "/c",
+        "wsl.exe",
+        "-d",
+        "ubuntu",
+        "--",
+        "bash",
+        "-lc",
+        "exec bash ~/taskio/.claude/preview-server.sh %PORT%"
+      ]
+    }
+  ]
+}

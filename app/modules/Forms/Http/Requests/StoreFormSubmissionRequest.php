@@ -3,6 +3,7 @@
 namespace App\Modules\Forms\Http\Requests;
 
 use App\Modules\Forms\Models\Form;
+use App\Rules\ScopedExists;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreFormSubmissionRequest extends FormRequest
@@ -15,7 +16,7 @@ class StoreFormSubmissionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'form_id' => ['required', 'uuid', 'exists:forms,id'],
+            'form_id' => ['required', 'uuid', new ScopedExists(Form::class)],
             'submittable_type' => ['nullable', 'string'],
             'submittable_id' => ['nullable', 'uuid'],
             'data' => ['required', 'array'],
@@ -31,7 +32,7 @@ class StoreFormSubmissionRequest extends FormRequest
         // automatically set it to point to the Form itself
         if (!$this->has('submittable_type') || !$this->has('submittable_id')) {
             $this->merge([
-                'submittable_type' => (new Form())->getMorphClass(),
+                'submittable_type' => (new Form)->getMorphClass(),
                 'submittable_id' => $this->input('form_id'),
             ]);
         }

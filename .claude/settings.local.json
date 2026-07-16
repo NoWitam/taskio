@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php artisan *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(wsl -d ubuntu --cd /home/postgres/taskio -- php artisan boost:mcp)",
+      "Bash(wsl -d ubuntu -- bash -c 'cd /home/postgres/taskio && exec php artisan boost:mcp')",
+      "Bash(wsl -d ubuntu -- bash -lc 'php -v | head -1; echo \"---\"; dpkg -l | grep -E \"php8\\\\.[0-9]+-pgsql|php-pgsql\" 2>/dev/null; echo \"--- ext dir ---\"; php -i | grep \"^extension_dir\"; echo \"--- loaded pgsql files ---\"; php --ri pdo_pgsql 2>&1 | head -3')",
+      "Bash(ls -la \"\\\\\\\\\\\\\\\\wsl.localhost\\\\\\\\ubuntu\\\\\\\\home\\\\\\\\postgres\\\\\\\\taskio\" 2>/dev/null || ls -la /home/postgres/taskio)",
+      "Bash(vendor/bin/pint --test app/Models/AbstractModel.php app/modules/Forms/Services/FormService.php app/modules/Labels/Services/LabelService.php app/modules/Tasks/Services/TaskService.php app/modules/Approvals/Services/ApprovalPipelineService.php)",
+      "Bash(wsl.exe -d ubuntu bash -lc \"cd /home/postgres/taskio && php -v | head -1 && echo '---' && ls tests/Feature 2>/dev/null && ls tests/Unit 2>/dev/null\")",
+      "Bash(wsl.exe -d ubuntu bash -lc \\\\\"cd /home/postgres/taskio)",
+      "Bash(echo '--- expanded empty body \\)\\\\\\\\n{\\\\\\\\n}:')",
+      "Bash(grep -rPzoh '\\\\\\\\\\)\\\\\\\\s*\\\\\\\\n\\\\\\\\s*\\\\\\\\{\\\\\\\\s*\\\\\\\\n\\\\\\\\s*\\\\\\\\}' app --include='*.php')",
+      "Bash(grep -rEoh '\\\\\\\\\\)\\\\\\\\s*\\\\\\\\{\\\\\\\\s*\\\\\\\\}' app --include='*.php')"
+    ]
+  }
+}

@@ -5,14 +5,14 @@ namespace App\Modules\Comments\Models;
 use App\Casts\MarkdownTreeCast;
 use App\Models\AbstractModel;
 use App\Models\User;
+use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Comment extends AbstractModel
 {
-    use HasUuids, SoftDeletes;
+    use HasUuids, SoftDeletes, TenantAware;
 
     protected $table = 'comments';
 
@@ -20,7 +20,8 @@ class Comment extends AbstractModel
         'content',
         'commentable_type',
         'commentable_id',
-        'author_id'
+        'author_type',
+        'author_id',
     ];
 
     protected $casts = [
@@ -35,8 +36,16 @@ class Comment extends AbstractModel
         return $this->morphTo();
     }
 
-    public function author(): BelongsTo
+    /**
+     * Polymorphic author (User|Bot). A comment is normally authored by the current
+     * user; the bot task-execution flow authors comments as a Bot. The User branch
+     * bypasses WorkspaceMemberScope on load so a former-member author still renders
+     * (the comment author is part of a comment's permanent record).
+     */
+    public function author(): MorphTo
     {
-        return $this->belongsTo(User::class, 'author_id');
+        return $this->morphTo('author')->constrain([
+            User::class => fn ($query) => $query->withoutWorkspaceMemberScope(),
+        ]);
     }
 }

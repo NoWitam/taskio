@@ -11,6 +11,7 @@ use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Forms\Services\FormSubmissionService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Http\Response;
 
 class FormSubmissionsController extends Controller
 {
@@ -50,5 +51,47 @@ class FormSubmissionsController extends Controller
         return FormSubmissionResource::make(
             $submission->fresh()->loadMissing(['form', 'creator'])
         );
+    }
+
+    /**
+     * Soft-delete a submission (moves it to the trash).
+     */
+    public function destroy(FormSubmission $submission): Response
+    {
+        $this->authorize('delete', $submission);
+
+        $submission->delete();
+
+        return response()->noContent();
+    }
+
+    /**
+     * Restore a soft-deleted submission.
+     */
+    public function restore(string $id): FormSubmissionResource
+    {
+        $submission = FormSubmission::withTrashed()->findOrFail($id);
+
+        $this->authorize('restore', $submission);
+
+        $submission->restore();
+
+        return FormSubmissionResource::make(
+            $submission->loadMissing(['form', 'creator'])
+        );
+    }
+
+    /**
+     * Permanently delete a soft-deleted submission.
+     */
+    public function forceDestroy(string $id): Response
+    {
+        $submission = FormSubmission::withTrashed()->findOrFail($id);
+
+        $this->authorize('forceDelete', $submission);
+
+        $submission->forceDelete();
+
+        return response()->noContent();
     }
 }

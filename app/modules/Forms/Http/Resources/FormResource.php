@@ -2,7 +2,7 @@
 
 namespace App\Modules\Forms\Http\Resources;
 
-use App\Modules\Users\Http\Resources\UserResource;
+use App\Http\Resources\CreatorResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -46,7 +46,7 @@ class FormResource extends JsonResource
             'available_filters' => $this->getAvailableFilters(),
             'reporting_mode' => $this->getReportingMode(),
 
-            'creator' => UserResource::make($this->whenLoaded('creator')),
+            'creator' => CreatorResource::make($this->whenLoaded('creator')),
             'submissions_count' => $this->whenCounted('submissions'),
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),

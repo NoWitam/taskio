@@ -15,6 +15,7 @@ return [
     'formIcon' => 'Form Icon',
     'isAnonymous' => 'Anonymous Form',
     'anonymousDescription' => 'Form can be filled without logging in',
+    'anonymousDefaultName' => 'Task form',
     'formContent' => 'Form Content',
     'noForms' => 'No Forms',
     'searchForms' => 'Search forms...',
@@ -31,7 +32,7 @@ return [
     'confirmForceDelete' => 'Are you sure you want to permanently delete form :name?',
     'confirmForceDeleteDescription' => 'This action cannot be undone.',
     'confirmRestore' => 'Are you sure you want to restore form :name?',
-    
+
     // Element types
     'elementTypes' => [
         'section' => 'Section',
@@ -62,7 +63,7 @@ return [
     // Element palette
     'elementPalette' => 'Element Palette',
     'dragToAdd' => 'Drag to add',
-    
+
     // Element editor
     'elementProperties' => 'Element Properties',
     'noElementSelected' => 'No Element Selected',
@@ -95,11 +96,11 @@ return [
     'removeColumn' => 'Remove Column',
     'minInstances' => 'Minimum Instances',
     'maxInstances' => 'Maximum Instances',
-    
+
     // Element actions
     'duplicateElement' => 'Duplicate',
     'deleteElement' => 'Delete',
-    
+
     // Form builder
     'formCanvas' => 'Canvas',
     'elementTree' => 'Element Tree',
@@ -110,7 +111,7 @@ return [
     'formSavedMessage' => 'Form changes have been saved.',
     'formSaveFailed' => 'Save Failed',
     'formSaveFailedMessage' => 'Failed to save the form.',
-    
+
     // Form viewer
     'submitForm' => 'Submit Form',
     'formSubmitted' => 'Form Submitted',
@@ -121,7 +122,7 @@ return [
     'addInstance' => 'Add',
     'removeInstance' => 'Remove',
     'instance' => 'Instance',
-    
+
     // Validation
     'validation' => [
         'required' => 'This field is required.',
@@ -134,29 +135,29 @@ return [
         'invalidTime' => 'Please enter a valid time.',
         'invalidNumber' => 'Please enter a valid number.',
     ],
-    
+
     // Submissions
     'submissions' => 'Submissions',
     'submittedBy' => 'Submitted By',
     'submittedAt' => 'Submitted At',
     'noSubmissions' => 'No Submissions',
     'viewSubmission' => 'View Submission',
-    
+
     // Filters
     'showArchived' => 'Show Archived',
     'filterByAnonymous' => 'Anonymous Only',
-    
+
     // Form selection
     'selectForm' => 'Select Form',
     'searchPlaceholder' => 'Search forms...',
     'noFormsAvailable' => 'No Forms Available',
     'noFormsAvailableDescription' => 'All forms have been archived or no forms have been created yet.',
-    
+
     // Messages
     'selectFormToView' => 'Select a form to view details',
     'loadingForm' => 'Loading form...',
     'formNotFound' => 'Form not found.',
-    
+
     // New UI elements
     'moduleDescription' => 'Create and manage forms for your projects',
     'backToList' => 'Back to List',
@@ -182,14 +183,14 @@ return [
     'forceDeleteError' => 'Failed to permanently delete form',
     'formsTrashWarningTitle' => 'Automatic Deletion',
     'formsTrashWarningMessage' => 'Forms in trash are automatically permanently deleted after 30 days.',
-    
+
     // Enable dialog
     'enableFormTitle' => 'Enable Form',
     'enableFormDescription' => 'Enabling the form will allow users to submit responses.',
     'enableWarningTitle' => 'Warning',
     'enableWarningDescription' => 'Once enabled, every save must pass full validation. You can disable the form later to return to draft mode.',
     'enableForm' => 'Enable Form',
-    
+
     // Disable dialog
     'disable' => 'Disable',
     'disableFormTitle' => 'Disable Form',
@@ -229,7 +230,7 @@ return [
     'indexRestored' => 'Index restore has been started',
     'restoreIndexError' => 'Failed to restore index',
     'restoreIndexIncompatible' => 'The backup is incompatible with the current form version.',
-    
+
     // Submissions page
     'submissionsDescription' => 'Manage submissions for this form',
     'createSubmission' => 'Create Submission',
@@ -266,11 +267,11 @@ return [
     'confirmDeleteSubmission' => 'Are you sure you want to delete this submission?',
     'confirmForceDeleteSubmission' => 'Are you sure you want to permanently delete this submission?',
     'createSubmissionDescription' => 'Fill out the form to create a new submission',
-    
+
     // Preview page
     'previewDescription' => 'Preview the form structure',
     'formNotFoundDescription' => 'The form with the given ID does not exist',
-    
+
     // Reports page
     'reportsDescription' => 'View statistics and reports for this form',
     'reportsComingSoon' => 'Reports Coming Soon',

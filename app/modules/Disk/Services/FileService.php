@@ -22,7 +22,7 @@ class FileService
             'type' => FileType::fromMimeType($file->getMimeType()),
             'mime_type' => $file->getMimeType(),
             'size' => $file->getSize(),
-            'fileable_type' => $parent?->getMorphClass(), 
+            'fileable_type' => $parent?->getMorphClass(),
             'fileable_id' => $parent?->getKey(),
         ]);
     }
@@ -36,25 +36,34 @@ class FileService
         File::whereIn('id', $files->pluck('id'))
             ->update([
                 'fileable_id' => $model->id,
-                'fileable_type' => $model->getMorphClass()
+                'fileable_type' => $model->getMorphClass(),
             ]);
 
         // Zbierz zarówno dodane jak i usunięte pliki w jednym trackerze
         app(ChangelogManager::class)->manual($model, 'files', function (BagTracker $tracker) use ($files, $model, $file_ids, $deleteAnother) {
             // Dodaj nowe pliki
-            foreach($files as $file) {
+            foreach ($files as $file) {
                 $tracker->attach($file);
             }
-            
+
             // Usuń stare pliki jeśli deleteAnother
-            if($deleteAnother) {
+            if ($deleteAnother) {
                 $toDelete = $model->files()->whereNotIn('id', $file_ids)->get();
-                
-                foreach($toDelete as $file) {
+
+                foreach ($toDelete as $file) {
                     $tracker->detach($file);
                     $file->delete();
                 }
             }
         });
+    }
+
+    public function detach(Model $model, File $file): void
+    {
+        app(ChangelogManager::class)->manual($model, 'files', function (BagTracker $tracker) use ($file) {
+            $tracker->detach($file);
+        });
+
+        $file->delete();
     }
 }

@@ -3,6 +3,8 @@
 use App\Modules\Users\Http\Controllers\UsersController;
 use Illuminate\Support\Facades\Route;
 
-Route::prefix('users')->group(function (): void {
-    Route::get('/', [UsersController::class, 'index']);
+Route::middleware('auth:sanctum')->group(function () {
+    Route::prefix('users')->group(function (): void {
+        Route::get('/', [UsersController::class, 'index']);
+    });
 });

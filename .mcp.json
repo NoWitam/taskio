@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+        "laravel-boost": {
+            "command": "wsl",
+            "args": [
+                "-d",
+                "ubuntu",
+                "--",
+                "bash",
+                "-c",
+                "cd /home/postgres/taskio && exec php artisan boost:mcp"
+            ]
+        }
+    }
+}

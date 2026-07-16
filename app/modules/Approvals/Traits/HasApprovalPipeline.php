@@ -45,12 +45,21 @@ trait HasApprovalPipeline
         return $this->approval_pipeline_id !== null;
     }
 
+    public function latestApprovalRunId(): ?string
+    {
+        if ($this->relationLoaded('pendingApprovalProcess') && $this->pendingApprovalProcess !== null) {
+            return $this->pendingApprovalProcess->run_id;
+        }
+
+        return $this->approvalProcesses()->latest()->value('run_id');
+    }
+
     public function currentApprovalRun(): Collection
     {
         $pending = $this->pendingApprovalProcess;
 
         if (!$pending) {
-            return new Collection();
+            return new Collection;
         }
 
         return $this->approvalProcesses()

@@ -11,7 +11,9 @@ use App\Modules\Approvals\Models\ApprovalProcess;
 use App\Modules\Approvals\Models\ApprovalStage;
 use App\Modules\Changelog\Enums\ChangelogEvent;
 use App\Modules\Changelog\Managers\ChangelogManager;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -65,7 +67,7 @@ class ApprovalService
                 ]
             );
 
-            if ($firstStage->isAiApprover()) {
+            if ($firstStage->isAutomatedApprover()) {
                 ProcessAiApprovalJob::dispatch($process);
             }
 
@@ -153,7 +155,7 @@ class ApprovalService
             ]
         );
 
-        if ($nextStage->isAiApprover()) {
+        if ($nextStage->isAutomatedApprover()) {
             ProcessAiApprovalJob::dispatch($newProcess);
         }
 
@@ -193,13 +195,40 @@ class ApprovalService
 
     public function getQueueForUser(string $userId)
     {
-        return ApprovalProcess::query()
-            ->with(['pipeline', 'stage', 'approvable'])
+        $paginator = ApprovalProcess::query()
+            ->with(['pipeline', 'stage', 'approvable', 'approver', 'approverBot'])
             ->where('approver_type', ApproverType::User)
             ->where('approver_id', $userId)
             ->where('status', ApprovalProcessStatus::Pending)
             ->orderBy('created_at', 'desc')
             ->cursorPaginate(8);
+
+        $this->eagerLoadApprovableQueueRelations($paginator->getCollection());
+
+        return $paginator;
+    }
+
+    /**
+     * Batch-load each approvable's queue relations grouped by concrete type, so
+     * ApprovalQueueItemResource → toApprovalQueueItem() reads them from memory
+     * instead of lazy-loading per row (N+1). Stays decoupled from concrete
+     * approvables: the relation list comes from the Approvable interface.
+     */
+    private function eagerLoadApprovableQueueRelations(Collection $processes): void
+    {
+        $processes
+            ->map(fn (ApprovalProcess $process) => $process->approvable)
+            ->filter(fn ($approvable) => $approvable instanceof Approvable)
+            ->groupBy(fn (Approvable $approvable) => $approvable::class)
+            ->each(function (Collection $group): void {
+                /** @var Approvable $sample */
+                $sample = $group->first();
+                $relations = $sample->approvalQueueRelations();
+
+                if ($relations !== []) {
+                    EloquentCollection::make($group->all())->load($relations);
+                }
+            });
     }
 
     public function getQueueCountForUser(string $userId): int

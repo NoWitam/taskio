@@ -2,9 +2,7 @@
 
 namespace App\Modules\Approvals\Http\Resources;
 
-use App\Modules\Approvals\DTOs\ApprovalQueueItem;
 use App\Modules\Approvals\Interfaces\Approvable;
-use App\Modules\Users\Http\Resources\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -21,6 +19,12 @@ class ApprovalQueueItemResource extends JsonResource
                 'run_id' => $this->run_id,
                 'status' => $this->status->value,
                 'approver_type' => $this->approver_type->value,
+                // Polymorphic approver identity (User OR Bot, null for a generic AI stage).
+                'approver_identity' => ApproverResource::present(
+                    $this->approver_type,
+                    $this->whenLoaded('approver'),
+                    $this->whenLoaded('approverBot'),
+                ),
                 'created_at' => $this->created_at?->toISOString(),
             ],
             'pipeline' => [

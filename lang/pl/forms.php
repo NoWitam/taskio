@@ -16,6 +16,7 @@ return [
     'formIcon' => 'Ikona formularza',
     'isAnonymous' => 'Formularz anonimowy',
     'anonymousDescription' => 'Formularz może być wypełniony bez logowania',
+    'anonymousDefaultName' => 'Formularz zadania',
     'formContent' => 'Zawartość formularza',
     'noForms' => 'Brak formularzy',
     'searchForms' => 'Szukaj formularzy...',
@@ -32,7 +33,7 @@ return [
     'confirmForceDelete' => 'Czy na pewno chcesz trwale usunąć formularz :name?',
     'confirmForceDeleteDescription' => 'Ta akcja jest nieodwracalna.',
     'confirmRestore' => 'Czy na pewno chcesz przywrócić formularz :name?',
-    
+
     // Element types
     'elementTypes' => [
         'section' => 'Sekcja',
@@ -63,7 +64,7 @@ return [
     // Element palette
     'elementPalette' => 'Paleta elementów',
     'dragToAdd' => 'Przeciągnij aby dodać',
-    
+
     // Element editor
     'elementProperties' => 'Właściwości elementu',
     'noElementSelected' => 'Nie wybrano elementu',
@@ -96,11 +97,11 @@ return [
     'removeColumn' => 'Usuń kolumnę',
     'minInstances' => 'Minimalna liczba powtórzeń',
     'maxInstances' => 'Maksymalna liczba powtórzeń',
-    
+
     // Element actions
     'duplicateElement' => 'Duplikuj',
     'deleteElement' => 'Usuń',
-    
+
     // Form builder
     'formCanvas' => 'Obszar roboczy',
     'elementTree' => 'Drzewo elementów',
@@ -111,7 +112,7 @@ return [
     'formSavedMessage' => 'Zmiany w formularzu zostały zapisane.',
     'formSaveFailed' => 'Błąd zapisu',
     'formSaveFailedMessage' => 'Nie udało się zapisać formularza.',
-    
+
     // Form viewer
     'submitForm' => 'Wyślij formularz',
     'formSubmitted' => 'Formularz wysłany',
@@ -122,7 +123,7 @@ return [
     'addInstance' => 'Dodaj',
     'removeInstance' => 'Usuń',
     'instance' => 'Powtórzenie',
-    
+
     // Validation
     'validation' => [
         'required' => 'To pole jest wymagane.',
@@ -135,29 +136,29 @@ return [
         'invalidTime' => 'Wprowadź prawidłowy czas.',
         'invalidNumber' => 'Wprowadź prawidłową liczbę.',
     ],
-    
+
     // Submissions
     'submissions' => 'Wypełnienia',
     'submittedBy' => 'Wypełnione przez',
     'submittedAt' => 'Data wypełnienia',
     'noSubmissions' => 'Brak wypełnień',
     'viewSubmission' => 'Zobacz wypełnienie',
-    
+
     // Filters
     'showArchived' => 'Pokaż zarchiwizowane',
     'filterByAnonymous' => 'Tylko anonimowe',
-    
+
     // Form selection
     'selectForm' => 'Wybierz formularz',
     'searchPlaceholder' => 'Szukaj formularzy...',
     'noFormsAvailable' => 'Brak dostępnych formularzy',
     'noFormsAvailableDescription' => 'Wszystkie formularze zostały zarchiwizowane lub nie utworzono jeszcze żadnego formularza.',
-    
+
     // Messages
     'selectFormToView' => 'Wybierz formularz aby zobaczyć szczegóły',
     'loadingForm' => 'Ładowanie formularza...',
     'formNotFound' => 'Formularz nie został znaleziony.',
-    
+
     // New UI elements
     'moduleDescription' => 'Twórz i zarządzaj formularzami dla swoich projektów',
     'backToList' => 'Powrót do listy',
@@ -183,14 +184,14 @@ return [
     'forceDeleteError' => 'Nie udało się trwale usunąć formularza',
     'formsTrashWarningTitle' => 'Automatyczne usuwanie',
     'formsTrashWarningMessage' => 'Formularze w koszu są automatycznie trwale usuwane po 30 dniach.',
-    
+
     // Enable dialog
     'enableFormTitle' => 'Włącz formularz',
     'enableFormDescription' => 'Włączenie formularza umożliwi użytkownikom jego wypełnianie.',
     'enableWarningTitle' => 'Uwaga',
     'enableWarningDescription' => 'Po włączeniu formularza każdy zapis będzie musiał spełniać pełną walidację. Możesz później wyłączyć formularz, aby wrócić do trybu roboczego.',
     'enableForm' => 'Włącz formularz',
-    
+
     // Disable dialog
     'disable' => 'Wyłącz',
     'disableFormTitle' => 'Wyłącz formularz',
@@ -230,7 +231,7 @@ return [
     'indexRestored' => 'Przywracanie indeksu zostało rozpoczęte',
     'restoreIndexError' => 'Nie udało się przywrócić indeksu',
     'restoreIndexIncompatible' => 'Kopia zapasowa jest niezgodna z bieżącą wersją formularza.',
-    
+
     // Submissions page
     'submissionsDescription' => 'Zarządzaj wypełnieniami tego formularza',
     'createSubmission' => 'Utwórz wypełnienie',
@@ -267,11 +268,11 @@ return [
     'confirmDeleteSubmission' => 'Czy na pewno chcesz usunąć to wypełnienie?',
     'confirmForceDeleteSubmission' => 'Czy na pewno chcesz trwale usunąć to wypełnienie?',
     'createSubmissionDescription' => 'Wypełnij formularz aby utworzyć nowe wypełnienie',
-    
+
     // Preview page
     'previewDescription' => 'Podgląd struktury formularza',
     'formNotFoundDescription' => 'Formularz o podanym identyfikatorze nie istnieje',
-    
+
     // Reports page
     'reportsDescription' => 'Przegląd statystyk i raportów tego formularza',
     'reportsComingSoon' => 'Raporty wkrótce',

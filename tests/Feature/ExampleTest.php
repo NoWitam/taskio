@@ -8,12 +8,20 @@ use Tests\TestCase;
 class ExampleTest extends TestCase
 {
     /**
-     * A basic test example.
+     * The home route redirects into the "next" SPA (the only frontend; the
+     * legacy /app bundle was decommissioned).
      */
-    public function test_the_application_returns_a_successful_response(): void
+    public function test_the_home_route_redirects_into_the_next_app(): void
     {
-        $response = $this->get('/');
+        $this->get('/')->assertRedirect('/next');
+    }
 
-        $response->assertStatus(200);
+    /**
+     * The old legacy /app path stays alive for existing bookmarks by redirecting
+     * into /next, preserving whatever sub-path was requested.
+     */
+    public function test_the_legacy_app_path_redirects_into_next(): void
+    {
+        $this->get('/app/tasks')->assertRedirect('/next/tasks');
     }
 }

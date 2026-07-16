@@ -2,7 +2,7 @@
 
 namespace App\Modules\Approvals\Http\Resources;
 
-use App\Modules\Users\Http\Resources\UserResource;
+use App\Http\Resources\CreatorResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -16,7 +16,8 @@ class ApprovalPipelineResource extends JsonResource
             'icon' => $this->icon?->value,
             'description' => $this->description,
             'stages' => ApprovalStageResource::collection($this->whenLoaded('stages')),
-            'creator' => UserResource::make($this->whenLoaded('creator')),
+            'creator' => CreatorResource::make($this->whenLoaded('creator')),
+            'is_owner' => $this->isOwnedBy($request->user()),
             'can_be_edited' => $this->canBeEdited(),
             'can_be_deleted' => $this->canBeDeleted(),
             'created_at' => $this->created_at?->toISOString(),

@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Storage;
 
 class CreateFormReport implements ShouldQueue
 {
-    use Queueable, InteractsWithFormSchema;
+    use InteractsWithFormSchema, Queueable;
 
     private bool $usesAnalyticalTable = false;
 
@@ -184,8 +184,9 @@ class CreateFormReport implements ShouldQueue
                 KOLUMNY SYSTEMOWE:
                 - submission_id (UUID) - ID wypełnienia
                 - source (TEXT) - źródło wypełnienia ('task' lub 'form')
-                - creator_id (UUID) - ID twórcy wypełnienia
-                - creator_name (TEXT) - imię i nazwisko twórcy
+                - creator_id (UUID) - ID twórcy wypełnienia (człowiek, automatyzacja lub bot)
+                - creator_name (TEXT) - imię i nazwisko twórcy-CZŁOWIEKA; NULL dla wypełnień
+                  utworzonych przez automatyzację (workflow) lub bota
                 - created_at (TIMESTAMP) - data zatwierdzenia wypełnienia
                 - form_content_version_id (UUID) - wersja formularza
                 
@@ -222,7 +223,8 @@ class CreateFormReport implements ShouldQueue
                 - data (JSONB) - dane wypełnienia w formacie JSON
                 - form_content_version_id (UUID) - wersja formularza
                 - approved_at (TIMESTAMP, nullable) - data zatwierdzenia
-                - creator_id (UUID) - ID twórcy
+                - creator_id (UUID) - ID twórcy (człowiek, automatyzacja lub bot)
+                - creator_type (TEXT) - typ twórcy: 'user' (człowiek), 'workflow_run' (automatyzacja) lub 'bot'
                 - created_at (TIMESTAMP) - data utworzenia
                 - deleted_at (TIMESTAMP, nullable) - soft delete
             
@@ -417,7 +419,7 @@ class CreateFormReport implements ShouldQueue
      */
     private function formatSources(): string
     {
-        if(!empty($this->report->sources)) {
+        if (!empty($this->report->sources)) {
             return collect($this->report->sources)
                 ->map(function ($source) {
                     return match ($source) {
@@ -449,7 +451,7 @@ class CreateFormReport implements ShouldQueue
             'size' => strlen($content),
             'path' => 'reports/' . $filename,
             'mime_type' => 'text/plain',
-            'uploader_id' => $this->report->creator_id
+            'uploader_id' => $this->report->creator_id,
         ]);
 
         Storage::put('reports/' . $filename, $content);

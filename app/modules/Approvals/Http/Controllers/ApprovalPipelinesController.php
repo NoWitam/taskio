@@ -29,7 +29,7 @@ class ApprovalPipelinesController extends Controller
     public function show(ApprovalPipeline $pipeline): ApprovalPipelineResource
     {
         return ApprovalPipelineResource::make(
-            $pipeline->loadMissing(['stages.approver', 'creator'])
+            $pipeline->loadMissing(['stages.approver', 'stages.approverBot', 'creator'])
         );
     }
 

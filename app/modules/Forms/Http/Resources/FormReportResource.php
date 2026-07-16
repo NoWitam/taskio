@@ -2,8 +2,8 @@
 
 namespace App\Modules\Forms\Http\Resources;
 
+use App\Http\Resources\CreatorResource;
 use App\Modules\Disk\Http\Resources\FileResource;
-use App\Modules\Users\Http\Resources\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -25,7 +25,7 @@ class FormReportResource extends JsonResource
             'is_completed' => $this->isCompleted(),
             'completed_at' => $this->completed_at?->toISOString(),
             'file' => FileResource::make($this->whenLoaded('file')),
-            'creator' => UserResource::make($this->whenLoaded('creator')),
+            'creator' => CreatorResource::make($this->whenLoaded('creator')),
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
             'deleted_at' => $this->deleted_at?->toISOString(),

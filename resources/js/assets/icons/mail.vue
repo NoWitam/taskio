@@ -1,6 +1,0 @@
-<template>
-  <g>
-    <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
-    <polyline points="22 6 12 13 2 6" />
-  </g>
-</template>

@@ -6,6 +6,7 @@ use App\Modules\Forms\DTOs\FormDTO;
 use App\Modules\Forms\Jobs\IndexFormJob;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormContentVersion;
+use App\Modules\Workflows\Models\WorkflowRun;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
@@ -20,9 +21,11 @@ class FormService
     public function create(FormDTO $dto): Form
     {
         $isAnonymous = $dto->is_anonymous;
+        // Anonymous forms don't require a user-supplied name; fall back to a default.
+        $name = $isAnonymous && blank($dto->name) ? __('forms.anonymousDefaultName') : $dto->name;
 
         $form = Form::create([
-            'name' => $dto->name,
+            'name' => $name,
             'icon' => $dto->icon,
             'description' => $dto->description,
             'content' => $dto->content,
@@ -89,7 +92,7 @@ class FormService
 
     /**
      * Enable the form, making it ready to accept submissions
-     * 
+     *
      * @throws ValidationException if form doesn't have minimum required fields or is already enabled
      */
     public function enable(Form $form): Form
@@ -126,7 +129,7 @@ class FormService
      * Disable the form, putting it back into draft mode.
      * Preserves a backup of the current content for potential re-enable.
      * Disabling does NOT automatically unindex the form.
-     * 
+     *
      * @throws ValidationException if form cannot be disabled
      */
     public function disable(Form $form): Form
@@ -154,7 +157,7 @@ class FormService
      * Dispatches an async job to create the analytical table and bootstrap data.
      * Sets indexing_started_at to prevent duplicate triggers.
      * Only enabled forms can be indexed.
-     * 
+     *
      * @throws ValidationException if form cannot be indexed
      */
     public function indexForm(Form $form): Form
@@ -186,7 +189,7 @@ class FormService
      * Unindex the form, removing advanced filtering capabilities.
      * Drops the dedicated analytical table.
      * Optionally creates an internal-only backup of index metadata.
-     * 
+     *
      * @throws ValidationException if form cannot be unindexed
      */
     public function unindex(Form $form, bool $backupIndexes = false): Form
@@ -286,28 +289,24 @@ class FormService
     protected function listQuery(Request $request): Builder
     {
         return Form::query()
-            ->with('creator')
+            // creator is polymorphic (User|WorkflowRun|Bot); load a run's workflow so
+            // CreatorResource renders the automation name without an N+1 per row.
+            ->with(['creator' => fn ($creator) => $creator->morphWith([WorkflowRun::class => ['workflow']])])
             ->withCount('submissions')
             ->where('is_anonymous', false)
             ->when(
                 request()->boolean('trashed'),
-                fn(Builder $query) => $query->onlyTrashed()
+                fn (Builder $query) => $query->onlyTrashed()
             )
             ->when(
                 request()->filled('enabled'),
-                fn(Builder $query) => request()->boolean('enabled') ? $query->whereNotNull('enabled_at') : $query->whereNull('enabled_at')
+                fn (Builder $query) => request()->boolean('enabled') ? $query->whereNotNull('enabled_at') : $query->whereNull('enabled_at')
             )
             ->when(
                 request()->filled('indexed'),
-                fn(Builder $query) => request()->boolean('indexed') ? $query->whereNotNull('indexed_at') : $query->whereNull('indexed_at')
+                fn (Builder $query) => request()->boolean('indexed') ? $query->whereNotNull('indexed_at') : $query->whereNull('indexed_at')
             )
-            ->when(
-                $request->has('search'),
-                fn(Builder $query) => $query->where(fn(Builder $sq) => 
-                    $sq->whereLike('name', '%' . $request->get('search') . '%')
-                        ->orWhereLike('description', '%' . $request->get('search') . '%')
-                )
-            )
+            ->search(['name', 'description'], $request->get('search'))
             ->latest('created_at');
     }
 

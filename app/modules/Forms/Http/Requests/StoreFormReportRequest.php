@@ -3,6 +3,7 @@
 namespace App\Modules\Forms\Http\Requests;
 
 use App\Modules\Forms\Models\Form;
+use App\Rules\ScopedExists;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -18,7 +19,7 @@ class StoreFormReportRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'form_id' => ['required', 'uuid', 'exists:forms,id'],
+            'form_id' => ['required', 'uuid', new ScopedExists(Form::class)],
             'name' => ['required', 'string', 'max:255'],
             'guidelines' => ['nullable', 'string', 'max:5000'],
             'sources' => ['nullable', 'array'],

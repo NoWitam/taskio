@@ -22,7 +22,7 @@ class CommentsController extends Controller
     public function index(string $module, string $id): AnonymousResourceCollection
     {
         $commentable = $this->resolveCommentable($module, $id);
-        
+
         $comments = $this->service->getComments($commentable);
 
         return CommentResource::collection($comments);
@@ -37,7 +37,9 @@ class CommentsController extends Controller
             CommentDTO::fromRequest($request)
         );
 
-        return CommentResource::make($comment->load('author'));
+        return CommentResource::make(
+            $comment->load('author')
+        );
     }
 
     public function update(UpdateCommentRequest $request, Comment $comment): CommentResource
@@ -47,7 +49,9 @@ class CommentsController extends Controller
             CommentDTO::fromRequest($request)
         );
 
-        return CommentResource::make($comment->load('author'));
+        return CommentResource::make(
+            $comment->load('author')
+        );
     }
 
     public function destroy(DeleteCommentRequest $request, Comment $comment): \Illuminate\Http\JsonResponse
@@ -55,13 +59,13 @@ class CommentsController extends Controller
         $this->service->delete($comment);
 
         return response()->json([
-            'message' => 'Comment deleted successfully'
+            'message' => 'Comment deleted successfully',
         ]);
     }
 
     private function resolveCommentable(string $module, string $id): Model
     {
-        $modelClass = match($module) {
+        $modelClass = match ($module) {
             'tasks' => \App\Modules\Tasks\Models\Task::class,
             // Dodaj tutaj inne moduły w przyszłości
             default => throw new \Exception("Module {$module} not supported for comments")
