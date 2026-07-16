@@ -13,6 +13,7 @@ use App\Modules\Tasks\Http\Requests\ForceDeleteTaskRequest;
 use App\Modules\Tasks\Http\Requests\RestoreTaskRequest;
 use App\Modules\Tasks\Http\Requests\StoreTasksRequest;
 use App\Modules\Tasks\Http\Requests\SubmitTaskFormRequest;
+use App\Modules\Tasks\Http\Resources\TaskCountsResource;
 use App\Modules\Tasks\Http\Resources\TaskListResource;
 use App\Modules\Tasks\Http\Resources\TaskResource;
 use App\Modules\Tasks\Models\Task;
@@ -35,6 +36,15 @@ class TasksController extends Controller
                 ? $this->service->count($request)
                 : null,
         ]]);
+    }
+
+    public function counts(Request $request): TaskCountsResource
+    {
+        $this->authorize('viewAny', Task::class);
+
+        return TaskCountsResource::make(
+            $this->service->counts($request)
+        );
     }
 
     public function show(Request $request, string $id): TaskResource

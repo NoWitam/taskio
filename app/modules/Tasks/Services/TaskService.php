@@ -15,6 +15,7 @@ use App\Modules\Tasks\DTOs\TaskDTO;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Models\Task;
+use App\Modules\Tasks\Repositories\TasksRepository;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -26,8 +27,9 @@ class TaskService
 
     private FileService $fileService;
 
-    public function __construct()
-    {
+    public function __construct(
+        private readonly TasksRepository $repository
+    ) {
         $this->fileService = new FileService;
     }
 
@@ -140,9 +142,36 @@ class TaskService
         return $this->listQuery($request)->count();
     }
 
+    /**
+     * Per-status board counts for the kanban column badges. Reuses the SAME filter
+     * application as the list (minus the status filter — the endpoint produces a
+     * count for every status), and delegates the read + cache to TasksRepository.
+     * The unfiltered request is cached per workspace; a filtered request computes
+     * live so badges stay correct under active filters.
+     *
+     * @return array{counts: array<string, int>, total: int}
+     */
+    public function counts(Request $request): array
+    {
+        $counts = $this->repository->statusCounts(
+            fn (): Builder => $this->applyFilters(Task::query(), $request),
+            !$this->hasActiveFilters($request)
+        );
+
+        // `total` is the primary working set: the four active board columns. Archive
+        // and trash are secondary lifecycle buckets shown in their own tabs, so they
+        // are excluded here (sum them client-side if a grand total is ever needed).
+        $total = $counts[TaskStatus::TO_DO->value]
+            + $counts[TaskStatus::IN_PROGRESS->value]
+            + $counts[TaskStatus::IN_TEST->value]
+            + $counts[TaskStatus::DONE->value];
+
+        return ['counts' => $counts, 'total' => $total];
+    }
+
     protected function listQuery(Request $request)
     {
-        return Task::query()
+        $query = Task::query()
             // `pendingApprovalProcess` feeds TaskListResource::is_in_approval via
             // Task::isInApproval()'s relationLoaded() short-circuit — eager-loading
             // it here turns a per-row exists() query into one batched query.
@@ -154,7 +183,20 @@ class TaskService
                 function (Builder $query) use ($status) {
                     $status->resolveSelectQuery($query);
                 }
-            )
+            );
+
+        return $this->applyFilters($query, $request);
+    }
+
+    /**
+     * Apply every list filter EXCEPT status (search, priority, assignees, deadline,
+     * labels). Shared by {@see listQuery()} and the per-status {@see counts()} read so
+     * both honor the same active filters. The status filter is deliberately omitted:
+     * the counts endpoint produces a count for every status at once.
+     */
+    protected function applyFilters(Builder $query, Request $request): Builder
+    {
+        return $query
             ->search(['title', 'description'], $request->get('search'))
             ->when(
                 $priority = $request->enum('priority', TaskPriority::class),
@@ -195,6 +237,24 @@ class TaskService
             )
             ->filterByDate('deadline', $request)
             ->filterByLabels($request->array('labels'), $request->string('label_operator'));
+    }
+
+    /**
+     * Whether the request carries any list filter (status excluded — it is not a
+     * filter for the counts endpoint). Only the fully unfiltered board load is
+     * cached; any active filter forces a live computation.
+     */
+    protected function hasActiveFilters(Request $request): bool
+    {
+        return $request->filled('search')
+            || $request->filled('priority')
+            || $request->filled('user_id')
+            || $request->filled('bot_id')
+            || $request->filled('labels')
+            || $request->filled('date_from')
+            || $request->filled('date_to')
+            || $request->filled('date_preset')
+            || $request->boolean('hide_without_deadline');
     }
 
     public function submitForm(Task $task, array $data): Task

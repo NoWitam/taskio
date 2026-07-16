@@ -144,6 +144,19 @@ export interface TaskListResponse {
   meta: TaskListMeta;
 }
 
+/**
+ * Per-status task counts from `GET /api/tasks/counts` (the dedicated, cached
+ * read-layer endpoint). `counts` always carries EVERY status (zeros filled);
+ * each value equals what `GET /tasks?status=X` with the same filters would total.
+ * `total` sums only the four active board columns (excludes archive/trash).
+ */
+export interface TaskCountsResponse {
+  data: {
+    counts: Record<TaskStatus, number>;
+    total: number;
+  };
+}
+
 // --- Detail (full TaskResource) ------------------------------------------
 
 /**

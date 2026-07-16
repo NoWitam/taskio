@@ -27,6 +27,7 @@ import type {
   ChangelogResponse,
   TaskComment,
   TaskCommentsResponse,
+  TaskCountsResponse,
   TaskDetail,
   TaskDetailResponse,
   TaskFilters,
@@ -131,6 +132,8 @@ export const useTasksStore = defineStore('next-tasks', () => {
   // Per-status request token: a reset always supersedes work in flight so rapid
   // filter changes can never leave stale pages.
   const tokens: Record<string, number> = {};
+  // Single token for the all-status counts fetch (same race-guard intent).
+  let countsToken = 0;
 
   // --- Detail (single task) ------------------------------------------------
   const detail = ref<TaskDetail | null>(null);
@@ -215,14 +218,10 @@ export const useTasksStore = defineStore('next-tasks', () => {
       cursorByStatus.value[status] = response.meta?.next_cursor ?? null;
       hasMoreByStatus.value[status] = (response.meta?.next_cursor ?? null) !== null;
 
-      // `total` only ships on the first page; keep the captured value otherwise.
-      if (
-        response.meta &&
-        Object.prototype.hasOwnProperty.call(response.meta, 'total') &&
-        response.meta.total != null
-      ) {
-        totalByStatus.value[status] = response.meta.total;
-      }
+      // Column badge totals no longer come from the per-status list's `meta.total`;
+      // they are owned by the dedicated cached counts endpoint (`fetchCounts`). This
+      // list fetch focuses on items + cursor; the in-place mutations below keep the
+      // badge live between count refreshes.
     } catch (err: unknown) {
       if (token !== tokens[status]) return;
       errorByStatus.value[status] = true;
@@ -237,6 +236,32 @@ export const useTasksStore = defineStore('next-tasks', () => {
   /** Append the next page for `status` (infinite scroll). */
   async function loadMore(status: TaskStatus, filters: TaskFilters = {}): Promise<void> {
     await fetchByStatus(status, filters, { reset: false });
+  }
+
+  /**
+   * Fetch authoritative per-status totals from the dedicated cached endpoint
+   * (`GET /api/tasks/counts`) and populate `totalByStatus` for EVERY status at
+   * once. Accepts the same filters as the list (status is not a filter here — the
+   * endpoint returns all statuses), so the column badges stay correct under active
+   * filters. Best-effort: a failure leaves the previous totals in place. A token
+   * guards against a slow response clobbering a newer one (rapid filter changes).
+   */
+  async function fetchCounts(filters: TaskFilters = {}): Promise<void> {
+    const token = (countsToken += 1);
+    try {
+      const qs = serializeFilters(filters).toString();
+      const res = await api.get<TaskCountsResponse>(`/tasks/counts${qs ? `?${qs}` : ''}`);
+      if (token !== countsToken) return; // superseded by a newer request
+
+      const counts = res.data?.counts ?? {};
+      const next = { ...totalByStatus.value };
+      (Object.entries(counts) as Array<[string, number]>).forEach(([status, n]) => {
+        next[status] = n;
+      });
+      totalByStatus.value = next;
+    } catch {
+      /* best-effort: keep the last known totals (list errors surface elsewhere) */
+    }
   }
 
   /** Drop all cached state (e.g. when filters change wholesale). */
@@ -601,6 +626,7 @@ export const useTasksStore = defineStore('next-tasks', () => {
     // list actions
     fetchByStatus,
     loadMore,
+    fetchCounts,
     resetAll,
     // list mutations (exposed for tests / advanced callers)
     upsertIntoLists,

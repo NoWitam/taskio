@@ -246,3 +246,55 @@ describe('next tasks store — filter serialization', () => {
     expect(params.getAll('bot_id[]')).toEqual(['b1']);
   });
 });
+
+describe('next tasks store — counts endpoint', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('fetchCounts populates totalByStatus for every returned status', async () => {
+    const store = useTasksStore();
+    apiMock.get.mockResolvedValueOnce({
+      data: {
+        counts: { to_do: 2, in_progress: 1, in_test: 0, done: 4, archive: 0, trash: 3 },
+        total: 7,
+      },
+    });
+
+    await store.fetchCounts();
+
+    // No filters → a bare endpoint call (no query string).
+    expect(apiMock.get).toHaveBeenCalledWith('/tasks/counts');
+    expect(store.totalByStatus.to_do).toBe(2);
+    expect(store.totalByStatus.done).toBe(4);
+    expect(store.totalByStatus.trash).toBe(3);
+    expect(store.totalFor('in_test')).toBe(0);
+  });
+
+  it('serializes the same filters as the list (label_operator, arrays) and never sends status', async () => {
+    const store = useTasksStore();
+    apiMock.get.mockResolvedValueOnce({ data: { counts: {}, total: 0 } });
+
+    await store.fetchCounts({ labels: ['l1', 'l2'], labelOperator: 'AND', search: 'hi' });
+
+    const url = apiMock.get.mock.calls[0][0] as string;
+    const params = new URLSearchParams(url.slice(url.indexOf('?') + 1));
+    expect(params.get('label_operator')).toBe('AND');
+    expect(params.has('labelOperator')).toBe(false);
+    expect(params.getAll('labels[]')).toEqual(['l1', 'l2']);
+    expect(params.get('search')).toBe('hi');
+    // `status` is a list param, never a counts param (the endpoint returns all).
+    expect(params.has('status')).toBe(false);
+  });
+
+  it('leaves previous totals intact when the counts request fails', async () => {
+    const store = useTasksStore();
+    store.totalByStatus.to_do = 5;
+    apiMock.get.mockRejectedValueOnce(new Error('network'));
+
+    await store.fetchCounts();
+
+    expect(store.totalByStatus.to_do).toBe(5);
+  });
+});

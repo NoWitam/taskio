@@ -782,6 +782,10 @@ function refetchVisible(): void {
   visibleStatuses.value.forEach((status) =>
     store.fetchByStatus(status, filters.value, { reset: true }),
   );
+  // Column badge totals come from the dedicated cached counts endpoint (one call
+  // covers every status), not each list's meta.total. Refreshed alongside the
+  // visible lists so badges stay authoritative on load / filter change / create.
+  void store.fetchCounts(filters.value);
 }
 
 // Debounce when filters are "applied" (the API call): wait until the user has
