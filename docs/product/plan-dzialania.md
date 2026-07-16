@@ -72,6 +72,17 @@ review → commit/PR). Bez rozpoczynania kolejnego rozdziału przed review poprz
 
 **Wynik:** czysty main z całością Etapów 1–5, lista długów = 0 lub świadomie odłożona.
 
+### Status R0 (2026-07-16) — ZASADNICZO UKOŃCZONY
+
+- **1. Commit/PR Etapów 5/5.1** ✅ — całość zacommitowana i wypchnięta, draft [PR #8](https://github.com/NoWitam/taskio/pull/8).
+- **2. Follow-upy Workflows** ✅ — sweep-hardening (`c49b2b8`, izolacja per-tenant + per-workflow + testy), binding-leak reorder (`60d9096`); „restored-toast" rozstrzygnięty decyzją usera → zbudowano kosz+przywracanie workflowów (`d6a6a38`).
+- **3. Migracja Forms → next** ✅ — była już KOMPLETNA (4 batche), nie tylko Batch 1. Wykonano **cutover** (`27293af`): `/` → `/next`, `/app/*` → `/next/*`; oraz **wygaszenie legacy** (`67a4a88`): usunięto 291 plików starego frontendu, vite input = samo `main.ts`, tsc 0 total (54 błędy „baseline" były w legacy).
+- **4. Workspaces B2** ✅ — members+invitations były już zrobione i zacommitowane (`7750bc6`). Frontend auth: **decyzja usera — nic w R0** (onboarding invite-only; reset hasła MUSI wrócić ≤ R4). Brak konceptu ról (binarnie owner/member) — „zmiana roli" wymaga osobnej decyzji/modelowania.
+- **5. Audyt spójności UI** ✅ — 8-agentowy audyt; unifikacja header/subnav potwierdzona jako wdrożona (ADR-0011). HIGH naprawione (`4d4d961`). Pozycje LOW ocenione jako akceptowalne precedensy (kompozytowe triggery, chip-internal X). Follow-upy Approvals (deep-links, mobile, N+1) → osobny chip.
+- **6. Zadania — endpoint countów** ✅ — `GET /tasks/counts` + `TasksRepository` z cache per-workspace + inwalidacja przez `TaskObserver` (`46cbf5d`); kanban badge'e z endpointu; wzorzec do reużycia w R6. **Checklista/subtaski świadomie → R2** (naturalne miejsce: bot rozbija zadanie na kroki).
+
+**Pozostałe decyzje usera do rozstrzygnięcia** poza R0: nazwa produktu; timing Streamy/Muzyka; kampanie jako nakładka na Workflows; zakres Custom Quality; 2 pierwsze platformy publikacji.
+
 ---
 
 ## R1. Dysk / Zasoby (Etap 6)
