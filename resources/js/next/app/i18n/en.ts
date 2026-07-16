@@ -209,6 +209,8 @@ export const en = {
     moduleTasksDesc: 'Track and assign work across your workspace.',
     moduleFormsDesc: 'Build and publish dynamic forms.',
     moduleApprovalsDesc: 'Review and approve submissions.',
+    moduleWorkflowsDesc: 'Automate your workspace with triggers and steps.',
+    moduleBotsDesc: 'AI characters that create and review content.',
     moduleLabelsDesc: 'Organise everything with labels.',
     recentActivityTitle: 'Recent activity',
     recentActivityEmptyTitle: 'No activity yet',

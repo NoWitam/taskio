@@ -201,6 +201,8 @@ export const pl: MessageSchema = {
     moduleTasksDesc: 'Śledź i przydzielaj pracę w obszarze roboczym.',
     moduleFormsDesc: 'Twórz i publikuj dynamiczne formularze.',
     moduleApprovalsDesc: 'Przeglądaj i zatwierdzaj zgłoszenia.',
+    moduleWorkflowsDesc: 'Automatyzuj obszar roboczy wyzwalaczami i krokami.',
+    moduleBotsDesc: 'Postacie AI, które tworzą i sprawdzają treści.',
     moduleLabelsDesc: 'Porządkuj wszystko za pomocą etykiet.',
     recentActivityTitle: 'Ostatnia aktywność',
     recentActivityEmptyTitle: 'Brak aktywności',

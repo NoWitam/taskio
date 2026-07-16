@@ -3,17 +3,18 @@
 use App\Http\Controllers\AppController;
 use Illuminate\Support\Facades\Route;
 
-// Główna strona - przekierowanie na aplikację
+// Home → the "next" app (the legacy SPA at /app has been decommissioned).
 Route::get('/', function () {
-    return redirect('/app');
+    return redirect('/next');
 });
 
-// Główna trasa aplikacji - renderuje Blade widok z wstrzykniętymi danymi
-Route::get('/app{path?}', [AppController::class, 'index'])
-    ->where('path', '.*')
-    ->name('app');
+// Old legacy entry: keep the path alive for existing bookmarks by redirecting
+// into the next app (preserving whatever sub-path was requested).
+Route::get('/app{path?}', function (string $path = '') {
+    return redirect('/next' . $path);
+})->where('path', '.*');
 
+// The "next" SPA — the application shell.
 Route::get('/next{path?}', [AppController::class, 'next'])
     ->where('path', '.*')
     ->name('next');
-

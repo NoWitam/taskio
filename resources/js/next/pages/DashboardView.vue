@@ -46,11 +46,16 @@ interface ModuleCard {
 }
 
 // Module count drives a stat; the same list renders the navigation cards below.
+// `to` marks a LIVE module (routed in the next app); a card without `to` is a
+// genuine "coming soon" placeholder. Keep this list in step with the router +
+// the AppLayout nav so the Dashboard never advertises a live module as pending.
 const modules: ModuleCard[] = [
   { key: 'dashboard', titleKey: 'nav.dashboard', descKey: 'dashboard.moduleDashboardDesc', icon: 'layout-dashboard', to: '/dashboard' },
-  { key: 'tasks', titleKey: 'nav.tasks', descKey: 'dashboard.moduleTasksDesc', icon: 'list-checks' },
-  { key: 'forms', titleKey: 'nav.forms', descKey: 'dashboard.moduleFormsDesc', icon: 'file-text' },
-  { key: 'approvals', titleKey: 'nav.approvals', descKey: 'dashboard.moduleApprovalsDesc', icon: 'check-circle' },
+  { key: 'tasks', titleKey: 'nav.tasks', descKey: 'dashboard.moduleTasksDesc', icon: 'list-checks', to: '/tasks' },
+  { key: 'forms', titleKey: 'nav.forms', descKey: 'dashboard.moduleFormsDesc', icon: 'file-text', to: '/forms' },
+  { key: 'approvals', titleKey: 'nav.approvals', descKey: 'dashboard.moduleApprovalsDesc', icon: 'check-circle', to: '/approvals' },
+  { key: 'workflows', titleKey: 'nav.workflows', descKey: 'dashboard.moduleWorkflowsDesc', icon: 'workflow', to: '/workflows' },
+  { key: 'bots', titleKey: 'nav.bots', descKey: 'dashboard.moduleBotsDesc', icon: 'sparkles', to: '/bots' },
   { key: 'labels', titleKey: 'nav.labels', descKey: 'dashboard.moduleLabelsDesc', icon: 'hash' },
 ];
 

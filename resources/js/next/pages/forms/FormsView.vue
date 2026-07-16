@@ -483,7 +483,10 @@ async function onUnindex(form: FormSummary): Promise<void> {
       variant: 'danger',
     })
   ) {
-    void runAction(() => store.unindexForm(form.id, false), 'forms.toasts.unindexed');
+    // Back up the index data on unindex — the legacy dialog defaulted this to
+    // ON, so preserve that safer behavior (a dedicated toggle would need a custom
+    // modal; ConfirmDialog can't host a checkbox — deferred).
+    void runAction(() => store.unindexForm(form.id, true), 'forms.toasts.unindexed');
   }
 }
 
