@@ -51,6 +51,14 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, titleKey: 'nav.tasks' },
       },
       {
+        // The disk file manager. The current folder is a `?folder=<id>` query
+        // (deep-linkable), so one route serves the whole tree.
+        path: 'disk',
+        name: 'next.disk',
+        component: () => import('../../pages/disk/DiskView.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.disk' },
+      },
+      {
         // Workspace member + invitation management (owner-gated in the UI; the
         // backend enforces it too). Reached from the user-menu "Manage members".
         path: 'settings/members',

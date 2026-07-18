@@ -55,6 +55,12 @@ enum WorkflowConditionOperator: string
     case IS_TRUE = 'is_true';
     case IS_FALSE = 'is_false';
 
+    // file (value-less): a file field is either answered or not. There is nothing meaningful
+    // to compare a file to with a flat scalar operator — richer questions (its type, its name)
+    // live in the pipeline operations of the condition tree.
+    case FILLED = 'filled';
+    case EMPTY = 'empty';
+
     /** @return array<int, string> */
     public static function ids(): array
     {
@@ -68,15 +74,20 @@ enum WorkflowConditionOperator: string
     public function passesOnMissingPath(): bool
     {
         return match ($this) {
-            self::NOT_EQUALS, self::NEQ, self::IS_NOT, self::EXCLUDES => true,
+            // `empty` belongs here for the same reason: a file field that never made it into
+            // the payload is genuinely un-answered.
+            self::NOT_EQUALS, self::NEQ, self::IS_NOT, self::EXCLUDES, self::EMPTY => true,
             default => false,
         };
     }
 
-    /** Whether the operator ignores/omits its value (the boolean predicates). */
+    /** Whether the operator ignores/omits its value (the boolean and file predicates). */
     public function isValueless(): bool
     {
-        return $this === self::IS_TRUE || $this === self::IS_FALSE;
+        return match ($this) {
+            self::IS_TRUE, self::IS_FALSE, self::FILLED, self::EMPTY => true,
+            default => false,
+        };
     }
 
     /** Whether the operator's value MUST be an array ([from,to] for between, options for in). */

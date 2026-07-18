@@ -19,6 +19,7 @@ use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 /**
@@ -568,6 +569,37 @@ class StoreWorkflowRequest extends FormRequest
         $this->validateAssignee($validator, $prefix, $config);
         $this->validateScopedUuid($validator, $prefix . '.form_id', $config['form_id'] ?? null, Form::class);
         $this->validateScopedUuid($validator, $prefix . '.approval_pipeline_id', $config['approval_pipeline_id'] ?? null, ApprovalPipeline::class);
+
+        // attachments is a FILE union: a literal is a file uuid (or a list of them — a Disk pick),
+        // a variable must resolve to a FILE terminal (e.g. a submission's file field). The
+        // concrete files are re-resolved and copied at run time, so this only pins the SHAPE;
+        // an unresolvable id is skipped there rather than 422'd here.
+        $this->validateUnionOrLiteral(
+            $validator,
+            $prefix . '.attachments',
+            $config['attachments'] ?? null,
+            fn (mixed $value) => $this->isFileUuidLiteral($value),
+            'a file id (or a list of file ids)',
+            $refCtx,
+            [WorkflowVariableType::FILE],
+        );
+    }
+
+    /**
+     * A create_task attachments literal: a single file uuid, or a list of them (single-file is
+     * the common case, but a list degrades cleanly). An empty list is allowed (no attachment).
+     */
+    private function isFileUuidLiteral(mixed $value): bool
+    {
+        $ids = is_array($value) ? $value : [$value];
+
+        foreach ($ids as $id) {
+            if (!is_string($id) || !Str::isUuid($id)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -931,7 +963,7 @@ class StoreWorkflowRequest extends FormRequest
         return match ($type) {
             WorkflowStepType::CREATE_TASK => [
                 'title', 'description', 'priority', 'deadline', 'labels',
-                'assignee_type', 'assignee_id', 'form_id', 'approval_pipeline_id',
+                'assignee_type', 'assignee_id', 'form_id', 'approval_pipeline_id', 'attachments',
             ],
             WorkflowStepType::CREATE_FORM_REPORT => [
                 'form_id', 'name', 'guidelines', 'sources', 'submissions_from', 'submissions_to',

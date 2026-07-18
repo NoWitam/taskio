@@ -14,8 +14,9 @@ namespace App\Modules\Workflows\Enums;
  *   - date     an ISO date string (compared via Carbon)
  *   - enum     a single-choice value drawn from a known option set (single-select)
  *   - multi    a set of values (multi-select, checklist)
+ *   - file     uploaded/picked disk file(s), carried as a snapshot list {id,name,mime_type,size}
  *
- * The EDITOR primitive vocabulary is narrower (text|number|boolean); date/enum/multi
+ * The EDITOR primitive vocabulary is narrower (text|number|boolean); date/enum/multi/file
  * DEGRADE to text inside a markdown directive (`data.type`). The directive carries NO other
  * type field — it is IDENTITY-ONLY (`data.id` = path); the REAL workflow type is recovered
  * from the catalog by path. See WorkflowVariableCatalogService for the mapping from a form
@@ -29,6 +30,7 @@ enum WorkflowVariableType: string
     case DATE = 'date';
     case ENUM = 'enum';
     case MULTI = 'multi';
+    case FILE = 'file';
 
     /** @return array<int, string> */
     public static function ids(): array
@@ -101,6 +103,13 @@ enum WorkflowVariableType: string
             self::BOOLEAN => [
                 WorkflowConditionOperator::IS_TRUE,
                 WorkflowConditionOperator::IS_FALSE,
+            ],
+            // A file is either attached or not. Comparing one with a flat scalar operator is
+            // meaningless; questions about its type or name are pipeline operations in the
+            // condition tree (see WorkflowOperation's file_* cases).
+            self::FILE => [
+                WorkflowConditionOperator::FILLED,
+                WorkflowConditionOperator::EMPTY,
             ],
         };
     }

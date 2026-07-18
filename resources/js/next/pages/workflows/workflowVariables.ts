@@ -367,7 +367,7 @@ export function variablesOfType(
 }
 
 /** Every type a value-or-variable field may reference. */
-const ALL_VALUE_TYPES: WorkflowVariableType[] = ['text', 'number', 'boolean', 'date', 'enum', 'multi'];
+const ALL_VALUE_TYPES: WorkflowVariableType[] = ['text', 'number', 'boolean', 'date', 'enum', 'multi', 'file'];
 
 /**
  * ALL value-or-variable-referenceable variables at `position` — the SF "show-all"
@@ -401,6 +401,7 @@ const VARIABLE_ICONS: Record<WorkflowVariableType, IconName> = {
   date: 'calendar',
   enum: 'list',
   multi: 'list-checks',
+  file: 'file-text',
 };
 
 export function variableIcon(type: WorkflowVariableType): IconName {

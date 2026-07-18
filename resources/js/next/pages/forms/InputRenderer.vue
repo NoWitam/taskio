@@ -10,8 +10,8 @@
 // hint / error / required from the surrounding FormField). In `preview` mode the
 // controls are disabled. Self-recursive (by filename).
 //
-// NOTE: the backend `image` field is a STRING (an AI image prompt, per its
-// JsonSchema), so it renders as a prompt textarea — not a file upload.
+// NOTE: the `image` field (wire type kept for back-compat) is a single-FILE
+// upload — its answer is a Disk temp-file id (see FormFileInput), not a string.
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import Textarea from '../../ui/forms/Textarea.vue';
@@ -23,6 +23,7 @@ import TimePicker from '../../ui/forms/TimePicker.vue';
 import Card from '../../ui/layout/Card.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Icon from '../../ui/primitives/Icon.vue';
+import FormFileInput from './FormFileInput.vue';
 import { useI18n } from '../../app/i18n';
 import type { FormElement, FormElementOption } from './types';
 
@@ -65,6 +66,8 @@ if (el.type === 'select' && el.config.multiple) {
   if (props.formData[el.id] === undefined) props.formData[el.id] = [];
 } else if (el.type === 'checkbox') {
   if (props.formData[el.id] === undefined) props.formData[el.id] = false;
+} else if (el.type === 'image') {
+  if (props.formData[el.id] === undefined) props.formData[el.id] = null;
 } else if (el.type === 'checklist') {
   for (const option of el.config.options ?? []) {
     const key = `${el.id}_${option.value}`;
@@ -229,18 +232,18 @@ if (el.type === 'select' && el.config.multiple) {
     />
   </FormField>
 
-  <!-- Image (AI prompt string per backend schema) -->
+  <!-- File (single-file upload; answer is a Disk temp-file id) -->
   <FormField
     v-else-if="element.type === 'image'"
     :label="element.config.label"
-    :description="element.config.hint || t('forms.viewer.imageHint', 'Text prompt to generate an image with AI')"
+    :description="element.config.hint || undefined"
     :required="element.config.required"
     :error="getError(element.id)"
   >
-    <Textarea
-      v-model="(formData[element.id] as string)"
-      :rows="2"
-      :placeholder="element.config.placeholder"
+    <FormFileInput
+      v-model="(formData[element.id] as string | null)"
+      :accepted-types="element.config.acceptedTypes"
+      :max-size="element.config.maxSize"
       :disabled="isPreview()"
     />
   </FormField>

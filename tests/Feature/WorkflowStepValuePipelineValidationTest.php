@@ -44,6 +44,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                     'options' => [['value' => 'blog'], ['value' => 'news']],
                 ]],
                 ['id' => 'headline', 'type' => 'short_text', 'config' => ['label' => 'Headline']],
+                ['id' => 'upload', 'type' => 'image', 'config' => ['label' => 'Upload']],
             ],
         ]);
     }
@@ -292,5 +293,59 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
         $this->postWorkflow($owner, $workspace, $this->payload($form, [
             'deadline' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date']],
         ]))->assertCreated();
+    }
+
+    // ---- attachments (FILE union) --------------------------------------------
+
+    public function test_accepts_a_literal_file_attachment(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A literal attachment is a file uuid (a Disk pick). Only the SHAPE is checked at write
+        // time — the concrete file is re-resolved (and scoped) at run time.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'attachments' => ['kind' => 'literal', 'value' => (string) \Illuminate\Support\Str::uuid()],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_a_file_variable_attachment(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A file field resolves to a FILE terminal — valid for the attachments slot as-is.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'attachments' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.upload', 'type' => 'file']],
+        ]))->assertCreated();
+    }
+
+    public function test_rejects_a_non_uuid_literal_attachment(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'attachments' => ['kind' => 'literal', 'value' => 'not-a-file-id'],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.attachments']);
+    }
+
+    public function test_rejects_a_file_attachment_variable_that_terminates_in_text(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // file_name turns the file into TEXT — the attachments slot requires a FILE terminal.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'attachments' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.upload', 'type' => 'file'],
+                'pipeline' => [['op' => 'file_name', 'args' => []]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.attachments.pipeline']);
     }
 }

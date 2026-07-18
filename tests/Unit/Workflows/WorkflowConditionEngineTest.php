@@ -78,10 +78,77 @@ class WorkflowConditionEngineTest extends TestCase
             'enum_is', 'enum_is_not', 'enum_in', 'enum_to_text', 'enum_to_number', 'enum_to_date', 'enum_to_choice',
             'multi_includes', 'multi_excludes', 'multi_includes_any', 'multi_includes_all', 'multi_count',
             'multi_is_empty', 'multi_to_text',
+            // file: two boolean terminals (so a file field is usable in the condition tree at
+            // all) + two converters that hand off to the text/number vocabulary.
+            'file_is_empty', 'file_is_not_empty', 'file_count', 'file_name',
         ];
 
         $this->assertSame($expected, array_map(fn (WorkflowOperation $op) => $op->value, WorkflowOperation::cases()));
-        $this->assertCount(68, WorkflowOperation::cases());
+        $this->assertCount(72, WorkflowOperation::cases());
+    }
+
+    // ── FILE (4 ops) ──────────────────────────────────────────────────────────
+
+    /** A file snapshot as the trigger payload carries it. */
+    private function file(string $name, string $mime = 'application/pdf'): array
+    {
+        return ['id' => '019f-' . $name, 'name' => $name, 'mime_type' => $mime, 'size' => 1024];
+    }
+
+    public function test_file_boolean_terminals(): void
+    {
+        $this->assertTrue($this->pipe('file', [], [$this->op('file_is_empty')]));
+        $this->assertFalse($this->pipe('file', [$this->file('a.pdf')], [$this->op('file_is_empty')]));
+
+        $this->assertTrue($this->pipe('file', [$this->file('a.pdf')], [$this->op('file_is_not_empty')]));
+        $this->assertFalse($this->pipe('file', [], [$this->op('file_is_not_empty')]));
+    }
+
+    public function test_file_count_chains_into_the_number_vocabulary(): void
+    {
+        // No file-specific comparison ops: file_count hands off to num_*.
+        $this->assertTrue($this->pipe('file', [$this->file('a.pdf'), $this->file('b.pdf')], [
+            $this->op('file_count'),
+            $this->op('num_eq', ['value' => 2]),
+        ]));
+        $this->assertTrue($this->pipe('file', [$this->file('a.pdf')], [
+            $this->op('file_count'),
+            $this->op('num_lt', ['value' => 2]),
+        ]));
+        $this->assertTrue($this->pipe('file', [], [
+            $this->op('file_count'),
+            $this->op('num_eq', ['value' => 0]),
+        ]));
+    }
+
+    public function test_file_name_chains_into_the_text_vocabulary(): void
+    {
+        // This is how "is it a PDF" is asked — sharper than a coarse type check would be.
+        $this->assertTrue($this->pipe('file', [$this->file('raport.pdf')], [
+            $this->op('file_name'),
+            $this->op('text_ends_with', ['value' => '.pdf']),
+        ]));
+        $this->assertFalse($this->pipe('file', [$this->file('zdjecie.png', 'image/png')], [
+            $this->op('file_name'),
+            $this->op('text_ends_with', ['value' => '.pdf']),
+        ]));
+
+        // Several files join like multi_to_text does.
+        $this->assertTrue($this->pipe('file', [$this->file('a.pdf'), $this->file('b.pdf')], [
+            $this->op('file_name'),
+            $this->op('text_equals', ['value' => 'a.pdf, b.pdf']),
+        ]));
+    }
+
+    public function test_file_ops_tolerate_the_shapes_a_looser_payload_can_hold(): void
+    {
+        // A bare id (no snapshot) still means "a file is here"...
+        $this->assertTrue($this->pipe('file', 'some-uuid', [$this->op('file_is_not_empty')]));
+        // ...and a single snapshot need not be wrapped in a list.
+        $this->assertTrue($this->pipe('file', $this->file('a.pdf'), [$this->op('file_is_not_empty')]));
+        // An unanswered field is empty, however it is spelled.
+        $this->assertTrue($this->pipe('file', null, [$this->op('file_is_empty')]));
+        $this->assertTrue($this->pipe('file', '', [$this->op('file_is_empty')]));
     }
 
     // ── TEXT (16 ops) ─────────────────────────────────────────────────────────

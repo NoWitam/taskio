@@ -297,7 +297,7 @@ function clearColumnElement(index: number): void {
         </FormField>
       </template>
 
-      <!-- Image (AI prompt) -->
+      <!-- File (single-file upload) -->
       <template v-else-if="element.type === 'image'">
         <FormField :label="t('forms.builder.maxSizeMb')">
           <NumberInput v-model="config.maxSize" :min="1" :max="50" />

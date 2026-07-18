@@ -2,6 +2,7 @@
 
 use App\Http\Middleware\RequireWorkspace;
 use App\Modules\Disk\Http\Controllers\FilesController;
+use App\Modules\Disk\Http\Controllers\FoldersController;
 use Illuminate\Support\Facades\Route;
 
 /**
@@ -25,10 +26,57 @@ use Illuminate\Support\Facades\Route;
  */
 Route::middleware(['auth:sanctum', RequireWorkspace::class])
     ->prefix('disk')
-    ->controller(FilesController::class)
     ->group(function () {
-        // Literal segments before the {file} wildcard, so 'temp' is never read as an id.
-        Route::post('/temp', 'uploadTemp')->middleware('throttle:60,1,disk-upload');
+        // Literal segments FIRST, so 'temp'/'folders' are never read as a {file} id. The
+        // whereUuid below is the belt to this braces: with it, a literal segment could not
+        // bind to {file} even if a future edit reordered these.
+        Route::post('/temp', [FilesController::class, 'uploadTemp'])->middleware('throttle:60,1,disk-upload');
 
-        Route::get('/{file}', 'show')->name('disk.show')->middleware('throttle:300,1,disk-read');
+        // --- Folders (the tree) ---------------------------------------------------------
+        Route::controller(FoldersController::class)->prefix('folders')->name('disk.folders.')->group(function () {
+            Route::get('/', 'index')->name('index');
+            Route::post('/', 'store')->name('store');
+            // Literal-then-wildcard again, one level down.
+            Route::post('/{id}/restore', 'restore')->name('restore')->whereUuid('id');
+            Route::post('/{folder}/move', 'move')->name('move')->whereUuid('folder');
+            Route::get('/{folder}', 'show')->name('show')->whereUuid('folder');
+            Route::patch('/{folder}', 'update')->name('update')->whereUuid('folder');
+            Route::delete('/{folder}', 'destroy')->name('destroy')->whereUuid('folder');
+        });
+
+        // --- Files ------------------------------------------------------------------------
+        Route::controller(FilesController::class)->group(function () {
+            Route::get('/', 'index')->name('disk.index');
+            Route::post('/', 'store')->name('disk.store')->middleware('throttle:60,1,disk-upload');
+
+            // The read-only virtual "Zasoby" tree. Literal, so it never binds as a {file} id.
+            Route::get('/resources', 'resources')->name('disk.resources');
+
+            // Literal-then-wildcard: these must not be read as a {file} id.
+            Route::get('/{id}/restore-preview', 'restorePreview')->name('disk.restore-preview')->whereUuid('id');
+            Route::post('/{id}/restore', 'restore')->name('disk.restore')->whereUuid('id');
+            Route::delete('/{id}/force', 'forceDestroy')->name('disk.force-destroy')->whereUuid('id');
+
+            // "Pick from Disk": duplicate a LIVE file into the caller's temp. Uses {file}
+            // model-binding (not the withTrashed {id} above) so a trashed/foreign source 404s
+            // at bind, and throttled with the upload bucket since it writes a new blob.
+            Route::post('/{file}/copy-to-temp', 'copyToTemp')
+                ->name('disk.copy-to-temp')
+                ->whereUuid('file')
+                ->middleware('throttle:60,1,disk-upload');
+
+            // "Copy" action: duplicate a LIVE file into the disk (new name + folder). Same
+            // binding/throttle rationale as copy-to-temp (it writes a new blob).
+            Route::post('/{file}/copy', 'copy')
+                ->name('disk.copy')
+                ->whereUuid('file')
+                ->middleware('throttle:60,1,disk-upload');
+
+            Route::get('/{file}', 'show')
+                ->name('disk.show')
+                ->whereUuid('file')
+                ->middleware('throttle:300,1,disk-read');
+            Route::patch('/{file}', 'update')->name('disk.update')->whereUuid('file');
+            Route::delete('/{file}', 'destroy')->name('disk.destroy')->whereUuid('file');
+        });
     });

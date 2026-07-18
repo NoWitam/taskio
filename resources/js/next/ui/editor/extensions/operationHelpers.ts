@@ -26,6 +26,7 @@ const VARIABLE_TYPE_ICON: Record<VariablePrimitive, IconName> = {
   date: 'calendar',
   enum: 'list',
   multi: 'list-checks',
+  file: 'file-text',
 };
 
 export function getVariableIconName(type: VariablePrimitive): IconName {
@@ -49,6 +50,8 @@ export function getVariableIconLabel(type: VariablePrimitive): string {
       return translate('editor.types.enum', 'Choice');
     case 'multi':
       return translate('editor.types.multi', 'Multi-choice');
+    case 'file':
+      return translate('editor.types.file', 'File');
     case 'text':
     default:
       return translate('editor.types.text', 'Text');

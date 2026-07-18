@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use RuntimeException;
 
 class Workspace extends AbstractModel
 {
@@ -43,9 +44,28 @@ class Workspace extends AbstractModel
      * layered over the base connection of its driver.
      *
      * @return array<string, mixed>
+     *
+     * @throws RuntimeException when an own-mode workspace has no provisioned database yet.
      */
     public function connectionConfig(): array
     {
+        // FAIL LOUD, NEVER FALL BACK: an own-mode workspace is only a real tenant once its
+        // dedicated database exists. Until then db_database is null and the array_filter
+        // below would simply drop it — returning the BASE (shared) connection under the
+        // `tenant` name. Because WorkspaceScope deliberately leaves own-mode queries
+        // unconstrained (the whole database is meant to BE the tenant), that silently turns
+        // "this workspace" into "every workspace". A missing tenant connection is safe; a
+        // wrong one is a cross-workspace data leak.
+        //
+        // Provisioning is unaffected: WorkspaceProvisioner::createDatabase() persists the
+        // database name BEFORE migrate() configures the connection.
+        if ($this->db_mode === WorkspaceDbMode::Own && blank($this->db_database)) {
+            throw new RuntimeException(
+                "Workspace [{$this->id}] is in own-database mode but has no provisioned database "
+                . '(status: ' . ($this->status?->value ?? 'unknown') . '); refusing to fall back to the shared connection.'
+            );
+        }
+
         $driver = $this->db_driver ?? config('database.default');
 
         $base = config('database.connections.' . $driver, []);

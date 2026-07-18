@@ -38,9 +38,10 @@ import Icon from '../../ui/primitives/Icon.vue';
 import MarkdownEditor from '../../ui/editor/MarkdownEditor.vue';
 import ValueOrVariableField from './ValueOrVariableField.vue';
 import DateOrVariableField from './DateOrVariableField.vue';
+import FormFileInput from '../forms/FormFileInput.vue';
 import { useI18n } from '../../app/i18n';
 import { stepIcon, stepLabel } from './workflowMeta';
-import { allValueVariables, stripVariableDirectives, toEditorVariablesTyped } from './workflowVariables';
+import { allValueVariables, stripVariableDirectives, toEditorVariablesTyped, variablesOfType } from './workflowVariables';
 import { resolveOperationCatalog } from './workflowConditions';
 import { pipelineSatisfies } from '../../ui/editor/extensions/operationHelpers';
 import { sanitizeStepKey, type StepDraft } from './workflowEditorModel';
@@ -258,6 +259,19 @@ const toModel = computed<WorkflowFieldValue<string> | null>({
   set: (v) => setCfg('submissions_to', v),
 });
 
+// --- create_task: attachments (value-or-variable, FILE) ---------------------
+// A FILE terminal. Unlike priority/deadline, the picker is genuinely TYPE-FILTERED to
+// file variables: NO operation coerces another type INTO a file, so a non-file pick
+// could never satisfy the field — offering it (show-all) would only invite a dead end.
+const FILE_RESULT_TYPES: WorkflowVariableType[] = ['file'];
+const attachmentsModel = computed<WorkflowFieldValue | null>({
+  get: () => cfg<WorkflowFieldValue | null>('attachments') ?? null,
+  set: (v) => setCfg('attachments', v),
+});
+const fileVariables = computed<CatalogVariable[]>(() =>
+  variablesOfType(props.catalog, props.steps, props.position, 'file', props.triggerType),
+);
+
 // --- Value-or-variable field SPECS + the saved-model type-error gate ----------
 // ONE spec map: each value-or-variable config field the card owns → its terminal
 // contract ({resultTypes, targetOptions}). The template binds :result-types /
@@ -274,6 +288,7 @@ const vovFieldSpecs = computed(() => ({
   deadline: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
   submissions_from: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
   submissions_to: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
+  attachments: { resultTypes: FILE_RESULT_TYPES } as VovFieldSpec,
 }));
 
 /** Project a SAVED `{op,args}` wire step onto the editor step shape `pipelineSatisfies` reads. */
@@ -544,6 +559,31 @@ const labelsModel = computed<string[]>({
             :aria-label="t('workflows.step.config.labels')"
             :placeholder="t('workflows.step.config.labelsPlaceholder')"
           />
+        </FormField>
+
+        <!-- Attachment: value-or-variable (upload a file | a FILE variable, e.g. a
+             submission's file). No operations modal — nothing coerces INTO a file, so
+             the variable picker is type-filtered to file variables. -->
+        <FormField
+          :label="t('workflows.step.config.attachments')"
+          :description="t('workflows.step.config.attachmentsHint')"
+          :error="fieldError('attachments')"
+        >
+          <ValueOrVariableField
+            v-model="attachmentsModel"
+            :variables="fileVariables"
+            :result-types="vovFieldSpecs.attachments.resultTypes"
+            :external-error-present="!!fieldError('attachments')"
+            :picker-label="t('workflows.step.config.attachments')"
+          >
+            <template #default="{ value, setValue, disabled }">
+              <FormFileInput
+                :model-value="(value as string | null) ?? null"
+                :disabled="disabled"
+                @update:model-value="(v) => setValue(v)"
+              />
+            </template>
+          </ValueOrVariableField>
         </FormField>
 
         <!-- Assignee: SegmentedControl user/bot + the matching picker. -->

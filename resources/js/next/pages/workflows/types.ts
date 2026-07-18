@@ -58,13 +58,13 @@ export type WorkflowStepType = 'create_task' | 'create_form_report';
  * `WorkflowVariableType`). The editor primitive vocabulary is narrower
  * (text|number|boolean); date/enum/multi degrade to text inside a directive.
  */
-export type WorkflowVariableType = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'multi';
+export type WorkflowVariableType = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'multi' | 'file';
 
 /** The editor PRIMITIVE a workflow type serializes to inside a markdown directive. */
 export type WorkflowVariablePrimitive = 'text' | 'number' | 'boolean';
 
 /**
- * The 18 TYPED condition operators (mirrors `WorkflowConditionOperator`). Every
+ * The 20 TYPED condition operators (mirrors `WorkflowConditionOperator`). Every
  * operator belongs to exactly one field type's allow-list (§4.8).
  */
 export type WorkflowConditionOperator =
@@ -93,7 +93,11 @@ export type WorkflowConditionOperator =
   | 'excludes'
   // boolean (value-less)
   | 'is_true'
-  | 'is_false';
+  | 'is_false'
+  // file (value-less): a file field is either answered or not; richer questions
+  // (its name, how many) are pipeline ops in the condition tree.
+  | 'filled'
+  | 'empty';
 
 // REVISION 4 (Phase 4a) — the 16-family model is RETIRED. The `schedule` trigger is
 // now a COMPOSITIONAL descriptor v2 (§4.5.1): a TIME axis × a DAY axis × a MONTH

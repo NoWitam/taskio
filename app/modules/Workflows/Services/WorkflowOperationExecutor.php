@@ -109,7 +109,36 @@ class WorkflowOperationExecutor
             WorkflowVariableType::BOOLEAN => $this->toBool($value),
             WorkflowVariableType::DATE => $this->parseDate($value) ?? self::FAIL,
             WorkflowVariableType::MULTI => $this->toStringList($value),
+            WorkflowVariableType::FILE => $this->toFileList($value),
         };
+    }
+
+    /**
+     * A file value as a canonical list of snapshots ({id,name,mime_type,size}). Tolerates the
+     * shapes a legacy or hand-written payload can hold — a bare id, a single snapshot — so a
+     * pipeline degrades to a sane answer rather than failing the whole condition.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function toFileList(mixed $value): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        $isSnapshot = fn (mixed $item): bool => is_array($item) && array_key_exists('id', $item);
+
+        $items = is_array($value) && !$isSnapshot($value) ? $value : [$value];
+
+        return array_values(array_filter(array_map(
+            fn (mixed $item) => match (true) {
+                $isSnapshot($item) => $item,
+                // A bare id still counts as "a file is here", it just has no name to read.
+                is_string($item) && $item !== '' => ['id' => $item],
+                default => null,
+            },
+            $items,
+        )));
     }
 
     /** Lenient truthiness (mirrors the legacy evaluator so 'true'/'1'/1 all read true). */
@@ -153,6 +182,30 @@ class WorkflowOperationExecutor
             WorkflowVariableType::DATE => $this->applyDate($op, $value, $args),
             WorkflowVariableType::ENUM => $this->applyEnum($op, (string) $value, $args),
             WorkflowVariableType::MULTI => $this->applyMulti($op, is_array($value) ? $value : [], $args),
+            WorkflowVariableType::FILE => $this->applyFile($op, is_array($value) ? $value : [], $args),
+        };
+    }
+
+    /**
+     * File ops. Two boolean terminals plus two converters that hand the value to the existing
+     * text/number vocabulary — so "is it a PDF" is file_name -> text_ends_with, and "more than
+     * one" is file_count -> num_gt, with no file-specific comparison ops to maintain.
+     *
+     * @param  array<int, array<string, mixed>>  $files  canonical snapshot list
+     * @param  array<string, mixed>  $args
+     */
+    private function applyFile(WorkflowOperation $op, array $files, array $args): mixed
+    {
+        return match ($op) {
+            WorkflowOperation::FILE_IS_EMPTY => $files === [],
+            WorkflowOperation::FILE_IS_NOT_EMPTY => $files !== [],
+            WorkflowOperation::FILE_COUNT => (float) count($files),
+            // The names, comma-joined — mirrors multi_to_text's shape for a set-valued source.
+            WorkflowOperation::FILE_NAME => implode(', ', array_values(array_filter(array_map(
+                fn (array $file) => (string) ($file['name'] ?? ''),
+                $files,
+            ), fn (string $name) => $name !== ''))),
+            default => self::FAIL,
         };
     }
 

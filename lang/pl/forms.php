@@ -50,7 +50,7 @@ return [
         'date' => 'Data',
         'time' => 'Czas',
         'url' => 'URL',
-        'image' => 'Obraz',
+        'image' => 'Plik',
         'checkbox' => 'Pole wyboru',
     ],
 
@@ -135,6 +135,8 @@ return [
         'invalidDate' => 'Wprowadź prawidłową datę.',
         'invalidTime' => 'Wprowadź prawidłowy czas.',
         'invalidNumber' => 'Wprowadź prawidłową liczbę.',
+        'file_invalid' => 'Wybrany plik jest nieprawidłowy lub już niedostępny.',
+        'file_not_owned' => 'Ten plik nie należy do Ciebie.',
     ],
 
     // Submissions

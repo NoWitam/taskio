@@ -49,7 +49,7 @@ return [
         'date' => 'Date',
         'time' => 'Time',
         'url' => 'URL',
-        'image' => 'Image',
+        'image' => 'File',
         'checkbox' => 'Checkbox',
     ],
 
@@ -134,6 +134,8 @@ return [
         'invalidDate' => 'Please enter a valid date.',
         'invalidTime' => 'Please enter a valid time.',
         'invalidNumber' => 'Please enter a valid number.',
+        'file_invalid' => 'The selected file is invalid or no longer available.',
+        'file_not_owned' => 'This file does not belong to you.',
     ],
 
     // Submissions

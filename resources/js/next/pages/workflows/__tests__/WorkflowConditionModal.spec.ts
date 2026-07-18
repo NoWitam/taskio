@@ -21,6 +21,9 @@ const CATALOG = standardOperationsCatalog();
 const FIELDS: CatalogField[] = [
   { path: 'fields.status', field_id: 'status', label: 'Status', type: 'enum', enumOptions: ['open', 'done', 'blocked'], operators: ['is', 'is_not', 'in'] },
   { path: 'fields.level', field_id: 'level', label: 'Level', type: 'enum', enumOptions: ['low', 'high'], operators: ['is', 'is_not', 'in'] },
+  // A file field: its condition is built through the SAME pipeline (file → boolean via
+  // file_is_empty / file_is_not_empty), never a bespoke operator UI.
+  { path: 'fields.attachment', field_id: 'attachment', label: 'Attachment', type: 'file', operators: ['filled', 'empty'] },
 ];
 
 function step(op: string, args: Record<string, unknown> = {}, outputType: WorkflowVariableType = 'boolean'): VariablePipelineStep {
@@ -117,6 +120,26 @@ describe('WorkflowConditionModal', () => {
 
     // enum_is → boolean, so the condition is now ready to save.
     expect(saveButton()?.disabled).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('a file field with file_is_not_empty resolves to boolean → Save enabled', () => {
+    const condition: DraftCondition = {
+      uid: 'c1', kind: 'condition', source: 'fields.attachment', sourceType: 'file',
+      pipeline: [step('file_is_not_empty')],
+    };
+    const wrapper = mountModal(condition);
+    expect(saveButton()?.disabled).toBe(false);
+    expect(document.body.textContent).toContain('The condition is ready.');
+    wrapper.unmount();
+  });
+
+  it('a bare file field (identity, no ops) is not boolean → Save blocked', () => {
+    const condition: DraftCondition = {
+      uid: 'c1', kind: 'condition', source: 'fields.attachment', sourceType: 'file', pipeline: [],
+    };
+    const wrapper = mountModal(condition);
+    expect(saveButton()?.disabled).toBe(true);
     wrapper.unmount();
   });
 

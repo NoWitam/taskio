@@ -106,6 +106,17 @@ enum WorkflowOperation: string
     case MULTI_IS_EMPTY = 'multi_is_empty';
     case MULTI_TO_TEXT = 'multi_to_text';
 
+    // ── FILE (input: file) ────────────────────────────────────────────────────
+    // A file variable carries a snapshot list. Two boolean terminals make a file field usable
+    // in the condition tree at all (every condition pipeline must terminate in boolean), and
+    // the two CONVERTERS let the existing vocabulary answer everything else by chaining:
+    // "is it a PDF" is file_name -> text_ends_with '.pdf' (sharper than a coarse type check),
+    // "more than one file" is file_count -> num_gt 1.
+    case FILE_IS_EMPTY = 'file_is_empty';
+    case FILE_IS_NOT_EMPTY = 'file_is_not_empty';
+    case FILE_COUNT = 'file_count';
+    case FILE_NAME = 'file_name';
+
     /** The value type this op CONSUMES (its single input). */
     public function inputType(): WorkflowVariableType
     {
@@ -132,6 +143,9 @@ enum WorkflowOperation: string
 
             self::MULTI_INCLUDES, self::MULTI_EXCLUDES, self::MULTI_INCLUDES_ANY, self::MULTI_INCLUDES_ALL,
             self::MULTI_COUNT, self::MULTI_IS_EMPTY, self::MULTI_TO_TEXT => WorkflowVariableType::MULTI,
+
+            self::FILE_IS_EMPTY, self::FILE_IS_NOT_EMPTY, self::FILE_COUNT,
+            self::FILE_NAME => WorkflowVariableType::FILE,
         };
     }
 
@@ -142,8 +156,9 @@ enum WorkflowOperation: string
             // text -> text
             self::TEXT_UPPERCASE, self::TEXT_LOWERCASE, self::TEXT_TRIM, self::TEXT_SUBSTRING,
             self::TEXT_REPLACE, self::TEXT_APPEND, self::TEXT_PREPEND,
-            // number -> text / boolean -> text / date -> text / multi -> text / enum -> text
-            self::NUM_TO_TEXT, self::BOOL_TO_TEXT, self::DATE_TO_TEXT, self::MULTI_TO_TEXT, self::ENUM_TO_TEXT => WorkflowVariableType::TEXT,
+            // number -> text / boolean -> text / date -> text / multi -> text / enum -> text / file -> text
+            self::NUM_TO_TEXT, self::BOOL_TO_TEXT, self::DATE_TO_TEXT, self::MULTI_TO_TEXT, self::ENUM_TO_TEXT,
+            self::FILE_NAME => WorkflowVariableType::TEXT,
 
             // text -> number / number -> number / bool -> number / date -> number / multi -> number / enum -> number
             self::TEXT_LENGTH, self::TEXT_TO_NUMBER,
@@ -151,7 +166,7 @@ enum WorkflowOperation: string
             self::NUM_ROUND, self::NUM_FLOOR, self::NUM_CEIL,
             self::BOOL_TO_NUMBER,
             self::DATE_DAY, self::DATE_MONTH, self::DATE_YEAR, self::DATE_WEEKDAY,
-            self::MULTI_COUNT, self::ENUM_TO_NUMBER => WorkflowVariableType::NUMBER,
+            self::MULTI_COUNT, self::ENUM_TO_NUMBER, self::FILE_COUNT => WorkflowVariableType::NUMBER,
 
             // date -> date / enum -> date
             self::DATE_ADD_DAYS, self::DATE_SUBTRACT_DAYS, self::DATE_ADD_MONTHS, self::DATE_ADD_YEARS,
@@ -169,7 +184,8 @@ enum WorkflowOperation: string
             self::DATE_IS_WEEKEND, self::DATE_IS_PAST, self::DATE_IS_FUTURE,
             self::ENUM_IS, self::ENUM_IS_NOT, self::ENUM_IN,
             self::MULTI_INCLUDES, self::MULTI_EXCLUDES, self::MULTI_INCLUDES_ANY, self::MULTI_INCLUDES_ALL,
-            self::MULTI_IS_EMPTY => WorkflowVariableType::BOOLEAN,
+            self::MULTI_IS_EMPTY,
+            self::FILE_IS_EMPTY, self::FILE_IS_NOT_EMPTY => WorkflowVariableType::BOOLEAN,
         };
     }
 

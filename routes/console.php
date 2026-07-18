@@ -22,3 +22,8 @@ Schedule::command('workflows:reap-stale-runs')->everyFiveMinutes()->withoutOverl
 // guard; the per-workflow compare-and-swap claim in the sweep is the second (fires once even
 // if two sweeps overlap). Requires `schedule:run` on cron.
 Schedule::command('workflows:run-scheduled')->everyMinute()->withoutOverlapping();
+
+// Disk housekeeping: delete uploads that were never attached or placed (an abandoned dropzone
+// leaves a row + its bytes behind). Hourly is plenty — the retention window is measured in
+// days, so this only has to run often enough that nothing piles up.
+Schedule::command('disk:prune-temp-files')->hourly()->withoutOverlapping();

@@ -436,5 +436,15 @@ export function standardOperationsCatalog(): VariableOperationDefinition[] {
     { id: 'multi_count', label: L('multi_count', 'Count'), inputTypes: ['multi'], outputType: 'number' },
     { id: 'multi_is_empty', label: L('multi_is_empty', 'Is empty'), inputTypes: ['multi'], outputType: 'boolean' },
     { id: 'multi_to_text', label: L('multi_to_text', 'To text (joined)'), inputTypes: ['multi'], outputType: 'text' },
+
+    // ── file ────────────────────────────────────────────────────────────────
+    // A file variable carries a snapshot list. Two boolean terminals make a file field usable
+    // in a condition at all; the two converters hand it to the text/number vocabulary, so
+    // "is it a PDF" is file_name -> text_ends_with '.pdf' and "more than one" is
+    // file_count -> num_gt 1 — no file-specific comparison ops to keep in sync.
+    { id: 'file_is_empty', label: L('file_is_empty', 'Is empty'), inputTypes: ['file'], outputType: 'boolean' },
+    { id: 'file_is_not_empty', label: L('file_is_not_empty', 'Is not empty'), inputTypes: ['file'], outputType: 'boolean' },
+    { id: 'file_count', label: L('file_count', 'Count'), inputTypes: ['file'], outputType: 'number' },
+    { id: 'file_name', label: L('file_name', 'File name'), inputTypes: ['file'], outputType: 'text' },
   ];
 }

@@ -5,6 +5,7 @@ namespace App\Modules\Tasks\Http\Requests;
 use App\Models\User;
 use App\Modules\Approvals\Models\ApprovalPipeline;
 use App\Modules\Bot\Models\Bot;
+use App\Modules\Disk\Models\File;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Models\Task;
@@ -43,10 +44,47 @@ class StoreTasksRequest extends FormRequest
             'labels' => ['array', 'min:0', 'max:5'],
             'labels.*' => ['required', 'uuid'],
             'attachments' => ['array', 'min:0', 'max:5'],
-            'attachments.*' => ['required', 'uuid'],
+            // ScopedExists (not a bare uuid): a file id from another workspace must be
+            // rejected at write time. The claim rule below narrows it further.
+            'attachments.*' => ['required', 'uuid', new ScopedExists(File::class), $this->claimableAttachmentRule()],
             'form_id' => ['nullable', 'uuid', new ScopedExists(Form::class)],
             'approval_pipeline_id' => ['nullable', 'uuid', new ScopedExists(ApprovalPipeline::class)],
         ];
+    }
+
+    /**
+     * Which files this request may put on the task.
+     *
+     * `attachments` carries the FULL list on an update (the client re-sends what is already
+     * there alongside anything new), so two shapes are legitimate:
+     *   - a TEMP upload of MINE (fresh from /disk/temp, not yet owned by anything), or
+     *   - a file ALREADY attached to this very task.
+     *
+     * Everything else is refused rather than silently ignored: attachToModel() only rebinds
+     * temp rows, so without this a member could quietly hand another member's pending upload
+     * to their own task, and any other id would vanish without a word.
+     */
+    private function claimableAttachmentRule(): Closure
+    {
+        return function (string $attribute, mixed $value, Closure $fail): void {
+            $file = File::query()->find($value);
+
+            if ($file === null) {
+                return; // ScopedExists already reported it.
+            }
+
+            $task = $this->route('task');
+
+            if ($task instanceof Task && $file->fileable_type === $task->getMorphClass() && $file->fileable_id === $task->getKey()) {
+                return; // already this task's attachment — re-sent unchanged.
+            }
+
+            if (!$file->isOwnedByResource() && $file->folder_id === null && $file->uploader_id === $this->user()?->id) {
+                return; // my own pending upload.
+            }
+
+            $fail('This file cannot be attached to the task.');
+        };
     }
 
     /**

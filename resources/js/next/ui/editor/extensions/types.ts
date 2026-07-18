@@ -10,13 +10,20 @@ export const DATA_VERSION = 1 as const;
 
 /**
  * The editor's variable value types. The ORIGINAL trio (text/number/boolean) is
- * what the legacy FORMAT.md ever serialized; `date` / `enum` / `multi` extend the
- * vocabulary for hosts that carry richer sources (e.g. workflow-condition editing
- * over form fields: selects → enum, multi-selects → multi, date inputs → date).
+ * what the legacy FORMAT.md ever serialized; `date` / `enum` / `multi` / `file`
+ * extend the vocabulary for hosts that carry richer sources (e.g. workflow-condition
+ * editing over form fields: selects → enum, multi-selects → multi, date inputs →
+ * date, file inputs → file).
  * Wire values: date = an ISO `YYYY-MM-DD` string; enum = one of the source
- * variable's option VALUES; multi = an array of option values.
+ * variable's option VALUES; multi = an array of option values; file = a list of
+ * file snapshots ({id, name, mime_type, size}).
+ *
+ * NOTE: this widens what an op may DECLARE as its input, not what a directive
+ * SERIALIZES — a directive's `data.type` still degrades everything outside the
+ * original trio to 'text' (identity-only; the real type is recovered from the
+ * catalog by path).
  */
-export type VariablePrimitive = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'multi';
+export type VariablePrimitive = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'multi' | 'file';
 
 /** One selectable option of an enum/multi SOURCE variable. */
 export interface VariableOption {

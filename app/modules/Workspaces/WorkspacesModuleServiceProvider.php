@@ -15,6 +15,7 @@ class WorkspacesModuleServiceProvider extends ServiceProvider
     {
         $this->commands([
             \App\Modules\Workspaces\Console\ProvisionWorkspace::class,
+            \App\Modules\Workspaces\Console\MigrateTenantsCommand::class,
         ]);
     }
 

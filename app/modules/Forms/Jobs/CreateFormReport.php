@@ -2,6 +2,7 @@
 
 namespace App\Modules\Forms\Jobs;
 
+use App\Modules\Disk\Services\FileService;
 use App\Modules\Forms\Agents\FormReportAgent;
 use App\Modules\Forms\Models\FormReport;
 use App\Modules\Forms\Services\FormAnalyticalTableService;
@@ -9,7 +10,6 @@ use App\Modules\Forms\Tools\QuerySubmissions;
 use App\Modules\Forms\Traits\InteractsWithFormSchema;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\Storage;
 
 class CreateFormReport implements ShouldQueue
 {
@@ -445,16 +445,18 @@ class CreateFormReport implements ShouldQueue
             now()->format('Y-m-d_His')
         );
 
-        $this->report->file()->create([
-            'name' => $filename,
-            'type' => 'document',
-            'size' => strlen($content),
-            'path' => 'reports/' . $filename,
-            'mime_type' => 'text/plain',
-            'uploader_id' => $this->report->creator_id,
-        ]);
-
-        Storage::put('reports/' . $filename, $content);
+        // Through FileService so a report's file is stored like every other file: a
+        // per-workspace blob prefix and a FileType derived from the real mime. It used to
+        // hand-roll the row with mime `text/plain` for a markdown document — the disk's type
+        // facet would have believed it. The uploader is passed explicitly: this runs on a
+        // queue worker with no authenticated user.
+        app(FileService::class)->storeContent(
+            content: $content,
+            name: $filename,
+            mimeType: 'text/markdown',
+            parent: $this->report,
+            attributes: ['uploader_id' => $this->report->creator_id],
+        );
     }
 
     /**

@@ -895,8 +895,19 @@ class WorkflowVariableResolver
             return '';
         }
 
+        // A file in TEXT means its NAME. This lives here rather than in a typed branch because
+        // most embeds stringify WITHOUT knowing the type (an identity chip is resolved by
+        // path) — and a snapshot object would otherwise render as an empty string.
+        if ($this->isFileSnapshot($value)) {
+            return $this->fileSnapshotLabel($value);
+        }
+
         if (is_array($value)) {
-            return implode(', ', array_map(fn ($v) => is_scalar($v) ? (string) $v : '', $value));
+            return implode(', ', array_map(fn ($v) => match (true) {
+                $this->isFileSnapshot($v) => $this->fileSnapshotLabel($v),
+                is_scalar($v) => (string) $v,
+                default => '',
+            }, $value));
         }
 
         if (is_bool($value)) {
@@ -904,6 +915,26 @@ class WorkflowVariableResolver
         }
 
         return is_scalar($value) ? (string) $value : '';
+    }
+
+    /**
+     * Whether $value is a FILE snapshot ({id, name, mime_type, size}).
+     *
+     * Deliberately strict — `mime_type` is the discriminator. The payload carries other
+     * snapshots that also have id/name (the form, the task), and those must keep their
+     * existing stringify behaviour rather than start rendering as a name.
+     */
+    private function isFileSnapshot(mixed $value): bool
+    {
+        return is_array($value)
+            && array_key_exists('id', $value)
+            && array_key_exists('name', $value)
+            && array_key_exists('mime_type', $value);
+    }
+
+    private function fileSnapshotLabel(array $snapshot): string
+    {
+        return (string) ($snapshot['name'] ?? '');
     }
 
     /**
@@ -928,11 +959,15 @@ class WorkflowVariableResolver
      *   boolean → bool
      *   enum/text → string | null
      *   multi   → array (a scalar is wrapped)
+     *   file    → array of file IDS (the consumers — attachments — need ids, not snapshots)
      */
     private function coerce(mixed $value, WorkflowVariableType $type): mixed
     {
         if ($value === null) {
-            return $type === WorkflowVariableType::MULTI ? [] : null;
+            return match ($type) {
+                WorkflowVariableType::MULTI, WorkflowVariableType::FILE => [],
+                default => null,
+            };
         }
 
         return match ($type) {
@@ -940,8 +975,42 @@ class WorkflowVariableResolver
             WorkflowVariableType::NUMBER => is_numeric($value) ? $value + 0 : null,
             WorkflowVariableType::BOOLEAN => filter_var($value, FILTER_VALIDATE_BOOLEAN),
             WorkflowVariableType::MULTI => is_array($value) ? array_values($value) : [$value],
+            WorkflowVariableType::FILE => $this->coerceFileIds($value),
             WorkflowVariableType::ENUM, WorkflowVariableType::TEXT => is_scalar($value) ? (string) $value : null,
         };
+    }
+
+    /**
+     * A file variable carries a snapshot LIST ({id,name,mime_type,size}) — coercing it yields
+     * the IDS, which is what every consumer wants (attaching a file needs its id, not its
+     * name). Tolerates a bare id / a single snapshot / a list of either, so a legacy or
+     * hand-written payload degrades instead of exploding.
+     *
+     * @return array<int, string>
+     */
+    private function coerceFileIds(mixed $value): array
+    {
+        // The type is already known to be FILE here, so any array carrying an `id` is a
+        // snapshot — no need for the strict discriminator stringify() has to use.
+        $isSnapshot = fn (mixed $item): bool => is_array($item) && array_key_exists('id', $item);
+
+        $items = is_array($value) && !$isSnapshot($value) ? $value : [$value];
+
+        $ids = [];
+
+        foreach ($items as $item) {
+            $id = match (true) {
+                is_string($item) => $item,
+                $isSnapshot($item) => (string) $item['id'],
+                default => null,
+            };
+
+            if ($id !== null && $id !== '') {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
     }
 
     /** Coerce to an ISO-8601 string, or null on any parse failure (never throws). */

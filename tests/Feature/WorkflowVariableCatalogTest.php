@@ -64,6 +64,8 @@ class WorkflowVariableCatalogTest extends TestCase
                 ['id' => 'todos', 'type' => 'checklist', 'config' => [
                     'label' => 'Todos', 'options' => [['value' => 'a'], ['value' => 'b']],
                 ]],
+                // The file input (wire type 'image') carries format:'file' → FILE variable.
+                ['id' => 'attachment', 'type' => 'image', 'config' => ['label' => 'Attachment']],
                 ['id' => 'details', 'type' => 'section', 'config' => ['name' => 'details', 'children' => [
                     ['id' => 'note', 'type' => 'long_text', 'config' => ['label' => 'Note']],
                 ]]],
@@ -158,6 +160,9 @@ class WorkflowVariableCatalogTest extends TestCase
         $this->assertSame(WorkflowVariableType::MULTI->value, $byPath['trigger.fields.channels']['type']);
         $this->assertSame(['fb', 'ig'], $byPath['trigger.fields.channels']['enumOptions']);
         $this->assertSame(WorkflowVariableType::MULTI->value, $byPath['trigger.fields.todos']['type']);
+
+        // a file input maps to the FILE variable (format:'file' wins over its string shape).
+        $this->assertSame(WorkflowVariableType::FILE->value, $byPath['trigger.fields.attachment']['type']);
 
         // section-nested field recurses to a dotted path.
         $this->assertSame(WorkflowVariableType::TEXT->value, $byPath['trigger.fields.details.note']['type']);
@@ -289,9 +294,20 @@ class WorkflowVariableCatalogTest extends TestCase
                 ],
             ]);
 
-        // All 68 label-less operation descriptors are present (the FE resolves labels via i18n).
+        // All 72 label-less operation descriptors are present (the FE resolves labels via i18n).
         $operations = collect($response->json('data.operations'));
-        $this->assertCount(68, $operations);
+        $this->assertCount(72, $operations);
+
+        // The file ops: two boolean terminals (so a file field is usable in a condition at all)
+        // plus two converters that hand the value to the text/number vocabulary. All nullary.
+        $fileName = $operations->firstWhere('id', 'file_name');
+        $this->assertSame('file', $fileName['input']);
+        $this->assertSame('text', $fileName['output']);
+        $this->assertSame([], $fileName['args']);
+
+        $fileIsEmpty = $operations->firstWhere('id', 'file_is_empty');
+        $this->assertSame('file', $fileIsEmpty['input']);
+        $this->assertSame('boolean', $fileIsEmpty['output']);
 
         // Spot-check a sourceMap op: enum_to_date maps each enum option to a date.
         $enumToDate = $operations->firstWhere('id', 'enum_to_date');

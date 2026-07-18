@@ -312,14 +312,22 @@ class WorkflowVariableCatalogService
      * Map a form field's JSON-schema fragment to a workflow variable type. Uses the schema's
      * shape (string/number/boolean/array + format/enum) so it stays aligned with what
      * FormElementType::toJsonSchema emits:
-     *   string+format:date → date · enum(single) → enum · array → multi · number → number ·
-     *   boolean → boolean · everything else (incl. url/time/unknown) → text (defensive).
+     *   string+format:file → file · string+format:date → date · enum(single) → enum ·
+     *   array → multi · number → number · boolean → boolean · everything else (incl.
+     *   url/time/unknown) → text (defensive).
      *
      * @param  array<string, mixed>  $schema
      */
     private function mapSchemaToVariableType(array $schema): WorkflowVariableType
     {
         $jsonType = $schema['type'] ?? 'string';
+
+        // A file input carries format:'file'. Checked FIRST so it wins over every shape below —
+        // a future multi-file field could arrive as an array and must still read as FILE, never
+        // as a plain multi-select.
+        if (($schema['format'] ?? null) === 'file') {
+            return WorkflowVariableType::FILE;
+        }
 
         if ($jsonType === 'array') {
             return WorkflowVariableType::MULTI; // multi-select / checklist

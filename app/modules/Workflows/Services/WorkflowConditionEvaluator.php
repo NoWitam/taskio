@@ -84,6 +84,31 @@ class WorkflowConditionEvaluator
             WorkflowVariableType::ENUM => $this->enum($operator, $actual, $value),
             WorkflowVariableType::MULTI => $this->multi($operator, $actual, $value),
             WorkflowVariableType::BOOLEAN => $this->boolean($operator, $actual),
+            WorkflowVariableType::FILE => $this->file($operator, $actual),
+        };
+    }
+
+    /**
+     * A file field answers one question: is there a file or not. `filled`/`empty` take no
+     * value (an absent field already short-circuits to empty via passesOnMissingPath).
+     *
+     * The payload carries a snapshot LIST, but tolerate the shapes a legacy or hand-written
+     * payload can hold — a bare id string, a single snapshot — so a condition degrades to a
+     * sane answer instead of misreading a non-empty value as empty.
+     */
+    private function file(WorkflowConditionOperator $op, mixed $actual): bool
+    {
+        $hasFile = match (true) {
+            $actual === null => false,
+            is_string($actual) => $actual !== '',
+            is_array($actual) => $actual !== [],
+            default => false,
+        };
+
+        return match ($op) {
+            WorkflowConditionOperator::FILLED => $hasFile,
+            WorkflowConditionOperator::EMPTY => !$hasFile,
+            default => false,
         };
     }
 
