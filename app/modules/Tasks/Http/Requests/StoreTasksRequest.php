@@ -79,7 +79,9 @@ class StoreTasksRequest extends FormRequest
                 return; // already this task's attachment — re-sent unchanged.
             }
 
-            if (!$file->isOwnedByResource() && $file->folder_id === null && $file->uploader_id === $this->user()?->id) {
+            // A temp is precisely a file with no container yet (fileable_type NULL) — a disk file
+            // (fileable is a folder) is not claimable, even at the root.
+            if ($file->fileable_type === null && $file->uploader_id === $this->user()?->id) {
                 return; // my own pending upload.
             }
 

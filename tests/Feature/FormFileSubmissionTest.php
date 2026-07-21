@@ -65,8 +65,7 @@ class FormFileSubmissionTest extends TestCase
         $file = File::factory()->create([
             'uploader_id' => $uploader->id,
             'fileable_id' => null,
-            'fileable_type' => null,
-            'folder_id' => null,
+            'fileable_type' => null, // no container = a temp upload
         ]);
         Storage::put($file->path, 'bytes');
 

@@ -11,6 +11,15 @@ return [
         'form_submission' => 'Form attachments',
     ],
 
+    'ai' => [
+        'failed' => 'The AI edit failed. Please try again.',
+        'budget' => "You have reached today's AI image limit. Try again tomorrow.",
+    ],
+
+    'drafts' => [
+        'too_large' => 'This draft is too large to autosave.',
+    ],
+
     'validation' => [
         'folder_not_empty' => 'This folder is not empty. Move or remove its contents first.',
         'folder_name_taken' => 'A folder with this name already exists here.',

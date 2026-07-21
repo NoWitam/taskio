@@ -17,7 +17,16 @@ class DiskModuleServiceProvider extends ServiceProvider
     {
         $this->commands([
             \App\Modules\Disk\Console\PruneTempFilesCommand::class,
+            \App\Modules\Disk\Console\ReapStaleAiEditsCommand::class,
+            \App\Modules\Disk\Console\ReapStaleDraftsCommand::class,
         ]);
+
+        // The PDF-thumbnail rasterizer is injected behind an interface so tests can swap in a fake
+        // (and the feature never hard-depends on poppler being installed at unit-test time).
+        $this->app->bind(
+            \App\Modules\Disk\Support\PdfRasterizer::class,
+            \App\Modules\Disk\Support\PopplerPdfRasterizer::class,
+        );
     }
 
     public function boot(): void

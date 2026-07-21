@@ -162,8 +162,7 @@ class DiskFoundationsTest extends TestCase
     public function test_a_file_carries_disk_metadata(): void
     {
         $folder = Folder::factory()->create();
-        $file = File::factory()->create([
-            'folder_id' => $folder->id,
+        $file = File::factory()->inFolder($folder)->create([
             'description' => 'Materiał na wrzesień',
         ]);
 

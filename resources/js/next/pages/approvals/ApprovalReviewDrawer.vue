@@ -16,7 +16,7 @@
 //                  vertical STAGE TIMELINE (criteria + prior decisions per stage)
 //                  and a sticky decision CARD with a PROGRESSIVE note (collapsed →
 //                  optional for approve, auto-expanded + required for reject) and
-//                  the Approve / Reject actions. Comments hosts ApprovalComments.
+//                  the Approve / Reject actions. Comments hosts the shared CommentsPanel.
 //
 // Decision flow is unchanged: Approve / Reject shown ONLY for the current pending
 // stage that is mine; reject needs a note (mirrors the backend `required_if`); on
@@ -25,7 +25,7 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import FormViewer from '../forms/FormViewer.vue';
 import MarkdownViewer from '../../ui/editor/MarkdownViewer.vue';
-import ApprovalComments from './ApprovalComments.vue';
+import CommentsPanel from '../../ui/patterns/CommentsPanel.vue';
 import ApprovalStageStepper from './ApprovalStageStepper.vue';
 import ApprovalStageTimeline from './ApprovalStageTimeline.vue';
 import Tabs, { type TabItem } from '../../ui/navigation/Tabs.vue';
@@ -140,7 +140,7 @@ watch(hasForm, (has) => { leftTab.value = has ? 'form' : 'details'; }, { immedia
 
 // --- Right pane (decision): Decision / Comments toggle --------------------
 const rightTab = ref<'decision' | 'comments'>('decision');
-// ApprovalComments owns its list; it reports its loaded count so the tab can badge
+// CommentsPanel owns its list; it reports its loaded count so the tab can badge
 // "there's discussion here" without the drawer refetching.
 const commentsCount = ref(0);
 const rightTabs = computed<TabItem<'decision' | 'comments'>[]>(() => {
@@ -439,7 +439,7 @@ function onReject(): void {
             <!-- Comments: kept mounted so the count + draft survive tab switches. -->
             <template v-if="entity?.comments_url" #panel-comments>
               <div class="flex min-h-0 flex-1 flex-col">
-                <ApprovalComments
+                <CommentsPanel
                   :comments-url="entity.comments_url"
                   class="min-h-0 flex-1"
                   @count="commentsCount = $event"

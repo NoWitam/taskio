@@ -16,6 +16,15 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__ . '/../routes/console.php',
         health: '/up',
     )
+    // Broadcasting auth must authenticate the SPA the SAME way the API does — the `api` group
+    // (Sanctum stateful) + auth:sanctum — otherwise the framework default (`web` guard) resolves no
+    // user and /broadcasting/auth returns 403 for the private channel. ResolveWorkspace (in the api
+    // group) no-ops without X-Workspace-Id, and the channel checks CENTRAL workspace membership, so
+    // no tenant context is needed here; RequireWorkspace is route-scoped, so it is not applied.
+    ->withBroadcasting(
+        __DIR__ . '/../routes/channels.php',
+        ['middleware' => ['api', 'auth:sanctum']],
+    )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(LogMiddleware::class);
         $middleware->append(FlushChangelogMiddleware::class);

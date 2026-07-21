@@ -8,6 +8,7 @@ use App\Modules\Changelog\Managers\BagTracker;
 use App\Modules\Changelog\Managers\FieldTracker;
 use App\Modules\Changelog\Managers\ModelChangelogManager;
 use App\Modules\Changelog\Traits\HasChangelog;
+use App\Modules\Comments\Traits\HasComments;
 use App\Modules\Disk\Enums\FileType;
 use App\Modules\Labels\Models\Label;
 use App\Modules\Labels\Traits\HasLabels;
@@ -17,12 +18,15 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class File extends AbstractModel implements InterfacesHasChangelog
 {
-    use HasChangelog, HasCreator, HasFactory, HasLabels, HasUuids, SoftDeletes, TenantAware;
+    use HasChangelog, HasComments, HasCreator, HasFactory, HasLabels, HasUuids, SoftDeletes, TenantAware;
 
     protected const CREATOR_ID_COLUMN = 'uploader_id';
 
@@ -30,13 +34,17 @@ class File extends AbstractModel implements InterfacesHasChangelog
 
     protected $table = 'files';
 
+    /**
+     * The fileable_type marking a DISK file: its container is a Folder (the morph alias registered
+     * in DiskModuleServiceProvider). `fileable_id` = the folder, or NULL for the workspace root.
+     */
+    public const FOLDER_TYPE = 'folder';
+
     protected $fillable = [
         'name',
         'description',
         'path',
         'type',
-        'folder_id',
-        'disk_placed_at',
         'uploader_id',
         'mime_type',
         'size',
@@ -50,7 +58,6 @@ class File extends AbstractModel implements InterfacesHasChangelog
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
-        'disk_placed_at' => 'datetime',
         'disk_trashed_at' => 'datetime',
     ];
 
@@ -59,21 +66,74 @@ class File extends AbstractModel implements InterfacesHasChangelog
         return $this->morphTo();
     }
 
-    /** The disk folder this file sits in; NULL means the workspace root. */
-    public function folder(): BelongsTo
+    /**
+     * ALL users' autosave DRAFTS of this file — one row per user ({@see DiskFileDraft}). Both live on
+     * the same tenant connection, and DiskFileDraft is TenantAware, so the relation is workspace-
+     * scoped automatically. The per-user grid flag uses {@see draft()} instead.
+     */
+    public function drafts(): HasMany
     {
-        return $this->belongsTo(Folder::class, 'folder_id');
+        return $this->hasMany(DiskFileDraft::class, 'file_id');
     }
 
     /**
-     * A temp upload: not owned by any resource AND never placed on the disk. The
-     * disk_placed_at guard is what keeps a file dropped at the ROOT (folder_id NULL, no owner)
-     * out of the temp bucket — otherwise it would be indistinguishable from an in-flight upload
-     * and could be rebound to a resource or swept.
+     * The CURRENT user's autosave draft of this file — at most one (`UNIQUE(file_id, user_id)`), null
+     * when they have none. Scoped to the authenticated user so a list can derive a per-user `has_draft`
+     * via `withExists(['draft as has_draft'])` WITHOUT threading the user id through the query builder.
+     * Reads `auth()->id()` at query-build time, so it is only meaningful in an authenticated request
+     * (the reaper/console use {@see DiskFileDraft} directly, never this relation).
+     */
+    public function draft(): HasOne
+    {
+        return $this->hasOne(DiskFileDraft::class, 'file_id')->where('user_id', auth()->id());
+    }
+
+    /**
+     * Labels, carrying the `enforced` pivot flag (F3): true when the row was materialized onto this
+     * file by an ancestor folder's governance (locked in the UI), false for a manual label. Overrides
+     * {@see HasLabels::labels()} to expose the flag; the shared pivot's other consumers ignore it.
+     */
+    public function labels(): MorphToMany
+    {
+        return $this->morphToMany(Label::class, 'labelable', 'labelables', 'labelable_id', 'label_id')
+            ->withTimestamps()
+            ->withPivot('enforced');
+    }
+
+    /**
+     * The disk folder this file sits in — the `fileable` when it is a Folder; NULL for the
+     * workspace root or a resource-owned file. Kept a `belongsTo` on `fileable_id` so it eager-
+     * loads (`with('folder')`); a non-folder file's fileable_id won't match any folder → null.
+     */
+    public function folder(): BelongsTo
+    {
+        return $this->belongsTo(Folder::class, 'fileable_id');
+    }
+
+    /**
+     * Backwards-compatible virtual attribute (the `folder_id` column is gone — placement lives in
+     * `fileable`). Reads as the containing folder's id for a disk file, NULL otherwise, so the API
+     * Resource and callers keep working unchanged.
+     */
+    public function getFolderIdAttribute(): ?string
+    {
+        return $this->fileable_type === self::FOLDER_TYPE ? $this->fileable_id : null;
+    }
+
+    /**
+     * A temp upload: no container yet — `fileable_type` NULL, an uploaded-but-not-attached file.
+     * A disk file (fileable_type 'folder', even at the ROOT where fileable_id is NULL) and a
+     * resource file (task attachment, report) both carry a fileable_type, so neither is a temp.
      */
     public function scopeTemp(Builder $query): void
     {
-        $query->whereNull('fileable_type')->whereNull('disk_placed_at');
+        $query->whereNull('fileable_type');
+    }
+
+    /** Disk-native files: their container is a folder (root or nested). */
+    public function scopeDiskNative(Builder $query): void
+    {
+        $query->where('fileable_type', self::FOLDER_TYPE);
     }
 
     /**
@@ -87,13 +147,14 @@ class File extends AbstractModel implements InterfacesHasChangelog
     }
 
     /**
-     * Whether this file belongs to another resource (a task attachment, a report's output)
-     * rather than living on the disk itself. Those are shown under read-only virtual folders,
-     * and their lifecycle stays with the owning module.
+     * Whether this file belongs to another RESOURCE (a task attachment, a report's output) rather
+     * than living on the disk itself. A disk file's fileable is a Folder — that is NOT resource
+     * ownership. Those resource files are shown under read-only virtual folders, and their
+     * lifecycle stays with the owning module.
      */
     public function isOwnedByResource(): bool
     {
-        return $this->fileable_type !== null;
+        return $this->fileable_type !== null && $this->fileable_type !== self::FOLDER_TYPE;
     }
 
     public function getChangelogManager(): ModelChangelogManager
@@ -101,14 +162,16 @@ class File extends AbstractModel implements InterfacesHasChangelog
         return new ModelChangelogManager($this, [
             FieldTracker::make('name')->withComparison(),
             FieldTracker::make('description')->withComparison(),
-            // Renders the folder NAME, resolved withTrashed: audit history must not lose the
-            // name just because the folder was deleted afterwards (mirrors Task's assignee).
-            FieldTracker::make('folder_id')->withMap(function (?string $folderId, File $file) {
-                if (!$folderId) {
+            // The containing folder — tracked on the real `fileable_id` column (a disk file's
+            // fileable IS its folder). Renders the folder NAME, resolved withTrashed so audit
+            // history keeps it even after the folder is deleted (mirrors Task's assignee); a
+            // non-folder fileable (a resource owner) maps to null, so a bind never logs here.
+            FieldTracker::make('fileable_id')->withMap(function (?string $fileableId, File $file) {
+                if (!$fileableId || $file->fileable_type !== self::FOLDER_TYPE) {
                     return null;
                 }
 
-                $folder = Folder::withTrashed()->find($folderId);
+                $folder = Folder::withTrashed()->find($fileableId);
 
                 return $folder ? ['id' => $folder->id, 'name' => $folder->name] : null;
             }),

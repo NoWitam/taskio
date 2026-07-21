@@ -6,13 +6,14 @@
 // file in a grid, the fetch is DEFERRED until the tile nears the viewport (IntersectionObserver)
 // and runs only for the types we can preview cheaply:
 //   • image → the image itself (object-cover),
-//   • text  → the first lines of its content (a snippet).
-// Everything else (video, document, audio, archive …) shows the type glyph; a real preview there
-// needs server-side rendering (a video frame, a PDF page), which is out of scope.
+//   • text  → the first lines of its content (a snippet),
+//   • pdf   → a server-rendered page thumbnail (object-contain), via the thumbnail endpoint.
+// Everything else (video, audio, archive …) shows the type glyph; a real preview there needs
+// server-side rendering (e.g. a video frame), which is out of scope.
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import { api } from '../../app/lib/api';
-import { fileTypeIcon, isImageFile, isTextFile } from './fileIcon';
+import { fileTypeIcon, isImageFile, isPdfFile, isTextFile } from './fileIcon';
 import type { DiskFile } from './types';
 
 const props = defineProps<{ file: DiskFile }>();
@@ -23,7 +24,8 @@ const textSnippet = ref<string | null>(null);
 
 const isImage = (): boolean => isImageFile(props.file.type, props.file.mime_type);
 const isText = (): boolean => isTextFile(props.file.type, props.file.mime_type);
-const previewable = (): boolean => isImage() || isText();
+const isPdf = (): boolean => isPdfFile(props.file.type, props.file.mime_type);
+const previewable = (): boolean => isImage() || isText() || isPdf();
 
 let observer: IntersectionObserver | null = null;
 let started = false;
@@ -36,6 +38,17 @@ async function load(): Promise<void> {
   if (started) return;
   started = true;
   try {
+    if (isPdf()) {
+      // The PDF's thumbnail is a server-rendered page (PNG). The endpoint 404s for a non-PDF or a
+      // render miss → the catch leaves imageUrl null and the glyph shows. It needs the auth/workspace
+      // headers, so it is blob-fetched into an object URL like the image path. `?v=<updated_at>` makes
+      // the URL content-addressed so a replaced file's thumbnail (long-cached in the browser) can't go
+      // stale — the server cache is keyed by uuid + invalidated on replace, this covers the client.
+      const version = props.file.updated_at_iso ? '?v=' + encodeURIComponent(props.file.updated_at_iso) : '';
+      const blob = await api.get<Blob>('/disk/' + props.file.id + '/thumbnail' + version, { responseType: 'blob' });
+      imageUrl.value = URL.createObjectURL(blob);
+      return;
+    }
     const blob = await api.get<Blob>(inlineUrl(props.file.path), { responseType: 'blob' });
     if (isImage()) {
       imageUrl.value = URL.createObjectURL(blob);
@@ -78,7 +91,13 @@ onBeforeUnmount(() => {
     ref="rootRef"
     class="flex h-full w-full items-center justify-center overflow-hidden bg-next-muted text-next-4xl text-next-muted-foreground"
   >
-    <img v-if="imageUrl" :src="imageUrl" :alt="file.name" class="h-full w-full object-cover" />
+    <img
+      v-if="imageUrl"
+      :src="imageUrl"
+      :alt="file.name"
+      class="h-full w-full"
+      :class="isPdf() ? 'object-contain' : 'object-cover'"
+    />
     <span
       v-else-if="textSnippet !== null"
       class="block h-full w-full overflow-hidden whitespace-pre-wrap break-words p-next-2 text-left text-[9px] leading-[1.25] text-next-fg/70"

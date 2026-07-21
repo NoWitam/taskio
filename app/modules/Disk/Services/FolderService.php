@@ -2,9 +2,15 @@
 
 namespace App\Modules\Disk\Services;
 
+use App\Modules\Changelog\Managers\BagTracker;
+use App\Modules\Changelog\Managers\ChangelogManager;
+use App\Modules\Disk\DTOs\DiskItemFilters;
 use App\Modules\Disk\DTOs\FolderDTO;
+use App\Modules\Disk\DTOs\UpdateFolderDTO;
 use App\Modules\Disk\Models\File;
 use App\Modules\Disk\Models\Folder;
+use App\Modules\Labels\Models\Label;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -29,6 +35,32 @@ class FolderService
             ->where('parent_id', $parent?->getKey())
             ->orderBy('name')
             ->get();
+    }
+
+    /**
+     * The folders shown for the unified items endpoint's "folders" stage, filtered/sorted per
+     * $filters. `where` decides the reach — this folder's children, its whole subtree, or every
+     * folder (the whole disk). Counts are eager-loaded for the "N items" hint, and the order ENDS
+     * in the primary key — a cursor seek on `name` alone would skip/duplicate at a page edge.
+     */
+    public function childrenQuery(?Folder $parent, DiskItemFilters $filters): Builder
+    {
+        $query = Folder::query()->withCount(['children', 'files']);
+
+        // Subtree at the ROOT is the whole disk (no prefix to anchor on).
+        if ($filters->where === DiskItemFilters::WHERE_EVERYWHERE || ($filters->where === DiskItemFilters::WHERE_SUBTREE && $parent === null)) {
+            // every folder — no scoping
+        } elseif ($filters->where === DiskItemFilters::WHERE_SUBTREE) {
+            $query->where('path', 'like', $parent->descendantPrefix() . '%');
+        } else {
+            $query->where('parent_id', $parent?->getKey());
+        }
+
+        $query->search(['name'], $filters->search); // folders match on name only
+
+        $column = $filters->sort === 'created_at' ? 'created_at' : 'name';
+
+        return $query->orderBy($column, $filters->dir)->orderBy('id', $filters->dir);
     }
 
     /**
@@ -73,10 +105,67 @@ class FolderService
         $this->guardSiblingName($dto->name, $parent?->getKey());
 
         // path is computed by the model from the parent — never accepted from input.
-        return Folder::create([
+        $folder = Folder::create([
             'name' => $dto->name,
             'parent_id' => $parent?->getKey(),
         ]);
+
+        $this->inheritGovernance($folder, $parent);
+
+        return $folder;
+    }
+
+    /**
+     * A new subfolder inherits its parent's RECOMMENDED labels as its OWN (an adjustable starting
+     * point — the subfolder can change them). ENFORCED labels are deliberately NOT copied: they are
+     * inherited by DERIVATION ({@see inheritedEnforcedLabels}) and shown locked, so un-enforcing at
+     * an ancestor cleanly removes them everywhere and a descendant can never opt out. A root folder
+     * inherits nothing.
+     */
+    private function inheritGovernance(Folder $folder, ?Folder $parent): void
+    {
+        if ($parent === null) {
+            return;
+        }
+
+        $recommended = $parent->labels()
+            ->wherePivot('mode', Folder::LABEL_MODE_RECOMMENDED)
+            ->pluck('labels.id')
+            ->all();
+
+        if ($recommended !== []) {
+            $folder->labels()->sync(
+                collect($recommended)->mapWithKeys(fn (string $id) => [$id => ['mode' => Folder::LABEL_MODE_RECOMMENDED]])->all()
+            );
+        }
+    }
+
+    /**
+     * The labels ENFORCED by any ANCESTOR of $folder (its strict ancestors on the materialized path,
+     * NOT its own) — the enforced governance a folder INHERITS. Not materialized onto the folder:
+     * folders are never label-filtered, so this is derived at read time and surfaced as locked
+     * labels in the drawer. Soft-deleted labels are dropped.
+     */
+    public function inheritedEnforcedLabels(Folder $folder): Collection
+    {
+        $ancestorIds = $folder->ancestorIds();
+
+        if ($ancestorIds === []) {
+            return new Collection;
+        }
+
+        $labelIds = DB::table('folder_label')
+            ->whereIn('folder_id', $ancestorIds)
+            ->where('mode', Folder::LABEL_MODE_ENFORCED)
+            ->distinct()
+            ->pluck('label_id')
+            ->all();
+
+        if ($labelIds === []) {
+            return new Collection;
+        }
+
+        return Label::query()->whereIn('id', $labelIds)->get();
     }
 
     public function rename(Folder $folder, string $name): Folder
@@ -86,6 +175,79 @@ class FolderService
         $folder->update(['name' => $name]);
 
         return $folder;
+    }
+
+    /**
+     * Metadata edits — name, description, icon and governance labels. Absent DTO fields are left
+     * alone; null clears (drop a description/icon). Field changes ride the model save (the
+     * changelog auto-diffs name/description/icon); label governance is synced onto the
+     * `folder_label` pivot with its per-label mode, changelog-tracked as membership.
+     */
+    public function update(Folder $folder, UpdateFolderDTO $dto): Folder
+    {
+        return DB::transaction(function () use ($folder, $dto) {
+            if ($dto->hasName) {
+                $this->guardSiblingName($dto->name, $folder->parent_id, $folder->getKey());
+                $folder->name = $dto->name;
+            }
+
+            if ($dto->hasDescription) {
+                $folder->description = $dto->description;
+            }
+
+            if ($dto->hasIcon) {
+                $folder->icon = $dto->icon;
+            }
+
+            $folder->save();
+
+            if ($dto->hasLabels) {
+                $this->syncLabels($folder, $dto->labels ?? []);
+                // The enforced set may have changed → re-materialize onto every file in the subtree.
+                app(FolderLabelEnforcer::class)->syncSubtree($folder);
+            }
+
+            $folder->load('labels');
+            // Carry the inherited-enforced set too, so the edit response shows the SAME governance as
+            // the show payload (own + inherited) — the drawer re-seeds from it after a save.
+            $folder->setRelation('inheritedEnforcedLabels', $this->inheritedEnforcedLabels($folder));
+
+            return $folder;
+        });
+    }
+
+    /**
+     * Sync the folder's governance labels to exactly $labels (`[{id, mode}]`). Labels are
+     * re-queried under the workspace scope, so a foreign id can never attach; the changelog bag
+     * records membership add/remove (a mode-only flip is not a membership change).
+     *
+     * @param  array<int, array{id: string, mode: string}>  $labels
+     */
+    private function syncLabels(Folder $folder, array $labels): void
+    {
+        // Keep only ids that resolve in scope, mapping each to its requested mode (last wins).
+        $modeById = [];
+        foreach ($labels as $label) {
+            $modeById[$label['id']] = $label['mode'];
+        }
+
+        $scoped = Label::query()->whereIn('id', array_keys($modeById))->pluck('id')->all();
+        $modeById = array_intersect_key($modeById, array_flip($scoped));
+
+        app(ChangelogManager::class)->manual($folder, 'labels', function (BagTracker $tracker) use ($folder, $modeById) {
+            $current = $folder->labels()->pluck('labels.id')->all();
+
+            foreach (Label::query()->whereIn('id', array_diff(array_keys($modeById), $current))->get() as $added) {
+                $tracker->attach($added);
+            }
+
+            foreach (Label::query()->whereIn('id', array_diff($current, array_keys($modeById)))->get() as $removed) {
+                $tracker->detach($removed);
+            }
+
+            // belongsToMany sync with pivot payload: sets each row's mode and drops the rest.
+            $folder->labels()->sync(array_map(fn (string $mode) => ['mode' => $mode], $modeById));
+        });
     }
 
     /**
@@ -115,6 +277,10 @@ class FolderService
             $folder->save();
 
             $this->reanchorDescendants($oldPrefix, $newPrefix);
+
+            // The subtree now sits under different ancestors: recompute enforced labels for every
+            // file in it (adds the new parents' enforced labels, drops the old parents').
+            app(FolderLabelEnforcer::class)->syncSubtree($folder);
         });
 
         return $folder->refresh();
@@ -124,7 +290,7 @@ class FolderService
     public function trash(Folder $folder): void
     {
         $hasChildren = Folder::query()->where('parent_id', $folder->getKey())->exists();
-        $hasFiles = File::query()->where('folder_id', $folder->getKey())->exists();
+        $hasFiles = File::query()->diskNative()->where('fileable_id', $folder->getKey())->exists();
 
         if ($hasChildren || $hasFiles) {
             throw ValidationException::withMessages([

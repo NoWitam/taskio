@@ -1,0 +1,26 @@
+<?php
+
+use App\Models\User;
+use App\Modules\Workspaces\Models\Workspace;
+use Illuminate\Support\Facades\Broadcast;
+
+/**
+ * Private channel carrying async Disk AI image-edit status pushes for ONE workspace
+ * (see {@see \App\Modules\Disk\Events\DiskAiEditUpdated}). It is per-workspace, not
+ * per-edit: every editor open in the workspace subscribes once and filters by id.
+ *
+ * Authorized by CENTRAL workspace membership so the `/broadcasting/auth` request needs
+ * no tenant context (it runs on the `auth:sanctum` guard with the API's Bearer token,
+ * without X-Workspace-Id): the channel name carries the workspace id and we check the
+ * authenticated user belongs to it. `Workspace::find()` is unscoped (Workspace is a
+ * central model, not tenant-aware) and `hasMember()` runs the membership existence check
+ * WITHOUT the member scope — exactly the check ResolveWorkspace uses to gate the
+ * X-Workspace-Id header. A missing user, workspace, or non-member returns false (denied).
+ *
+ * `$user` is nullable defensively: `auth:sanctum` normally rejects an unauthenticated
+ * request before the callback runs, but a null here yields a clean denial rather than a
+ * TypeError.
+ */
+Broadcast::channel('disk-ai.workspace.{workspaceId}', function (?User $user, string $workspaceId): bool {
+    return $user !== null && (Workspace::find($workspaceId)?->hasMember($user) ?? false);
+});

@@ -13,8 +13,8 @@ import ApiTable, { type ApiRow } from '../ApiTable.vue';
 
 const { t } = useI18n();
 
-type Variant = 'info' | 'success' | 'warning' | 'danger';
-const variants: Variant[] = ['info', 'success', 'warning', 'danger'];
+type Variant = 'info' | 'success' | 'warning' | 'danger' | 'modified';
+const variants: Variant[] = ['info', 'success', 'warning', 'danger', 'modified'];
 
 const dismissed = ref<Record<string, boolean>>({});
 function reset(): void {
@@ -22,7 +22,7 @@ function reset(): void {
 }
 
 const propRows: ApiRow[] = [
-  { name: 'variant', type: "'info' | 'success' | 'warning' | 'danger'", default: "'info'", description: 'Intent → surface tint + icon + ARIA role.' },
+  { name: 'variant', type: "'info' | 'success' | 'warning' | 'danger' | 'modified'", default: "'info'", description: 'Intent → surface tint + icon + ARIA role. `modified` = the project-wide "unsaved / draft" violet.' },
   { name: 'size', type: "'sm' | 'md'", default: "'md'", description: 'Padding + text scale.' },
   { name: 'title', type: 'string', default: '—', description: 'Optional bold title above the body.' },
   { name: 'dismissible', type: 'boolean', default: 'false', description: 'Render a ✕ that emits `dismiss`.' },
@@ -41,17 +41,17 @@ const slotRows: ApiRow[] = [
 <template>
   <StoryPage
     title="Alert"
-    description="An inline message block that stays in document flow (not a toast). Four variants pair a subtle surface with a matching icon — color is never the only signal. Optional title, body, actions, and a dismiss ✕. info/success are polite (role=status); warning/danger are assertive (role=alert)."
+    description="An inline message block that stays in document flow (not a toast). Five variants pair a subtle surface with a matching icon — color is never the only signal; `modified` is the project-wide unsaved/draft violet (autosave drafts, dirty markers). Optional title, body, actions, and a dismiss ✕. info/success/modified are polite (role=status); warning/danger are assertive (role=alert)."
   >
     <template #a11y>
       <ul class="ml-next-4 list-disc space-y-next-1">
-        <li>info / success → <code>role="status"</code> (polite); warning / danger → <code>role="alert"</code> (assertive).</li>
+        <li>info / success / modified → <code>role="status"</code> (polite); warning / danger → <code>role="alert"</code> (assertive).</li>
         <li>The leading icon is decorative; meaning lives in the icon shape + text, never color alone.</li>
         <li>The dismiss ✕ is a real button with a translated <code>aria-label</code>.</li>
       </ul>
     </template>
 
-    <StorySection title="Variants" description="info / success / warning / danger.">
+    <StorySection title="Variants" description="info / success / warning / danger / modified (the unsaved/draft violet).">
       <div class="flex flex-col gap-next-3">
         <Alert v-for="v in variants" :key="v" :variant="v" :title="v">
           A short {{ v }} message that explains what happened.

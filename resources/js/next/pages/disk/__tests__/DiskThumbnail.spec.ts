@@ -35,6 +35,7 @@ function file(overrides: Partial<DiskFile> = {}): DiskFile {
     can_be_deleted: true,
     can_be_restored: false,
     can_be_force_deleted: false,
+    has_draft: false,
     ...overrides,
   };
 }
@@ -88,5 +89,46 @@ describe('DiskThumbnail', () => {
     expect(apiMock.get).not.toHaveBeenCalled();
     expect(wrapper.find('img').exists()).toBe(false);
     expect(wrapper.find('svg').exists()).toBe(true); // the Icon glyph
+  });
+
+  it('renders a PDF page thumbnail from the thumbnail endpoint (object-contain, not the inline URL)', async () => {
+    apiMock.get.mockResolvedValue(new Blob(['png-bytes'], { type: 'image/png' }));
+    const wrapper = mount(DiskThumbnail, {
+      props: { file: file({ type: 'document', mime_type: 'application/pdf', name: 'doc.pdf' }) },
+    });
+    await flushPromises();
+
+    const img = wrapper.find('img');
+    expect(img.exists()).toBe(true);
+    expect(img.attributes('src')).toBe('blob:preview');
+    // PDFs are page-shaped → contain (don't crop), unlike images (cover).
+    expect(img.classes()).toContain('object-contain');
+    // Fetched the dedicated thumbnail endpoint (by file id), NOT the inline serve URL.
+    expect(apiMock.get).toHaveBeenCalledWith('/disk/f/thumbnail', { responseType: 'blob' });
+  });
+
+  it('content-addresses the PDF thumbnail URL with ?v=<updated_at> so a replaced file busts the browser cache', async () => {
+    apiMock.get.mockResolvedValue(new Blob(['png-bytes'], { type: 'image/png' }));
+    const wrapper = mount(DiskThumbnail, {
+      props: {
+        file: file({ type: 'document', mime_type: 'application/pdf', name: 'doc.pdf', updated_at_iso: '2026-07-21T10:00:00Z' }),
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('img').exists()).toBe(true);
+    expect(apiMock.get).toHaveBeenCalledWith('/disk/f/thumbnail?v=2026-07-21T10%3A00%3A00Z', { responseType: 'blob' });
+  });
+
+  it('degrades a PDF to the type glyph when the thumbnail endpoint 404s (no <img>, no toast)', async () => {
+    apiMock.get.mockRejectedValue({ response: { status: 404 } });
+    const wrapper = mount(DiskThumbnail, {
+      props: { file: file({ type: 'document', mime_type: 'application/pdf', name: 'doc.pdf' }) },
+    });
+    await flushPromises();
+
+    expect(apiMock.get).toHaveBeenCalledWith('/disk/f/thumbnail', { responseType: 'blob' });
+    expect(wrapper.find('img').exists()).toBe(false);
+    expect(wrapper.find('svg').exists()).toBe(true); // the glyph
   });
 });

@@ -7,9 +7,9 @@
 // the component; only the math that can be tested in isolation lives here.
 
 /** The classic, non-AI filters offered in the editor. */
-export type ImageFilter = 'none' | 'grayscale' | 'sepia' | 'invert';
+export type ImageFilter = 'none' | 'grayscale' | 'sepia' | 'invert' | 'warm' | 'cool' | 'highContrast';
 
-export const IMAGE_FILTERS: ImageFilter[] = ['none', 'grayscale', 'sepia', 'invert'];
+export const IMAGE_FILTERS: ImageFilter[] = ['none', 'grayscale', 'sepia', 'invert', 'warm', 'cool', 'highContrast'];
 
 /** Clamp to a byte (0..255); the source array is Uint8ClampedArray but adjustments overflow first. */
 function clamp255(value: number): number {
@@ -48,6 +48,24 @@ export function invert(data: Uint8ClampedArray): Uint8ClampedArray {
   return data;
 }
 
+/** Warm — lift the red channel and drop the blue by a fixed amount (a warm color cast). */
+export function warm(data: Uint8ClampedArray): Uint8ClampedArray {
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = clamp255(data[i] + 18);
+    data[i + 2] = clamp255(data[i + 2] - 18);
+  }
+  return data;
+}
+
+/** Cool — lift the blue channel and drop the red (a cool color cast). */
+export function cool(data: Uint8ClampedArray): Uint8ClampedArray {
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = clamp255(data[i] - 18);
+    data[i + 2] = clamp255(data[i + 2] + 18);
+  }
+  return data;
+}
+
 /** Brightness: shift every channel by `amount` (-255..255). */
 export function brightness(data: Uint8ClampedArray, amount: number): Uint8ClampedArray {
   if (amount === 0) return data;
@@ -71,6 +89,41 @@ export function contrast(data: Uint8ClampedArray, amount: number): Uint8ClampedA
   return data;
 }
 
+/** Saturation: `amount` is -100..100; -100 → fully grey, 0 → identity, +100 → doubled saturation.
+ *  Each channel is pushed away from (or toward) the pixel's Rec.601 luma by the factor. */
+export function saturation(data: Uint8ClampedArray, amount: number): Uint8ClampedArray {
+  if (amount === 0) return data;
+  const factor = 1 + amount / 100;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    data[i] = clamp255(gray + (data[i] - gray) * factor);
+    data[i + 1] = clamp255(gray + (data[i + 1] - gray) * factor);
+    data[i + 2] = clamp255(gray + (data[i + 2] - gray) * factor);
+  }
+  return data;
+}
+
+/** The live, non-destructive tonal adjustments — each on a -100..100 UI scale, 0 = neutral. */
+export interface AdjustValues {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+}
+
+export const NEUTRAL_ADJUST: AdjustValues = { brightness: 0, contrast: 0, saturation: 0 };
+
+/**
+ * Apply brightness → contrast → saturation IN PLACE, in that order. Brightness maps the -100..100
+ * UI scale onto the ±255 channel shift; contrast and saturation take the UI value directly. Each
+ * step no-ops at 0, so a neutral bundle leaves the bytes untouched.
+ */
+export function applyAdjustments(data: Uint8ClampedArray, adj: AdjustValues): Uint8ClampedArray {
+  if (adj.brightness !== 0) brightness(data, Math.round(adj.brightness * 2.55));
+  if (adj.contrast !== 0) contrast(data, adj.contrast);
+  if (adj.saturation !== 0) saturation(data, adj.saturation);
+  return data;
+}
+
 /** Apply the named classic filter to the raw RGBA bytes in place. */
 export function applyFilter(data: Uint8ClampedArray, filter: ImageFilter): Uint8ClampedArray {
   switch (filter) {
@@ -80,6 +133,12 @@ export function applyFilter(data: Uint8ClampedArray, filter: ImageFilter): Uint8
       return sepia(data);
     case 'invert':
       return invert(data);
+    case 'warm':
+      return warm(data);
+    case 'cool':
+      return cool(data);
+    case 'highContrast':
+      return contrast(data, 55);
     default:
       return data;
   }
@@ -121,6 +180,26 @@ export function normalizeCrop(raw: { x0: number; y0: number; x1: number; y1: num
   };
 }
 
+/**
+ * Constrain a drag rectangle so the SELECTED PIXELS keep a target aspect ratio (w/h). The anchor
+ * corner (x0,y0) and the dragged x1 are kept; y1 is recomputed from the pixel width so
+ * (|Δx|·canvasW)/(|Δy|·canvasH) === ratio, preserving the drag's vertical direction and clamped to
+ * the canvas. Pure (fractions in, fractions out) so the crop math is testable without a canvas.
+ */
+export function constrainRatio(
+  raw: { x0: number; y0: number; x1: number; y1: number },
+  ratio: number,
+  canvasW: number,
+  canvasH: number,
+): { x0: number; y0: number; x1: number; y1: number } {
+  if (ratio <= 0 || canvasW <= 0 || canvasH <= 0) return raw;
+  const widthPx = Math.abs(raw.x1 - raw.x0) * canvasW;
+  const heightFrac = widthPx / ratio / canvasH;
+  const dir = raw.y1 >= raw.y0 ? 1 : -1;
+  const y1 = Math.min(1, Math.max(0, raw.y0 + dir * heightFrac));
+  return { x0: raw.x0, y0: raw.y0, x1: raw.x1, y1 };
+}
+
 /** Map a fractional crop rect onto integer source pixels for drawImage (each edge ≥ 1px). */
 export function cropToPixels(
   rect: CropRect,
@@ -132,5 +211,26 @@ export function cropToPixels(
     sy: Math.round(rect.y * height),
     sw: Math.max(1, Math.round(rect.w * width)),
     sh: Math.max(1, Math.round(rect.h * height)),
+  };
+}
+
+/**
+ * Map a pointer's client coordinates over the mask overlay onto CANVAS-PIXEL coordinates. The
+ * overlay is DISPLAYED at `rect` (already post-CSS-`zoom`, straight from getBoundingClientRect)
+ * while its backing buffer is `canvasW × canvasH`; scaling by the display→buffer ratio keeps a
+ * brush dab aligned with the underlying image regardless of the display scale or zoom. Pure so the
+ * mask coordinate math is unit-testable without a real canvas (happy-dom has no 2D context).
+ */
+export function maskPointToCanvas(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  canvasW: number,
+  canvasH: number,
+): { x: number; y: number } {
+  if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
+  return {
+    x: ((clientX - rect.left) / rect.width) * canvasW,
+    y: ((clientY - rect.top) / rect.height) * canvasH,
   };
 }

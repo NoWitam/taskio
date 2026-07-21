@@ -4,6 +4,7 @@ namespace App\Modules\Disk\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Disk\DTOs\FolderDTO;
+use App\Modules\Disk\DTOs\UpdateFolderDTO;
 use App\Modules\Disk\Http\Requests\MoveFolderRequest;
 use App\Modules\Disk\Http\Requests\StoreFolderRequest;
 use App\Modules\Disk\Http\Requests\UpdateFolderRequest;
@@ -53,7 +54,12 @@ class FoldersController extends Controller
     {
         $this->authorize('view', $folder);
 
-        return FolderResource::make($folder->loadCount(['children', 'files']))
+        $folder->loadCount(['children', 'files'])->load('labels');
+        // The enforced labels this folder INHERITS from its ancestors (derived, shown locked) —
+        // carried as a pseudo-relation the resource merges into `labels`.
+        $folder->setRelation('inheritedEnforcedLabels', $this->service->inheritedEnforcedLabels($folder));
+
+        return FolderResource::make($folder)
             ->additional([
                 'breadcrumbs' => FolderResource::collection($this->service->breadcrumbs($folder)),
             ]);
@@ -69,7 +75,7 @@ class FoldersController extends Controller
     public function update(UpdateFolderRequest $request, Folder $folder): FolderResource
     {
         return FolderResource::make(
-            $this->service->rename($folder, $request->string('name')->trim()->value())
+            $this->service->update($folder, UpdateFolderDTO::fromRequest($request))
         );
     }
 

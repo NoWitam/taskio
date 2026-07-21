@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use App\Modules\Disk\Models\File;
 use App\Modules\Disk\Models\Folder;
+use App\Modules\Labels\Models\Label;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Tenancy\TenantContext;
 use Closure;
@@ -153,6 +154,148 @@ class FolderApiTest extends TestCase
         $this->patchJson('/api/disk/folders/' . $folder->id, ['name' => 'Nowa'])
             ->assertOk()
             ->assertJsonPath('data.name', 'Nowa');
+    }
+
+    public function test_a_folder_carries_a_description_and_an_icon(): void
+    {
+        $folder = Folder::factory()->create(['name' => 'Kampanie']);
+
+        $this->patchJson('/api/disk/folders/' . $folder->id, [
+            'description' => 'Wszystkie kampanie 2026',
+            'icon' => 'megaphone',
+        ])
+            ->assertOk()
+            ->assertJsonPath('data.description', 'Wszystkie kampanie 2026')
+            ->assertJsonPath('data.icon', 'megaphone');
+
+        $folder->refresh();
+        $this->assertSame('Wszystkie kampanie 2026', $folder->description);
+        $this->assertSame('megaphone', $folder->icon);
+
+        // Null clears; absent leaves alone (the name is not in this payload, so it must survive).
+        $this->patchJson('/api/disk/folders/' . $folder->id, ['description' => null])
+            ->assertOk()
+            ->assertJsonPath('data.description', null)
+            ->assertJsonPath('data.icon', 'megaphone')
+            ->assertJsonPath('data.name', 'Kampanie');
+    }
+
+    public function test_a_folder_governs_labels_with_a_mode(): void
+    {
+        $folder = Folder::factory()->create();
+        $enforced = Label::create(['name' => 'Marka']);
+        $recommended = Label::create(['name' => 'Wrzesień']);
+
+        $this->patchJson('/api/disk/folders/' . $folder->id, [
+            'labels' => [
+                ['id' => $enforced->id, 'mode' => 'enforced'],
+                ['id' => $recommended->id, 'mode' => 'recommended'],
+            ],
+        ])->assertOk();
+
+        // The show/drawer payload carries each label with its pivot mode.
+        $show = $this->getJson('/api/disk/folders/' . $folder->id)->assertOk();
+        $modes = collect($show->json('data.labels'))->pluck('mode', 'id');
+        $this->assertSame('enforced', $modes[$enforced->id]);
+        $this->assertSame('recommended', $modes[$recommended->id]);
+
+        // Dropping one from the set detaches it; the pivot holds only the survivor.
+        $this->patchJson('/api/disk/folders/' . $folder->id, [
+            'labels' => [['id' => $enforced->id, 'mode' => 'recommended']],
+        ])->assertOk();
+
+        $folder->refresh();
+        $this->assertSame([$enforced->id], $folder->labels()->pluck('labels.id')->all());
+        $this->assertSame('recommended', $folder->labels()->first()->pivot->mode);
+    }
+
+    public function test_an_unknown_label_mode_is_rejected(): void
+    {
+        $folder = Folder::factory()->create();
+        $label = Label::create(['name' => 'X']);
+
+        $this->patchJson('/api/disk/folders/' . $folder->id, [
+            'labels' => [['id' => $label->id, 'mode' => 'mandatory']],
+        ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('labels.0.mode');
+    }
+
+    public function test_a_new_subfolder_owns_recommended_and_inherits_enforced_as_locked(): void
+    {
+        $parent = Folder::factory()->create();
+        $enforced = Label::create(['name' => 'Enf']);
+        $recommended = Label::create(['name' => 'Rec']);
+        $parent->labels()->sync([
+            $enforced->id => ['mode' => 'enforced'],
+            $recommended->id => ['mode' => 'recommended'],
+        ]);
+
+        $childId = $this->postJson('/api/disk/folders', ['name' => 'Child', 'parent_id' => $parent->id])
+            ->assertCreated()->json('data.id');
+
+        // OWN governance carries only the RECOMMENDED label (enforced is inherited, not copied).
+        $child = Folder::findOrFail($childId)->load('labels');
+        $this->assertSame([$recommended->id], $child->labels->pluck('id')->all());
+        $this->assertSame('recommended', $child->labels->first()->pivot->mode);
+
+        // The show payload surfaces the ancestor's enforced label as LOCKED (inherited) alongside it.
+        $labels = collect($this->getJson('/api/disk/folders/' . $childId)->json('data.labels'))->keyBy('id');
+        $this->assertTrue($labels[$enforced->id]['locked']);
+        $this->assertSame('enforced', $labels[$enforced->id]['mode']);
+        $this->assertFalse($labels[$recommended->id]['locked']);
+    }
+
+    public function test_enforcing_a_label_is_inherited_locked_by_an_existing_subfolder(): void
+    {
+        $parent = Folder::factory()->create();
+        $child = Folder::factory()->childOf($parent)->create();
+        $label = Label::create(['name' => 'Later']);
+
+        // Enforce AFTER the subfolder already exists — inheritance is derived at read time, so the
+        // existing subfolder picks it up with no propagation.
+        $this->patchJson('/api/disk/folders/' . $parent->id, [
+            'labels' => [['id' => $label->id, 'mode' => 'enforced']],
+        ])->assertOk();
+
+        $row = collect($this->getJson('/api/disk/folders/' . $child->id)->json('data.labels'))
+            ->firstWhere('id', $label->id);
+        $this->assertNotNull($row, 'The subfolder must show the ancestor-enforced label.');
+        $this->assertTrue($row['locked']);
+        $this->assertSame('enforced', $row['mode']);
+
+        // …but it is NOT written onto the subfolder's own governance.
+        $this->assertSame([], $child->fresh()->labels->pluck('id')->all());
+    }
+
+    public function test_a_folder_edit_response_still_carries_inherited_enforced_labels(): void
+    {
+        $parent = Folder::factory()->create();
+        $child = Folder::factory()->childOf($parent)->create();
+        $enforced = Label::create(['name' => 'Inherited']);
+        $own = Label::create(['name' => 'Own']);
+        $parent->labels()->sync([$enforced->id => ['mode' => 'enforced']]);
+
+        // Editing the CHILD's own governance must still return the inherited (locked) label, or the
+        // drawer would drop it after a save.
+        $labels = collect($this->patchJson('/api/disk/folders/' . $child->id, [
+            'labels' => [['id' => $own->id, 'mode' => 'recommended']],
+        ])->assertOk()->json('data.labels'))->keyBy('id');
+
+        $this->assertTrue($labels[$enforced->id]['locked']);
+        $this->assertFalse($labels[$own->id]['locked']);
+    }
+
+    public function test_folder_metadata_edits_land_in_its_changelog(): void
+    {
+        $folder = Folder::factory()->create(['name' => 'Kampanie']);
+
+        $this->patchJson('/api/disk/folders/' . $folder->id, ['description' => 'Nowy opis'])->assertOk();
+        app(\App\Modules\Changelog\Managers\ChangelogManager::class)->flush();
+
+        // The generic changelog endpoint resolves the `folder` morph alias and returns its history.
+        $history = $this->getJson('/api/folder/' . $folder->id . '/changelog')->assertOk();
+        $this->assertNotEmpty($history->json('data'), 'A folder edit must produce a changelog entry under the "folder" morph alias.');
     }
 
     public function test_creating_deeper_than_the_cap_is_rejected(): void
@@ -304,7 +447,7 @@ class FolderApiTest extends TestCase
         Folder::factory()->childOf($withChild)->create();
 
         $withFile = Folder::factory()->create();
-        File::factory()->create(['folder_id' => $withFile->id]);
+        File::factory()->inFolder($withFile)->create();
 
         // No surprise mass-deletes: the user empties it first (cascade is a later decision).
         $this->deleteJson('/api/disk/folders/' . $withChild->id)->assertStatus(422);

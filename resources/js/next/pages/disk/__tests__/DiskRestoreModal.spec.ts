@@ -33,7 +33,7 @@ function diskFile(over: Partial<DiskFile> = {}): DiskFile {
     created_at: '2026-07-17 10:00', description: null, mime_type: 'application/pdf', folder_id: null,
     source: 'disk', created_at_iso: null, updated_at_iso: null, disk_trashed_at: '2026-07-17T10:00:00Z',
     can_be_updated: true, can_be_moved: true, can_be_deleted: true,
-    can_be_restored: true, can_be_force_deleted: true, ...over,
+    can_be_restored: true, can_be_force_deleted: true, has_draft: false, ...over,
   };
 }
 function fld(id: string, name: string): DiskFolder {

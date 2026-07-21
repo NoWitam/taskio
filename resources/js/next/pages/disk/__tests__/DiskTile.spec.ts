@@ -31,7 +31,7 @@ const file: DiskFile = {
   created_at: '2026-07-17 10:00', description: null, mime_type: 'image/png', folder_id: null,
   source: 'disk', created_at_iso: null, updated_at_iso: null, disk_trashed_at: null,
   can_be_updated: true, can_be_moved: true, can_be_deleted: true,
-  can_be_restored: true, can_be_force_deleted: true,
+  can_be_restored: true, can_be_force_deleted: true, has_draft: false,
 };
 
 describe('DiskTile', () => {
@@ -76,5 +76,24 @@ describe('DiskTile', () => {
       props: { kind: 'file', file: { ...file, can_be_restored: true, can_be_force_deleted: false }, menu: 'trash' },
     });
     expect(wrapper.findAll('button').some((b) => b.attributes('aria-label') === 'Actions')).toBe(true);
+  });
+
+  // --- draft indicator (has_draft) -----------------------------------------
+  it('a file with has_draft shows the draft indicator with its accessible label + title', () => {
+    const wrapper = mount(DiskTile, { props: { kind: 'file', file: { ...file, has_draft: true } } });
+    const badge = wrapper.find('[aria-label="Unsaved draft"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.attributes('role')).toBe('img'); // an image role, not color-alone
+    expect(badge.attributes('title')).toBe('Unsaved draft'); // native hover tooltip
+  });
+
+  it('a file WITHOUT a draft shows no indicator', () => {
+    const wrapper = mount(DiskTile, { props: { kind: 'file', file: { ...file, has_draft: false } } });
+    expect(wrapper.find('[aria-label="Unsaved draft"]').exists()).toBe(false);
+  });
+
+  it('a folder never shows the draft indicator (folders have no drafts)', () => {
+    const wrapper = mount(DiskTile, { props: { kind: 'folder', folder } });
+    expect(wrapper.find('[aria-label="Unsaved draft"]').exists()).toBe(false);
   });
 });

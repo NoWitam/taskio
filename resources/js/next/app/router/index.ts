@@ -51,9 +51,10 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, titleKey: 'nav.tasks' },
       },
       {
-        // The disk file manager. The current folder is a `?folder=<id>` query
-        // (deep-linkable), so one route serves the whole tree.
-        path: 'disk',
+        // The disk file manager. The current folder is a PATH param (`/next/disk/<id>`,
+        // deep-linkable); the optional `:folder` also carries the synthetic `sys:res…` /
+        // `sys:trash` ids (single segment, no slash), so one route serves the whole tree.
+        path: 'disk/:folder?',
         name: 'next.disk',
         component: () => import('../../pages/disk/DiskView.vue'),
         meta: { requiresAuth: true, titleKey: 'nav.disk' },

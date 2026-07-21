@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // Alert — an INLINE message block for the "next" frontend.
 //
-// Stays in document flow (NOT a toast). Variants info|success|warning|danger map
-// to a `*-subtle` surface + a `*-subtle-foreground` text + a matching leading
-// icon, so meaning is never carried by color alone. Optional title, a default-slot
-// body, an `#actions` slot, and an optional dismiss ✕ (translated aria-label,
-// emits `dismiss`). Sizes sm|md.
+// Stays in document flow (NOT a toast). Variants info|success|warning|danger|modified
+// map to a `*-subtle` surface + a `*-subtle-foreground` text + a matching leading
+// icon, so meaning is never carried by color alone. `modified` is the project-wide
+// "unsaved / drifted from a snapshot" violet (--color-next-modified) — drafts,
+// dirty markers. Optional title, a default-slot body, an `#actions` slot, and an
+// optional dismiss ✕ (translated aria-label, emits `dismiss`). Sizes sm|md.
 //
 // A11y: `role="status"` (polite) for info/success; `role="alert"` (assertive) for
 // warning/danger so a problem is announced. The leading icon is decorative (the
@@ -14,7 +15,7 @@ import { computed } from 'vue';
 import Icon, { type IconName } from '../primitives/Icon.vue';
 import { useI18n } from '../../app/i18n';
 
-type AlertVariant = 'info' | 'success' | 'warning' | 'danger';
+type AlertVariant = 'info' | 'success' | 'warning' | 'danger' | 'modified';
 type AlertSize = 'sm' | 'md';
 
 const props = withDefaults(
@@ -46,6 +47,7 @@ const SURFACE_CLASS: Record<AlertVariant, string> = {
   success: 'bg-next-success-subtle text-next-success-subtle-foreground border-next-success-subtle',
   warning: 'bg-next-warning-subtle text-next-warning-subtle-foreground border-next-warning-subtle',
   danger: 'bg-next-danger-subtle text-next-danger-subtle-foreground border-next-danger-subtle',
+  modified: 'bg-next-modified-subtle text-next-modified-subtle-foreground border-next-modified-subtle',
 };
 
 const DEFAULT_ICON: Record<AlertVariant, IconName> = {
@@ -53,6 +55,7 @@ const DEFAULT_ICON: Record<AlertVariant, IconName> = {
   success: 'check-circle',
   warning: 'alert-triangle',
   danger: 'alert-circle',
+  modified: 'pencil',
 };
 
 const SIZE_CLASS: Record<AlertSize, string> = {

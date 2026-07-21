@@ -44,6 +44,7 @@ function file(overrides: Partial<DiskFile> = {}): DiskFile {
     can_be_deleted: true,
     can_be_restored: false,
     can_be_force_deleted: false,
+    has_draft: false,
     ...overrides,
   };
 }

@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
-// Disk store — the file-manager BROWSE level. Pins the level fetch (folders +
-// first file page + breadcrumbs, with folder_id ALWAYS sent so root vs. absent
-// never blur), file infinite-scroll append, and the token guard that lets a newer
-// open() supersede an in-flight one. The api client is mocked so no real HTTP happens.
+// Disk store — the file-manager BROWSE level. Pins the ONE unified level fetch
+// (GET /disk/items[/<folder>] → mixed folders+files split back by `kind`, plus the
+// breadcrumb trail), infinite-scroll append over that one cursor, and the token guard
+// that lets a newer open() supersede an in-flight one. api is mocked, so no real HTTP.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
@@ -33,13 +33,34 @@ function file(id: string, over: Partial<DiskFile> = {}): DiskFile {
     created_at: '2026-07-17 10:00', description: null, mime_type: 'image/png', folder_id: null,
     source: 'disk', created_at_iso: null, updated_at_iso: null, disk_trashed_at: null,
     can_be_updated: true, can_be_moved: true, can_be_deleted: true,
-    can_be_restored: true, can_be_force_deleted: true, ...over,
+    can_be_restored: true, can_be_force_deleted: true, has_draft: false, ...over,
   };
 }
 
-/** Route each URL to a canned response, in resolution order matching the code. */
-function routeGet(handlers: { folders?: unknown; files?: unknown; crumbs?: unknown }): void {
+/**
+ * Route each URL to a canned response. The folder browse is the unified `/disk/items` endpoint —
+ * its mixed response is BUILT from the `folders`/`files`/`crumbs` handlers (folders tagged first,
+ * then files) so existing per-array expectations still read naturally. Trash/bucket/picker keep
+ * their own endpoints.
+ */
+function routeGet(
+  handlers: {
+    folders?: { data?: DiskFolder[] };
+    files?: { data?: DiskFile[]; meta?: { next_cursor: string | null } };
+    crumbs?: { data?: DiskFolder; breadcrumbs?: DiskFolder[] };
+  } = {},
+): void {
   apiMock.get.mockImplementation((url: string) => {
+    if (url.startsWith('/disk/items')) {
+      const fs = (handlers.folders?.data ?? []).map((f) => ({ kind: 'folder', ...f }));
+      const fl = (handlers.files?.data ?? []).map((f) => ({ kind: 'file', ...f }));
+      return Promise.resolve({
+        data: [...fs, ...fl],
+        meta: handlers.files?.meta ?? { next_cursor: null },
+        folder: handlers.crumbs?.data ?? null,
+        breadcrumbs: handlers.crumbs?.breadcrumbs ?? [],
+      });
+    }
     if (url.startsWith('/disk/folders/')) return Promise.resolve(handlers.crumbs ?? { data: {}, breadcrumbs: [] });
     if (url.startsWith('/disk/folders')) return Promise.resolve(handlers.folders ?? { data: [] });
     if (url.startsWith('/disk?')) return Promise.resolve(handlers.files ?? { data: [], meta: { next_cursor: null } });
@@ -53,7 +74,7 @@ describe('useDiskStore', () => {
     apiMock.get.mockReset();
   });
 
-  it('opens the ROOT: folders + files, no breadcrumbs, folder_id sent empty', async () => {
+  it('opens the ROOT via ONE unified items call: folders + files, no breadcrumbs', async () => {
     routeGet({
       folders: { data: [folder('a')] },
       files: { data: [file('f1')], meta: { next_cursor: 'c2' } },
@@ -65,20 +86,17 @@ describe('useDiskStore', () => {
     expect(store.files).toHaveLength(1);
     expect(store.breadcrumbs).toEqual([]);
     expect(store.filesHasMore).toBe(true);
-    // folder_id is ALWAYS present (empty = root), distinct from "absent"; and the
-    // folder browser is scoped to disk-native files (source=disk) so resource files
-    // (attachments/reports) never leak into the folder view — they live under Zasoby.
-    const filesCall = apiMock.get.mock.calls.find((c) => String(c[0]).startsWith('/disk?'));
-    expect(String(filesCall?.[0])).toContain('folder_id=');
-    expect(String(filesCall?.[0])).toContain('source=disk');
-    // No breadcrumbs fetch at the root.
-    expect(apiMock.get.mock.calls.some((c) => String(c[0]).startsWith('/disk/folders/'))).toBe(false);
+    // ONE endpoint for the folder browse (no folder segment = the root); the old split
+    // folders/files calls are gone (resource files still never leak here — server-scoped).
+    expect(apiMock.get.mock.calls.some((c) => String(c[0]) === '/disk/items')).toBe(true);
+    expect(apiMock.get.mock.calls.some((c) => String(c[0]).startsWith('/disk?'))).toBe(false);
+    expect(apiMock.get.mock.calls.some((c) => String(c[0]).startsWith('/disk/folders'))).toBe(false);
   });
 
-  it('opens a FOLDER: scopes by id and builds a trail ENDING at the open folder', async () => {
-    // REGRESSION: the show endpoint returns ANCESTORS only (the materialized path never
-    // holds self) — the store must append `data`, or the crumb row loses the current
-    // folder and the up-tile of any depth≥2 folder jumps to the root instead of the parent.
+  it('opens a FOLDER: one path-scoped call + a trail ENDING at the open folder', async () => {
+    // REGRESSION: the endpoint returns ANCESTORS only (the materialized path never holds self)
+    // plus the folder object — the store appends it, or the crumb row loses the current folder
+    // and the up-tile of any depth≥2 folder jumps to the root instead of the parent.
     routeGet({
       folders: { data: [folder('child')] },
       files: { data: [], meta: { next_cursor: null } },
@@ -88,19 +106,109 @@ describe('useDiskStore', () => {
     await store.open('b');
 
     expect(store.currentFolderId).toBe('b');
+    expect(store.folders.map((f) => f.id)).toEqual(['child']);
     expect(store.breadcrumbs.map((f) => f.id)).toEqual(['a', 'b']); // ancestors + self
-    expect(apiMock.get.mock.calls.some((c) => String(c[0]).includes('parent_id=b'))).toBe(true);
-    expect(apiMock.get.mock.calls.some((c) => String(c[0]) === '/disk/folders/b')).toBe(true);
+    expect(apiMock.get.mock.calls.some((c) => String(c[0]) === '/disk/items/b')).toBe(true);
   });
 
-  it('loadMoreFiles appends the next page and advances the cursor', async () => {
-    routeGet({ files: { data: [file('f1')], meta: { next_cursor: 'c2' } } });
+  it('applyFilters appends the active filters to the items request (and resets to a bare URL)', async () => {
+    routeGet({ files: { data: [], meta: { next_cursor: null } } });
+    const store = useDiskStore();
+    await store.open('f1'); // folder view
+
+    apiMock.get.mockClear();
+    await store.applyFilters({ types: ['image', 'folder'], q: 'report', searchIn: 'name_description', where: 'subtree', sort: 'created_at', dir: 'asc' });
+
+    const url = String(apiMock.get.mock.calls[0][0]);
+    expect(url).toContain('/disk/items/f1');
+    expect(url).toContain('types%5B%5D=image');
+    expect(url).toContain('types%5B%5D=folder');
+    expect(url).toContain('q=report');
+    expect(url).toContain('search_in=name_description');
+    expect(url).toContain('search_where=subtree');
+    expect(url).toContain('sort=created_at');
+    expect(url).toContain('dir=asc'); // non-default direction for a date sort (default is desc)
+
+    apiMock.get.mockClear();
+    await store.resetFilters();
+    expect(String(apiMock.get.mock.calls[0][0])).toBe('/disk/items/f1'); // defaults → no query
+  });
+
+  it('updateFolder PATCHes the folder and merges the fresh row into the grid', async () => {
+    routeGet({ folders: { data: [folder('c1', { name: 'Old' })] }, files: { data: [] } });
+    const store = useDiskStore();
+    await store.open('parent');
+
+    apiPatch().mockResolvedValueOnce({ data: folder('c1', { name: 'New', description: 'desc', icon: 'megaphone' }) });
+    const payload = { name: 'New', description: 'desc', icon: 'megaphone', labels: [{ id: 'l1', mode: 'enforced' as const }] };
+    const updated = await store.updateFolder('c1', payload);
+
+    expect(apiPatch()).toHaveBeenCalledWith('/disk/folders/c1', payload);
+    expect(updated.name).toBe('New');
+    expect(store.folders.find((f) => f.id === 'c1')?.name).toBe('New'); // merged in place
+  });
+
+  it('fetchFolder GETs the folder detail (its governance labels)', async () => {
+    routeGet();
+    const store = useDiskStore();
+    apiMock.get.mockClear();
+    apiMock.get.mockResolvedValueOnce({ data: folder('x', { labels: [{ id: 'l1', name: 'A', mode: 'recommended' }] }) });
+
+    const detail = await store.fetchFolder('x');
+
+    expect(apiMock.get).toHaveBeenCalledWith('/disk/folders/x');
+    expect(detail.labels?.[0].mode).toBe('recommended');
+  });
+
+  it('fetchFile GETs the JSON info endpoint (not the binary route)', async () => {
+    const store = useDiskStore();
+    apiMock.get.mockResolvedValueOnce({ data: file('f9', { name: 'raport.pdf' }) });
+
+    const detail = await store.fetchFile('f9');
+
+    expect(apiMock.get).toHaveBeenCalledWith('/disk/f9/info');
+    expect(detail.name).toBe('raport.pdf');
+  });
+
+  it('replaceFileContent POSTs multipart to /content and merges the fresh row', async () => {
+    routeGet({ files: { data: [file('f1', { size: 10 })] } });
     const store = useDiskStore();
     await store.open(null);
 
-    apiMock.get.mockResolvedValueOnce({ data: [file('f2')], meta: { next_cursor: null } });
+    apiPost().mockResolvedValueOnce({ data: file('f1', { size: 99 }) });
+    const updated = await store.replaceFileContent('f1', new Blob(['abc'], { type: 'text/plain' }), 'notatka.txt');
+
+    expect(apiPost().mock.calls[0][0]).toBe('/disk/f1/content');
+    expect(apiPost().mock.calls[0][1]).toBeInstanceOf(FormData);
+    expect(updated.size).toBe(99);
+    expect(store.files.find((f) => f.id === 'f1')?.size).toBe(99); // merged in place
+  });
+
+  it('fetchChangelog targets the file morph by default and the folder morph on request', async () => {
+    const store = useDiskStore();
+
+    apiMock.get.mockResolvedValueOnce({ data: [], meta: { next_cursor: null } });
+    await store.fetchChangelog('abc');
+    expect(apiMock.get).toHaveBeenLastCalledWith('/file/abc/changelog');
+
+    apiMock.get.mockResolvedValueOnce({ data: [], meta: { next_cursor: null } });
+    await store.fetchChangelog('abc', { module: 'folder' });
+    expect(apiMock.get).toHaveBeenLastCalledWith('/folder/abc/changelog');
+  });
+
+  it('loadMoreFiles appends the next unified page (splitting folders + files) and advances the cursor', async () => {
+    routeGet({ folders: { data: [folder('a')] }, files: { data: [file('f1')], meta: { next_cursor: 'c2' } } });
+    const store = useDiskStore();
+    await store.open(null);
+
+    // A later page can still carry trailing folders before its files (the unified stage order).
+    apiMock.get.mockResolvedValueOnce({
+      data: [{ kind: 'folder', ...folder('b') }, { kind: 'file', ...file('f2') }],
+      meta: { next_cursor: null },
+    });
     await store.loadMoreFiles();
 
+    expect(store.folders.map((f) => f.id)).toEqual(['a', 'b']);
     expect(store.files.map((f) => f.id)).toEqual(['f1', 'f2']);
     expect(store.filesHasMore).toBe(false);
   });
@@ -234,6 +342,24 @@ describe('useDiskStore', () => {
     expect(store.files[0].description).toBe('a note');
   });
 
+  it('setFileHasDraft flips has_draft on the matching row and no-ops for an unknown id', async () => {
+    routeGet({ files: { data: [file('f1', { has_draft: false })], meta: { next_cursor: null } } });
+    const store = useDiskStore();
+    await store.open(null);
+
+    store.setFileHasDraft('f1', true);
+    expect(store.files.find((f) => f.id === 'f1')?.has_draft).toBe(true); // optimistic layer, no refetch
+
+    store.setFileHasDraft('f1', false);
+    expect(store.files.find((f) => f.id === 'f1')?.has_draft).toBe(false);
+
+    // Unknown id → a true no-op: the flag is untouched AND the array reference is unchanged (no churn).
+    const before = store.files;
+    store.setFileHasDraft('does-not-exist', true);
+    expect(store.files).toBe(before);
+    expect(store.files.find((f) => f.id === 'f1')?.has_draft).toBe(false);
+  });
+
   it('fetchChangelog reads the generic /file/{id}/changelog endpoint (morph alias)', async () => {
     apiMock.get.mockResolvedValue({
       data: [{ id: 1, event: 'updated', event_description: 'Renamed', details: {}, causer: { id: 'u', name: 'Ada', email: 'a@x' }, created_at: '2026-07-17T10:00:00Z' }],
@@ -347,14 +473,14 @@ describe('useDiskStore', () => {
     expect(store.filesLoading).toBe(false);
   });
 
-  it('openFolder ENCODES the folder id in the breadcrumb request path (no raw interpolation)', async () => {
+  it('openFolder ENCODES the folder id in the items request path (no raw interpolation)', async () => {
     routeGet({ crumbs: { data: folder('x'), breadcrumbs: [] } });
     const store = useDiskStore();
     // A crafted deep-link value with a path separator must be percent-encoded, not interpolated raw.
     await store.open('a/b');
 
-    expect(apiMock.get.mock.calls.some((c) => String(c[0]) === '/disk/folders/a%2Fb')).toBe(true);
-    expect(apiMock.get.mock.calls.some((c) => String(c[0]) === '/disk/folders/a/b')).toBe(false);
+    expect(apiMock.get.mock.calls.some((c) => String(c[0]) === '/disk/items/a%2Fb')).toBe(true);
+    expect(apiMock.get.mock.calls.some((c) => String(c[0]) === '/disk/items/a/b')).toBe(false);
   });
 
   it('renameFile patches and replaces the row in place', async () => {
@@ -433,5 +559,87 @@ describe('useDiskStore', () => {
     expect(apiDelete()).toHaveBeenCalledWith('/disk/f2');
     expect(store.folders.map((f) => f.id)).toEqual(['b']);
     expect(store.files.map((f) => f.id)).toEqual(['f1']);
+  });
+
+  it('aiEditText posts {content, prompt} to /disk/ai/text and returns the rewritten text', async () => {
+    const store = useDiskStore();
+    apiPost().mockResolvedValueOnce({ data: { text: 'Corrected text.' } });
+
+    const out = await store.aiEditText('draft text', 'Fix grammar');
+
+    expect(apiPost()).toHaveBeenCalledWith('/disk/ai/text', { content: 'draft text', prompt: 'Fix grammar' });
+    expect(out).toBe('Corrected text.');
+  });
+
+  // --- per-user edit drafts (autosave) --------------------------------------
+  it('saveDraft POSTs multipart (manifest + base_{id} PNG parts) and returns base_ids + updated_at', async () => {
+    const store = useDiskStore();
+    apiPost().mockResolvedValueOnce({ data: { base_ids: [1, 2], updated_at: '2026-07-21T10:00:00Z' } });
+
+    const manifest = { kind: 'image', baseIds: [1, 2] };
+    const res = await store.saveDraft('f1', manifest, 'v1', [
+      { id: 1, blob: new Blob(['a'], { type: 'image/png' }) },
+      { id: 2, blob: new Blob(['b'], { type: 'image/png' }) },
+    ]);
+
+    const [url, body] = apiPost().mock.calls[apiPost().mock.calls.length - 1];
+    expect(url).toBe('/disk/f1/draft');
+    expect(body).toBeInstanceOf(FormData);
+    const form = body as FormData;
+    expect(form.get('manifest')).toBe(JSON.stringify(manifest));
+    expect(form.get('base_version')).toBe('v1');
+    expect(form.get('base_1')).toBeInstanceOf(File);
+    expect(form.get('base_2')).toBeInstanceOf(File);
+    expect(res).toEqual({ base_ids: [1, 2], updated_at: '2026-07-21T10:00:00Z' });
+  });
+
+  it('saveDraft omits base_version when null and sends no base parts for a text draft', async () => {
+    const store = useDiskStore();
+    apiPost().mockResolvedValueOnce({ data: { base_ids: [], updated_at: 'x' } });
+
+    await store.saveDraft('f1', { kind: 'text', content: 'hi' }, null, []);
+
+    const form = apiPost().mock.calls[apiPost().mock.calls.length - 1][1] as FormData;
+    expect(form.has('base_version')).toBe(false);
+    expect(form.get('manifest')).toContain('hi');
+    expect(form.has('base_0')).toBe(false);
+  });
+
+  it('fetchDraft returns the draft, or null on a 404', async () => {
+    const store = useDiskStore();
+    const draft = { kind: 'text', manifest: {}, base_ids: [], base_version: null, updated_at: 'x' };
+    apiMock.get.mockResolvedValueOnce({ data: draft });
+
+    expect(await store.fetchDraft('f1')).toEqual(draft);
+    expect(apiMock.get).toHaveBeenCalledWith('/disk/f1/draft');
+
+    apiMock.get.mockRejectedValueOnce({ response: { status: 404 } });
+    expect(await store.fetchDraft('f1')).toBeNull();
+  });
+
+  it('fetchDraft rethrows a non-404 error (autosave stays best-effort elsewhere)', async () => {
+    const store = useDiskStore();
+    apiMock.get.mockRejectedValueOnce({ response: { status: 500 } });
+    await expect(store.fetchDraft('f1')).rejects.toBeTruthy();
+  });
+
+  it('fetchDraftBase GETs one base PNG as a blob', async () => {
+    const store = useDiskStore();
+    const blob = new Blob(['png'], { type: 'image/png' });
+    apiMock.get.mockResolvedValueOnce(blob);
+
+    const out = await store.fetchDraftBase('f1', 3);
+
+    expect(apiMock.get).toHaveBeenCalledWith('/disk/f1/draft/base/3', { responseType: 'blob' });
+    expect(out).toBe(blob);
+  });
+
+  it('deleteDraft DELETEs the draft endpoint', async () => {
+    const store = useDiskStore();
+    apiDelete().mockResolvedValueOnce(undefined);
+
+    await store.deleteDraft('f1');
+
+    expect(apiDelete()).toHaveBeenCalledWith('/disk/f1/draft');
   });
 });

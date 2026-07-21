@@ -89,6 +89,11 @@ const el = ref<HTMLTextAreaElement | null>(null);
 function grow(): void {
   const node = el.value;
   if (!node || !props.autoGrow) return;
+  // Bail when the field isn't laid out yet — e.g. mounted inside a hidden
+  // (display:none) tab panel, where clientHeight/scrollHeight both read 0 and we
+  // would otherwise pin `height: 0px` and collapse it to a sliver. It keeps its
+  // `rows` height until shown, then re-measures as its content changes.
+  if (node.offsetParent === null) return;
   node.style.height = 'auto';
   // Never shrink below the height implied by `rows` — auto-grow should grow FROM
   // that baseline, not collapse an empty field to a single line.

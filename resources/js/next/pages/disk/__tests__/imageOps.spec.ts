@@ -4,13 +4,19 @@ import {
   grayscale,
   sepia,
   invert,
+  warm,
+  cool,
   brightness,
   contrast,
+  saturation,
+  applyAdjustments,
   applyFilter,
   rotatedSize,
   fitScale,
   normalizeCrop,
+  constrainRatio,
   cropToPixels,
+  maskPointToCanvas,
 } from '../imageOps';
 
 /** One opaque RGBA pixel as a fresh clamped array. */
@@ -57,6 +63,25 @@ describe('imageOps filters', () => {
     expect(d[2]).toBeGreaterThan(200); // brights get brighter
   });
 
+  it('saturation 0 is a no-op; -100 collapses to grey; +100 pushes away from luma', () => {
+    // No-op at 0.
+    expect(Array.from(saturation(px(200, 100, 50), 0)).slice(0, 3)).toEqual([200, 100, 50]);
+    // -100 → every channel equals the pixel's luma (fully desaturated).
+    const grey = saturation(px(200, 100, 50), -100);
+    expect(grey[0]).toBe(grey[1]);
+    expect(grey[1]).toBe(grey[2]);
+    // +100 doubles the spread around luma: the dominant channel gets stronger.
+    const boosted = saturation(px(200, 100, 50), 100);
+    expect(boosted[0]).toBeGreaterThan(200);
+    expect(boosted[2]).toBeLessThan(50);
+  });
+
+  it('applyAdjustments no-ops on a neutral bundle and chains brightness→contrast→saturation', () => {
+    expect(Array.from(applyAdjustments(px(10, 20, 30), { brightness: 0, contrast: 0, saturation: 0 })).slice(0, 3)).toEqual([10, 20, 30]);
+    // Brightness maps the -100..100 UI scale onto ±255: +100 → +255 → white clamp.
+    expect(Array.from(applyAdjustments(px(100, 100, 100), { brightness: 100, contrast: 0, saturation: 0 })).slice(0, 3)).toEqual([255, 255, 255]);
+  });
+
   it("applyFilter('none') leaves the data untouched", () => {
     const before = px(1, 2, 3);
     const after = applyFilter(px(1, 2, 3), 'none');
@@ -65,6 +90,23 @@ describe('imageOps filters', () => {
 
   it('applyFilter dispatches to the named filter', () => {
     expect(Array.from(applyFilter(px(10, 20, 30), 'invert')).slice(0, 3)).toEqual([245, 235, 225]);
+  });
+
+  it('warm lifts red + drops blue; cool does the opposite; green stays', () => {
+    const w = warm(px(100, 100, 100));
+    expect([w[0], w[1], w[2]]).toEqual([118, 100, 82]);
+    const c = cool(px(100, 100, 100));
+    expect([c[0], c[1], c[2]]).toEqual([82, 100, 118]);
+  });
+
+  it('applyFilter dispatches warm / cool / highContrast', () => {
+    expect(Array.from(applyFilter(px(100, 100, 100), 'warm')).slice(0, 3)).toEqual([118, 100, 82]);
+    expect(Array.from(applyFilter(px(100, 100, 100), 'cool')).slice(0, 3)).toEqual([82, 100, 118]);
+    // highContrast pushes away from the 128 midpoint.
+    const hc = applyFilter(px(40, 128, 220), 'highContrast');
+    expect(hc[0]).toBeLessThan(40);
+    expect(hc[1]).toBe(128);
+    expect(hc[2]).toBeGreaterThan(220);
   });
 });
 
@@ -96,9 +138,52 @@ describe('imageOps geometry', () => {
     expect(b.h).toBeCloseTo(0.3);
   });
 
+  it('constrainRatio locks the selection to a target pixel ratio, preserving drag direction', () => {
+    // Canvas 200×100, target 1:1. A 0.5-wide selection is 100px → 100px tall → 1.0 frac (clamped).
+    const a = constrainRatio({ x0: 0, y0: 0, x1: 0.5, y1: 0.2 }, 1, 200, 100);
+    expect(a.x1).toBe(0.5);
+    expect(a.y1).toBeCloseTo(1);
+    // 16:9 on a 100×100 canvas: 0.8 wide (80px) → 45px tall → 0.45 frac.
+    const b = constrainRatio({ x0: 0, y0: 0, x1: 0.8, y1: 0.9 }, 16 / 9, 100, 100);
+    expect(b.y1).toBeCloseTo(0.45);
+    // Upward drag (y1 < y0) stays upward.
+    const c = constrainRatio({ x0: 0.5, y0: 0.9, x1: 0.9, y1: 0.1 }, 1, 100, 100);
+    expect(c.y1).toBeLessThan(c.y0);
+    expect(c.y1).toBeCloseTo(0.5);
+  });
+
   it('cropToPixels maps fractions onto integer source pixels with a 1px floor', () => {
     expect(cropToPixels({ x: 0.25, y: 0.5, w: 0.5, h: 0.25 }, 800, 600)).toEqual({ sx: 200, sy: 300, sw: 400, sh: 150 });
     // A sub-pixel selection never yields a 0-size drawImage source.
     expect(cropToPixels({ x: 0, y: 0, w: 0.0001, h: 0.0001 }, 100, 100)).toEqual({ sx: 0, sy: 0, sw: 1, sh: 1 });
+  });
+});
+
+describe('maskPointToCanvas (mask brush coordinate mapping)', () => {
+  it('maps 1:1 when the overlay is displayed at its buffer size', () => {
+    const rect = { left: 0, top: 0, width: 100, height: 100 };
+    expect(maskPointToCanvas(40, 60, rect, 100, 100)).toEqual({ x: 40, y: 60 });
+  });
+
+  it('scales display coords up to the (larger) canvas buffer', () => {
+    // Overlay shown at 100×50 but backed by a 400×200 buffer → coords ×4.
+    const rect = { left: 0, top: 0, width: 100, height: 50 };
+    expect(maskPointToCanvas(25, 10, rect, 400, 200)).toEqual({ x: 100, y: 40 });
+  });
+
+  it('subtracts the overlay origin (offset rect) before scaling', () => {
+    // Rect offset by (20,30); a pointer at its center maps to the buffer center.
+    const rect = { left: 20, top: 30, width: 200, height: 100 };
+    expect(maskPointToCanvas(120, 80, rect, 200, 100)).toEqual({ x: 100, y: 50 });
+  });
+
+  it('accounts for zoom (a zoomed-in overlay has a larger display rect)', () => {
+    // 2× zoom: the 100×100 buffer is displayed at 200×200, so a display point halves into the buffer.
+    const rect = { left: 0, top: 0, width: 200, height: 200 };
+    expect(maskPointToCanvas(100, 50, rect, 100, 100)).toEqual({ x: 50, y: 25 });
+  });
+
+  it('returns the origin for a degenerate (zero-size) rect instead of dividing by zero', () => {
+    expect(maskPointToCanvas(10, 10, { left: 0, top: 0, width: 0, height: 0 }, 100, 100)).toEqual({ x: 0, y: 0 });
   });
 });

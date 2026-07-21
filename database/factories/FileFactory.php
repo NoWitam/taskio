@@ -5,6 +5,7 @@ namespace Database\Factories;
 use App\Models\User;
 use App\Modules\Disk\Enums\FileType;
 use App\Modules\Disk\Models\File;
+use App\Modules\Disk\Models\Folder;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
@@ -54,5 +55,23 @@ class FileFactory extends Factory
             'fileable_id' => $parent->getKey(),
             'fileable_type' => $parent->getMorphClass(),
         ]);
+    }
+
+    /**
+     * A DISK file placed in $folder (null = the workspace root). Its container is the folder via
+     * the polymorphic `fileable` — the placement model after ADR-0018 (no folder_id column).
+     */
+    public function inFolder(?Folder $folder = null): static
+    {
+        return $this->state(fn () => [
+            'fileable_type' => File::FOLDER_TYPE,
+            'fileable_id' => $folder?->getKey(),
+        ]);
+    }
+
+    /** A disk file at the workspace root (fileable_type 'folder', fileable_id NULL). */
+    public function atRoot(): static
+    {
+        return $this->inFolder(null);
     }
 }

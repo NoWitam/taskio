@@ -11,6 +11,15 @@ return [
         'form_submission' => 'Załączniki formularzy',
     ],
 
+    'ai' => [
+        'failed' => 'Edycja przez AI nie powiodła się. Spróbuj ponownie.',
+        'budget' => 'Osiągnięto dzienny limit edycji AI. Spróbuj ponownie jutro.',
+    ],
+
+    'drafts' => [
+        'too_large' => 'Ten szkic jest zbyt duży, aby go automatycznie zapisać.',
+    ],
+
     'validation' => [
         'folder_not_empty' => 'Ten folder nie jest pusty. Najpierw przenieś lub usuń jego zawartość.',
         'folder_name_taken' => 'Folder o tej nazwie już tutaj istnieje.',

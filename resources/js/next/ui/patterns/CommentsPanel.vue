@@ -1,9 +1,9 @@
 <script setup lang="ts">
-// ApprovalComments — the comments panel inside the Approvals → review drawer
-// (next, Batch 3). A STANDALONE sibling of tasks/TaskComments.vue: it follows the
-// SAME UX (list with skeletons / empty / error+retry, a bottom composer, inline
-// edit/delete of OWN comments, an `edited` marker) but keeps its own self-
-// contained state — NO Pinia store, NO coupling to the tasks store.
+// CommentsPanel — the SHARED comments panel (born as approvals' ApprovalComments, generalized
+// for any commentable: approval entities, disk files/folders, …). Module-agnostic by design:
+// the host passes `commentsUrl` and gets a `count` emit back. Same UX as tasks' comments
+// (list with skeletons / empty / error+retry, a bottom composer, inline edit/delete of OWN
+// comments, an `edited` marker) with self-contained state — NO Pinia store coupling.
 //
 // VERIFIED backend contract (app/modules/Comments):
 //   GET    {comments_url}              (cursorPaginate(8), created_at DESC)
@@ -23,13 +23,13 @@
 //
 // All design-system components; no legacy imports; namespaced tokens; i18n + a11y.
 import { computed, ref, watch } from 'vue';
-import Textarea from '../../ui/forms/Textarea.vue';
-import Button from '../../ui/primitives/Button.vue';
-import Icon from '../../ui/primitives/Icon.vue';
-import Avatar from '../../ui/primitives/Avatar.vue';
-import Skeleton from '../../ui/data/Skeleton.vue';
-import EmptyState from '../../ui/data/EmptyState.vue';
-import Alert from '../../ui/feedback/Alert.vue';
+import Textarea from '../forms/Textarea.vue';
+import Button from '../primitives/Button.vue';
+import Icon from '../primitives/Icon.vue';
+import Avatar from '../primitives/Avatar.vue';
+import Skeleton from '../data/Skeleton.vue';
+import EmptyState from '../data/EmptyState.vue';
+import Alert from '../feedback/Alert.vue';
 import { api } from '../../app/lib/api';
 import { useAuthStore } from '../../app/stores/auth';
 import { useToast } from '../../app/composables/useToast';
@@ -210,9 +210,9 @@ async function submit(): Promise<void> {
     const res = await api.post<CommentResponse>(listPath.value, { content });
     comments.value = [res.data, ...comments.value];
     draft.value = '';
-    toast.success(t('approvals.comments.toasts.added'));
+    toast.success(t('comments.toasts.added'));
   } catch {
-    toast.danger(t('approvals.comments.toasts.error'));
+    toast.danger(t('comments.toasts.error'));
   } finally {
     posting.value = false;
   }
@@ -243,10 +243,10 @@ async function saveEdit(id: string | number): Promise<void> {
       next[idx] = res.data;
       comments.value = next;
     }
-    toast.success(t('approvals.comments.toasts.updated'));
+    toast.success(t('comments.toasts.updated'));
     cancelEdit();
   } catch {
-    toast.danger(t('approvals.comments.toasts.error'));
+    toast.danger(t('comments.toasts.error'));
   } finally {
     savingEdit.value = false;
   }
@@ -255,31 +255,31 @@ async function saveEdit(id: string | number): Promise<void> {
 // --- Delete (DELETE) ------------------------------------------------------
 async function remove(id: string | number): Promise<void> {
   const ok = await confirm({
-    title: t('approvals.comments.deleteTitle'),
-    message: t('approvals.comments.deleteConfirm'),
-    confirmLabel: t('approvals.comments.delete'),
-    cancelLabel: t('approvals.comments.cancel'),
+    title: t('comments.deleteTitle'),
+    message: t('comments.deleteConfirm'),
+    confirmLabel: t('comments.delete'),
+    cancelLabel: t('comments.cancel'),
     variant: 'danger',
     onConfirm: async () => {
       await api.delete(singleCommentPath(id));
       comments.value = comments.value.filter((c) => String(c.id) !== String(id));
     },
   });
-  if (ok) toast.success(t('approvals.comments.toasts.deleted'));
+  if (ok) toast.success(t('comments.toasts.deleted'));
 }
 </script>
 
 <template>
   <section
     class="flex h-full min-h-0 flex-col gap-next-4"
-    :aria-label="t('approvals.comments.title')"
+    :aria-label="t('comments.title')"
   >
     <!-- Load error (full-panel) with retry. -->
     <Alert v-if="loadError && comments.length === 0" variant="danger" size="sm" class="shrink-0">
       <div class="flex items-center justify-between gap-next-2">
-        <span>{{ t('approvals.comments.loadError') }}</span>
+        <span>{{ t('comments.loadError') }}</span>
         <Button variant="ghost" size="xs" leading-icon="rotate-ccw" @click="retry">
-          {{ t('approvals.comments.retry') }}
+          {{ t('comments.retry') }}
         </Button>
       </div>
     </Alert>
@@ -302,8 +302,8 @@ async function remove(id: string | number): Promise<void> {
         v-else-if="isEmpty"
         size="sm"
         icon="mail"
-        :title="t('approvals.comments.empty')"
-        :description="t('approvals.comments.emptyDescription')"
+        :title="t('comments.empty')"
+        :description="t('comments.emptyDescription')"
       />
 
       <!-- List. -->
@@ -320,7 +320,7 @@ async function remove(id: string | number): Promise<void> {
                   {{ formatDateTime(comment.created_at) }}
                 </time>
                 <span v-if="comment.is_edited" class="text-next-xs italic text-next-muted-foreground">
-                  ({{ t('approvals.comments.edited') }})
+                  ({{ t('comments.edited') }})
                 </span>
               </div>
 
@@ -330,7 +330,7 @@ async function remove(id: string | number): Promise<void> {
                   v-model="editDraft"
                   :rows="2"
                   auto-grow
-                  :aria-label="t('approvals.comments.editAria')"
+                  :aria-label="t('comments.editAria')"
                 />
                 <div class="flex gap-next-2">
                   <Button
@@ -339,10 +339,10 @@ async function remove(id: string | number): Promise<void> {
                     :disabled="!editDraft.trim()"
                     @click="saveEdit(comment.id)"
                   >
-                    {{ t('approvals.comments.save') }}
+                    {{ t('comments.save') }}
                   </Button>
                   <Button size="sm" variant="ghost" :disabled="savingEdit" @click="cancelEdit">
-                    {{ t('approvals.comments.cancel') }}
+                    {{ t('comments.cancel') }}
                   </Button>
                 </div>
               </template>
@@ -356,7 +356,7 @@ async function remove(id: string | number): Promise<void> {
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    :aria-label="t('approvals.comments.edit')"
+                    :aria-label="t('comments.edit')"
                     @click="startEdit(comment.id, displayContent(comment.content))"
                   >
                     <Icon name="pencil" />
@@ -364,7 +364,7 @@ async function remove(id: string | number): Promise<void> {
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    :aria-label="t('approvals.comments.delete')"
+                    :aria-label="t('comments.delete')"
                     @click="remove(comment.id)"
                   >
                     <Icon name="trash" />
@@ -397,13 +397,13 @@ async function remove(id: string | number): Promise<void> {
         v-model="draft"
         :rows="3"
         :maxlength="5000"
-        :placeholder="t('approvals.comments.placeholder')"
-        :aria-label="t('approvals.comments.add')"
+        :placeholder="t('comments.placeholder')"
+        :aria-label="t('comments.add')"
         auto-grow
       />
       <div class="flex justify-end">
         <Button type="submit" leading-icon="mail" :loading="posting" :disabled="!draft.trim()">
-          {{ posting ? t('approvals.comments.submitting') : t('approvals.comments.submit') }}
+          {{ posting ? t('comments.submitting') : t('comments.submit') }}
         </Button>
       </div>
     </form>

@@ -27,3 +27,14 @@ Schedule::command('workflows:run-scheduled')->everyMinute()->withoutOverlapping(
 // leaves a row + its bytes behind). Hourly is plenty — the retention window is measured in
 // days, so this only has to run often enough that nothing piles up.
 Schedule::command('disk:prune-temp-files')->hourly()->withoutOverlapping();
+
+// Stale-edit reaper for async Disk AI image edits: fail edits stranded in queued/processing by a
+// dead worker (a SIGKILL/OOM bypasses the job's failed() hook) and prune old terminal rows. Every
+// five minutes matches the other reapers; harmless under a sync queue where edits can't strand.
+Schedule::command('disk:reap-stale-ai-edits')->everyFiveMinutes()->withoutOverlapping();
+
+// Draft reaper for per-user Disk file-edit autosaves: prune drafts (row + storage dir) past their
+// 24h retention window, so an abandoned autosave never lingers with its base blobs. Every ten
+// minutes — the retention window is measured in hours, so this only has to run often enough to keep
+// nothing piling up.
+Schedule::command('disk:reap-stale-drafts')->everyTenMinutes()->withoutOverlapping();

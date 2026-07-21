@@ -3,18 +3,23 @@
 namespace App\Modules\Disk\Http\Controllers;
 
 use App\Http\Controllers\Controller;
+use App\Modules\Disk\DTOs\DiskItemFilters;
 use App\Modules\Disk\DTOs\UpdateFileDTO;
 use App\Modules\Disk\Http\Requests\CopyFileRequest;
+use App\Modules\Disk\Http\Requests\ReplaceFileContentRequest;
 use App\Modules\Disk\Http\Requests\RestoreFileRequest;
 use App\Modules\Disk\Http\Requests\StoreFileRequest;
 use App\Modules\Disk\Http\Requests\UpdateFileRequest;
 use App\Modules\Disk\Http\Requests\UploadTempFileRequest;
+use App\Modules\Disk\Http\Resources\DiskItemResource;
 use App\Modules\Disk\Http\Resources\FileResource;
 use App\Modules\Disk\Http\Resources\FolderResource;
 use App\Modules\Disk\Models\File;
 use App\Modules\Disk\Models\Folder;
 use App\Modules\Disk\Services\FileService;
 use App\Modules\Disk\Services\FolderService;
+use App\Modules\Disk\Services\ThumbnailService;
+use App\Support\Pagination\StagedCursorPaginator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -44,6 +49,7 @@ class FilesController extends Controller
     public function __construct(
         private FileService $service,
         private FolderService $folders,
+        private ThumbnailService $thumbnails,
     ) {}
 
     /** Browse the disk (or its trash with ?trashed=1). */
@@ -52,6 +58,44 @@ class FilesController extends Controller
         $this->authorize('viewAny', File::class);
 
         return FileResource::collection($this->service->index($request));
+    }
+
+    /**
+     * The unified contents of a folder (null = the workspace root): its subfolders AND its
+     * disk-native files as ONE cursor-paginated list (folders first, then files), plus the
+     * folder's breadcrumbs. Replaces the old pair of `?parent_id=` (folders) + `?folder_id=`
+     * (files) calls for browsing. Backed by {@see StagedCursorPaginator} — folders are stage 0,
+     * files stage 1 — so a single `?cursor=` walks both.
+     */
+    public function items(Request $request, ?Folder $folder = null): AnonymousResourceCollection
+    {
+        $this->authorize('viewAny', File::class);
+
+        $filters = DiskItemFilters::fromRequest($request);
+
+        // A type filter can drop a whole stage (e.g. "only images" → no folders stage; "only folders"
+        // → no files stage). Folders come first, so their stage stays declared first when present.
+        $paginator = StagedCursorPaginator::make(24);
+        if ($filters->includeFolders) {
+            $paginator->stage('folders', fn () => $this->folders->childrenQuery($folder, $filters));
+        }
+        if ($filters->includeFiles) {
+            $paginator->stage('files', fn () => $this->service->diskFilesQuery($folder, $filters));
+        }
+        $page = $paginator->paginate($request->query('cursor'));
+
+        // Eager-load the creator on every item (folders + files both use HasCreator) so the
+        // per-item can_be_* capability flags — which resolve through the policy → creator — don't
+        // N+1. The staged result's loadMissing batches this per model type.
+        $page->loadMissing('creator');
+
+        return DiskItemResource::collection($page)->additional([
+            // The open folder itself (null at the root) + its ancestors (root first). The
+            // materialized path never holds self, so the client appends `folder` to `breadcrumbs`
+            // to get a trail ending at the current level.
+            'folder' => $folder ? FolderResource::make($folder->loadCount(['children', 'files'])) : null,
+            'breadcrumbs' => FolderResource::collection($folder ? $this->folders->breadcrumbs($folder) : []),
+        ]);
     }
 
     /**
@@ -111,11 +155,60 @@ class FilesController extends Controller
         );
     }
 
+    /**
+     * A file's metadata as JSON — the preview's deep-link/refresh source. Deliberately separate
+     * from show(): the bare GET /{file} serves the BINARY and cannot double as a JSON endpoint.
+     */
+    public function info(File $file): FileResource
+    {
+        $this->authorize('view', $file);
+
+        // The draft flag too, so a DEEP-LINKED file (opened outside the grid) still tells the editor
+        // whether to fetch its draft — the frontend probes GET /{file}/draft only when `has_draft`
+        // (serialized from `draft_exists`) is true.
+        $file->load(['labels', 'folder'])->loadExists('draft');
+
+        return FileResource::make($file);
+    }
+
+    /**
+     * A small first-page PNG raster of a PDF — the file grid's real thumbnail instead of a glyph.
+     * Authorized like info(). The service returns null for a non-PDF, when thumbnails are disabled,
+     * or when rendering is unavailable / fails, which is a 404 here (never a 500) — the grid then
+     * falls back to the type glyph. Privately cacheable: the bytes are derived from a file only the
+     * workspace can read.
+     */
+    public function thumbnail(File $file): Response
+    {
+        $this->authorize('view', $file);
+
+        $png = $this->thumbnails->render($file);
+
+        abort_if($png === null, Response::HTTP_NOT_FOUND);
+
+        return response($png, Response::HTTP_OK, [
+            'Content-Type' => 'image/png',
+            'X-Content-Type-Options' => 'nosniff',
+            'Cache-Control' => 'private, max-age=86400',
+        ]);
+    }
+
     /** Metadata only: rename, describe, tag, move between folders. */
     public function update(UpdateFileRequest $request, File $file): FileResource
     {
         return FileResource::make(
             $this->service->update($file, UpdateFileDTO::fromRequest($request))
+        );
+    }
+
+    /**
+     * Overwrite the file's CONTENT (the preview editor's "Zapisz") — the row keeps its identity,
+     * the blob and content-derived columns swap. Disk-native files only (the service guards).
+     */
+    public function replaceContent(ReplaceFileContentRequest $request, File $file): FileResource
+    {
+        return FileResource::make(
+            $this->service->replaceContent($file, $request->file('file'))
         );
     }
 

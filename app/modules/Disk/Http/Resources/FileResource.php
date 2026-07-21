@@ -3,7 +3,6 @@
 namespace App\Modules\Disk\Http\Resources;
 
 use App\Modules\Disk\Models\File;
-use App\Modules\Labels\Http\Resources\LabelResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -37,14 +36,34 @@ class FileResource extends JsonResource
             'mime_type' => $this->mime_type,
             'folder_id' => $this->folder_id,
             'folder' => FolderResource::make($this->whenLoaded('folder')),
-            'labels' => LabelResource::collection($this->whenLoaded('labels')),
+            // Each label plus `locked` — true when it was materialized by a folder's governance
+            // (pivot `enforced`), so the UI shows a lock instead of a remove control (F3). The flag
+            // is coerced representation-agnostically (a non-cast pivot may arrive as bool / 1 / 't').
+            'labels' => $this->whenLoaded('labels', fn () => $this->labels->map(fn ($label) => [
+                'id' => $label->id,
+                'name' => $label->name,
+                'color' => $label->color,
+                'description' => $label->description,
+                'icon' => $label->icon?->value,
+                'locked' => in_array($label->pivot->enforced, [true, 1, '1', 't', 'true'], true),
+            ])->all()),
 
-            // Where the file came from: 'disk' when it lives here in its own right, else the
-            // owning resource's morph alias ('task', 'form_report', …).
-            'source' => $this->fileable_type ?? 'disk',
+            // Where the file came from: 'disk' when it lives here in its own right (its container
+            // is a folder, or it is a not-yet-placed temp), else the owning resource's morph alias
+            // ('task', 'form_report', …).
+            'source' => ($this->fileable_type === null || $this->fileable_type === File::FOLDER_TYPE)
+                ? 'disk'
+                : $this->fileable_type,
             'created_at_iso' => $this->created_at?->toIso8601String(),
             'updated_at_iso' => $this->updated_at?->toIso8601String(),
             'disk_trashed_at' => $this->disk_trashed_at?->toIso8601String(),
+
+            // Whether the CURRENT user has an in-progress autosave DRAFT of this file (their
+            // unsaved edits) — the grid flags those tiles. Computed only by the browser LIST
+            // query (a per-row withExists); every other response (info/upload/replace) leaves the
+            // attribute unset → false, which is correct: a fresh upload has no draft, and an
+            // explicit Save clears it.
+            'has_draft' => (bool) ($this->draft_exists ?? false),
 
             // --- Server-authoritative capabilities ------------------------------------
             'can_be_updated' => $user?->can('update', $this->resource) ?? false,

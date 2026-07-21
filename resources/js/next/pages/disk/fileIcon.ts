@@ -27,3 +27,8 @@ export function isImageFile(type: string | null | undefined, mime?: string | nul
 export function isTextFile(type: string | null | undefined, mime?: string | null): boolean {
   return type === 'text' || (mime?.startsWith('text/') ?? false);
 }
+
+/** Whether a file is a PDF we can show a server-rendered page thumbnail for (by FileType or mime). */
+export function isPdfFile(type: string | null | undefined, mime?: string | null): boolean {
+  return type === 'pdf' || mime === 'application/pdf';
+}

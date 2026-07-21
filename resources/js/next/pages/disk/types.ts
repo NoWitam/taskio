@@ -13,6 +13,17 @@ export interface DiskLabel {
   name: string;
   color?: string | null;
   icon?: string | null;
+  /** On a FILE's label: true when it was materialized by a folder's enforced governance (F3) — the
+   *  UI shows a lock instead of a remove control and it cannot be detached by hand. */
+  locked?: boolean;
+}
+
+/** How a folder governs a label for its contents. */
+export type FolderLabelMode = 'enforced' | 'recommended';
+
+/** A label a folder governs — a plain label plus its pivot `mode`. */
+export interface DiskFolderLabel extends DiskLabel {
+  mode: FolderLabelMode;
 }
 
 /** A file, as the disk browser consumes it. */
@@ -43,12 +54,25 @@ export interface DiskFile {
   /** Trash actions (ownership-gated): the UI must gate on these, not can_be_deleted. */
   can_be_restored: boolean;
   can_be_force_deleted: boolean;
+  /**
+   * True when the CURRENT user has an in-progress autosave draft for this file (the preview editor's
+   * not-yet-saved edits); folders never have drafts. The server value is authoritative on (re)fetch;
+   * the disk store's `setFileHasDraft` applies a live optimistic layer so the grid indicator can flip
+   * the moment a draft is created/cleared without a refetch.
+   */
+  has_draft: boolean;
 }
 
 /** A folder in the tree. */
 export interface DiskFolder {
   id: string;
   name: string;
+  /** Optional metadata (present on the show/drawer payload; tiles carry name only). */
+  description?: string | null;
+  /** Chosen IconEnum value, rendered inside the folder glyph. */
+  icon?: string | null;
+  /** Governance labels with their pivot mode — only on the show/drawer payload. */
+  labels?: DiskFolderLabel[];
   parent_id: string | null;
   depth: number;
   /** Ancestor ids, root first. */
@@ -88,9 +112,92 @@ export interface FileListResponse {
   meta?: { next_cursor: string | null };
 }
 
+/**
+ * One item in the unified folder browse (`GET /disk/items/{folder?}`): a folder OR a file,
+ * discriminated by `kind` (the backend's DiskItemResource prepends it). The client splits this
+ * one list back into folders/files by `kind`.
+ */
+export type DiskItem = ({ kind: 'folder' } & DiskFolder) | ({ kind: 'file' } & DiskFile);
+
+/** Where the search looks. */
+export type DiskSearchWhere = 'folder' | 'subtree' | 'everywhere';
+
+/** The disk browser's filter state (mirrors the `GET /disk/items` query params 1:1). */
+export interface DiskFilters {
+  /** FileType values + the pseudo-type 'folder'; empty = show everything. */
+  types: string[];
+  q: string;
+  searchIn: 'name' | 'name_description';
+  where: DiskSearchWhere;
+  sort: 'name' | 'created_at';
+  dir: 'asc' | 'desc';
+}
+
+export const DEFAULT_DISK_FILTERS: DiskFilters = {
+  types: [],
+  q: '',
+  searchIn: 'name',
+  where: 'folder',
+  sort: 'name',
+  dir: 'asc',
+};
+
+/** The default sort direction for a sort column (name → A→Z, date → newest first). */
+export function defaultDirFor(sort: DiskFilters['sort']): DiskFilters['dir'] {
+  return sort === 'created_at' ? 'desc' : 'asc';
+}
+
+/** The unified folder-items envelope: mixed items (cursor-paginated) + the folder + its ancestors. */
+export interface DiskItemsResponse {
+  data: DiskItem[];
+  meta?: { next_cursor: string | null };
+  /** The open folder itself (null at the root) — appended to `breadcrumbs` for a trail ending here. */
+  folder?: DiskFolder | null;
+  /** The current folder's ANCESTORS, root first (empty at the root); the client appends `folder`. */
+  breadcrumbs?: DiskFolder[];
+}
+
 /** A single file envelope (store/update/restore). */
 export interface FileResponse {
   data: DiskFile;
+}
+
+// --- Per-user edit drafts (autosave: GET/POST/DELETE /disk/{id}/draft) --------
+// The preview editor autosaves its in-progress state so a refresh/crash never loses work; the
+// MAIN file is overwritten only on an explicit Save. The `manifest` shape is FE-owned (opaque to
+// the backend) — image drafts carry the editor's FULL history + which base blobs are live; text
+// drafts carry the whole buffer.
+
+/** Image draft manifest — the editor's full undo history + the live base ids. */
+export interface ImageDraftManifest {
+  kind: 'image';
+  history: { baseId: number; state: unknown }[];
+  historyIndex: number;
+  savedIndex: number;
+  baseIds: number[];
+}
+
+/** Text draft manifest — the entire buffer. */
+export interface TextDraftManifest {
+  kind: 'text';
+  content: string;
+}
+
+export type DraftManifest = ImageDraftManifest | TextDraftManifest;
+
+/**
+ * A per-user autosaved draft (the shape shared by the POST upsert response and the GET fetch).
+ * `manifest` is the FE-owned blob above (kept `any` because its concrete shape depends on `kind`
+ * and the store treats it opaquely); `base_ids` lists the live image base blobs; `base_version`
+ * is the file's `updated_at_iso` captured when the draft began (so the FE can warn on a stale file).
+ */
+export interface DraftInfo {
+  kind: 'image' | 'text';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  manifest: any;
+  base_ids: number[];
+  base_version: string | null;
+  updated_at: string;
 }
 
 // --- Resources ("Zasoby") virtual tree (GET /disk/resources) -----------------

@@ -160,7 +160,7 @@ class ResourceFoldersTest extends TestCase
 
         $this->getJson('/api/disk/folders/sys:res:task')->assertNotFound();
 
-        $file = File::factory()->create(['folder_id' => Folder::factory()->create()->id]);
+        $file = File::factory()->inFolder(Folder::factory()->create())->create();
         Storage::put($file->path, 'x');
         $this->patchJson('/api/disk/' . $file->id, ['folder_id' => 'sys:res:task:2026-07'])
             ->assertStatus(422)->assertJsonValidationErrors('folder_id');

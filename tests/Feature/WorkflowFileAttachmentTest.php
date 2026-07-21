@@ -59,9 +59,8 @@ class WorkflowFileAttachmentTest extends TestCase
     /** A file that lives on the disk with real bytes (so a copy assertion is not vacuous). */
     private function diskFile(array $attributes = []): File
     {
-        $file = File::factory()->create($attributes + [
+        $file = File::factory()->inFolder(Folder::factory()->create())->create($attributes + [
             'uploader_id' => $this->user->id,
-            'folder_id' => Folder::factory()->create()->id,
         ]);
         Storage::put($file->path, 'the-bytes');
 
@@ -149,9 +148,10 @@ class WorkflowFileAttachmentTest extends TestCase
         $this->assertSame('brief.pdf', $copy->name);
         $this->assertSame('the-bytes', Storage::get($copy->path));
 
-        // The source is untouched — still on the disk, not stolen into the task.
+        // The source is untouched — still a DISK file (its container is a folder), not stolen
+        // into the task (copy-on-attach duplicates rather than rebinding).
         $source->refresh();
-        $this->assertNull($source->fileable_type);
+        $this->assertFalse($source->isOwnedByResource());
         $this->assertTrue(Storage::exists($source->path));
     }
 

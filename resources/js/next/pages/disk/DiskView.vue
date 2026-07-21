@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // DiskView — the workspace file manager (P1: a Windows-style tile grid).
 //
-// The current folder is URL-driven via `?folder=<id>` (deep-linkable, back-button
-// friendly); the store owns the level's server state. The grid reads, top to
+// The current folder is URL-driven via the `/next/disk/<id>` path param (deep-linkable,
+// back-button friendly); the store owns the level's server state. The grid reads, top to
 // bottom: an "up" tile (except at the root), then folder tiles, then file tiles,
 // with the folder path shown as breadcrumbs above. Files paginate (infinite
 // scroll); folders come a level at a time.
@@ -23,10 +23,12 @@ import ConfirmDialog from '../../ui/overlay/ConfirmDialog.vue';
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import DiskTile from './DiskTile.vue';
+import DiskFilterBar from './DiskFilterBar.vue';
 import DiskRestoreModal from './DiskRestoreModal.vue';
 import DiskMoveModal, { type MoveTarget } from './DiskMoveModal.vue';
 import DiskCopyModal from './DiskCopyModal.vue';
-import DiskFileDrawer from './DiskFileDrawer.vue';
+import DiskPreview from './preview/DiskPreview.vue';
+import { downloadFile } from './download';
 import { useDiskStore, isVirtualId, isTrashId, TRASH_ID } from '../../app/stores/disk';
 import { useInfiniteScroll } from '../../app/composables/useInfiniteScroll';
 import { useToast } from '../../app/composables/useToast';
@@ -43,10 +45,10 @@ const store = useDiskStore();
 const { folders, files, breadcrumbs, loading, error, filesHasMore, filesLoading, virtualNodes, resourceTree } =
   storeToRefs(store);
 
-/** The level id from the query: null (root), a folder uuid, or a `sys:res…` virtual id. */
+/** The level id from the PATH param: null (root), a folder uuid, or a `sys:res…` virtual id. */
 const folderId = computed<string | null>(() => {
-  const q = route.query.folder;
-  return typeof q === 'string' && q ? q : null;
+  const p = route.params.folder;
+  return typeof p === 'string' && p ? p : null;
 });
 
 /** In the read-only resources tree (rather than a real folder). */
@@ -65,10 +67,30 @@ watch(
   { immediate: true },
 );
 
-/** Navigate to a folder (null = root) by pushing the `?folder=` query. */
-function goTo(id: string | null): void {
-  router.push({ name: 'next.disk', query: id ? { folder: id } : {} });
+/** Navigate to a folder (null = root) by pushing the `:folder` path param. */
+function goTo(id: string | null, highlight?: string): void {
+  router.push({
+    name: 'next.disk',
+    params: id ? { folder: id } : {},
+    query: highlight ? { highlight } : {},
+  });
 }
+
+// "Show in its folder" lands here with `?highlight=<id>`; briefly ring that tile once
+// the destination level has loaded, then drop the param so a refresh won't re-trigger it.
+const highlightedId = ref<string | null>(null);
+let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+watch(
+  () => [route.query.highlight, loading.value] as const,
+  ([hl, isLoading]) => {
+    if (typeof hl !== 'string' || !hl || isLoading) return;
+    highlightedId.value = hl;
+    void router.replace({ query: { ...route.query, highlight: undefined } });
+    if (highlightTimer) clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => (highlightedId.value = null), 2200);
+  },
+  { immediate: true },
+);
 
 /** The parent of the current level (null = the disk root). */
 const parentId = computed<string | null>(() => {
@@ -86,30 +108,30 @@ const parentId = computed<string | null>(() => {
 
 const crumbs = computed<BreadcrumbItem[]>(() => {
   const base: BreadcrumbItem[] = [
-    { label: t('disk.title', 'Disk'), to: { name: 'next.disk', query: {} }, icon: 'folder' },
+    { label: t('disk.title', 'Disk'), to: { name: 'next.disk', params: {} }, icon: 'folder' },
   ];
   if (isTrash.value) {
-    return [...base, { label: t('disk.trash.root', 'Trash'), to: { name: 'next.disk', query: { folder: TRASH_ID } }, icon: 'trash' }];
+    return [...base, { label: t('disk.trash.root', 'Trash'), to: { name: 'next.disk', params: { folder: TRASH_ID } }, icon: 'trash' }];
   }
   if (!isVirtual.value) {
     return [
       ...base,
-      ...breadcrumbs.value.map((f) => ({ label: f.name, to: { name: 'next.disk', query: { folder: f.id } } })),
+      ...breadcrumbs.value.map((f) => ({ label: f.name, to: { name: 'next.disk', params: { folder: f.id } } })),
     ];
   }
   // Zasoby path: Dysk → Zasoby → [type] → [bucket], all localized here (the store keeps labels raw).
   const [, , typeAlias, bucketKey] = (folderId.value ?? '').split(':');
   const out: BreadcrumbItem[] = [
     ...base,
-    { label: t('disk.resources.root', 'Resources'), to: { name: 'next.disk', query: { folder: 'sys:res' } }, icon: 'inbox' },
+    { label: t('disk.resources.root', 'Resources'), to: { name: 'next.disk', params: { folder: 'sys:res' } }, icon: 'inbox' },
   ];
   const type = typeAlias ? resourceTree.value.find((r) => r.type === typeAlias) : undefined;
   if (typeAlias) {
-    out.push({ label: type ? t(type.label_key) : typeAlias, to: { name: 'next.disk', query: { folder: `sys:res:${typeAlias}` } } });
+    out.push({ label: type ? t(type.label_key) : typeAlias, to: { name: 'next.disk', params: { folder: `sys:res:${typeAlias}` } } });
   }
   if (typeAlias && bucketKey) {
     const gran = type?.buckets.find((b) => b.key === bucketKey)?.granularity;
-    out.push({ label: bucketLabel(bucketKey, gran, locale.value), to: { name: 'next.disk', query: { folder: `sys:res:${typeAlias}:${bucketKey}` } } });
+    out.push({ label: bucketLabel(bucketKey, gran, locale.value), to: { name: 'next.disk', params: { folder: `sys:res:${typeAlias}:${bucketKey}` } } });
   }
   return out;
 });
@@ -119,22 +141,45 @@ function openFolder(folder: DiskFolder): void {
 }
 
 /**
- * A file tile's primary click. In a normal folder/bucket it opens the detail drawer (preview +
- * metadata + history); in the trash it opens the restore dialog — but only when the server says
- * this member may restore it (the trash lists the whole workspace's deletions).
+ * A file tile's primary click. In a normal folder/bucket it opens the full-page PREVIEW; in the
+ * trash it opens the restore dialog — but only when the server says this member may restore it
+ * (the trash lists the whole workspace's deletions).
  */
 function onFileActivate(file: DiskFile): void {
   if (!isTrash.value) {
-    drawerFile.value = file;
-    drawerOpen.value = true;
+    openPreview(file.id);
   } else if (file.can_be_restored) {
     openRestoreFor(file);
   }
 }
 
-// --- File detail drawer ------------------------------------------------------
-const drawerOpen = ref(false);
-const drawerFile = ref<DiskFile | null>(null);
+// --- Preview modal (?preview=<id>) -------------------------------------------
+// The preview opens as a full-viewport MODAL over the grid (DiskPreview wraps itself in
+// Modal size="full"). Query-driven so it is deep-linkable and browser-Back closes it; opening
+// PUSHES (Back returns to the grid), prev/next inside the preview replace the param. Never in
+// the trash (trashed binaries cannot be served; the restore flow owns that surface).
+const previewId = computed<string | null>(() => {
+  if (isTrash.value) return null;
+  const p = route.query.preview;
+  return typeof p === 'string' && p ? p : null;
+});
+
+function openPreview(id: string): void {
+  void router.push({ query: { ...route.query, preview: id } });
+}
+
+/** The folder tiles' "Podgląd" action — same surface, folder flavor. */
+function previewFolder(folder: DiskFolder): void {
+  openPreview(folder.id);
+}
+
+async function onTileDownload(file: DiskFile): Promise<void> {
+  try {
+    await downloadFile(file);
+  } catch {
+    toast.danger(t('disk.browser.openError', 'Could not open the file.'));
+  }
+}
 
 
 // --- Resource ("Zasoby") node tiles — the host localizes their raw labels. ---
@@ -356,7 +401,8 @@ const { sentinelRef } = useInfiniteScroll({
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col gap-next-6">
+  <!-- pb: the tile grid must not end flush with the viewport — breathing room below the last row. -->
+  <div class="flex min-h-0 flex-1 flex-col gap-next-6 pb-next-6">
     <PageHeader :title="t('disk.title', 'Disk')" :description="t('disk.subtitle', 'Your workspace files and folders.')" icon="folder">
       <!-- The resources tree and the trash are READ-ONLY: no upload / new-folder there. -->
       <template v-if="!isVirtual && !isTrash" #actions>
@@ -380,6 +426,9 @@ const { sentinelRef } = useInfiniteScroll({
     </PageHeader>
 
     <Breadcrumbs :items="crumbs" :max-visible="5" :aria-label="t('disk.browser.breadcrumbs', 'Folder path')" />
+
+    <!-- Filters + saved views (the real-folder browse only; Zasoby/Trash are read-only lists). -->
+    <DiskFilterBar v-if="!isVirtual && !isTrash" />
 
     <!-- Error -->
     <EmptyState
@@ -438,11 +487,15 @@ const { sentinelRef } = useInfiniteScroll({
           kind="folder"
           :folder="folder"
           :menu="isTrash ? 'trash' : 'default'"
+          :current-folder-id="isTrash || isVirtual ? undefined : folderId"
+          :highlighted="folder.id === highlightedId"
           @activate="isTrash ? undefined : openFolder(folder)"
+          @preview="previewFolder(folder)"
           @rename="startRename({ kind: 'folder', id: folder.id, name: folder.name })"
           @move="startMove({ kind: 'folder', id: folder.id, name: folder.name })"
           @delete="startDelete({ kind: 'folder', id: folder.id, name: folder.name })"
           @restore="restoreFolderNow(folder)"
+          @show-in-folder="goTo(folder.parent_id ?? null, folder.id)"
         />
 
         <!-- Resource-tree nodes: types, then their date buckets. -->
@@ -459,19 +512,26 @@ const { sentinelRef } = useInfiniteScroll({
         <!-- Files (folder view + resource bucket view + trash). A trashed file's binary
              cannot be served (its binding excludes soft-deleted rows), so activation in the
              trash opens the restore dialog instead (only when the user may restore it). -->
+        <!-- Keyed on updated_at too: a content replace must remount DiskThumbnail (it fetches
+             once on mount) or the grid keeps showing the OLD image. -->
         <DiskTile
           v-for="file in files"
-          :key="`file-${file.id}`"
+          :key="`file-${file.id}-${file.updated_at_iso ?? ''}`"
           kind="file"
           :file="file"
           :menu="isTrash ? 'trash' : 'default'"
+          :current-folder-id="isTrash || isVirtual ? undefined : folderId"
+          :highlighted="file.id === highlightedId"
           @activate="onFileActivate(file)"
+          @preview="onFileActivate(file)"
+          @download="onTileDownload(file)"
           @rename="startRename({ kind: 'file', id: file.id, name: file.name })"
           @copy="startCopy(file)"
           @move="startMove({ kind: 'file', id: file.id, name: file.name })"
           @delete="startDelete({ kind: 'file', id: file.id, name: file.name })"
           @restore="openRestoreFor(file)"
           @force-delete="startForceDelete(file)"
+          @show-in-folder="goTo(file.folder_id, file.id)"
         />
 
         <!-- Next-page load (cursor pagination): skeleton tiles that mimic the real tile,
@@ -484,6 +544,9 @@ const { sentinelRef } = useInfiniteScroll({
       <!-- Infinite-scroll sentinel (after the grid). -->
       <div ref="sentinelRef" class="h-px w-full" aria-hidden="true" />
     </template>
+
+    <!-- The multi-panel preview MODAL (?preview=<id>) — a full-viewport overlay over the grid. -->
+    <DiskPreview v-if="previewId" :key="previewId" :item-id="previewId" />
 
     <!-- New folder modal. -->
     <Modal v-model:open="newFolderOpen" size="sm" :aria-label="t('disk.browser.newFolder', 'New folder')">
@@ -538,9 +601,6 @@ const { sentinelRef } = useInfiniteScroll({
       :loading="deleting"
       @confirm="confirmDelete"
     />
-
-    <!-- File detail drawer (preview + metadata + tags + history). -->
-    <DiskFileDrawer v-model:open="drawerOpen" :file="drawerFile" />
 
     <!-- Move dialog (pick a destination folder; defaults to the current folder). -->
     <DiskMoveModal v-model:open="moveOpen" :target="moveTarget" :default-folder-id="currentRealFolder" />

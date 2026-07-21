@@ -101,7 +101,8 @@ export type IconName =
   | 'film'
   | 'music'
   | 'archive'
-  | 'copy';
+  | 'copy'
+  | 'crop';
 
 /** name -> array of inner SVG elements (paths/circles) as raw markup. */
 export const ICONS: Record<IconName, string> = {
@@ -334,6 +335,9 @@ export const ICONS: Record<IconName, string> = {
   copy:
     '<rect width="14" height="14" x="8" y="8" rx="2" ry="2" />' +
     '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />',
+  crop:
+    '<path d="M6 2v14a2 2 0 0 0 2 2h14" />' +
+    '<path d="M18 22V8a2 2 0 0 0-2-2H2" />',
 };
 
 /** All available icon names — handy for the gallery icon grid. */

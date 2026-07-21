@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Disk\Enums\FileType;
+use App\Modules\Disk\Models\DiskFileDraft;
 use App\Modules\Disk\Models\File;
 use App\Modules\Disk\Models\Folder;
 use App\Modules\Disk\Services\FileService;
@@ -60,10 +61,24 @@ class FileApiTest extends TestCase
      */
     private function diskFile(array $attributes = []): File
     {
-        $file = File::factory()->create($attributes + ['folder_id' => Folder::factory()->create()->id]);
+        $file = File::factory()->inFolder(Folder::factory()->create())->create($attributes);
         Storage::put($file->path, 'bytes');
 
         return $file;
+    }
+
+    /**
+     * A per-user autosave draft row for $file. There is no DiskFileDraft factory — the flag only
+     * needs the row (workspace_id is stamped by TenantAware from the active tenant context).
+     */
+    private function draftFor(File $file, User $user): DiskFileDraft
+    {
+        return DiskFileDraft::create([
+            'file_id' => $file->id,
+            'user_id' => $user->id,
+            'kind' => 'image',
+            'byte_size' => 10,
+        ]);
     }
 
     // ---- Browsing ---------------------------------------------------------------
@@ -102,10 +117,9 @@ class FileApiTest extends TestCase
     public function test_the_index_filters_by_source_folder_type_and_labels(): void
     {
         $folder = Folder::factory()->create();
-        $inFolder = File::factory()->image()->create(['folder_id' => $folder->id]);
-        $atRoot = File::factory()->create(['folder_id' => null, 'fileable_type' => null]);
-        // Give the root file a parent so it is not treated as a temp upload.
-        $atRoot->forceFill(['fileable_type' => null, 'folder_id' => null])->save();
+        $inFolder = File::factory()->image()->inFolder($folder)->create();
+        // A disk file at the ROOT — not in $folder, so the folder filter must exclude it.
+        File::factory()->atRoot()->create();
 
         $label = Label::create(['name' => 'wrzesień']);
         $inFolder->labels()->attach($label->id);
@@ -129,6 +143,30 @@ class FileApiTest extends TestCase
             [$inFolder->id],
             collect($this->getJson('/api/disk?search=' . $inFolder->name)->json('data'))->pluck('id')->all(),
         );
+    }
+
+    public function test_the_index_flags_files_that_have_the_current_users_draft(): void
+    {
+        // (a) my own in-progress draft → flagged. A second, foreign draft on the SAME file must
+        // not change that: the flag is strictly per user.
+        $withMyDraft = $this->diskFile(['name' => 'z-moim-szkicem.png']);
+        $other = User::factory()->create();
+        $this->workspace->users()->attach($other->id);
+        $this->draftFor($withMyDraft, $this->user);
+        $this->draftFor($withMyDraft, $other);
+
+        // (b) only ANOTHER user's draft → not flagged for me (per-user isolation).
+        $withOthersDraft = $this->diskFile(['name' => 'cudzy-szkic.png']);
+        $this->draftFor($withOthersDraft, $other);
+
+        // (c) no draft at all → false.
+        $clean = $this->diskFile(['name' => 'bez-szkicu.png']);
+
+        $byId = collect($this->getJson('/api/disk')->assertOk()->json('data'))->keyBy('id');
+
+        $this->assertTrue($byId[$withMyDraft->id]['has_draft'], 'A file with my draft is flagged.');
+        $this->assertFalse($byId[$withOthersDraft->id]['has_draft'], "Another user's draft never flags the file for me.");
+        $this->assertFalse($byId[$clean->id]['has_draft'], 'A file with no draft is not flagged.');
     }
 
     // ---- Uploading --------------------------------------------------------------
@@ -155,17 +193,16 @@ class FileApiTest extends TestCase
 
     public function test_a_file_uploaded_to_the_roo_t_is_placed_and_visible_there(): void
     {
-        // A root upload (no folder) is structurally identical to a temp — disk_placed_at is what
-        // tells them apart, so it must show in the root disk view while a real temp does not.
+        // A root upload has fileable_type 'folder' with fileable_id NULL — a temp has NO fileable,
+        // so the root disk view shows the placed file while a real temp stays hidden.
         $response = $this->postJson('/api/disk', [
             'file' => UploadedFile::fake()->image('root.png'),
         ]);
         $response->assertCreated()->assertJsonPath('data.folder_id', null)->assertJsonPath('data.source', 'disk');
         $id = $response->json('data.id');
 
-        // A genuine temp upload sitting at the "root" (no folder, no owner, never placed).
-        $temp = File::factory()->create(['folder_id' => null, 'fileable_type' => null]);
-        $temp->forceFill(['fileable_type' => null, 'fileable_id' => null, 'folder_id' => null, 'disk_placed_at' => null])->save();
+        // A genuine temp upload (no fileable yet).
+        $temp = File::factory()->create();
 
         $ids = collect($this->getJson('/api/disk?folder_id=&source=disk')->json('data'))->pluck('id')->all();
         $this->assertContains($id, $ids);
@@ -193,6 +230,27 @@ class FileApiTest extends TestCase
         $this->patchJson('/api/disk/' . $file->id, ['description' => null])
             ->assertOk()
             ->assertJsonPath('data.description', null);
+    }
+
+    public function test_enforced_labels_are_locked_and_survive_a_metadata_edit(): void
+    {
+        $folder = Folder::factory()->create();
+        $file = File::factory()->inFolder($folder)->create();
+        $enforced = Label::create(['name' => 'Marka']);
+        $manual = Label::create(['name' => 'Wrzesień']);
+
+        // Governance enforces a label on the folder → materialized onto the file.
+        $this->patchJson('/api/disk/folders/' . $folder->id, [
+            'labels' => [['id' => $enforced->id, 'mode' => 'enforced']],
+        ])->assertOk();
+
+        // A metadata edit that sets only a MANUAL label must not strip the enforced one.
+        $res = $this->patchJson('/api/disk/' . $file->id, ['labels' => [$manual->id]])->assertOk();
+
+        $labels = collect($res->json('data.labels'))->keyBy('id');
+        $this->assertEqualsCanonicalizing([$enforced->id, $manual->id], $labels->keys()->all());
+        $this->assertTrue($labels[$enforced->id]['locked'], 'The folder-enforced label is locked.');
+        $this->assertFalse($labels[$manual->id]['locked'], 'A manual label is not locked.');
     }
 
     public function test_a_file_can_be_moved_between_folders_and_to_the_root(): void
@@ -272,7 +330,7 @@ class FileApiTest extends TestCase
     public function test_a_file_restores_into_its_original_folder(): void
     {
         $folder = Folder::factory()->create();
-        $file = File::factory()->create(['folder_id' => $folder->id]);
+        $file = File::factory()->inFolder($folder)->create();
         $this->deleteJson('/api/disk/' . $file->id);
 
         $preview = $this->getJson('/api/disk/' . $file->id . '/restore-preview');
@@ -291,7 +349,7 @@ class FileApiTest extends TestCase
     public function test_restoring_a_file_whose_folder_is_gone_requires_a_target(): void
     {
         $folder = Folder::factory()->create();
-        $file = File::factory()->create(['folder_id' => $folder->id]);
+        $file = File::factory()->inFolder($folder)->create();
         $this->deleteJson('/api/disk/' . $file->id);
         $folder->forceDelete();
 
@@ -330,7 +388,10 @@ class FileApiTest extends TestCase
             // A restored file must never reappear inside a task that believes it removed it.
             ->assertJsonPath('data.source', 'disk');
 
-        $this->assertNull(File::query()->find($attachment->id)->fileable_type);
+        // It comes back as a disk file (its container is now the target folder), no longer the task's.
+        $restored = File::query()->find($attachment->id);
+        $this->assertSame(File::FOLDER_TYPE, $restored->fileable_type);
+        $this->assertSame($target->id, $restored->fileable_id);
         $this->assertSame(0, $task->files()->count());
     }
 
@@ -352,11 +413,10 @@ class FileApiTest extends TestCase
         $copy = File::query()->findOrFail($response->json('data.id'));
         $this->assertNotSame($source->id, $copy->id);
 
-        // The copy is a genuine TEMP owned by the actor: no owner, no folder, never placed — so
-        // it binds to a submission exactly like an upload, and the actor passes the claim rules.
+        // The copy is a genuine TEMP owned by the actor: no fileable yet — so it binds to a
+        // submission exactly like an upload, and the actor passes the claim rules.
         $this->assertNull($copy->fileable_type);
         $this->assertNull($copy->folder_id);
-        $this->assertNull($copy->disk_placed_at);
         $this->assertSame($this->user->id, $copy->uploader_id);
 
         // A distinct blob under the workspace prefix; the source is left untouched.
@@ -412,9 +472,9 @@ class FileApiTest extends TestCase
 
         $copy = File::query()->findOrFail($response->json('data.id'));
         $this->assertNotSame($source->id, $copy->id);
-        // A real DISK file (placed), owned by the actor, standalone.
-        $this->assertNotNull($copy->disk_placed_at);
-        $this->assertNull($copy->fileable_type);
+        // A real DISK file: its container is the target folder (fileable), owned by the actor.
+        $this->assertSame(File::FOLDER_TYPE, $copy->fileable_type);
+        $this->assertSame($target->id, $copy->fileable_id);
         $this->assertSame($this->user->id, $copy->uploader_id);
         // A distinct blob; the source is untouched.
         $this->assertNotSame($source->path, $copy->path);

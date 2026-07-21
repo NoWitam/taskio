@@ -3,12 +3,21 @@
 namespace App\Modules\Disk\Models;
 
 use App\Models\AbstractModel;
+use App\Modules\Changelog\Interfaces\HasChangelog as InterfacesHasChangelog;
+use App\Modules\Changelog\Managers\BagTracker;
+use App\Modules\Changelog\Managers\FieldTracker;
+use App\Modules\Changelog\Managers\ModelChangelogManager;
+use App\Modules\Changelog\Traits\HasChangelog;
+use App\Modules\Comments\Traits\HasComments;
+use App\Modules\Labels\Models\Label;
 use App\Traits\HasCreator;
 use App\Traits\TenantAware;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
@@ -29,19 +38,28 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * The trailing separator is load-bearing: without it the prefix '/a/b' would also match
  * '/a/bc...'.
  */
-class Folder extends AbstractModel
+class Folder extends AbstractModel implements InterfacesHasChangelog
 {
-    use HasCreator, HasFactory, HasUuids, SoftDeletes, TenantAware;
+    use HasChangelog, HasComments, HasCreator, HasFactory, HasUuids, SoftDeletes, TenantAware;
 
     /** How deep the tree may go; the root's children are depth 1. */
     public const MAX_DEPTH = 10;
 
     public const PATH_SEPARATOR = '/';
 
+    /** Governance modes on the folder_label pivot. */
+    public const LABEL_MODE_ENFORCED = 'enforced';
+
+    public const LABEL_MODE_RECOMMENDED = 'recommended';
+
+    public const LABEL_MODES = [self::LABEL_MODE_ENFORCED, self::LABEL_MODE_RECOMMENDED];
+
     protected $table = 'folders';
 
     protected $fillable = [
         'name',
+        'description',
+        'icon',
         'parent_id',
     ];
 
@@ -81,10 +99,27 @@ class Folder extends AbstractModel
         return $this->hasMany(self::class, 'parent_id');
     }
 
-    /** Files placed directly in this folder (attachments live outside the tree). */
-    public function files(): HasMany
+    /**
+     * Files placed directly in this folder — the disk files whose `fileable` IS this folder
+     * (resource attachments live outside the tree). A morphMany, so `withCount('files')` counts
+     * exactly `fileable_type = 'folder' AND fileable_id = <this>`.
+     */
+    public function files(): MorphMany
     {
-        return $this->hasMany(File::class, 'folder_id');
+        return $this->morphMany(File::class, 'fileable');
+    }
+
+    /**
+     * The labels this folder GOVERNS, each carrying a `mode` on the pivot: 'enforced' (materialized
+     * onto every file in the subtree) or 'recommended' (pre-selected on new items here). This is the
+     * dedicated `folder_label` pivot — NOT the shared `labelables` a file/task uses — because a
+     * folder declares labels for its contents rather than being tagged itself.
+     */
+    public function labels(): BelongsToMany
+    {
+        return $this->belongsToMany(Label::class, 'folder_label')
+            ->withPivot('mode')
+            ->withTimestamps();
     }
 
     /** Ancestor ids, root first — the breadcrumb order, exactly as stored. */
@@ -132,6 +167,24 @@ class Folder extends AbstractModel
         return $this->relationLoaded('parent') && $this->parent !== null
             ? $this->parent
             : self::query()->findOrFail($this->parent_id);
+    }
+
+    public function getChangelogManager(): ModelChangelogManager
+    {
+        return new ModelChangelogManager($this, [
+            FieldTracker::make('name')->withComparison(),
+            FieldTracker::make('description')->withComparison(),
+            // A plain icon-name string (a FE render hint) — tracked as-is.
+            FieldTracker::make('icon'),
+            // Governance labels — tracked as membership (attach/detach), manual because the mode
+            // pivot is synced outside a plain attribute save (see FolderService::update).
+            BagTracker::make('labels')->asClass(Label::class)->manualOnly()->withMap(fn (Label $label) => [
+                'id' => $label->id,
+                'name' => $label->name,
+                'color' => $label->color,
+                'icon' => $label->icon?->value,
+            ]),
+        ]);
     }
 
     protected static function newFactory()
