@@ -1,6 +1,6 @@
 # System Ikon SVG
 
-## Jak używać ikon
+## Jak używać ikony
 
 ### Podstawowe użycie
 ```vue
