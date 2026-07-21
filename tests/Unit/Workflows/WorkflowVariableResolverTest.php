@@ -6,6 +6,7 @@ use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Services\WorkflowOperationExecutor;
 use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
+use RuntimeException;
 use Tests\Support\ScriptedWorkflowAiTextService;
 use Tests\TestCase;
 
@@ -518,5 +519,141 @@ class WorkflowVariableResolverTest extends TestCase
     public function test_union_bare_scalar_is_treated_as_literal(): void
     {
         $this->assertSame('7', $this->resolver->resolveValueOrVariable(7, $this->context(), WorkflowVariableType::TEXT));
+    }
+
+    // ---- per-reference defaults (phase-1b) ------------------------------------
+
+    /** A directive carrying an optional literal `default` (+ an optional pipeline). */
+    private function directiveWithDefault(string $path, mixed $default, array $pipeline = [], string $type = 'text'): string
+    {
+        $payload = json_encode([
+            'v' => 1,
+            'data' => [
+                'id' => $path,
+                'name' => $path,
+                'type' => $type,
+                'locked' => false,
+                'pipeline' => $pipeline,
+                'resultType' => $type,
+                'default' => $default,
+            ],
+        ]);
+
+        return '@[variable]("' . str_replace('"', '\\"', $payload) . '")';
+    }
+
+    public function test_default_is_substituted_when_the_reference_is_missing(): void
+    {
+        // trigger.fields.missing is absent → the literal default is used.
+        $directive = $this->directiveWithDefault('trigger.fields.missing', 'fallback-value');
+
+        $this->assertSame('fallback-value', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    public function test_default_is_substituted_when_the_reference_is_empty_string(): void
+    {
+        $context = ['trigger' => ['fields' => ['note' => '']], 'steps' => []];
+        $directive = $this->directiveWithDefault('trigger.fields.note', 'fallback-value');
+
+        $this->assertSame('fallback-value', $this->resolver->resolve($directive, $context));
+    }
+
+    public function test_default_is_ignored_when_the_reference_has_a_value(): void
+    {
+        $directive = $this->directiveWithDefault('trigger.fields.priority', 'fallback-value');
+
+        $this->assertSame('high', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    public function test_default_is_applied_before_the_pipeline_runs(): void
+    {
+        // Missing ref → default 'draft' → THEN uppercased by the pipeline (default feeds the pipeline).
+        $directive = $this->directiveWithDefault('trigger.fields.missing', 'draft', [$this->step('text_uppercase')]);
+
+        $this->assertSame('DRAFT', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    public function test_default_can_feed_a_date_format_pipeline(): void
+    {
+        // Missing date ref → default ISO date → formatted by the safe date_format op.
+        $typeMap = ['trigger.fields.due' => WorkflowVariableType::DATE];
+        $directive = $this->directiveWithDefault('trigger.fields.due', '2026-01-09', [
+            $this->step('date_format', ['pattern' => 'DD/MM/YYYY']),
+        ]);
+
+        $this->assertSame('09/01/2026', $this->resolver->resolve($directive, $this->context(), $typeMap));
+    }
+
+    public function test_standalone_default_flat_token_is_not_re_interpreted(): void
+    {
+        // A standalone default holding `{{…}}` bytes is returned verbatim, never resolved to 'high'.
+        $directive = $this->directiveWithDefault('trigger.fields.missing', '{{trigger.fields.priority}}');
+
+        $this->assertSame('{{trigger.fields.priority}}', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    public function test_embedded_default_with_reference_like_bytes_is_not_re_interpreted(): void
+    {
+        // Injection guard: an EMBEDDED default carrying a `{{…}}` token AND `@[…]` directive-open bytes
+        // round-trips verbatim — once substituted it enters through the same NUL-mask as a resolved
+        // value, so neither the flat pass (which would otherwise resolve `{{trigger.fields.priority}}`
+        // to 'high') nor the directive pass re-scans it.
+        $default = 'raw {{trigger.fields.priority}} and @[variable] bytes';
+        $md = 'Value: ' . $this->directiveWithDefault('trigger.fields.missing', $default);
+
+        $this->assertSame('Value: ' . $default, $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_union_variable_uses_default_when_ref_is_missing(): void
+    {
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.missing', 'type' => 'text'],
+            'default' => 'fallback',
+        ];
+
+        $this->assertSame('fallback', $this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::TEXT));
+    }
+
+    public function test_union_variable_ignores_default_when_ref_present(): void
+    {
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'text'],
+            'default' => 'fallback',
+        ];
+
+        $this->assertSame('high', $this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::TEXT));
+    }
+
+    // ---- assert_present hard-fail escalation (phase-1b) -----------------------
+
+    public function test_assert_present_passes_a_present_value_through_the_resolver(): void
+    {
+        $directive = $this->directiveWithPipeline('trigger.fields.priority', 'text', [$this->step('assert_present')]);
+
+        $this->assertSame('high', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    public function test_assert_present_over_an_empty_value_raises_a_run_step_failure(): void
+    {
+        // A directive pipeline ending in assert_present over a MISSING ref re-raises as a
+        // RuntimeException — the runner records the step failed and stops the run ("force a value").
+        $directive = $this->directiveWithPipeline('trigger.fields.missing', 'text', [$this->step('assert_present')]);
+
+        $this->expectException(RuntimeException::class);
+        $this->resolver->resolve($directive, $this->context());
+    }
+
+    public function test_assert_present_in_a_structured_union_raises_a_run_step_failure(): void
+    {
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.missing', 'type' => 'text'],
+            'pipeline' => [['op' => 'assert_present']],
+        ];
+
+        $this->expectException(RuntimeException::class);
+        $this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::TEXT);
     }
 }

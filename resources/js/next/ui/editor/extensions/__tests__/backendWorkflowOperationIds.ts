@@ -33,4 +33,6 @@ export const BACKEND_WORKFLOW_OPERATION_IDS: string[] = [
   'multi_count', 'multi_is_empty', 'multi_to_text',
   // FILE (input: file)
   'file_is_empty', 'file_is_not_empty', 'file_count', 'file_name',
+  // GENERIC / NULL-HANDLING (append-only, phase-1b)
+  'coalesce', 'is_present', 'is_null', 'assert_present', 'date_format',
 ];

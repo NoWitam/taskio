@@ -535,6 +535,8 @@ function setChoiceRule(
                 :aria-label="arg.label"
                 @update:model-value="(v) => updateArg(step.stepId, arg.id, (v as string) ?? '')"
               />
+              <!-- Optional persistent hint (e.g. the date_format safe tokens). -->
+              <p v-if="arg.hint" class="text-next-xs text-next-muted-foreground">{{ arg.hint }}</p>
             </div>
           </div>
         </div>

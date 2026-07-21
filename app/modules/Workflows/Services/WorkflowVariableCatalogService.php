@@ -2,6 +2,7 @@
 
 namespace App\Modules\Workflows\Services;
 
+use App\Modules\Forms\Enums\FormElementType;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Traits\InteractsWithFormSchema;
 use App\Modules\Workflows\Enums\WorkflowAiPersona;
@@ -19,11 +20,14 @@ use App\Modules\Workflows\Models\Workflow;
  * engine actually exposes because every path here is one the trigger payload / step output map
  * really carries.
  *
- * A variable is `{ source, path, name, type, enumOptions?, nullable? }`:
+ * A variable is `{ source, path, name, type, descriptor, enumOptions?, nullable? }`:
  *   - source  'trigger' | 'steps'
  *   - path    the full dotted path a reference resolves against ('trigger.fields.abc',
  *             'steps.<key>.task_id') — identical in both serializations.
- *   - type    a WorkflowVariableType.
+ *   - type    a WorkflowVariableType — the LEGACY FLAT wire type (back-compat; TIME degrades to text).
+ *   - descriptor the ADDITIVE structured type descriptor `{ base, nullable, array, options? }`
+ *             (phase-1a). `time` gets its own base here even while `type` stays text; enum/multi
+ *             carry `{key,label}` options with the REAL human labels from the form element config.
  *   - nullable true when the path is only present sometimes (the task snapshot on a
  *             task-attached submission) — the FE can badge it and the engine null-resolves it.
  *
@@ -267,6 +271,9 @@ class WorkflowVariableCatalogService
     public function formFieldVariables(Form $form): array
     {
         $variables = [];
+        // Human option labels live in the ELEMENT CONFIG, not the JSON schema (which keeps only the
+        // option VALUES). Resolve them once per form (no N+1), keyed by the same field path.
+        $optionLabels = $this->schemaOptionLabels($form);
 
         foreach ($this->extractFieldPaths($form->getJsonSchema()) as $info) {
             if (($info['type'] ?? null) === 'repeater') {
@@ -284,6 +291,7 @@ class WorkflowVariableCatalogService
                 $type,
                 enumOptions: $enumOptions,
                 fieldId: $info['path'],
+                descriptorOptions: $optionLabels[$info['path']] ?? null,
             );
         }
 
@@ -351,9 +359,13 @@ class WorkflowVariableCatalogService
      * Map a form field's JSON-schema fragment to a workflow variable type. Uses the schema's
      * shape (string/number/boolean/array + format/enum) so it stays aligned with what
      * FormElementType::toJsonSchema emits:
-     *   string+format:file → file · string+format:date → date · enum(single) → enum ·
-     *   array → multi · number → number · boolean → boolean · everything else (incl.
-     *   url/time/unknown) → text (defensive).
+     *   string+format:file → file · string+format:date → date · string+format:time → time ·
+     *   enum(single) → enum · array → multi · number → number · boolean → boolean · everything
+     *   else (incl. url/unknown) → text (defensive).
+     *
+     * NOTE the TIME base is recovered here (a real type), but the variable's FLAT `type` wire value
+     * degrades it back to text (see flatType) — only the structured descriptor keeps `time` in this
+     * slice, so the resolver/evaluator/FE (which don't yet understand it) stay untouched.
      *
      * @param  array<string, mixed>  $schema
      */
@@ -382,6 +394,11 @@ class WorkflowVariableCatalogService
 
         if (($schema['format'] ?? null) === 'date') {
             return WorkflowVariableType::DATE;
+        }
+
+        // A time-of-day input (the form TIME element) carries format:'time'.
+        if (($schema['format'] ?? null) === 'time') {
+            return WorkflowVariableType::TIME;
         }
 
         // A single-select carries an enum of allowed values on a string schema.
@@ -436,11 +453,17 @@ class WorkflowVariableCatalogService
     }
 
     /**
-     * Build one variable descriptor. `enumOptions` is emitted only when present; `nullable` only
-     * when true; `field_id` is carried for field variables so conditionFields can key on it (it
-     * is dropped from the public response shape by the Resource-less controller — see below).
+     * Build one variable entry. `type` is the LEGACY FLAT wire type (back-compat) — degraded via
+     * flatType so a TIME field still reads as text; `descriptor` is the ADDITIVE structured type
+     * (phase-1a), carrying the real base (incl. `time`) plus `{key,label}` options for enum/multi.
+     * `enumOptions` is emitted only when present; `nullable` only when true; `field_id` is carried
+     * for field variables so conditionFields can key on it (it is dropped from the public response
+     * shape by the Resource-less controller — see below). `$descriptorOptions` are the resolved
+     * `{key,label}` option list (form-config labels); absent, the descriptor falls back to labelling
+     * each flat `enumOptions` value with itself (system/step enum vars have no human labels).
      *
      * @param  array<int, string>|null  $enumOptions
+     * @param  array<int, array{key: string, label: string}>|null  $descriptorOptions
      * @return array<string, mixed>
      */
     private function variable(
@@ -451,12 +474,17 @@ class WorkflowVariableCatalogService
         ?array $enumOptions = null,
         bool $nullable = false,
         ?string $fieldId = null,
+        ?array $descriptorOptions = null,
     ): array {
         $variable = [
             'source' => $source,
             'path' => $path,
             'name' => $name,
-            'type' => $type->value,
+            'type' => $this->flatType($type)->value,
+            'descriptor' => $type->descriptor(
+                $descriptorOptions ?? $this->optionsFromValues($enumOptions),
+                $nullable,
+            ),
         ];
 
         if ($enumOptions !== null) {
@@ -472,5 +500,148 @@ class WorkflowVariableCatalogService
         }
 
         return $variable;
+    }
+
+    /**
+     * The back-compat FLAT `type` wire value for a variable. TIME degrades to TEXT — its historical
+     * representation: the variable resolver, condition evaluator, and operation executor each dispatch
+     * on an EXHAUSTIVE match over the legacy 7 types (no default arm), and the FE mirrors a closed
+     * 7-member union, so surfacing `time` on the flat wire would be a runtime UnhandledMatchError / FE
+     * break. The structured `descriptor` carries the real `time` base instead. Every other type is
+     * itself. Retiring this shim (letting TIME flow flat) is the deferred runtime-semantics slice.
+     */
+    private function flatType(WorkflowVariableType $type): WorkflowVariableType
+    {
+        return $type === WorkflowVariableType::TIME ? WorkflowVariableType::TEXT : $type;
+    }
+
+    /**
+     * The per-path descriptor OPTION LABELS for a form's option-bearing inputs (select / checklist),
+     * read from the ELEMENT CONFIG — the only place human labels survive (FormElementType::toJsonSchema
+     * emits the option VALUES into the schema `enum` and DROPS the labels). ONE pass over the content
+     * tree, mirroring buildJsonSchema's path shape (sections nest under their id, grids flatten,
+     * repeaters are excluded), so each `path` aligns with an extractFieldPaths field path. No DB work.
+     *
+     * @return array<string, array<int, array{key: string, label: string}>>
+     */
+    private function schemaOptionLabels(Form $form): array
+    {
+        $labels = [];
+        $this->collectOptionLabels(is_array($form->content) ? $form->content : [], '', $labels);
+
+        return $labels;
+    }
+
+    /**
+     * Recurse the element tree collecting `path => [{key,label}]` for every option-bearing input.
+     *
+     * @param  array<int, mixed>  $elements
+     * @param  array<string, array<int, array{key: string, label: string}>>  $labels
+     */
+    private function collectOptionLabels(array $elements, string $prefix, array &$labels): void
+    {
+        foreach ($elements as $element) {
+            if (!is_array($element)) {
+                continue;
+            }
+
+            $type = FormElementType::tryFrom((string) ($element['type'] ?? ''));
+            $id = $element['id'] ?? null;
+            $config = is_array($element['config'] ?? null) ? $element['config'] : [];
+
+            // Option-bearing inputs: record path => [{key,label}].
+            if (in_array($type, [FormElementType::SELECT, FormElementType::CHECKLIST], true) && is_string($id) && $id !== '') {
+                $options = $this->labeledOptions($config['options'] ?? null);
+
+                if ($options !== []) {
+                    $labels[$this->joinPath($prefix, $id)] = $options;
+                }
+
+                continue;
+            }
+
+            // Section: children nest under the section id.
+            if ($type === FormElementType::SECTION && is_array($config['children'] ?? null) && is_string($id) && $id !== '') {
+                $this->collectOptionLabels($config['children'], $this->joinPath($prefix, $id), $labels);
+
+                continue;
+            }
+
+            // Grid: columns flatten to the SAME path level as the grid.
+            if ($type === FormElementType::GRID && is_array($config['columns'] ?? null)) {
+                foreach ($config['columns'] as $column) {
+                    if (is_array($column['element'] ?? null)) {
+                        $this->collectOptionLabels([$column['element']], $prefix, $labels);
+                    }
+                }
+            }
+
+            // Repeater: EXCLUDED — its answers are arrays-of-objects (no scalar variable is emitted).
+        }
+    }
+
+    /** Join a dotted-path prefix with a segment (segment-only when the prefix is empty). */
+    private function joinPath(string $prefix, string $segment): string
+    {
+        return $prefix === '' ? $segment : $prefix . '.' . $segment;
+    }
+
+    /**
+     * Normalize a form element's `config.options` ({value,label} entries, or bare scalars) into the
+     * descriptor's `{key,label}` list: the key is the option VALUE (string-normalized, matching the
+     * schema `enum` + the runtime answer), the label is the human `label` falling back to the value.
+     *
+     * @return array<int, array{key: string, label: string}>
+     */
+    private function labeledOptions(mixed $options): array
+    {
+        if (!is_array($options)) {
+            return [];
+        }
+
+        $labeled = [];
+
+        foreach ($options as $option) {
+            if (is_array($option)) {
+                $value = $option['value'] ?? null;
+
+                if (!is_scalar($value)) {
+                    continue;
+                }
+
+                $key = (string) $value;
+                $label = isset($option['label']) && is_string($option['label']) && trim($option['label']) !== ''
+                    ? $option['label']
+                    : $key;
+            } elseif (is_scalar($option)) {
+                $key = (string) $option;
+                $label = $key;
+            } else {
+                continue;
+            }
+
+            $labeled[] = ['key' => $key, 'label' => $label];
+        }
+
+        return $labeled;
+    }
+
+    /**
+     * The descriptor `{key,label}` options for a source whose only option data is a flat VALUE list
+     * (the trigger-system enum vars, and any enum/multi field lacking config labels): label = value.
+     *
+     * @param  array<int, string>|null  $values
+     * @return array<int, array{key: string, label: string}>
+     */
+    private function optionsFromValues(?array $values): array
+    {
+        if ($values === null) {
+            return [];
+        }
+
+        return array_values(array_map(fn ($value) => [
+            'key' => (string) $value,
+            'label' => (string) $value,
+        ], $values));
     }
 }

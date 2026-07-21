@@ -187,6 +187,31 @@ const assistEnvelopeRows: ApiRow[] = [
   { name: 'alternative',  type: '{ config, note } | null', description: 'An approximating config, honestly labeled with the difference — never merged into `config`.' },
   { name: 'explanation',  type: 'string', description: 'One short paragraph summarizing what was produced (or why not) — always shown to the user.' },
 ];
+
+// ── Variable typesystem Phase 1 (descriptor + TIME + defaults + 5 ops, ADR-0022) ────────────
+const descriptorFieldRows: ApiRow[] = [
+  { name: 'base',     type: 'text|number|boolean|date|enum|time|file', description: 'The scalar base. A multi variable\'s base is "enum" (an array of enum) — see `array` below.' },
+  { name: 'nullable', type: 'boolean', description: 'Mirrors the variable\'s own nullable flag.' },
+  { name: 'array',    type: 'boolean', description: 'true ONLY for a multi variable.' },
+  { name: 'options',  type: '{key,label}[] (enum base only)', description: 'key = the SAME value `enumOptions` already carries (the wire/runtime value, unchanged); label = the human label from the form element\'s config.options (falls back to the value when the config has none).' },
+];
+const presenceOpsRows: ApiRow[] = [
+  { name: 'coalesce',       type: 'text → text', description: 'Args: fallback (literal). The running value when present, else the fallback normalized to the running type.' },
+  { name: 'is_present',     type: 'text → boolean', description: 'true when the running value is non-empty.' },
+  { name: 'is_null',        type: 'text → boolean', description: 'The negation of is_present.' },
+  { name: 'assert_present', type: 'text → text', description: 'The value when present; over an EMPTY value it is the ONE opt-in HARD failure — the run stops at that step (see below). Not to be confused with the other three, which are always soft.' },
+  { name: 'date_format',    type: 'date → text', description: 'Args: pattern (a SAFE-TOKEN string, never a raw PHP date format). NOT a presence op.' },
+];
+const dateFormatTokenRows: ApiRow[] = [
+  { name: 'YYYY', type: 'renders', description: '4-digit year' },
+  { name: 'MMMM', type: 'renders', description: 'full month name' },
+  { name: 'MMM',  type: 'renders', description: 'short month name' },
+  { name: 'MM',   type: 'renders', description: '2-digit month' },
+  { name: 'DD',   type: 'renders', description: '2-digit day' },
+  { name: 'D',    type: 'renders', description: 'unpadded day' },
+  { name: 'HH',   type: 'renders', description: '2-digit hour' },
+  { name: 'mm',   type: 'renders', description: '2-digit minute' },
+];
 </script>
 
 <template>
@@ -510,6 +535,73 @@ WorkflowRun (one execution)
           resolve to a single comparable value, so emitting a variable for one would be a dead
           path (ADR-0009 §7 — honest catalog, not an oversight).
         </p>
+
+        <Alert variant="info" size="sm">
+          <strong>Structured <code class="font-next-mono">descriptor</code> + a <code class="font-next-mono">time</code> type
+          (Phase 1a of the variable-typesystem rework, ADR-0022) — additive, alongside the
+          unchanged flat <code class="font-next-mono">type</code>.</strong> Every catalog variable
+          now ALSO carries <code class="font-next-mono">descriptor: { base, nullable, array,
+          options? }</code>. An enum/multi variable's <code class="font-next-mono">options</code>
+          finally carry a real human <code class="font-next-mono">label</code> next to the wire
+          <code class="font-next-mono">key</code> (sourced from the form element's
+          <code class="font-next-mono">config.options</code> — the JSON schema itself keeps only
+          the option VALUES) — the variable picker and pipeline
+          <code class="font-next-mono">sourceOption</code>/<code class="font-next-mono">sourceMap</code>
+          args show the label, and still emit the key. A new
+          <code class="font-next-mono">WorkflowVariableType::TIME</code> case (the form builder's
+          TIME element) is DESCRIPTOR-ONLY this phase: its flat wire
+          <code class="font-next-mono">type</code> still degrades to <code class="font-next-mono">text</code>
+          and it carries no condition operators — a deliberate loud tripwire (the resolver/
+          evaluator/executor still dispatch on an exhaustive 7-case match, and the FE mirrors a
+          closed 7-member union) rather than a silent break once real TIME semantics land.
+        </Alert>
+        <ApiTable title="descriptor shape (WorkflowVariableType::descriptor)" :rows="descriptorFieldRows" />
+
+        <Alert variant="info" size="sm">
+          <strong>Per-reference "Default when empty" (Phase 1b, ADR-0022).</strong> Both wire
+          serializations of a reference gained an OPTIONAL literal default — the directive's
+          <code class="font-next-mono">data.default</code>, the
+          <code class="font-next-mono">{kind:'variable'}</code> union's sibling
+          <code class="font-next-mono">default</code> key. When the looked-up value resolves
+          <code class="font-next-mono">null</code>/<code class="font-next-mono">''</code>, the
+          default substitutes it BEFORE any pipeline runs (so it can itself be piped/formatted),
+          for an identity-only reference exactly as for a piped one. <strong>Injection-guard
+          invariant:</strong> the default enters the resolved-value stream at exactly the point a
+          real value would, so it is masked behind the SAME NUL-delimited placeholder an embedded
+          directive's resolved value already uses before the transitional flat
+          <code class="font-next-mono">&#123;&#123;...&#125;&#125;</code> pass runs — a default
+          literal containing reference-like bytes is never re-interpreted as a second-order
+          reference. Omitted from the wire when empty, so an un-defaulted reference stays
+          byte-identical to before this phase.
+        </Alert>
+
+        <Alert variant="info" size="sm">
+          <strong>5 append-only pipeline ops — the catalog grows 72 → 77 (Phase 1b, ADR-0022).</strong>
+          Four PRESENCE ops (<code class="font-next-mono">coalesce</code>/
+          <code class="font-next-mono">is_present</code>/<code class="font-next-mono">is_null</code>/
+          <code class="font-next-mono">assert_present</code>) accept the running value regardless
+          of its declared type at RUN time (the executor bypasses the normal type gate for them) —
+          their table below shows the NOMINAL text input/output the catalog and write-validator
+          advertise. <code class="font-next-mono">date_format</code> is an ordinary
+          <code class="font-next-mono">date → text</code> op rendering through a closed SAFE-TOKEN
+          whitelist — never a raw PHP format string; any other byte fails the whole pattern closed.
+        </Alert>
+        <ApiTable title="Presence, null-handling, and date-format ops" type-header="Input → output" :rows="presenceOpsRows" />
+        <ApiTable title="date_format safe tokens" type-header="Token" :rows="dateFormatTokenRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong><code class="font-next-mono">assert_present</code> is the ONE opt-in HARD
+          failure in the pipeline engine.</strong> Over an empty value it does not soft-fail like
+          every other op — the resolver re-raises it as the run's step failure (the run stops
+          there), joining the field's existing hard-fail doctrine (e.g. a blank
+          <code class="font-next-mono">create_task.title</code>). A CONDITION caller (an if-block's
+          boolean check) is unaffected and stays fail-closed to <code class="font-next-mono">false</code>
+          — the executor itself still never throws; only ONE resolver call site escalates. See
+          <code class="font-next-mono">docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md</code>
+          for the full design record (incl. why <code class="font-next-mono">WorkflowConditionTreeValidator</code>'s
+          write-time type gate does not YET special-case the presence ops the way the runtime
+          executor does — a deferred Phase 2 relaxation, inert today).
+        </Alert>
       </div>
     </StorySection>
 
@@ -1107,6 +1199,39 @@ WHERE id = ? AND state = 'pending'</pre>
         </div>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg">Variable typesystem Phase 1 — the "Default when empty" field + human option labels (ADR-0022)</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            Once a variable is picked, BOTH add-ons that let you pick one now render one extra,
+            low-emphasis "Default when empty" text input beneath the chip: <code class="font-next-mono">ValueOrVariableField.vue</code>
+            (the structured value-or-variable field) and the markdown editor's <code class="font-next-mono">VariablePanel.vue</code>
+            (the <code class="font-next-mono">@[variable]</code> chip's edit modal). Both are
+            emit-or-omit — leaving it blank keeps the wire payload byte-identical to before this
+            phase. Wherever a variable's options render (the variable picker, and a pipeline's
+            <code class="font-next-mono">sourceOption</code>/<code class="font-next-mono">sourceOptions</code>/<code class="font-next-mono">sourceMap</code>
+            args), <code class="font-next-mono">variableOptionList()</code>
+            (<code class="font-next-mono">workflowVariables.ts</code>) now prefers the catalog
+            variable's structured <code class="font-next-mono">descriptor.options</code> — showing
+            the human label, still emitting the stored key — falling back to the flat
+            <code class="font-next-mono">enumOptions</code> (label = value) only for an
+            older/label-less catalog response. <code class="font-next-mono">resolveVariableDescriptor()</code>
+            recovers a picked path's descriptor for read-side rendering elsewhere.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            The shared <code class="font-next-mono">VariablePipelineEditor.vue</code> (used by both
+            add-ons AND the IF-condition editor) also gained a generic per-arg
+            <code class="font-next-mono">hint</code> slot, first used by the new
+            <code class="font-next-mono">date_format</code> op to show its safe-token legend
+            ("Safe tokens: YYYY MMMM MMM MM DD HH mm D") under the pattern input. The 5 new ops
+            (<code class="font-next-mono">coalesce</code>/<code class="font-next-mono">is_present</code>/<code class="font-next-mono">is_null</code>/<code class="font-next-mono">assert_present</code>/<code class="font-next-mono">date_format</code>)
+            are declared in <code class="font-next-mono">standardOperationsCatalog()</code> with
+            the SAME nominal input/output the backend catalog advertises — see "The typed variable
+            system" above for the full wire contract and
+            <code class="font-next-mono">docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md</code>
+            for the design record.
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-1 font-next-semibold text-next-fg">Step editor: ordered list, no canvas — collapsible cards + type-selection cards (SF2)</p>
           <p class="text-next-xs text-next-muted-foreground">
             The step model is strictly LINEAR (one ordered list, no branching, no parallel
@@ -1160,6 +1285,9 @@ WHERE id = ? AND state = 'pending'</pre>
           <li><strong>Per-tenant error isolation in the sweep commands</strong> — <code class="font-next-mono">workflows:run-scheduled</code> / <code class="font-next-mono">workflows:reap-stale-runs</code> have no per-tenant try/catch yet (consistent with the existing Bot reaper pattern; hardening queued separately).</li>
           <li><strong>Public holiday awareness</strong> — the "last working day" rule (and every other schedule rule) has no holiday-calendar concept; a fire date landing on a holiday still fires normally. Would need a real holiday-calendar data source.</li>
           <li><strong>Rolling intervals, every-N-weeks, one-off dates, and sub-minute cadences</strong> — the schedule vocabulary has no cadence phased from an arbitrary start rather than the wall clock (e.g. "exactly every 90 minutes"), no "every N weeks" rule, no single one-off-date cadence, and no sub-minute grid. Named explicitly in the AI-assist's honest-unsupported list rather than silently approximated.</li>
+          <li><strong>TIME real runtime semantics</strong> (variable-typesystem Phase 2) — <code class="font-next-mono">WorkflowVariableType::TIME</code> (Phase 1a, ADR-0022) is catalog/descriptor-only: no condition operators, and its flat wire <code class="font-next-mono">type</code> still degrades to <code class="font-next-mono">text</code>. Needs its own resolver/evaluator/executor arms plus a closed-union update on the FE before it can flow as a first-class type.</li>
+          <li><strong>Presence-op write validation is stricter than the runtime</strong> (variable-typesystem Phase 2) — <code class="font-next-mono">WorkflowConditionTreeValidator::walkPipeline</code>'s exact-type gate does not yet special-case <code class="font-next-mono">coalesce</code>/<code class="font-next-mono">is_present</code>/<code class="font-next-mono">is_null</code>/<code class="font-next-mono">assert_present</code> the way <code class="font-next-mono">WorkflowOperationExecutor</code> already does — inert today (no shipped pipeline needs it), tracked in ADR-0022.</li>
+          <li><strong>Two Phase-2 hardening items, neither reachable today</strong> — a defensive default arm in <code class="font-next-mono">WorkflowOperationExecutor::normalizeInput()</code> (currently an exhaustive match over the original 7 types, so a hypothetical <code class="font-next-mono">TIME</code>-typed pipeline call would throw rather than fail closed) and write-time validation of <code class="font-next-mono">date_format</code>'s <code class="font-next-mono">pattern</code> arg against its safe-token whitelist (today only checked as a generic string — a malformed pattern is caught at run time, not as a 422). See ADR-0022.</li>
         </ul>
       </div>
     </StorySection>

@@ -15,7 +15,7 @@ import ValueOrVariableField from '../ValueOrVariableField.vue';
 import VariablePipelineEditor from '../../../ui/editor/extensions/VariablePipelineEditor.vue';
 import { standardOperationsCatalog } from '../../../ui/editor/extensions/standardOperations';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
-import type { CatalogVariable } from '../types';
+import type { CatalogVariable, WorkflowFieldValue } from '../types';
 
 const VARIABLES: CatalogVariable[] = [
   { source: 'trigger', path: 'fields.status', name: 'Status', type: 'enum', enumOptions: ['open', 'done'] },
@@ -361,6 +361,123 @@ describe('ValueOrVariableField', () => {
     expect(wrapper.find('.next-vov.is-error').exists()).toBe(true);
     expect(wrapper.find('.next-vov__token-error').exists()).toBe(true);
     expect(wrapper.get('.next-vov__token-main').attributes('aria-invalid')).toBe('true');
+
+    wrapper.unmount();
+  });
+
+  // --- phase-1a: descriptor enum labels + phase-1b: per-reference default -------
+
+  it('the ops modal shows HUMAN enum labels from the descriptor (label ≠ value)', async () => {
+    const withDescriptor: CatalogVariable[] = [
+      {
+        source: 'trigger',
+        path: 'fields.status',
+        name: 'Status',
+        type: 'enum',
+        enumOptions: ['open', 'done'],
+        descriptor: {
+          base: 'enum',
+          nullable: false,
+          array: false,
+          options: [
+            { key: 'open', label: 'Open ticket' },
+            { key: 'done', label: 'Resolved' },
+          ],
+        },
+      },
+    ];
+    const wrapper = mountField({
+      variables: withDescriptor,
+      operationsCatalog: standardOperationsCatalog(),
+      resultTypes: ['enum', 'text'],
+      modelValue: { kind: 'variable', ref: { source: 'trigger', path: 'fields.status', type: 'enum' } },
+    });
+    await nextTick();
+    await openOpsModal(wrapper);
+
+    // sourceOptions now carry the human labels; the stored value stays the wire key.
+    expect(wrapper.findComponent(VariablePipelineEditor).props('sourceOptions')).toEqual([
+      { label: 'Open ticket', value: 'open' },
+      { label: 'Resolved', value: 'done' },
+    ]);
+
+    wrapper.unmount();
+  });
+
+  it('per-reference default: not shown until a variable is picked', () => {
+    const wrapper = mountField();
+    expect(wrapper.find('.next-vov__default').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('per-reference default: typing writes `default` onto the union; clearing OMITS it', async () => {
+    const wrapper = mountField({
+      modelValue: { kind: 'variable', ref: { source: 'trigger', path: 'fields.name', type: 'text' } },
+    });
+    await nextTick();
+
+    await wrapper.get('.next-vov__default input').setValue('Anonymous');
+    let emitted = wrapper.emitted('update:modelValue')!;
+    expect(emitted[emitted.length - 1][0]).toEqual({
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.name', type: 'text' },
+      default: 'Anonymous',
+    });
+
+    // Simulate the parent v-model syncing the new value back, then clear the default.
+    await wrapper.setProps({ modelValue: emitted[emitted.length - 1][0] as WorkflowFieldValue });
+    await wrapper.get('.next-vov__default input').setValue('');
+    emitted = wrapper.emitted('update:modelValue')!;
+    // Empty ⇒ the key is gone (byte-identical to a ref without a default).
+    expect(emitted[emitted.length - 1][0]).toEqual({
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.name', type: 'text' },
+    });
+
+    wrapper.unmount();
+  });
+
+  it('per-reference default: hydrates an existing default into the input', async () => {
+    const wrapper = mountField({
+      modelValue: {
+        kind: 'variable',
+        ref: { source: 'trigger', path: 'fields.name', type: 'text' },
+        default: 'Anonymous',
+      },
+    });
+    await nextTick();
+    expect((wrapper.get('.next-vov__default input').element as HTMLInputElement).value).toBe('Anonymous');
+    wrapper.unmount();
+  });
+
+  it('per-reference default: SURVIVES a modal pipeline save', async () => {
+    const wrapper = mountField({
+      operationsCatalog: standardOperationsCatalog(),
+      resultTypes: ['enum', 'text'],
+      modelValue: {
+        kind: 'variable',
+        ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
+        default: 'open',
+      },
+    });
+    await nextTick();
+    await openOpsModal(wrapper);
+
+    const pipeline = wrapper.findComponent(VariablePipelineEditor);
+    pipeline.vm.$emit('update:modelValue', [
+      { stepId: 's1', operationId: 'enum_to_text', args: {}, outputType: 'text' },
+    ]);
+    await nextTick();
+    modalButton('Save')!.click();
+    await nextTick();
+
+    const emitted = wrapper.emitted('update:modelValue')!;
+    expect(emitted[emitted.length - 1][0]).toEqual({
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
+      pipeline: [{ op: 'enum_to_text', args: {} }],
+      default: 'open',
+    });
 
     wrapper.unmount();
   });

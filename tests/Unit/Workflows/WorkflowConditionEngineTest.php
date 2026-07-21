@@ -61,9 +61,10 @@ class WorkflowConditionEngineTest extends TestCase
     public function test_operation_ids_are_the_pinned_wire_contract(): void
     {
         // The backend enum ids ARE the stable wire contract mirrored from the FE
-        // resources/js/next/ui/editor/extensions/standardOperations.ts (68 ops). This pin catches
-        // any accidental backend rename/removal/addition; the FE list is the source of truth. The two
-        // choice terminals (match_to_choice / enum_to_choice) map a value into a target field's option set.
+        // resources/js/next/ui/editor/extensions/standardOperations.ts. This pin catches any accidental
+        // backend rename/removal/reorder; ids may only be APPENDED. The two choice terminals
+        // (match_to_choice / enum_to_choice) map a value into a target field's option set. The final
+        // block is the phase-1b append (presence helpers + a safe date formatter).
         $expected = [
             'text_uppercase', 'text_lowercase', 'text_trim', 'text_substring', 'text_replace',
             'text_append', 'text_prepend', 'text_length', 'text_to_number', 'text_equals',
@@ -81,10 +82,12 @@ class WorkflowConditionEngineTest extends TestCase
             // file: two boolean terminals (so a file field is usable in the condition tree at
             // all) + two converters that hand off to the text/number vocabulary.
             'file_is_empty', 'file_is_not_empty', 'file_count', 'file_name',
+            // phase-1b append-only: presence helpers + a safe date formatter.
+            'coalesce', 'is_present', 'is_null', 'assert_present', 'date_format',
         ];
 
         $this->assertSame($expected, array_map(fn (WorkflowOperation $op) => $op->value, WorkflowOperation::cases()));
-        $this->assertCount(72, WorkflowOperation::cases());
+        $this->assertCount(77, WorkflowOperation::cases());
     }
 
     // ── FILE (4 ops) ──────────────────────────────────────────────────────────

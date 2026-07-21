@@ -31,6 +31,11 @@ enum WorkflowVariableType: string
     case ENUM = 'enum';
     case MULTI = 'multi';
     case FILE = 'file';
+    // Appended (phase-1a, append-only). A time-of-day string — the form builder's TIME element
+    // (format:'time'), historically degraded to TEXT. Its own base surfaces ONLY in the structured
+    // descriptor(); the flat wire `type` still degrades to text (WorkflowVariableCatalogService::flatType)
+    // until the resolver/evaluator/executor + FE learn it (the deferred runtime-semantics slice).
+    case TIME = 'time';
 
     /** @return array<int, string> */
     public static function ids(): array
@@ -111,6 +116,54 @@ enum WorkflowVariableType: string
                 WorkflowConditionOperator::FILLED,
                 WorkflowConditionOperator::EMPTY,
             ],
+            // TIME carries NO operators THIS slice. The condition evaluator + operation executor
+            // dispatch on an EXHAUSTIVE match over the legacy 7 types (no default), so a stored
+            // `time` condition would 500 at run time rather than fail closed. An empty set keeps a
+            // time field NON-conditionable (rejected at write, exactly as today), until the deferred
+            // runtime-semantics slice adds the evaluator/executor arms + real operators.
+            self::TIME => [],
+        };
+    }
+
+    /**
+     * The NORMALIZED structured type DESCRIPTOR for this type (phase-1a) — the legacy-flat → descriptor
+     * shim later phases build on. Shape: `{ base, nullable, array, options? }`:
+     *   - MULTI  → `{ base:'enum', array:true }`   (a multi is an array<enum>)
+     *   - ENUM   → `{ base:'enum', array:false, options }`
+     *   - text|number|boolean|date|time|file → `{ base:<self>, array:false }`
+     * `options` (a list of `{key,label}`) is carried ONLY for an enum base (ENUM/MULTI); the CALLER
+     * resolves the human labels — the JSON schema drops them, they live in the form element config.
+     *
+     * @param  array<int, array{key: string, label: string}>  $options
+     * @return array{base: string, nullable: bool, array: bool, options?: array<int, array{key: string, label: string}>}
+     */
+    public function descriptor(array $options = [], bool $nullable = false): array
+    {
+        $base = $this->descriptorBase();
+
+        $descriptor = [
+            'base' => $base->value,
+            'nullable' => $nullable,
+            'array' => $this === self::MULTI,
+        ];
+
+        if ($base === self::ENUM) {
+            $descriptor['options'] = array_values($options);
+        }
+
+        return $descriptor;
+    }
+
+    /**
+     * The BASE scalar type of this type's descriptor: MULTI is an array<enum> so its base is ENUM;
+     * every other type (ENUM included) is its own base. The default arm means appending a new case
+     * (e.g. TIME) never breaks it.
+     */
+    private function descriptorBase(): self
+    {
+        return match ($this) {
+            self::MULTI => self::ENUM,
+            default => $this,
         };
     }
 }

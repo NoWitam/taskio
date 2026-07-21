@@ -24,6 +24,7 @@ import type {
 } from '../../ui/editor/extensions/types';
 import type {
   CatalogVariable,
+  CatalogVariableDescriptor,
   WorkflowCatalog,
   WorkflowStepType,
   WorkflowTriggerType,
@@ -242,13 +243,23 @@ export function toEditorVariables(
 // --- toEditorVariablesTyped (§4.9 — the TRUE-type + options editor feed) -----
 
 /**
- * Map a catalog variable's enum options to the editor's `VariableOption[]` (label =
- * value; the catalog carries option VALUES only, labels are a UI concept). Empty /
- * absent → undefined so a non-enum definition carries no `options` key.
+ * The choice options for a catalog variable as the editor's `VariableOption[]`
+ * (`{label,value}`), PREFERRING the structured `descriptor.options` (`{key,label}` — show
+ * the human `label`, keep the `key` as the stored/emitted wire VALUE) and FALLING BACK to
+ * the flat `enumOptions` (label = value) when no descriptor is present (older / label-less
+ * responses, and existing fixtures). Empty / absent → undefined so a non-choice definition
+ * carries no `options` key. This is the single place the FE turns a variable's choices into
+ * human labels, so the variable picker / pipeline enum args / chip echo all agree.
  */
-function toVariableOptions(enumOptions: string[] | undefined): VariableOption[] | undefined {
-  if (!enumOptions || enumOptions.length === 0) return undefined;
-  return enumOptions.map((value) => ({ label: value, value }));
+export function variableOptionList(variable: CatalogVariable): VariableOption[] | undefined {
+  const descriptorOptions = variable.descriptor?.options;
+  if (descriptorOptions && descriptorOptions.length > 0) {
+    return descriptorOptions.map((option) => ({ label: option.label, value: option.key }));
+  }
+  if (variable.enumOptions && variable.enumOptions.length > 0) {
+    return variable.enumOptions.map((value) => ({ label: value, value }));
+  }
+  return undefined;
 }
 
 /**
@@ -277,7 +288,7 @@ export function toEditorVariablesTyped(
   return [...nonStep, ...stepOutputs]
     .filter((variable) => !isIdVariable(variable.path))
     .map((variable) => {
-    const options = toVariableOptions(variable.enumOptions);
+    const options = variableOptionList(variable);
     const definition: VariableDefinition = {
       id: variable.path, // identity-only: id === path
       name: variable.name,
@@ -327,6 +338,23 @@ export function resolveVariable(
   const inCatalog = (catalog?.variables ?? []).find((v) => v.path === path);
   if (inCatalog) return inCatalog;
   return positionScopedStepOutputs(catalog, steps, steps.length).find((v) => v.path === path) ?? null;
+}
+
+/**
+ * Recover the structured DESCRIPTOR for a path (§4.7, phase-1a) — the `{base,nullable,
+ * array,options?}` a catalog variable now carries — or null when the path is unknown or
+ * the (older) catalog carried no descriptor. Mirrors `resolveVariable` but returns just the
+ * descriptor: the by-path source of an enum's human option LABELS for read-side rendering.
+ * Locally-synthesized step outputs carry no descriptor (text outputs, no options), so this
+ * returns null for them and callers fall back to `enumOptions`.
+ */
+export function resolveVariableDescriptor(
+  path: string,
+  catalog: WorkflowCatalog | null | undefined,
+  steps: StepLike[],
+  triggerType?: WorkflowTriggerType | null,
+): CatalogVariableDescriptor | null {
+  return resolveVariable(path, catalog, steps, triggerType)?.descriptor ?? null;
 }
 
 // --- variablesOfType (the add-on picker filters, §4.9) ----------------------

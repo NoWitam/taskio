@@ -10,7 +10,7 @@ use Carbon\CarbonImmutable;
 use Throwable;
 
 /**
- * The ONE runtime engine for a variable-operation PIPELINE — the single source of truth for the 68
+ * The ONE runtime engine for a variable-operation PIPELINE — the single source of truth for the 77
  * operations (mirroring standardOperations.ts). It was extracted from WorkflowConditionEngine so
  * every consumer shares identical semantics and can never drift:
  *
@@ -28,7 +28,14 @@ use Throwable;
  * pipeline over the hard cap → an OperationResult::failure(). A base value that cannot be normalized
  * to its declared type is likewise a failure.
  *
- * OPERATION SEMANTICS (the 68 ops):
+ * PRESENCE FAMILY (append-only, phase-1b): coalesce/is_present/is_null/assert_present are the ONE
+ * exception to the per-step type gate — they accept ANY running type and read emptiness (null/''/[]).
+ * A leading presence op even consumes an unnormalizable/absent base (which a normal op fails closed
+ * on). assert_present over an empty value returns an OperationResult::hardFailure() — still a failure
+ * (so conditions stay false), but the ONE signal a value-producing caller re-raises as a run
+ * step-failure. The executor itself STILL never throws.
+ *
+ * OPERATION SEMANTICS (the 77 ops):
  *   - text_to_number: non-numeric fails (never coerces to 0). text_substring: `start` 1-based,
  *     `length` 0 = to the end. contains/starts_with/ends_with with an empty needle are false.
  *   - num_divide by zero fails. num ops use float compare (=== on floats).
@@ -41,11 +48,41 @@ use Throwable;
  *     it, else a REQUIRED `fallback` option; a missing/blank fallback fails closed (the op is total).
  *   - dates are STRICT ISO Y-m-d wall-clock (anything else fails); date_weekday is 0=Sunday..6.
  *     date_is_past/future/weekend compare against "today" in config('app.timezone').
+ *   - coalesce → the input when present, else a `fallback` literal (normalized to the running type).
+ *     is_present/is_null → boolean. assert_present → the input, else a HARD failure. date_format
+ *     renders a date via a SAFE token pattern (YYYY/MM/DD/D/MMMM/MMM/HH/mm + a few separators) — a
+ *     raw PHP format string is never honored; a bad pattern / non-date is fail-soft (never a throw).
  */
 class WorkflowOperationExecutor
 {
     /** An operation/argument failure marker — collapses to an OperationResult::failure(), never an exception. */
     private const FAIL = "\0__workflow_operation_failed__\0";
+
+    /**
+     * A HARD failure marker (append-only) — collapses to OperationResult::hardFailure(), which a
+     * value-producing caller re-raises as a run step-failure. Raised ONLY by assert_present over an
+     * empty value; still not an exception (the executor stays throw-free).
+     */
+    private const HARD_FAIL = "\0__workflow_operation_hard_failed__\0";
+
+    /**
+     * The DATE_FORMAT safe-token whitelist (append-only): editor tokens → PHP date() tokens. Ordered
+     * LONGEST-FIRST so the greedy matcher never takes a shorter prefix (MMMM before MMM before MM, DD
+     * before D). This is the ONLY date-formatting surface — a raw PHP format string is NEVER honored.
+     */
+    private const DATE_FORMAT_TOKENS = [
+        'YYYY' => 'Y',
+        'MMMM' => 'F',
+        'MMM' => 'M',
+        'MM' => 'm',
+        'DD' => 'd',
+        'HH' => 'H',
+        'mm' => 'i',
+        'D' => 'j',
+    ];
+
+    /** Literal separators DATE_FORMAT allows between tokens (escaped through to date() verbatim). */
+    private const DATE_FORMAT_SEPARATORS = [' ', '-', '/', ':', '.', ','];
 
     /**
      * Run $pipeline over $baseValue (declared as $baseType), returning the transformed value + its
@@ -64,7 +101,11 @@ class WorkflowOperationExecutor
 
         $value = $this->normalizeInput($baseValue, $baseType);
 
-        if ($value === self::FAIL) {
+        // A LEADING presence op (coalesce/is_present/is_null/assert_present) reads EMPTINESS, which
+        // legitimately includes the null/'' base a normal op fails closed on — so DEFER the fail-closed
+        // return for it (it consumes the raw emptiness below). Every OTHER leading op keeps the exact
+        // legacy behavior: an unnormalizable base is still an immediate failure.
+        if ($value === self::FAIL && !$this->leadsWithPresenceOp($pipeline)) {
             return OperationResult::failure();
         }
 
@@ -77,11 +118,38 @@ class WorkflowOperationExecutor
 
             $op = WorkflowOperation::tryFrom((string) ($step['op'] ?? $step['operationId'] ?? ''));
 
-            if ($op === null || $op->inputType() !== $currentType) {
+            if ($op === null) {
                 return OperationResult::failure();
             }
 
             $args = is_array($step['args'] ?? null) ? $step['args'] : [];
+
+            // Presence-family ops accept ANY running type (they inspect presence, not shape) — handled
+            // before the strict type gate. They preserve the running type (coalesce/assert_present) or
+            // yield boolean (is_present/is_null); assert_present over an empty value is the ONE HARD
+            // failure a value-producing caller escalates to a run step-failure.
+            if ($op->isPresenceOp()) {
+                $applied = $this->applyPresence($op, $value, $currentType, $args);
+
+                if ($applied === self::HARD_FAIL) {
+                    return OperationResult::hardFailure();
+                }
+
+                if ($applied === self::FAIL) {
+                    return OperationResult::failure();
+                }
+
+                [$value, $currentType] = $applied;
+
+                continue;
+            }
+
+            // Any non-presence op meeting a DEFERRED base failure, or a type-flow mismatch, is the
+            // legacy fail-closed dead end.
+            if ($value === self::FAIL || $op->inputType() !== $currentType) {
+                return OperationResult::failure();
+            }
+
             $value = $this->apply($op, $value, $args);
 
             if ($value === self::FAIL) {
@@ -184,6 +252,73 @@ class WorkflowOperationExecutor
             WorkflowVariableType::MULTI => $this->applyMulti($op, is_array($value) ? $value : [], $args),
             WorkflowVariableType::FILE => $this->applyFile($op, is_array($value) ? $value : [], $args),
         };
+    }
+
+    // ---- presence family (append-only) ----------------------------------------
+
+    /** Whether the pipeline OPENS with a presence-family op (which tolerates an empty/absent base). */
+    private function leadsWithPresenceOp(array $pipeline): bool
+    {
+        $first = $pipeline[0] ?? null;
+
+        if (!is_array($first)) {
+            return false;
+        }
+
+        $op = WorkflowOperation::tryFrom((string) ($first['op'] ?? $first['operationId'] ?? ''));
+
+        return $op !== null && $op->isPresenceOp();
+    }
+
+    /**
+     * A presence-family op. It reads the running value's EMPTINESS — null, '', [] or an unrepresentable
+     * base (the FAIL marker) all count as empty, matching the FILLED/EMPTY condition semantics — and
+     * accepts ANY running type:
+     *   - is_present / is_null → boolean.
+     *   - coalesce  → the value when present, else the `fallback` literal normalized to the running type.
+     *   - assert_present → the value when present, else HARD_FAIL (the one opt-in "force a value").
+     * Returns [value, type] on success, or the FAIL / HARD_FAIL sentinel.
+     *
+     * @param  array<string, mixed>  $args
+     * @return array{0: mixed, 1: WorkflowVariableType}|string
+     */
+    private function applyPresence(WorkflowOperation $op, mixed $value, WorkflowVariableType $currentType, array $args): array|string
+    {
+        $empty = $this->isEmptyValue($value);
+
+        return match ($op) {
+            WorkflowOperation::IS_PRESENT => [!$empty, WorkflowVariableType::BOOLEAN],
+            WorkflowOperation::IS_NULL => [$empty, WorkflowVariableType::BOOLEAN],
+            WorkflowOperation::ASSERT_PRESENT => $empty ? self::HARD_FAIL : [$value, $currentType],
+            WorkflowOperation::COALESCE => $empty ? $this->coalesceFallback($args, $currentType) : [$value, $currentType],
+            default => self::FAIL,
+        };
+    }
+
+    /** Emptiness for the presence family: null, '', [] or an unrepresentable base (the FAIL marker). */
+    private function isEmptyValue(mixed $value): bool
+    {
+        return $value === self::FAIL || $value === null || $value === '' || $value === [];
+    }
+
+    /**
+     * The coalesce `fallback` (a literal) normalized to the running type, so a downstream typed op sees
+     * a proper T. A non-scalar or unrepresentable fallback fails closed.
+     *
+     * @param  array<string, mixed>  $args
+     * @return array{0: mixed, 1: WorkflowVariableType}|string
+     */
+    private function coalesceFallback(array $args, WorkflowVariableType $currentType): array|string
+    {
+        $fallback = $args['fallback'] ?? null;
+
+        if (!is_scalar($fallback)) {
+            return self::FAIL;
+        }
+
+        $normalized = $this->normalizeInput($fallback, $currentType);
+
+        return $normalized === self::FAIL ? self::FAIL : [$normalized, $currentType];
     }
 
     /**
@@ -380,8 +515,76 @@ class WorkflowOperationExecutor
             WorkflowOperation::DATE_IS_WEEKEND => $v->isWeekend(),
             WorkflowOperation::DATE_IS_PAST => $v->lessThan($this->today()),
             WorkflowOperation::DATE_IS_FUTURE => $v->greaterThan($this->today()),
+            WorkflowOperation::DATE_FORMAT => $this->dateFormat($v, $args),
             default => self::FAIL,
         };
+    }
+
+    /**
+     * Format a date via a SAFE TOKEN pattern — NEVER a raw PHP date() format string. The `pattern` is a
+     * sequence of whitelisted tokens (YYYY MM DD D MMMM MMM HH mm) + a few literal separators; anything
+     * else fails closed (→ FAIL, the module's fail-soft: the caller yields '' / coerced null). $v is a
+     * CarbonImmutable (applyDate already guarded a non-date), so this never throws.
+     *
+     * @param  array<string, mixed>  $args
+     */
+    private function dateFormat(CarbonImmutable $v, array $args): mixed
+    {
+        $pattern = $args['pattern'] ?? null;
+
+        if (!is_string($pattern) || $pattern === '') {
+            return self::FAIL;
+        }
+
+        $format = $this->compileDatePattern($pattern);
+
+        return $format === null ? self::FAIL : $v->format($format);
+    }
+
+    /**
+     * Compile a safe-token pattern to a PHP date() format string, or null when it carries any byte
+     * outside the whitelist. Tokens are matched greedily longest-first (MMMM beats MMM beats MM); a
+     * literal separator is BACKSLASH-escaped so date() emits it verbatim rather than interpreting it.
+     */
+    private function compileDatePattern(string $pattern): ?string
+    {
+        $out = '';
+        $i = 0;
+        $len = strlen($pattern);
+
+        while ($i < $len) {
+            $token = $this->matchDateToken($pattern, $i);
+
+            if ($token !== null) {
+                $out .= self::DATE_FORMAT_TOKENS[$token];
+                $i += strlen($token);
+
+                continue;
+            }
+
+            $char = $pattern[$i];
+
+            if (!in_array($char, self::DATE_FORMAT_SEPARATORS, true)) {
+                return null; // any non-token, non-separator byte rejects the whole pattern
+            }
+
+            $out .= '\\' . $char; // escape the literal so date() does not interpret it
+            $i++;
+        }
+
+        return $out;
+    }
+
+    /** The whitelisted token starting at $offset (longest-first), or null when none matches. */
+    private function matchDateToken(string $pattern, int $offset): ?string
+    {
+        foreach (self::DATE_FORMAT_TOKENS as $token => $_php) {
+            if (substr($pattern, $offset, strlen($token)) === $token) {
+                return $token;
+            }
+        }
+
+        return null;
     }
 
     /** @param array<string, mixed> $args */

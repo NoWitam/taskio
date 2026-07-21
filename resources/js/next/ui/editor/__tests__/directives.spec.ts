@@ -124,6 +124,28 @@ describe('variable directive', () => {
     expect(roundTrip(MD)).toBe(MD);
   });
 
+  it('serializes + parses the OPTIONAL default (phase-1b): present → data.default, empty → omitted', () => {
+    // Present: `data.default` is appended (last), parses back, and round-trips.
+    const withDefault = { ...ATTRS, default: 'N/A' };
+    const mdWithDefault =
+      '@[variable]("' + JSON.stringify({ v: 1, data: withDefault }).replace(/"/g, '\\"') + '")';
+    const docWith: MarkdownDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'variable', attrs: withDefault }] }],
+    };
+    expect(ser(docWith)).toBe(mdWithDefault);
+    expect(firstInline(mdWithDefault, 'variable')?.attrs?.default).toBe('N/A');
+    expect(roundTrip(mdWithDefault)).toBe(mdWithDefault);
+
+    // Empty / null default is OMITTED — byte-identical to the ATTRS-only directive (MD).
+    const docNull: MarkdownDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'variable', attrs: { ...ATTRS, default: null } }] }],
+    };
+    expect(ser(docNull)).toBe(MD);
+    expect(ser(docNull)).not.toContain('default');
+  });
+
   it('round-trips when the payload contains brackets and sits next to a real link', () => {
     const data = {
       id: 'a',

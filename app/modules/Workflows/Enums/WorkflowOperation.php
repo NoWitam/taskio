@@ -7,7 +7,7 @@ use App\Modules\Workflows\DTOs\WorkflowOperationArg;
 /**
  * The canonical variable-operations vocabulary — the backend 1:1 mirror of the FE
  * `standardOperationsCatalog()` (resources/js/next/ui/editor/extensions/standardOperations.ts).
- * The 68 ids ARE the stable wire contract of a pipeline: an id may only be added, never renamed.
+ * The 77 ids ARE the stable wire contract of a pipeline: an id may only be added, never renamed.
  * Each op takes ONE input type and yields ONE output type, so a CONDITION pipeline is a type-flow
  * that MUST terminate in boolean (any variable can become a condition). A VALUE pipeline targeting a
  * choice field (e.g. a task priority) instead terminates in one of the two choice-producing ops
@@ -117,6 +117,19 @@ enum WorkflowOperation: string
     case FILE_COUNT = 'file_count';
     case FILE_NAME = 'file_name';
 
+    // ── GENERIC / NULL-HANDLING (append-only, phase-1b) ───────────────────────
+    // Presence helpers + a safe date formatter. COALESCE/IS_PRESENT/IS_NULL/ASSERT_PRESENT accept ANY
+    // running value (they inspect PRESENCE, not shape): the executor special-cases them BEFORE the
+    // per-step type gate (isPresenceOp) — COALESCE/ASSERT_PRESENT preserve the running type, IS_PRESENT/
+    // IS_NULL yield boolean, ASSERT_PRESENT is the one opt-in HARD failure. Their declared input/output
+    // below are the NOMINAL text/boolean the write-validator + catalog advertise; the real runtime
+    // type-flow is the executor's. DATE_FORMAT is an ordinary date→text op (safe-token pattern only).
+    case COALESCE = 'coalesce';
+    case IS_PRESENT = 'is_present';
+    case IS_NULL = 'is_null';
+    case ASSERT_PRESENT = 'assert_present';
+    case DATE_FORMAT = 'date_format';
+
     /** The value type this op CONSUMES (its single input). */
     public function inputType(): WorkflowVariableType
     {
@@ -146,6 +159,11 @@ enum WorkflowOperation: string
 
             self::FILE_IS_EMPTY, self::FILE_IS_NOT_EMPTY, self::FILE_COUNT,
             self::FILE_NAME => WorkflowVariableType::FILE,
+
+            // Presence helpers accept ANY value; TEXT is the NOMINAL input the validator/catalog show
+            // (the executor bypasses the type gate for them at runtime). date_format consumes a date.
+            self::COALESCE, self::IS_PRESENT, self::IS_NULL, self::ASSERT_PRESENT => WorkflowVariableType::TEXT,
+            self::DATE_FORMAT => WorkflowVariableType::DATE,
         };
     }
 
@@ -185,7 +203,13 @@ enum WorkflowOperation: string
             self::ENUM_IS, self::ENUM_IS_NOT, self::ENUM_IN,
             self::MULTI_INCLUDES, self::MULTI_EXCLUDES, self::MULTI_INCLUDES_ANY, self::MULTI_INCLUDES_ALL,
             self::MULTI_IS_EMPTY,
-            self::FILE_IS_EMPTY, self::FILE_IS_NOT_EMPTY => WorkflowVariableType::BOOLEAN,
+            self::FILE_IS_EMPTY, self::FILE_IS_NOT_EMPTY,
+            // Presence predicates (append-only): boolean.
+            self::IS_PRESENT, self::IS_NULL => WorkflowVariableType::BOOLEAN,
+
+            // coalesce/assert_present NOMINALLY yield text (they preserve the running type at runtime);
+            // date_format renders a date to text.
+            self::COALESCE, self::ASSERT_PRESENT, self::DATE_FORMAT => WorkflowVariableType::TEXT,
         };
     }
 
@@ -269,6 +293,14 @@ enum WorkflowOperation: string
                 WorkflowOperationArg::literal('values', WorkflowOperationArgType::SOURCE_OPTIONS),
             ],
 
+            // Presence/format ops (append-only): coalesce's fallback + date_format's safe-token pattern.
+            self::COALESCE => [
+                WorkflowOperationArg::literal('fallback', WorkflowOperationArgType::TEXT),
+            ],
+            self::DATE_FORMAT => [
+                WorkflowOperationArg::literal('pattern', WorkflowOperationArgType::TEXT),
+            ],
+
             default => [],
         };
     }
@@ -283,6 +315,20 @@ enum WorkflowOperation: string
     {
         return match ($this) {
             self::ENUM_TO_CHOICE, self::MATCH_TO_CHOICE => true,
+            default => false,
+        };
+    }
+
+    /**
+     * Whether this op is a PRESENCE-family helper (append-only, phase-1b): coalesce / is_present /
+     * is_null / assert_present. These inspect a value's EMPTINESS rather than its shape, so the
+     * executor handles them BEFORE the per-step type gate — they accept ANY running type (see
+     * WorkflowOperationExecutor::applyPresence). date_format is NOT one (it is an ordinary date op).
+     */
+    public function isPresenceOp(): bool
+    {
+        return match ($this) {
+            self::COALESCE, self::IS_PRESENT, self::IS_NULL, self::ASSERT_PRESENT => true,
             default => false,
         };
     }

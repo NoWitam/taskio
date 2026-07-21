@@ -126,6 +126,19 @@ chip/result icon reflects the final `resultType` (`resolveType`). An **IF/ELSE-I
 condition is only valid when its pipeline resolves to `boolean`** — the condition
 Modal shows a status icon and **blocks saving** an invalid condition.
 
+**Per-reference "Default when empty" (Workflows variable-typesystem Phase 1b,
+`docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md`).**
+`VariablePanel.vue` now renders one extra optional text input once a variable is
+picked, saved onto `VariableNodeAttrs.default` and serialized as the directive's
+`data.default` — omitted from the payload when left blank, so an un-defaulted
+variable stays byte-identical to before this addition. Consuming hosts (the
+Workflows resolver) substitute it for a null/empty lookup before the pipeline
+runs; this editor only carries the byte, it does not interpret it.
+`VariableOperationArgumentDefinition` also gained an optional `hint` string,
+rendered as persistent helper text under an arg control by
+`VariablePipelineEditor` — first used by the `date_format` op (Workflows-only, a
+host op) to show its safe-token legend under the pattern field.
+
 ### Variable value types (extended vocabulary)
 
 `VariablePrimitive` covers six value types. The original trio — `text`, `number`,

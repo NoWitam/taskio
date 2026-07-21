@@ -191,7 +191,7 @@ function fieldError(field: string): string | undefined {
 const editorVariables = computed<VariableDefinition[]>(() =>
   toEditorVariablesTyped(props.catalog, props.steps, props.position, props.triggerType),
 );
-/** The merged 66-op catalog (backend descriptors × FE labels; full standard set as fallback). */
+/** The merged 77-op catalog (backend descriptors × FE labels; full standard set as fallback). */
 const operationsCatalog = computed<VariableOperationDefinition[]>(() =>
   resolveOperationCatalog(props.catalog),
 );

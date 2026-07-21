@@ -48,7 +48,7 @@ export interface VariableOptions {
 const pluginKey = new PluginKey('next-variable-suggestion');
 
 function encodeVariableDirective(attrs: VariableNodeAttrs): string {
-  const data = {
+  const data: Record<string, unknown> = {
     id: attrs.id,
     name: attrs.name,
     type: attrs.type,
@@ -56,6 +56,11 @@ function encodeVariableDirective(attrs: VariableNodeAttrs): string {
     pipeline: attrs.pipeline ?? [],
     resultType: attrs.resultType,
   };
+  // Emit-or-OMIT the per-reference default (phase-1b): only serialize `data.default` when
+  // it is non-empty, so a ref without a default stays byte-identical to the pre-1b format.
+  if (attrs.default !== undefined && attrs.default !== null && attrs.default !== '') {
+    data.default = attrs.default;
+  }
   const json = JSON.stringify({ v: DATA_VERSION, data });
   return `@[variable]("${json.replace(/"/g, '\\"')}")`;
 }
@@ -74,17 +79,20 @@ function ensureMarkdownRegistered(): void {
     toNode(payload): JSONNode | null {
       const p = payload as Partial<VariableNodeAttrs> | null;
       if (!p || !p.id) return null;
-      return {
-        type: 'variable',
-        attrs: {
-          id: p.id,
-          name: p.name ?? p.id,
-          type: p.type ?? 'text',
-          locked: p.locked ?? false,
-          pipeline: Array.isArray(p.pipeline) ? p.pipeline : [],
-          resultType: p.resultType ?? 'text',
-        },
+      const attrs: Record<string, unknown> = {
+        id: p.id,
+        name: p.name ?? p.id,
+        type: p.type ?? 'text',
+        locked: p.locked ?? false,
+        pipeline: Array.isArray(p.pipeline) ? p.pipeline : [],
+        resultType: p.resultType ?? 'text',
       };
+      // Rehydrate the optional per-reference default (phase-1b) only when present, so a
+      // directive without one keeps `default` at its (null) attr default.
+      if (p.default !== undefined && p.default !== null && p.default !== '') {
+        attrs.default = p.default;
+      }
+      return { type: 'variable', attrs };
     },
   });
 }
@@ -115,6 +123,8 @@ export function createVariable(options: VariableOptions = {}) {
         locked: { default: false },
         pipeline: { default: [] },
         resultType: { default: 'text' },
+        // Optional per-reference default (phase-1b); null ⇒ omitted from the directive.
+        default: { default: null },
       };
     },
 

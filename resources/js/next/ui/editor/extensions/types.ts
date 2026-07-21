@@ -96,6 +96,8 @@ export interface VariableOperationArgumentDefinition {
   label: string;
   type: VariableOperationArgumentType;
   placeholder?: string;
+  /** Optional persistent helper text under the control (e.g. the date_format safe tokens). */
+  hint?: string;
   options?: Array<{ label: string; value: string }>;
   defaultValue?: string | number | boolean;
   /** `sourceMap` only: the kind of each mapped TARGET value (`enum` = a target choice). */
@@ -131,6 +133,12 @@ export interface VariableNodeAttrs {
   locked: boolean;
   pipeline: VariablePipelineStep[];
   resultType: VariablePrimitive;
+  /**
+   * OPTIONAL literal DEFAULT (phase-1b): the value the backend substitutes when the
+   * referenced value resolves null/'' at run time. Serialized as `data.default` — and
+   * only when non-empty, so a ref without a default stays byte-identical to today.
+   */
+  default?: string | null;
 }
 
 // --- AI text ----------------------------------------------------------------

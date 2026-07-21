@@ -55,13 +55,15 @@ class WorkflowVariableCatalogTest extends TestCase
                 ['id' => 'start_time', 'type' => 'time', 'config' => ['label' => 'Start time']],
                 ['id' => 'category', 'type' => 'select', 'config' => [
                     'label' => 'Category', 'multiple' => false,
-                    'options' => [['value' => 'blog'], ['value' => 'news']],
+                    // Human labels differ from the wire VALUES (dropped by the JSON schema, kept in config).
+                    'options' => [['value' => 'blog', 'label' => 'Blog'], ['value' => 'news', 'label' => 'News']],
                 ]],
                 ['id' => 'channels', 'type' => 'select', 'config' => [
                     'label' => 'Channels', 'multiple' => true,
-                    'options' => [['value' => 'fb'], ['value' => 'ig']],
+                    'options' => [['value' => 'fb', 'label' => 'Facebook'], ['value' => 'ig', 'label' => 'Instagram']],
                 ]],
                 ['id' => 'todos', 'type' => 'checklist', 'config' => [
+                    // No labels here — the descriptor must fall back to labelling each value with itself.
                     'label' => 'Todos', 'options' => [['value' => 'a'], ['value' => 'b']],
                 ]],
                 // The file input (wire type 'image') carries format:'file' → FILE variable.
@@ -136,6 +138,31 @@ class WorkflowVariableCatalogTest extends TestCase
         $this->assertTrue($byPath['trigger.task.id']['nullable']);
     }
 
+    public function test_trigger_system_variables_carry_structured_descriptors(): void
+    {
+        $vars = app(WorkflowVariableCatalogService::class)
+            ->triggerSystemVariables(WorkflowTriggerType::FORM_SUBMITTED);
+
+        $byPath = $this->fieldsByPath($vars);
+
+        // Plain scalar system vars.
+        $this->assertSame(['base' => 'text', 'nullable' => false, 'array' => false], $byPath['trigger.submission.id']['descriptor']);
+        $this->assertSame(['base' => 'date', 'nullable' => false, 'array' => false], $byPath['trigger.submitted_at']['descriptor']);
+
+        // A nullable system var carries nullable:true into its descriptor too.
+        $this->assertSame(['base' => 'text', 'nullable' => true, 'array' => false], $byPath['trigger.task.id']['descriptor']);
+
+        // trigger.source is an enum → enum base + options. System vars have no human labels, so the
+        // label falls back to the value.
+        $source = $byPath['trigger.source']['descriptor'];
+        $this->assertSame('enum', $source['base']);
+        $this->assertFalse($source['array']);
+        $this->assertSame([
+            ['key' => 'manual', 'label' => 'manual'],
+            ['key' => 'task', 'label' => 'task'],
+        ], $source['options']);
+    }
+
     // ---- Service: per-form field variables -----------------------------------
 
     public function test_field_variables_are_typed_from_the_form_schema(): void
@@ -182,6 +209,98 @@ class WorkflowVariableCatalogTest extends TestCase
         $this->assertArrayNotHasKey('trigger.fields.items.item_name', $byPath);
     }
 
+    // ---- Service: structured type descriptors (phase-1a, additive) -----------
+
+    public function test_field_variables_carry_a_structured_type_descriptor(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $catalog = app(WorkflowVariableCatalogService::class)->formFieldVariables($this->richForm($owner));
+        $byPath = $this->fieldsByPath($catalog);
+
+        // Scalars → { base:<self>, nullable:false, array:false }.
+        $this->assertSame(['base' => 'text', 'nullable' => false, 'array' => false], $byPath['trigger.fields.full_name']['descriptor']);
+        $this->assertSame(['base' => 'number', 'nullable' => false, 'array' => false], $byPath['trigger.fields.age']['descriptor']);
+        $this->assertSame(['base' => 'boolean', 'nullable' => false, 'array' => false], $byPath['trigger.fields.agree']['descriptor']);
+        $this->assertSame(['base' => 'date', 'nullable' => false, 'array' => false], $byPath['trigger.fields.due']['descriptor']);
+        $this->assertSame(['base' => 'text', 'nullable' => false, 'array' => false], $byPath['trigger.fields.link']['descriptor']);
+        $this->assertSame(['base' => 'file', 'nullable' => false, 'array' => false], $byPath['trigger.fields.attachment']['descriptor']);
+
+        // A TIME field gets its OWN base in the descriptor (the flat `type` still degrades to text —
+        // asserted in the back-compat test below).
+        $this->assertSame(['base' => 'time', 'nullable' => false, 'array' => false], $byPath['trigger.fields.start_time']['descriptor']);
+    }
+
+    public function test_single_select_descriptor_carries_enum_options_with_real_labels(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $catalog = app(WorkflowVariableCatalogService::class)->formFieldVariables($this->richForm($owner));
+        $byPath = $this->fieldsByPath($catalog);
+
+        $descriptor = $byPath['trigger.fields.category']['descriptor'];
+
+        $this->assertSame('enum', $descriptor['base']);
+        $this->assertFalse($descriptor['array']);
+        // Options carry {key,label} with the REAL labels from the element config (NOT the schema enum).
+        $this->assertSame([
+            ['key' => 'blog', 'label' => 'Blog'],
+            ['key' => 'news', 'label' => 'News'],
+        ], $descriptor['options']);
+        // The label is genuinely NOT the value — proving the label came from the config, not the schema.
+        $this->assertNotSame($descriptor['options'][0]['key'], $descriptor['options'][0]['label']);
+    }
+
+    public function test_multi_select_and_checklist_descriptors_are_arrays_of_enum(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $catalog = app(WorkflowVariableCatalogService::class)->formFieldVariables($this->richForm($owner));
+        $byPath = $this->fieldsByPath($catalog);
+
+        // SELECT-multiple → { base:'enum', array:true, options:[{key,label}] } with real labels.
+        $channels = $byPath['trigger.fields.channels']['descriptor'];
+        $this->assertSame('enum', $channels['base']);
+        $this->assertTrue($channels['array']);
+        $this->assertSame([
+            ['key' => 'fb', 'label' => 'Facebook'],
+            ['key' => 'ig', 'label' => 'Instagram'],
+        ], $channels['options']);
+
+        // CHECKLIST → same shape; with no config labels the label falls back to the value.
+        $todos = $byPath['trigger.fields.todos']['descriptor'];
+        $this->assertSame('enum', $todos['base']);
+        $this->assertTrue($todos['array']);
+        $this->assertSame([
+            ['key' => 'a', 'label' => 'a'],
+            ['key' => 'b', 'label' => 'b'],
+        ], $todos['options']);
+    }
+
+    public function test_descriptor_is_additive_and_leaves_the_legacy_type_and_enum_options_untouched(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $catalog = app(WorkflowVariableCatalogService::class)->formFieldVariables($this->richForm($owner));
+        $byPath = $this->fieldsByPath($catalog);
+
+        // BACK-COMPAT: a TIME field's flat `type` still degrades to text (runtime + FE untouched);
+        // only its descriptor knows it is `time`.
+        $this->assertSame(WorkflowVariableType::TEXT->value, $byPath['trigger.fields.start_time']['type']);
+        $this->assertSame('time', $byPath['trigger.fields.start_time']['descriptor']['base']);
+
+        // BACK-COMPAT: the enum/multi flat `type` + `enumOptions` (value-only) keys are unchanged,
+        // even though the config now also carries human labels (which flow only into the descriptor).
+        $this->assertSame(WorkflowVariableType::ENUM->value, $byPath['trigger.fields.category']['type']);
+        $this->assertSame(['blog', 'news'], $byPath['trigger.fields.category']['enumOptions']);
+        $this->assertSame(WorkflowVariableType::MULTI->value, $byPath['trigger.fields.channels']['type']);
+        $this->assertSame(['fb', 'ig'], $byPath['trigger.fields.channels']['enumOptions']);
+    }
+
     // ---- Service: step outputs -----------------------------------------------
 
     public function test_step_output_variables(): void
@@ -193,6 +312,8 @@ class WorkflowVariableCatalogTest extends TestCase
         $this->assertArrayHasKey('steps.create_task.title', $byPath);
         $this->assertSame('steps', $byPath['steps.create_task.task_id']['source']);
         $this->assertSame(WorkflowVariableType::TEXT->value, $byPath['steps.create_task.task_id']['type']);
+        // Step-output vars carry a scalar descriptor alongside the flat type (additive).
+        $this->assertSame(['base' => 'text', 'nullable' => false, 'array' => false], $byPath['steps.create_task.task_id']['descriptor']);
 
         // The catalog picks up a new step type's outputs automatically from its static
         // descriptors — create_form_report's report_id/report_name are referenceable with no
@@ -243,7 +364,8 @@ class WorkflowVariableCatalogTest extends TestCase
             ->assertJsonStructure([
                 'data' => [
                     'variables' => [
-                        '*' => ['source', 'path', 'name', 'type'],
+                        // The additive `descriptor` survives serialization (only field_id is stripped).
+                        '*' => ['source', 'path', 'name', 'type', 'descriptor' => ['base', 'nullable', 'array']],
                     ],
                     'fields' => [
                         '*' => ['path', 'field_id', 'label', 'type', 'operators'],
@@ -294,9 +416,9 @@ class WorkflowVariableCatalogTest extends TestCase
                 ],
             ]);
 
-        // All 72 label-less operation descriptors are present (the FE resolves labels via i18n).
+        // All 77 label-less operation descriptors are present (the FE resolves labels via i18n).
         $operations = collect($response->json('data.operations'));
-        $this->assertCount(72, $operations);
+        $this->assertCount(77, $operations);
 
         // The file ops: two boolean terminals (so a file field is usable in a condition at all)
         // plus two converters that hand the value to the text/number vocabulary. All nullary.
@@ -337,6 +459,22 @@ class WorkflowVariableCatalogTest extends TestCase
             [['id' => 'value', 'type' => 'number']],
             $operations->firstWhere('id', 'num_gt')['args'],
         );
+
+        // Phase-1b append-only ops: coalesce (fallback literal), the nullary presence predicates, and
+        // date_format (safe-token pattern literal). NOMINAL input/output the FE/validator advertise.
+        $coalesce = $operations->firstWhere('id', 'coalesce');
+        $this->assertSame([['id' => 'fallback', 'type' => 'text']], $coalesce['args']);
+
+        $isPresent = $operations->firstWhere('id', 'is_present');
+        $this->assertSame('boolean', $isPresent['output']);
+        $this->assertSame([], $isPresent['args']);
+
+        $this->assertSame([], $operations->firstWhere('id', 'assert_present')['args']);
+
+        $dateFormat = $operations->firstWhere('id', 'date_format');
+        $this->assertSame('date', $dateFormat['input']);
+        $this->assertSame('text', $dateFormat['output']);
+        $this->assertSame([['id' => 'pattern', 'type' => 'text']], $dateFormat['args']);
     }
 
     public function test_non_member_of_the_active_workspace_is_forbidden(): void
@@ -431,6 +569,13 @@ class WorkflowVariableCatalogTest extends TestCase
         $this->assertSame('text', $byId['date']['primitive']);
         // The operator set mirrors WorkflowVariableType::operators().
         $this->assertSame(WorkflowVariableType::ENUM->operators(), $byId['enum']['operators']);
+
+        // TIME (appended in phase-1a) joins the vocabulary with a text editor primitive and — this
+        // slice — NO operators: it is representable (in the descriptor) but not yet conditionable at
+        // run time (a stored time condition would hit the evaluator's exhaustive match).
+        $this->assertArrayHasKey('time', $byId);
+        $this->assertSame('text', $byId['time']['primitive']);
+        $this->assertSame([], $byId['time']['operators']);
     }
 
     // ---- Form-independent catalog: endpoint (GET /workflows/catalog) ----------

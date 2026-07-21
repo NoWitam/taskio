@@ -25,16 +25,16 @@ describe('standardOperationsCatalog', () => {
 
   const catalog = () => standardOperationsCatalog();
 
-  it('has 72 ops with UNIQUE, stable ids', () => {
+  it('has 77 ops with UNIQUE, stable ids', () => {
     const ids = catalog().map((op) => op.id);
-    expect(ids.length).toBe(72);
+    expect(ids.length).toBe(77);
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  // FE↔BE guard: the EXACT set of 72 ids. The backend condition engine pins the SAME
-  // set on its side (WorkflowConditionOperationCatalog) — a drift on either side fails
-  // here first. Compared sorted so ordering never matters, only the membership.
-  it('pins the EXACT 72-id set the backend mirrors', () => {
+  // FE↔BE guard: the EXACT set of 77 ids. The backend condition engine pins the SAME
+  // set on its side (WorkflowOperation) — a drift on either side fails here first.
+  // Compared sorted so ordering never matters, only the membership.
+  it('pins the EXACT 77-id set the backend mirrors', () => {
     const EXPECTED = [
       // text (17) — incl. the choice-producing match_to_choice
       'text_uppercase', 'text_lowercase', 'text_trim', 'text_substring', 'text_replace',
@@ -58,8 +58,10 @@ describe('standardOperationsCatalog', () => {
       'multi_count', 'multi_is_empty', 'multi_to_text',
       // file (4) — two boolean terminals + two converters into the text/number vocab
       'file_is_empty', 'file_is_not_empty', 'file_count', 'file_name',
+      // generic / null-handling (5, phase-1b) — presence helpers + a safe date formatter
+      'coalesce', 'is_present', 'is_null', 'assert_present', 'date_format',
     ];
-    expect(EXPECTED.length).toBe(72);
+    expect(EXPECTED.length).toBe(77);
     const ids = catalog().map((op) => op.id);
     expect([...ids].sort()).toEqual([...EXPECTED].sort());
   });

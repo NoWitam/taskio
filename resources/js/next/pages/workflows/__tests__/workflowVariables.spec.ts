@@ -9,12 +9,14 @@ import {
   isIdVariable,
   positionScopedStepOutputs,
   resolveVariable,
+  resolveVariableDescriptor,
   resolveVariableType,
   stripVariableDirectives,
   toEditorVariables,
   toEditorVariablesTyped,
   triggerSystemVariables,
   variableIcon,
+  variableOptionList,
   variablesOfType,
   type StepLike,
 } from '../workflowVariables';
@@ -353,6 +355,121 @@ describe('stripVariableDirectives — the read-side echo (§3.2)', () => {
   it('strips multiple directives in one string', () => {
     const md = `${variableDirective({ id: 'trigger.submission.id', name: 'a' })} / ${variableDirective({ id: 'trigger.fields.age', name: 'b' })}`;
     expect(stripVariableDirectives(md, CATALOG, STEPS)).toBe('Submission ID / Age');
+  });
+});
+
+describe('descriptor-based enum labels (phase-1a)', () => {
+  // A catalog whose enum/multi vars ALSO carry the structured descriptor with REAL human
+  // labels (DISTINCT from the wire keys). Older fixtures omit the descriptor → the code
+  // falls back to `enumOptions` (label = value).
+  const DESCRIPTOR_CATALOG: WorkflowCatalog = {
+    variables: [
+      {
+        source: 'trigger',
+        path: 'trigger.fields.status',
+        name: 'Status',
+        type: 'enum',
+        enumOptions: ['open', 'done'],
+        descriptor: {
+          base: 'enum',
+          nullable: false,
+          array: false,
+          options: [
+            { key: 'open', label: 'Open ticket' },
+            { key: 'done', label: 'Resolved' },
+          ],
+        },
+      },
+      {
+        source: 'trigger',
+        path: 'trigger.fields.tags',
+        name: 'Tags',
+        type: 'multi',
+        enumOptions: ['a', 'b'],
+        descriptor: {
+          base: 'enum',
+          nullable: false,
+          array: true,
+          options: [
+            { key: 'a', label: 'Alpha' },
+            { key: 'b', label: 'Beta' },
+          ],
+        },
+      },
+      // No descriptor → falls back to enumOptions (label = value).
+      { source: 'trigger', path: 'trigger.source', name: 'Source', type: 'enum', enumOptions: ['manual', 'task'] },
+    ],
+    fields: [],
+  };
+
+  it('variableOptionList prefers descriptor {key,label} — human label, key stays the wire value', () => {
+    expect(variableOptionList(DESCRIPTOR_CATALOG.variables[0])).toEqual([
+      { label: 'Open ticket', value: 'open' },
+      { label: 'Resolved', value: 'done' },
+    ]);
+  });
+
+  it('variableOptionList falls back to enumOptions (label = value) when no descriptor', () => {
+    expect(variableOptionList(DESCRIPTOR_CATALOG.variables[2])).toEqual([
+      { label: 'manual', value: 'manual' },
+      { label: 'task', value: 'task' },
+    ]);
+  });
+
+  it('variableOptionList returns undefined for a non-choice variable', () => {
+    expect(
+      variableOptionList({ source: 'trigger', path: 'trigger.fields.age', name: 'Age', type: 'number' }),
+    ).toBeUndefined();
+  });
+
+  it('toEditorVariablesTyped surfaces the HUMAN labels (≠ their values) from the descriptor', () => {
+    const vars = toEditorVariablesTyped(DESCRIPTOR_CATALOG, [], 0);
+    expect(vars.find((v) => v.id === 'trigger.fields.status')?.options).toEqual([
+      { label: 'Open ticket', value: 'open' },
+      { label: 'Resolved', value: 'done' },
+    ]);
+    expect(vars.find((v) => v.id === 'trigger.fields.tags')?.options).toEqual([
+      { label: 'Alpha', value: 'a' },
+      { label: 'Beta', value: 'b' },
+    ]);
+    // The descriptor-less var still carries label = value (fallback preserved).
+    expect(vars.find((v) => v.id === 'trigger.source')?.options).toEqual([
+      { label: 'manual', value: 'manual' },
+      { label: 'task', value: 'task' },
+    ]);
+  });
+
+  it('resolveVariableDescriptor recovers the descriptor by path (null when absent / unknown)', () => {
+    expect(resolveVariableDescriptor('trigger.fields.status', DESCRIPTOR_CATALOG, [])).toMatchObject({
+      base: 'enum',
+      array: false,
+      options: [
+        { key: 'open', label: 'Open ticket' },
+        { key: 'done', label: 'Resolved' },
+      ],
+    });
+    // A var carrying no descriptor → null.
+    expect(resolveVariableDescriptor('trigger.source', DESCRIPTOR_CATALOG, [])).toBeNull();
+    // Unknown path → null.
+    expect(resolveVariableDescriptor('trigger.ghost', DESCRIPTOR_CATALOG, [])).toBeNull();
+  });
+
+  it('a `time` descriptor base rides on a flat text type (descriptor-only; primitive intact)', () => {
+    const timeCatalog: WorkflowCatalog = {
+      variables: [
+        {
+          source: 'trigger',
+          path: 'trigger.fields.slot',
+          name: 'Slot',
+          type: 'text', // the flat wire type degrades time → text
+          descriptor: { base: 'time', nullable: false, array: false },
+        },
+      ],
+      fields: [],
+    };
+    expect(resolveVariableDescriptor('trigger.fields.slot', timeCatalog, [])?.base).toBe('time');
+    // resolveVariableType is UNCHANGED — still the flat text type.
+    expect(resolveVariableType('trigger.fields.slot', timeCatalog, [])).toBe('text');
   });
 });
 

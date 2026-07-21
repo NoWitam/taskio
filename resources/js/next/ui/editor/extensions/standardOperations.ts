@@ -50,7 +50,7 @@ function D(id: string, fallback: string): string {
 }
 
 /**
- * Build the full standard catalog (66 ops). Call inside a computed — labels follow
+ * Build the full standard catalog (77 ops). Call inside a computed — labels follow
  * the active locale.
  */
 export function standardOperationsCatalog(): VariableOperationDefinition[] {
@@ -446,5 +446,56 @@ export function standardOperationsCatalog(): VariableOperationDefinition[] {
     { id: 'file_is_not_empty', label: L('file_is_not_empty', 'Is not empty'), inputTypes: ['file'], outputType: 'boolean' },
     { id: 'file_count', label: L('file_count', 'Count'), inputTypes: ['file'], outputType: 'number' },
     { id: 'file_name', label: L('file_name', 'File name'), inputTypes: ['file'], outputType: 'text' },
+
+    // ── GENERIC / NULL-HANDLING (append-only, phase-1b) ───────────────────────
+    // Presence helpers + a safe date formatter. inputTypes/outputType MIRROR the backend's
+    // NOMINAL declaration (the executor special-cases the presence family before the type
+    // gate at runtime); the FE only owns the labels here.
+    {
+      id: 'coalesce',
+      label: L('coalesce', 'Fallback when empty'),
+      description: D('coalesce', 'Uses the fallback text when the value is empty; otherwise keeps the value.'),
+      inputTypes: ['text'],
+      outputType: 'text',
+      args: [{ id: 'fallback', label: A('coalesceFallback', 'Fallback value'), type: 'text' }],
+    },
+    {
+      id: 'is_present',
+      label: L('is_present', 'Has a value'),
+      description: D('is_present', 'True when the value is filled (not empty).'),
+      inputTypes: ['text'],
+      outputType: 'boolean',
+    },
+    {
+      id: 'is_null',
+      label: L('is_null', 'Has no value'),
+      description: D('is_null', 'True when the value is missing or empty.'),
+      inputTypes: ['text'],
+      outputType: 'boolean',
+    },
+    {
+      id: 'assert_present',
+      label: L('assert_present', 'Require a value'),
+      description: D('assert_present', 'Keeps the value, but fails the run when it is empty.'),
+      inputTypes: ['text'],
+      outputType: 'text',
+    },
+    {
+      id: 'date_format',
+      label: L('date_format', 'Format date'),
+      description: D('date_format', 'Renders the date as text using a format pattern.'),
+      inputTypes: ['date'],
+      outputType: 'text',
+      args: [
+        {
+          id: 'pattern',
+          label: A('pattern', 'Format pattern'),
+          type: 'text',
+          placeholder: 'YYYY-MM-DD',
+          // Document the safe tokens the backend accepts (a token-picker is a later nicety).
+          hint: A('patternHint', 'Safe tokens: YYYY MMMM MMM MM DD HH mm D'),
+        },
+      ],
+    },
   ];
 }

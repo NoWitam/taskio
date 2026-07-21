@@ -49,6 +49,8 @@ const { t } = useI18n();
 const name = ref('');
 const locked = ref(false);
 const pipeline = ref<VariablePipelineStep[]>([]);
+/** Optional per-reference default (phase-1b): the literal used when the value is empty. */
+const defaultValue = ref('');
 
 // The source definition (by id) gives the authoritative base type + name; fall
 // back to the node's own attrs when the variable isn't in the predefined list.
@@ -67,6 +69,7 @@ watch(
     name.value = props.state.name ?? '';
     locked.value = props.state.locked ?? false;
     pipeline.value = (props.state.pipeline ?? []).map((s) => ({ ...s, args: { ...s.args } }));
+    defaultValue.value = props.state.default ?? '';
   },
   { immediate: true },
 );
@@ -87,6 +90,8 @@ function save(): void {
     locked: locked.value,
     pipeline: pipeline.value,
     resultType: resultType.value,
+    // Emit-or-OMIT: an empty default is stored as null so the directive omits it.
+    default: defaultValue.value === '' ? null : defaultValue.value,
   });
   open.value = false;
 }
@@ -125,6 +130,13 @@ function save(): void {
           <Icon :name="getVariableIconName(baseType)" />
           <span class="sr-only">{{ getVariableIconLabel(baseType) }}</span>
         </span>
+      </div>
+
+      <!-- Default when empty (phase-1b): the literal substituted when the variable
+           resolves empty at run time. Optional — leave blank to omit it. -->
+      <div class="flex flex-col gap-next-1_5">
+        <label class="text-next-sm font-next-medium text-next-fg" for="next-var-default">{{ t('editor.variable.defaultLabel', 'Default when empty') }}</label>
+        <TextInput id="next-var-default" v-model="defaultValue" :placeholder="t('editor.variable.defaultPlaceholder', 'Value to use when empty')" />
       </div>
 
       <!-- Pipeline (the source definition's options feed enum/multi comparison args) -->

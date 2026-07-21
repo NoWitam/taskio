@@ -1679,6 +1679,8 @@ export const en = {
       lockName: 'Lock name',
       unlockName: 'Unlock name',
       sourceVariable: 'Source variable',
+      defaultLabel: 'Default when empty',
+      defaultPlaceholder: 'Value to use when empty',
       save: 'Save',
       cancel: 'Cancel',
       remove: 'Delete',
@@ -1790,6 +1792,11 @@ export const en = {
       multi_count: 'Count',
       multi_is_empty: 'Is empty',
       multi_to_text: 'To text (joined)',
+      coalesce: 'Fallback when empty',
+      is_present: 'Has a value',
+      is_null: 'Has no value',
+      assert_present: 'Require a value',
+      date_format: 'Format date',
     },
     // Shared argument labels for the standard operations.
     opsArgs: {
@@ -1812,6 +1819,9 @@ export const en = {
       choiceMapping: 'Choice per option',
       rules: 'Rules',
       fallback: 'Fallback choice',
+      coalesceFallback: 'Fallback value',
+      pattern: 'Format pattern',
+      patternHint: 'Safe tokens: YYYY MMMM MMM MM DD HH mm D',
     },
     // Optional descriptions shown under an op's label in the add-operation menu.
     opsDesc: {
@@ -1824,6 +1834,11 @@ export const en = {
       enum_to_date: 'Maps EACH option to the date you pick for it; an unmapped option fails.',
       enum_to_choice: 'Maps EACH option to a destination choice; an unmapped option fails.',
       match_to_choice: 'Maps the text to a destination choice by rules; a fallback covers the rest.',
+      coalesce: 'Uses the fallback text when the value is empty; otherwise keeps the value.',
+      is_present: 'True when the value is filled (not empty).',
+      is_null: 'True when the value is missing or empty.',
+      assert_present: 'Keeps the value, but fails the run when it is empty.',
+      date_format: 'Renders the date as text using a format pattern.',
     },
     ifBlock: {
       title: 'Conditional block',
@@ -3037,6 +3052,8 @@ export const en = {
       actionRequired: 'Action required',
       typeError: 'This variable does not match the field yet — add operations so it returns {expected}.',
       needsChoice: 'map it to one of this field’s choices',
+      defaultLabel: 'Default when empty',
+      defaultPlaceholder: 'Value to use when empty',
     },
     runs: {
       refresh: 'Refresh',

@@ -223,11 +223,14 @@ export interface WorkflowFieldPipelineStep {
  * A structured field that is EITHER a literal OR a variable reference (§4.9). Bare
  * scalars are also accepted as literals by the backend; this is the canonical
  * emitted union. The variable arm may carry an OPTIONAL operations `pipeline` that
- * reshapes the referenced value at run time (omitted for a plain identity ref).
+ * reshapes the referenced value at run time (omitted for a plain identity ref) AND an
+ * OPTIONAL literal `default` (phase-1b): the value the backend substitutes when the
+ * referenced value resolves null/'' . Emit-or-OMIT — a ref with no default serializes
+ * byte-identically to today (the key is absent).
  */
 export type WorkflowFieldValue<T = unknown> =
   | { kind: 'literal'; value: T }
-  | { kind: 'variable'; ref: WorkflowVariableRef; pipeline?: WorkflowFieldPipelineStep[] };
+  | { kind: 'variable'; ref: WorkflowVariableRef; pipeline?: WorkflowFieldPipelineStep[]; default?: T };
 
 // --- trigger_config (per-type wire shapes, §4.4) ---------------------------
 
@@ -467,14 +470,46 @@ export interface ScheduleAssistResponse {
 // (or any form-less) workflow gets a REAL catalog instead of falling back to a mirror.
 
 /**
+ * One structured-descriptor option: the human `label` for a stored option `key`. The
+ * `key` is the UNCHANGED wire value (⊆ the flat `enumOptions`); the `label` is the real
+ * human label the JSON schema drops (it lives in the form element config). Mirrors the
+ * backend descriptor's `{key,label}`.
+ */
+export interface CatalogDescriptorOption {
+  key: string;
+  label: string;
+}
+
+/**
+ * The ADDITIVE structured type descriptor a catalog variable now ALSO carries (phase-1a)
+ * alongside the unchanged flat `type`. Mirrors `WorkflowVariableType::descriptor`:
+ *   - `base`     the REAL scalar base — incl. `time` (whose flat `type` still degrades to
+ *                `text`) and `enum` (a MULTI is `base:'enum'` + `array:true`).
+ *   - `nullable` the path is only sometimes present.
+ *   - `array`    true for a multi (an array of the enum base).
+ *   - `options`  present ONLY for an enum base (enum/multi); carries the REAL `{key,label}`
+ *                human labels. The FE shows the `label`, stores/emits the `key`.
+ * Optional on `CatalogVariable` so older / label-less responses (and existing fixtures)
+ * that omit it still parse — consumers fall back to `enumOptions` (values) for choices.
+ */
+export interface CatalogVariableDescriptor {
+  base: 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'time' | 'file';
+  nullable: boolean;
+  array: boolean;
+  options?: CatalogDescriptorOption[];
+}
+
+/**
  * One reference-able variable (mirrors WorkflowVariableCatalogService::variable):
- * `{source, path, name, type, enumOptions?, nullable?}`.
+ * `{source, path, name, type, descriptor?, enumOptions?, nullable?}`. `descriptor` is the
+ * ADDITIVE structured type (phase-1a) — the source of an enum's human option LABELS.
  */
 export interface CatalogVariable {
   source: 'trigger' | 'steps';
   path: string;
   name: string;
   type: WorkflowVariableType;
+  descriptor?: CatalogVariableDescriptor;
   enumOptions?: string[];
   nullable?: boolean;
 }
@@ -521,7 +556,7 @@ export interface CatalogOperationArg {
 
 /**
  * One operation DESCRIPTOR from the catalog (B2 added `operations[]`): the id + its
- * single `input` type, `output` type and `args`. These 66 ids are the authoritative
+ * single `input` type, `output` type and `args`. These 77 ids are the authoritative
  * SET the backend condition engine implements; the FE attaches human labels by id
  * from `standardOperationsCatalog()` (a descriptor without a known label falls back
  * to its id). NO labels ship on the wire.

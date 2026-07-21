@@ -105,6 +105,25 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > change" recipe this groundwork sets up for the rest of the rework (global variables, a loop item,
 > a template slot, campaign inputs), and "GET /api/workflows/catalog" / the `types` key below for
 > the wire contract.
+>
+> **Structured `descriptor`, a `TIME` type, per-reference `default`s, and 5 append-only ops (this
+> revision, Phase 1 of the variable-typesystem rework) — ADDITIVE, no breaking change.** Every
+> catalog variable now ALSO carries a structured `descriptor` (`{ base, nullable, array, options?
+> }`) alongside the unchanged flat `type` — enum/multi options carry real `{key,label}` pairs (the
+> label lives in the form element's config, not the JSON schema) instead of a bare value list. A
+> new `WorkflowVariableType::TIME` case joins the vocabulary (the form builder's TIME element,
+> previously silently folded into `text`) — it is descriptor-only THIS phase: the flat wire `type`
+> still degrades it to `text` and it carries no condition operators (`operatorCases()` is `[]`), a
+> deliberate loud tripwire rather than a silent `UnhandledMatchError` once real TIME semantics
+> land. Both wire serializations of a reference (the markdown directive's `data.default`, the
+> `{kind:'variable'}` union's `default`) gained an OPTIONAL literal `default`, substituted for a
+> null/`''` lookup BEFORE the pipeline runs, through the SAME NUL-mask injection-guard path a
+> resolved value already uses. The operation catalog grows **72 → 77**, append-only: `coalesce`,
+> `is_present`, `is_null`, `assert_present` (the type-agnostic presence family — the ONE opt-in
+> HARD failure in the pipeline engine), and `date_format` (a safe-token date renderer, never a raw
+> PHP format string). See **ADR-0022-workflows-variable-typesystem-phase1.md** for the full design
+> record and "Structured `descriptor`", "Per-reference defaults", and "Presence, null-handling,
+> and date-format ops" below for the wire contracts.
 
 ---
 
@@ -1270,6 +1289,98 @@ pass has already run. This mirrors the same masking `@[ai-text]`'s generated out
 (see "Runtime operations, if-blocks, and AI text" → §c above) — applied here to every directive's
 looked-up value, not just AI-generated text.
 
+### Structured `descriptor` (phase-1a, additive)
+
+Every `variable` entry in BOTH catalog responses (`GET /forms/{form}/workflow-catalog`,
+`GET /workflows/catalog`) now ALSO carries `descriptor: { base, nullable, array, options? }`
+(`WorkflowVariableCatalogService::variable()`, built by `WorkflowVariableType::descriptor()`) —
+alongside the UNCHANGED flat `type`/`enumOptions?`/`nullable?` keys. Nothing about the flat shape
+changed; `descriptor` is a second, richer view of the same variable:
+
+| Key | Meaning |
+|---|---|
+| `base` | The type's own scalar base — EXCEPT `multi`, whose base is `enum` (a multi is "an array of enum"); every other type (`time` included) is its own base. |
+| `array` | `true` only for a `multi` variable. |
+| `nullable` | Mirrors the variable's own `nullable` flag. |
+| `options` | Present ONLY when `base === 'enum'` (an `enum` or `multi` variable): a list of `{ key, label }`. `key` is the SAME string the flat `enumOptions` already carries (the wire value stored/matched at runtime — unchanged); `label` is the human-readable option label. |
+
+For a FORM field (a `select`/`checklist` element), `label` is read from the element's
+`config.options` — the only place it survives, since `FormElementType::toJsonSchema` emits option
+VALUES only into the JSON schema `enum`. When the element config carries no label for an option,
+the label falls back to the option's own value. A system/step enum variable (e.g.
+`trigger.source`) has no element config to read, so every option's label equals its key.
+
+```json
+{ "source": "trigger", "path": "trigger.fields.category", "name": "Category", "type": "enum",
+  "enumOptions": ["blog", "news"],
+  "descriptor": { "base": "enum", "nullable": false, "array": false,
+    "options": [{ "key": "blog", "label": "Blog" }, { "key": "news", "label": "News" }] } }
+
+{ "source": "trigger", "path": "trigger.fields.channels", "name": "Channels", "type": "multi",
+  "enumOptions": ["fb", "ig"],
+  "descriptor": { "base": "enum", "nullable": false, "array": true,
+    "options": [{ "key": "fb", "label": "Facebook" }, { "key": "ig", "label": "Instagram" }] } }
+```
+
+A `time` field (the form builder's TIME element, `format:'time'`) keeps its flat `type` degraded
+to `text` (unchanged runtime/FE behavior — see "Runtime operations" below), but its
+`descriptor.base` is the real `time`:
+
+```json
+{ "source": "trigger", "path": "trigger.fields.start_time", "name": "Start time", "type": "text",
+  "descriptor": { "base": "time", "nullable": false, "array": false } }
+```
+
+**Frontend consumption**: `CatalogVariable.descriptor` is OPTIONAL on the TypeScript side (a
+label-less/older fixture without it still parses). `variableOptionList()`
+(`resources/js/next/pages/workflows/workflowVariables.ts`) prefers `descriptor.options`
+(rendering the human `label`, emitting the `key` as the stored/compared value) and falls back to
+the flat `enumOptions` (label = value) only when no descriptor is present — the single place the
+editor turns a variable's choices into human labels, so the variable picker, pipeline
+`sourceOption`/`sourceMap` args, and the choice-mapping UI (ADR-0014) all agree.
+
+### Per-reference `default`s (phase-1b, additive)
+
+Both wire serializations of a variable reference gained an OPTIONAL literal `default`:
+
+- The markdown directive: a `data.default` scalar, alongside `data.id`/`data.pipeline`/etc.
+- The `{kind:'variable'}` union: a sibling `default` key next to `ref`/`pipeline`.
+
+`WorkflowVariableResolver::applyDefault()` substitutes it when the looked-up value is `null` or
+`''` (empty string) — for an identity-only reference exactly as for a piped one. The default is
+substituted BEFORE any pipeline runs, so it can itself be transformed/formatted like a real value
+(e.g. a missing date reference can default to an ISO string a downstream `date_format` op then
+renders). When the reference already resolves to a real value, the default is never consulted.
+
+```
+@[variable]("{\"v\":1,\"data\":{\"id\":\"trigger.fields.due_date\",\"name\":\"Due date\",\"type\":\"text\",\"locked\":false,\"pipeline\":[],\"resultType\":\"text\",\"default\":\"2026-01-09\"}}")
+```
+
+```json
+{ "kind": "variable", "ref": { "source": "trigger", "path": "trigger.fields.due_date", "type": "date" }, "default": "2026-01-09" }
+```
+
+**Injection-guard invariant (stated explicitly — a security property, not an implementation
+detail).** A substituted default enters the resolved-value stream at EXACTLY the point a real
+context value would, so it flows through the SAME NUL-delimited placeholder mask an embedded
+directive's resolved value already uses before the transitional flat `{{...}}` pass runs (see the
+"Reviewer fix" masking note above). A default literal that happens to contain `{{...}}` or
+`@[...]` bytes is therefore NEVER re-interpreted as a second-order reference — the exact same
+guarantee untrusted user-typed form content already had. A standalone directive or a
+structured-slot default is never re-scanned at all (there is no second pass over that shape).
+
+**Wire economy**: the frontend only serializes `default` when it is non-empty
+(`encodeVariableDirective`; `ValueOrVariableField.vue`'s `saveModal()`), so a reference with no
+default stays byte-identical to a pre-Phase-1 payload. The "Default when empty" affordance appears
+in both places a reference is edited once one is picked: `ValueOrVariableField.vue` (the
+structured value-or-variable field, e.g. `create_task.deadline`) and the markdown editor's
+`VariablePanel.vue` (the `@[variable]` chip's edit modal) — one low-emphasis text input each,
+empty ⇒ omitted from the wire.
+
+See **ADR-0022-workflows-variable-typesystem-phase1.md** for the full design record (why a second
+additive `descriptor` field instead of reshaping the flat one, the TIME loud-tripwire trade-off,
+and why the default is a plain literal rather than a nested reference).
+
 ---
 
 ## Runtime operations, if-blocks, and AI text (SB1 / SB2)
@@ -1426,6 +1537,13 @@ Label-less like `operations`/`ai_personas` (the FE localizes each type's display
 so a form-less catalog can still describe the full type system without a static frontend mirror —
 the same motivation `GET /workflows/catalog` itself was built for.
 
+**Phase 1 additions (append-only, no breaking change to either list).** `types` gains an 8th
+entry, `{ id: "time", primitive: "text", operators: [] }` — `WorkflowVariableType::TIME` is
+descriptor-only this phase (see "Structured `descriptor`" above), so it carries no operators yet.
+`operations` grows from 68 to **77** (72 immediately before this phase, +5 append-only —
+`coalesce`/`is_present`/`is_null`/`assert_present`/`date_format`, see "Presence, null-handling,
+and date-format ops" below).
+
 ### d. Write-time validation — runtime-only vs. validated
 
 There is NO PHP markdown parser in this codebase, so a text field's directive pipeline / if-block
@@ -1518,6 +1636,70 @@ a `422` where it previously passed. See `docs/decisions/ADR-0014-workflows-choic
 the full rationale (why a generic `enum` type + injected `targetOptions` + a `producesChoice()`
 terminal rule, instead of a new branded "choice" type in the closed
 `WorkflowVariableType`/`WorkflowOperationArgType` sets).
+
+### f. Presence, null-handling, and date-format ops (phase-1b, append-only)
+
+5 operations are appended to `WorkflowOperation` — ids are only ever appended, never reordered or
+removed (pinned by `WorkflowConditionEngineTest::test_operation_ids_are_the_pinned_wire_contract`),
+growing the catalog **72 → 77**:
+
+| Op | Input → output (nominal) | Args | Runtime semantics |
+|---|---|---|---|
+| `coalesce` | `text` → `text` | `fallback` (literal) | The running value when present, else `fallback` normalized to the running type. |
+| `is_present` | `text` → `boolean` | — | `true` when the running value is non-empty. |
+| `is_null` | `text` → `boolean` | — | The negation of `is_present`. |
+| `assert_present` | `text` → `text` | — | The running value when present; over an EMPTY value, the ONE opt-in HARD failure (see below). |
+| `date_format` | `date` → `text` | `pattern` (literal, safe-token) | Renders the date via the safe-token pattern below. NOT a presence op. |
+
+**The first four are the PRESENCE family** (`WorkflowOperation::isPresenceOp()`). Their declared
+`input`/`output` above are the NOMINAL shape the catalog and the write-validator advertise; at
+RUN time `WorkflowOperationExecutor::execute()` dispatches them BEFORE the normal per-step
+`inputType() !== currentType` gate, so — unlike every other op — they accept the running value AS
+IS regardless of its declared type, including a base value that failed normalization outright (a
+genuinely absent/unrepresentable value a normal op would already have failed closed on).
+"Empty" for this family (`isEmptyValue()`) is `null`, `''`, `[]`, or an unnormalizable base —
+mirroring the existing FILLED/EMPTY condition semantics.
+
+**`date_format`'s safe-token whitelist** (`WorkflowOperationExecutor::DATE_FORMAT_TOKENS`,
+matched longest-first so `MMMM` never loses to `MM`) — a raw PHP `date()` format string is NEVER
+honored; any byte outside this table or the literal separators ` - / : . ,` fails the WHOLE
+pattern CLOSED (soft failure — `''`/coerced null downstream — never a throw):
+
+| Token | Renders |
+|---|---|
+| `YYYY` | 4-digit year |
+| `MMMM` | full month name |
+| `MMM` | short month name |
+| `MM` | 2-digit month |
+| `DD` | 2-digit day |
+| `D` | unpadded day |
+| `HH` | 2-digit hour |
+| `mm` | 2-digit minute |
+
+Example: pattern `DD/MM/YYYY` over `2026-01-09` renders `09/01/2026`; `D MMMM YYYY` renders
+`9 January 2026` (`WorkflowOperationExecutorTest`).
+
+**`assert_present` is the ONE opt-in HARD failure in the pipeline engine.** `OperationResult`
+gained a `bool $hard` flag + a `hardFailure()` factory. Over an empty value, `assert_present`
+returns `OperationResult::hardFailure()` — still a `failed` result, so a CONDITION caller (which
+only ever reads `$result->failed`) is unaffected and stays fail-closed to `false` exactly as
+before. A VALUE-producing caller (`WorkflowVariableResolver::applyDirectivePipeline()` /
+`resolveVariableUnion()`) additionally checks `$result->hard` and RE-RAISES it as a
+`RuntimeException`, which the run records as that step's failure — the run stops there, joining
+the field's existing hard-fail doctrine (e.g. a blank `create_task.title`). The executor itself
+still NEVER throws — the hard signal is a return value read by exactly one call site.
+
+**Frontend mirror**: `standardOperationsCatalog()` declares the same 5 ids with the same nominal
+input/output the backend catalog advertises (labels only — the FE does not special-case presence
+semantics, it renders the op like any other); `date_format`'s `pattern` arg carries a persistent
+`hint` (`VariablePipelineEditor.vue`) showing the safe-token legend under the field.
+
+**A known asymmetry, inert this phase (Phase 2 item)**: `WorkflowConditionTreeValidator::walkPipeline`
+— the write-time type-flow gate for a value-or-variable pipeline (`priority`/`deadline`/
+`submissions_from`/`submissions_to`) — was not changed this phase and still requires an EXACT
+`op->inputType() === currentType` match at every step, including for the 4 presence ops (nominally
+`text`), where the runtime executor above already bypasses that exact check. See "Accepted
+residual risks" below and ADR-0022 for the full reasoning.
 
 ---
 
@@ -2189,6 +2371,26 @@ These are documented, reviewed trade-offs — not a TODO list.
   documents exactly this reliance). This is an **app-wide, pre-existing condition, NOT
   introduced by the Workflows module** — a fix (reordering the middleware, or moving workspace
   resolution earlier) is queued separately as a cross-cutting concern, not scoped to this batch.
+- **A `TIME` variable is descriptor-only and not yet conditionable — a deliberate loud tripwire,
+  not an oversight (Phase 1a).** `WorkflowVariableType::TIME` has NO condition operators
+  (`operatorCases()` = `[]`) and its flat wire `type` still degrades to `text`
+  (`WorkflowVariableCatalogService::flatType()`) — the resolver, condition evaluator, and
+  operation executor all still dispatch on the ORIGINAL 7-case exhaustive `match` (no `default`
+  arm), and the FE mirrors a closed 7-member type union. Letting `time` flow onto the flat wire
+  today would trip an `UnhandledMatchError` at runtime or break the FE union; keeping it
+  descriptor-only makes the gap loud instead of a landmine for whoever wires up real TIME
+  semantics next. See ADR-0022.
+- **`WorkflowConditionTreeValidator::walkPipeline`'s type gate does not yet know about the
+  presence-op family (Phase 1b).** The write validator for a value-or-variable pipeline
+  (`priority`/`deadline`/`submissions_from`/`submissions_to`) still requires an EXACT
+  `op->inputType() === currentType` match at every step, including `coalesce`/`is_present`/
+  `is_null`/`assert_present` (nominally `text`); the RUNTIME executor already special-cases these
+  4 to accept any type (`isPresenceOp()`). Today this is INERT — no shipped field pipeline opens
+  with a presence op over a non-text ref, and a markdown directive's pipeline has no write
+  validation at all (there is no PHP markdown parser in this codebase), so it is unaffected — but
+  it means a presence op is only writable at the START of a value-or-variable pipeline when the
+  reference is itself `text`-typed. Relaxing `walkPipeline` to mirror the executor's bypass is
+  deferred to Phase 2. See ADR-0022.
 
 ---
 
@@ -2251,6 +2453,14 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `docs/decisions/ADR-0009-workflows-rescope-typed-variables.md` — the 5.1 re-scope decisions
 - `docs/decisions/ADR-0008-workflows-module-design.md` — run-engine decisions that still hold (superseded sections marked)
 - `docs/next/workflows-uxui-spec.md` — the frontend UX/UI specification (REVISION 4 — the v2 compositional builder)
+- `app/modules/Workflows/Services/WorkflowOperationExecutor.php` — the shared pipeline engine (72→77 ops; phase-1b's presence family + `date_format`)
+- `app/modules/Workflows/DTOs/OperationResult.php` — pipeline outcome, incl. the `hard` flag (phase-1b)
+- `app/modules/Workflows/Enums/WorkflowOperation.php` — the 77-op enum (`inputType`/`outputType`/`argDescriptors`/`producesChoice`/`isPresenceOp`)
+- `app/modules/Workflows/Enums/WorkflowVariableType.php` — the 8-case type enum incl. `TIME` and `descriptor()` (phase-1a)
+- `app/modules/Workflows/Services/WorkflowConditionTreeValidator.php` — the value-pipeline write validator (the `walkPipeline` presence-op asymmetry noted above)
+- `tests/Unit/Workflows/WorkflowOperationExecutorTest.php`, `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — phase-1b presence/date-format/default coverage
+- `tests/Feature/WorkflowVariableCatalogTest.php` — phase-1a `descriptor` coverage
+- `docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md` — this phase's design record
 
 ## Planned / deferred (not implemented)
 
@@ -2281,3 +2491,18 @@ These are documented, reviewed trade-offs — not a TODO list.
   approximated. `every_n_days`/`every_n_hours`/`every_n_minutes` WITH an optional time-of-day
   window ARE supported (see the TIME/DAY axis tables) — do not confuse these with the unsupported
   rolling-interval case.
+- **`TIME` real runtime semantics** (Phase 2 of the variable-typesystem rework): condition
+  operators, resolver/evaluator/executor support, and a flat wire representation beyond the
+  current `text` degrade. `WorkflowVariableType::TIME` (phase-1a) is catalog/descriptor-only
+  today — see the Accepted residual risks note above and ADR-0022.
+- **Presence-op write validation on a non-text reference** (Phase 2): `WorkflowConditionTreeValidator::walkPipeline`'s
+  exact-type gate does not yet special-case `coalesce`/`is_present`/`is_null`/`assert_present` the
+  way the runtime executor already does — see the Accepted residual risks note above and
+  ADR-0022.
+- **Defensive `normalizeInput` default arm + write-time `date_format` pattern validation** (Phase
+  2 hardening, neither reachable today): `WorkflowOperationExecutor::normalizeInput()`'s `match`
+  is still exhaustive over the original 7 `WorkflowVariableType` cases (no `default` arm), so a
+  hypothetical future call with `baseType: TIME` would throw an `UnhandledMatchError` instead of
+  failing closed (no such call exists today). `date_format`'s `pattern` arg is validated at write
+  time only as a generic string, not against the safe-token whitelist — a malformed pattern is
+  only caught at RUN time (fails soft), never a `422`. See ADR-0022.

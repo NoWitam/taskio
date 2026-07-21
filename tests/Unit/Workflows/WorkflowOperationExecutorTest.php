@@ -213,4 +213,167 @@ class WorkflowOperationExecutorTest extends TestCase
     {
         $this->assertTrue($this->executor->execute('x', WorkflowVariableType::TEXT, ['not-a-step'])->failed);
     }
+
+    // ── presence family (append-only, phase-1b) ───────────────────────────────
+
+    public function test_coalesce_returns_the_input_when_present(): void
+    {
+        $result = $this->executor->execute('hello', WorkflowVariableType::TEXT, [
+            ['op' => 'coalesce', 'args' => ['fallback' => 'fallback-text']],
+        ]);
+
+        $this->assertFalse($result->failed);
+        $this->assertSame('hello', $result->value);
+        $this->assertSame(WorkflowVariableType::TEXT, $result->type);
+    }
+
+    public function test_coalesce_returns_the_fallback_for_an_empty_string(): void
+    {
+        $result = $this->executor->execute('', WorkflowVariableType::TEXT, [
+            ['op' => 'coalesce', 'args' => ['fallback' => 'fallback-text']],
+        ]);
+
+        $this->assertSame('fallback-text', $result->value);
+        $this->assertSame(WorkflowVariableType::TEXT, $result->type);
+    }
+
+    public function test_coalesce_substitutes_the_fallback_for_a_null_base(): void
+    {
+        // A null base normally fails a TEXT pipeline closed; a LEADING coalesce instead consumes the
+        // emptiness (the deferred normalization failure) and returns the fallback.
+        $result = $this->executor->execute(null, WorkflowVariableType::TEXT, [
+            ['op' => 'coalesce', 'args' => ['fallback' => 'x']],
+        ]);
+
+        $this->assertFalse($result->failed);
+        $this->assertSame('x', $result->value);
+    }
+
+    public function test_coalesce_result_flows_into_a_downstream_op(): void
+    {
+        // The fallback is normalized to the running type, so a following text op runs on it.
+        $result = $this->executor->execute('', WorkflowVariableType::TEXT, [
+            ['op' => 'coalesce', 'args' => ['fallback' => 'hi']],
+            ['op' => 'text_uppercase'],
+        ]);
+
+        $this->assertSame('HI', $result->value);
+    }
+
+    public function test_is_present_truthiness_including_empty_and_zero_edges(): void
+    {
+        $present = fn (mixed $v, WorkflowVariableType $t) => $this->executor
+            ->execute($v, $t, [['op' => 'is_present']]);
+
+        $this->assertSame(false, $present('', WorkflowVariableType::TEXT)->value);
+        $this->assertSame(false, $present(null, WorkflowVariableType::TEXT)->value);
+        $this->assertSame(true, $present('x', WorkflowVariableType::TEXT)->value);
+        // Zero is PRESENT (not empty), as text '0' and as the number 0.
+        $this->assertSame(true, $present('0', WorkflowVariableType::TEXT)->value);
+        $this->assertSame(true, $present(0, WorkflowVariableType::NUMBER)->value);
+        $this->assertSame(WorkflowVariableType::BOOLEAN, $present('x', WorkflowVariableType::TEXT)->type);
+    }
+
+    public function test_is_null_is_the_negation_of_is_present(): void
+    {
+        $isNull = fn (mixed $v, WorkflowVariableType $t) => $this->executor
+            ->execute($v, $t, [['op' => 'is_null']]);
+
+        $this->assertSame(true, $isNull('', WorkflowVariableType::TEXT)->value);
+        $this->assertSame(true, $isNull(null, WorkflowVariableType::TEXT)->value);
+        $this->assertSame(false, $isNull('x', WorkflowVariableType::TEXT)->value);
+        $this->assertSame(WorkflowVariableType::BOOLEAN, $isNull('x', WorkflowVariableType::TEXT)->type);
+    }
+
+    public function test_presence_ops_accept_any_source_type(): void
+    {
+        // The presence ops bypass the per-step type gate — a DATE / MULTI source works without a cast.
+        $this->assertSame(true, $this->executor->execute('2026-01-09', WorkflowVariableType::DATE, [['op' => 'is_present']])->value);
+        // An empty MULTI ([]) is "empty"; a non-empty MULTI is present.
+        $this->assertSame(true, $this->executor->execute([], WorkflowVariableType::MULTI, [['op' => 'is_null']])->value);
+        $this->assertSame(true, $this->executor->execute(['a'], WorkflowVariableType::MULTI, [['op' => 'is_present']])->value);
+    }
+
+    public function test_assert_present_passes_a_present_value_through(): void
+    {
+        $result = $this->executor->execute('kept', WorkflowVariableType::TEXT, [['op' => 'assert_present']]);
+
+        $this->assertFalse($result->failed);
+        $this->assertSame('kept', $result->value);
+        $this->assertSame(WorkflowVariableType::TEXT, $result->type);
+    }
+
+    public function test_assert_present_hard_fails_on_an_empty_value(): void
+    {
+        // The one opt-in HARD failure: still a failure (so conditions stay false), flagged `hard` so a
+        // value-producing caller re-raises it. Never a thrown exception at the executor boundary.
+        $empty = $this->executor->execute('', WorkflowVariableType::TEXT, [['op' => 'assert_present']]);
+        $this->assertTrue($empty->failed);
+        $this->assertTrue($empty->hard);
+
+        $null = $this->executor->execute(null, WorkflowVariableType::TEXT, [['op' => 'assert_present']]);
+        $this->assertTrue($null->failed);
+        $this->assertTrue($null->hard);
+    }
+
+    public function test_a_normal_failure_is_not_hard(): void
+    {
+        $result = $this->executor->execute('not-a-number', WorkflowVariableType::NUMBER, []);
+
+        $this->assertTrue($result->failed);
+        $this->assertFalse($result->hard);
+    }
+
+    // ── date_format (append-only, phase-1b) ───────────────────────────────────
+
+    public function test_date_format_renders_a_date_with_a_safe_token_pattern(): void
+    {
+        $result = $this->executor->execute('2026-01-09', WorkflowVariableType::DATE, [
+            ['op' => 'date_format', 'args' => ['pattern' => 'DD/MM/YYYY']],
+        ]);
+
+        $this->assertFalse($result->failed);
+        $this->assertSame('09/01/2026', $result->value);
+        $this->assertSame(WorkflowVariableType::TEXT, $result->type);
+    }
+
+    public function test_date_format_supports_month_name_and_unpadded_day_tokens(): void
+    {
+        $result = $this->executor->execute('2026-01-09', WorkflowVariableType::DATE, [
+            ['op' => 'date_format', 'args' => ['pattern' => 'D MMMM YYYY']],
+        ]);
+
+        $this->assertSame('9 January 2026', $result->value);
+    }
+
+    public function test_date_format_time_tokens_render_zeroed_for_a_date_only_value(): void
+    {
+        // HH:mm exercises the ':' separator + zeroed wall-clock (dates parse at start-of-day).
+        $result = $this->executor->execute('2026-01-09', WorkflowVariableType::DATE, [
+            ['op' => 'date_format', 'args' => ['pattern' => 'HH:mm']],
+        ]);
+
+        $this->assertSame('00:00', $result->value);
+    }
+
+    public function test_date_format_fails_soft_on_an_unsafe_pattern(): void
+    {
+        // A raw PHP format string is NEVER honored — an off-whitelist byte fails soft (no throw).
+        $result = $this->executor->execute('2026-01-09', WorkflowVariableType::DATE, [
+            ['op' => 'date_format', 'args' => ['pattern' => 'Y-m-d h:i:s']],
+        ]);
+
+        $this->assertTrue($result->failed);
+        $this->assertFalse($result->hard);
+    }
+
+    public function test_date_format_fails_soft_on_a_non_date_base(): void
+    {
+        // A non-date base fails at normalization, before date_format runs — never a throw.
+        $result = $this->executor->execute('not-a-date', WorkflowVariableType::DATE, [
+            ['op' => 'date_format', 'args' => ['pattern' => 'YYYY']],
+        ]);
+
+        $this->assertTrue($result->failed);
+    }
 }

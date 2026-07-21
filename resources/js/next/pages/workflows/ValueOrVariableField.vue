@@ -27,11 +27,12 @@ import Modal from '../../ui/overlay/Modal.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Badge from '../../ui/primitives/Badge.vue';
 import Icon from '../../ui/primitives/Icon.vue';
+import TextInput from '../../ui/forms/TextInput.vue';
 import Tooltip from '../../ui/overlay/Tooltip.vue';
 import VariablePipelineEditor from '../../ui/editor/extensions/VariablePipelineEditor.vue';
 import { getVariableIconLabel, pipelineSatisfies, resolveType } from '../../ui/editor/extensions/operationHelpers';
 import { useI18n } from '../../app/i18n';
-import { variableIcon } from './workflowVariables';
+import { variableIcon, variableOptionList } from './workflowVariables';
 import { CONDITION_LIMITS } from './workflowConditions';
 import type {
   CatalogVariable,
@@ -201,6 +202,26 @@ function removeVariable(): void {
   model.value = { kind: 'literal', value: null };
 }
 
+// --- Per-reference DEFAULT (phase-1b) ---------------------------------------
+// An OPTIONAL literal the backend substitutes when the referenced value resolves empty
+// (null/''). Low-density: ONE small input, shown only once a variable is picked. Empty
+// here ⇒ the `default` key is OMITTED, so a ref without a default stays byte-identical.
+const defaultInputId = `vov-default-${Math.random().toString(36).slice(2, 8)}`;
+
+const defaultValue = computed<string>({
+  get: () => {
+    const current = model.value?.kind === 'variable' ? model.value.default : undefined;
+    return current == null ? '' : String(current);
+  },
+  set: (value) => {
+    if (model.value?.kind !== 'variable') return;
+    const next = { ...model.value };
+    if (value === '') delete next.default;
+    else next.default = value;
+    model.value = next;
+  },
+});
+
 // --- Pipeline base (the picked variable's TRUE type + enum options) ----------
 /** Whether an operations modal may be offered at all (needs a catalog). */
 const pipelineEnabled = computed(() => props.operationsCatalog.length > 0);
@@ -210,9 +231,13 @@ const baseType = computed<VariablePrimitive>(
   () => (pickedVariable.value?.type ?? pickedRef.value?.type ?? 'text') as VariablePrimitive,
 );
 
-/** The picked variable's enum options mapped to the source-option arg choices. */
+/**
+ * The picked variable's enum options mapped to the source-option arg choices — PREFERS
+ * the structured `descriptor.options` (human `label`, `key` stays the wire value) and
+ * falls back to the flat `enumOptions` when no descriptor is present.
+ */
 const sourceOptions = computed<VariableOption[]>(() =>
-  (pickedVariable.value?.enumOptions ?? []).map((value) => ({ label: value, value })),
+  (pickedVariable.value ? variableOptionList(pickedVariable.value) : undefined) ?? [],
 );
 
 const maxOperations = computed(() => props.maxOperations ?? CONDITION_LIMITS.maxPipelineSteps);
@@ -336,12 +361,20 @@ const modalTitle = computed(() =>
   t('workflows.field.operations', '', { name: pickedLabel.value }),
 );
 
-/** Commit the modal's pipeline onto the union (omit when empty) + close. */
+/**
+ * Commit the modal's pipeline onto the union (omit when empty) + close. PRESERVES the
+ * per-reference `default` (the ops modal never edits it) — omit-or-emit keeps a ref with
+ * no default byte-identical.
+ */
 function saveModal(): void {
   const ref = pickedRef.value;
   if (!ref || !modalTypeSatisfied.value) return;
   const wire = modalPipeline.value.map(toWireStep);
-  model.value = wire.length ? { kind: 'variable', ref, pipeline: wire } : { kind: 'variable', ref };
+  const currentDefault = model.value?.kind === 'variable' ? model.value.default : undefined;
+  const next: WorkflowFieldValue = { kind: 'variable', ref };
+  if (wire.length) next.pipeline = wire;
+  if (currentDefault !== undefined && currentDefault !== '') next.default = currentDefault;
+  model.value = next;
   modalOpen.value = false;
 }
 </script>
@@ -442,6 +475,20 @@ function saveModal(): void {
     <p v-if="pickedRef && !fieldSatisfied && !externalErrorPresent" class="next-vov__error" role="alert">
       {{ t('workflows.field.typeError', '', { expected: expectedTypesLabel }) }}
     </p>
+
+    <!-- Per-reference DEFAULT (phase-1b): the literal the backend substitutes when the
+         referenced value resolves empty (null/''). One low-density optional input, shown
+         only once a variable is picked; empty ⇒ the `default` key is omitted. -->
+    <div v-if="pickedRef" class="next-vov__default">
+      <label :for="defaultInputId" class="next-vov__default-label">{{ t('workflows.field.defaultLabel') }}</label>
+      <TextInput
+        :id="defaultInputId"
+        v-model="defaultValue"
+        size="sm"
+        :disabled="disabled"
+        :placeholder="t('workflows.field.defaultPlaceholder')"
+      />
+    </div>
 
     <!-- Operations modal: the pipeline builder + the type gate (SF3.5). Only mounted
          for a picked variable; teleports itself to <body>. -->
@@ -550,6 +597,24 @@ function saveModal(): void {
   font-size: 0.8rem;
   line-height: 1.3;
   color: var(--color-next-danger);
+}
+
+/* Per-reference default: a low-emphasis optional field under the box. The label reads
+   the intent ("Default when empty"); the input grows to fill the remaining row. */
+.next-vov__default {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.375rem;
+}
+.next-vov__default-label {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  color: var(--color-next-muted-foreground);
+}
+.next-vov__default > :last-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* Leading compact toggle: sits inside on the left, divided from the body. */

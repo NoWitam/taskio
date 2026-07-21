@@ -1646,6 +1646,8 @@ export const pl: MessageSchema = {
       lockName: 'Zablokuj nazwę',
       unlockName: 'Odblokuj nazwę',
       sourceVariable: 'Zmienna źródłowa',
+      defaultLabel: 'Wartość domyślna, gdy puste',
+      defaultPlaceholder: 'Wartość używana, gdy puste',
       save: 'Zapisz',
       cancel: 'Anuluj',
       remove: 'Usuń',
@@ -1757,6 +1759,11 @@ export const pl: MessageSchema = {
       multi_count: 'Liczba zaznaczeń',
       multi_is_empty: 'Jest puste',
       multi_to_text: 'Zamień na tekst (lista)',
+      coalesce: 'Wartość zapasowa',
+      is_present: 'Ma wartość',
+      is_null: 'Nie ma wartości',
+      assert_present: 'Wymagaj wartości',
+      date_format: 'Sformatuj datę',
     },
     // Wspólne etykiety argumentów standardowych operacji.
     opsArgs: {
@@ -1779,6 +1786,9 @@ export const pl: MessageSchema = {
       choiceMapping: 'Wybór dla każdej opcji',
       rules: 'Reguły',
       fallback: 'Wybór zapasowy',
+      coalesceFallback: 'Wartość zapasowa',
+      pattern: 'Wzór formatu',
+      patternHint: 'Bezpieczne tokeny: YYYY MMMM MMM MM DD HH mm D',
     },
     // Opcjonalne opisy pokazywane pod etykietą operacji w menu dodawania.
     opsDesc: {
@@ -1791,6 +1801,11 @@ export const pl: MessageSchema = {
       enum_to_date: 'Mapuje KAŻDĄ opcję na wybraną dla niej datę; niezmapowana opcja przerywa obliczenie.',
       enum_to_choice: 'Mapuje KAŻDĄ opcję na wybór w polu docelowym; niezmapowana opcja przerywa obliczenie.',
       match_to_choice: 'Mapuje tekst na wybór w polu docelowym według reguł; resztę pokrywa wartość zapasowa.',
+      coalesce: 'Używa wartości zapasowej, gdy wartość jest pusta; w przeciwnym razie zachowuje wartość.',
+      is_present: 'Prawda, gdy wartość jest wypełniona (nie jest pusta).',
+      is_null: 'Prawda, gdy wartość jest pusta lub jej brak.',
+      assert_present: 'Zachowuje wartość, ale przerywa uruchomienie, gdy jest pusta.',
+      date_format: 'Renderuje datę jako tekst według wzoru formatu.',
     },
     ifBlock: {
       title: 'Blok warunkowy',
@@ -3004,6 +3019,8 @@ export const pl: MessageSchema = {
       actionRequired: 'Wymaga uwagi',
       typeError: 'Ta zmienna nie pasuje jeszcze do pola — dodaj operacje, aby zwracała {expected}.',
       needsChoice: 'zmapuj ją na jedną z wartości tego pola',
+      defaultLabel: 'Wartość domyślna, gdy puste',
+      defaultPlaceholder: 'Wartość używana, gdy puste',
     },
     runs: {
       refresh: 'Odśwież',

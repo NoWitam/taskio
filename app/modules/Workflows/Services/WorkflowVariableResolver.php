@@ -8,6 +8,7 @@ use App\Modules\Workflows\Enums\WorkflowVariableType;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -41,9 +42,17 @@ use Throwable;
  *      `data.type` is a degraded editor primitive); with no map entry the pipeline's first op's
  *      input type is trusted (the editor authored the pipeline against the real type).
  *   2. NON-TEXT (structured) fields carry the UNION handled by resolveValueOrVariable():
- *        { kind: 'literal', value } | { kind: 'variable', ref: {source,path,type}, pipeline?: [{op,args}] }
+ *        { kind: 'literal', value } | { kind: 'variable', ref: {source,path,type}, pipeline?: [{op,args}], default? }
  *      A present `pipeline` transforms the ref value from `ref.type`; the TYPED result is coerced to
  *      the field's expected type (a pipeline failure soft-resolves like an unresolved ref).
+ *
+ * DEFAULTS + ASSERT (phase-1b, append-only): a reference in EITHER serialization may carry an optional
+ * literal `default` (directive `data.default`; union `default`). When the looked-up value is null or
+ * '' the default is substituted BEFORE the pipeline runs (so it can then be formatted/piped); it
+ * enters through the SAME NUL-mask path a resolved value does, so a default holding `{{…}}` / `@[…]`
+ * bytes is never re-interpreted. A pipeline may end in the opt-in assert_present op: over an empty
+ * value the executor returns a HARD failure this resolver re-raises as the run's standard step-failure
+ * (a RuntimeException the runner records) — the one place a variable pipeline is NOT fail-soft.
  *
  * IF-BLOCKS: a text field may contain fenced `if-block` containers whose branches each carry a
  * boolean condition `{variableId, pipeline}`. resolveString evaluates the branches in order, resolves
@@ -95,6 +104,9 @@ class WorkflowVariableResolver
 
     /** Recursion cap for nested ai-text (an ai-text prompt containing another). Beyond → ''. */
     private const AI_TEXT_MAX_DEPTH = 3;
+
+    /** The run step-failure message an opt-in assert_present raises when its value resolves empty. */
+    private const ASSERT_FAILED_MESSAGE = 'A required workflow value (assert_present) resolved empty.';
 
     public function __construct(
         private WorkflowOperationExecutor $executor,
@@ -273,12 +285,17 @@ class WorkflowVariableResolver
         $ref = $field['ref'] ?? null;
         $path = $this->refPath($ref);
         $raw = $path !== null && $this->isReference($path) ? Arr::get($context, $path) : null;
+        $raw = $this->applyDefault($raw, $field['default'] ?? null);
 
         $pipeline = $field['pipeline'] ?? null;
 
         if (is_array($pipeline) && $pipeline !== []) {
             $refType = WorkflowVariableType::tryFrom((string) (is_array($ref) ? ($ref['type'] ?? '') : '')) ?? $expectedType;
             $result = $this->executor->execute($raw, $refType, $pipeline, $context);
+
+            if ($result->hard) {
+                throw new RuntimeException(self::ASSERT_FAILED_MESSAGE);
+            }
 
             return $result->failed ? $this->coerce(null, $expectedType) : $this->coerce($result->value, $expectedType);
         }
@@ -304,7 +321,7 @@ class WorkflowVariableResolver
             return null;
         }
 
-        $raw = Arr::get($context, $directive['id']);
+        $raw = $this->applyDefault(Arr::get($context, $directive['id']), $directive['default']);
 
         if ($directive['pipeline'] === []) {
             // A directive ONLY ever lives in a text FIELD (never a structured value-or-variable
@@ -334,7 +351,7 @@ class WorkflowVariableResolver
             return $original;
         }
 
-        $raw = Arr::get($context, $directive['id']);
+        $raw = $this->applyDefault(Arr::get($context, $directive['id']), $directive['default']);
 
         if ($directive['pipeline'] === []) {
             return $this->stringify($raw);
@@ -346,9 +363,10 @@ class WorkflowVariableResolver
     /**
      * Run a directive's pipeline over its base value and stringify the result. A pipeline failure
      * yields '' (fail-closed), leaving the field's own doctrine to react — a blank required title
-     * hard-fails the run, a blank description/name/guidelines is simply empty.
+     * hard-fails the run, a blank description/name/guidelines is simply empty. The ONE exception is an
+     * opt-in assert_present that resolved empty: it re-raises as a run step-failure ("force a value").
      *
-     * @param  array{id: string, pipeline: array<int, mixed>, type: ?string}  $directive
+     * @param  array{id: string, pipeline: array<int, mixed>, type: ?string, default: mixed}  $directive
      * @param  array<string, mixed>  $context
      * @param  array<string, WorkflowVariableType|string>  $typeMap
      */
@@ -360,15 +378,20 @@ class WorkflowVariableResolver
 
         $result = $this->executor->execute($raw, $baseType, $directive['pipeline'], $context);
 
+        if ($result->hard) {
+            throw new RuntimeException(self::ASSERT_FAILED_MESSAGE);
+        }
+
         return $result->failed ? '' : $this->stringifyResult($result->value, $result->type);
     }
 
     /**
      * Decode a variable directive payload to its identity + pipeline. Tolerates malformed JSON
      * (returns null). The payload is the legacy byte-format: the inner JSON with each `"` written as
-     * `\"`. Returns `{ id, pipeline, type }` where `type` is the directive's degraded primitive.
+     * `\"`. Returns `{ id, pipeline, type, default }` where `type` is the directive's degraded
+     * primitive and `default` is the optional per-reference literal (null when absent/non-scalar).
      *
-     * @return array{id: string, pipeline: array<int, mixed>, type: ?string}|null
+     * @return array{id: string, pipeline: array<int, mixed>, type: ?string, default: mixed}|null
      */
     private function decodeDirective(string $rawPayload): ?array
     {
@@ -398,6 +421,9 @@ class WorkflowVariableResolver
             'id' => $id,
             'pipeline' => is_array($data['pipeline'] ?? null) ? $data['pipeline'] : [],
             'type' => is_string($data['type'] ?? null) ? $data['type'] : null,
+            // Optional per-reference DEFAULT (append-only): a LITERAL scalar substituted for a null/''
+            // lookup BEFORE the pipeline runs. Absent / non-scalar → null (the reference is unchanged).
+            'default' => is_scalar($data['default'] ?? null) ? $data['default'] : null,
         ];
     }
 
@@ -890,6 +916,22 @@ class WorkflowVariableResolver
     private function isReference(string $path): bool
     {
         return in_array(explode('.', $path, 2)[0], self::ROOTS, true);
+    }
+
+    /**
+     * Substitute a per-reference DEFAULT for a lookup that came back null or '' (empty). The default is
+     * a LITERAL scalar entering the value stream exactly where a resolved value would, so the existing
+     * embedded-directive NUL-mask (resolveReferences' $stash) protects it from being re-scanned as a
+     * `{{…}}` / `@[…]` reference; a STANDALONE / structured slot is never re-scanned at all. A null /
+     * absent / non-scalar default is a no-op (the reference behaves exactly as before).
+     */
+    private function applyDefault(mixed $raw, mixed $default): mixed
+    {
+        if (($raw === null || $raw === '') && $default !== null && is_scalar($default)) {
+            return $default;
+        }
+
+        return $raw;
     }
 
     /** Stringify a resolved value for embedding in surrounding text. */

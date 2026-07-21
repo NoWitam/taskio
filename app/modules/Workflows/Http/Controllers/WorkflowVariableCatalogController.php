@@ -60,8 +60,8 @@ class WorkflowVariableCatalogController extends Controller
 
     /**
      * Serialize a built catalog into the response envelope, stripping each variable's internal
-     * field_id so the public variable shape stays exactly {source, path, name, type, enumOptions?,
-     * nullable?}. Shared by both routes so their response shape can never drift.
+     * field_id so the public variable shape stays exactly {source, path, name, type, descriptor,
+     * enumOptions?, nullable?}. Shared by both routes so their response shape can never drift.
      *
      * @param  array{variables: array<int, array<string, mixed>>, fields: array<int, array<string, mixed>>, operations: array<int, array<string, mixed>>, ai_personas: array<int, array{id: string}>, types: array<int, array<string, mixed>>}  $catalog
      */
@@ -80,8 +80,8 @@ class WorkflowVariableCatalogController extends Controller
 
     /**
      * Strip the internal `field_id` key from a variable so the public variable shape is exactly
-     * `{source, path, name, type, enumOptions?, nullable?}` (field_id lives only on the `fields`
-     * descriptors).
+     * `{source, path, name, type, descriptor, enumOptions?, nullable?}` (field_id lives only on the
+     * `fields` descriptors). The additive `descriptor` passes through untouched.
      *
      * @param  array<string, mixed>  $variable
      * @return array<string, mixed>
