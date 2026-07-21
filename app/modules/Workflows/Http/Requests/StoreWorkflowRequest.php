@@ -14,6 +14,7 @@ use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workflows\Services\WorkflowConditionTreeValidator;
 use App\Modules\Workflows\Services\WorkflowScheduleRulesValidator;
 use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
+use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use App\Rules\ScopedExists;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
@@ -712,9 +713,11 @@ class StoreWorkflowRequest extends FormRequest
             return;
         }
 
+        // Single source of truth for the reference whitelist (see ADR-0021): a new root added to
+        // WorkflowVariableResolver::ROOTS is automatically accepted by this write-side validator too.
         $source = $ref['source'] ?? null;
-        if (!in_array($source, ['trigger', 'steps'], true)) {
-            $validator->errors()->add($key . '.ref.source', 'The reference source must be trigger or steps.');
+        if (!in_array($source, WorkflowVariableResolver::ROOTS, true)) {
+            $validator->errors()->add($key . '.ref.source', 'The reference source must be one of: ' . implode(', ', WorkflowVariableResolver::ROOTS) . '.');
         }
 
         $path = $ref['path'] ?? null;

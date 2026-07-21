@@ -91,6 +91,20 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > `origin_run_id` null. **Returns 201 Created**, not the 202 run-now returns — see the endpoint
 > section below for the full contrast. A non-`failed` run 422s under the `run` key; the same
 > run-budget cap run-now enforces 422s under `workflow`.
+>
+> **Form-independent variable catalog + a `types` catalog key (this revision, Phase 0 of the
+> variable-typesystem rework) — ADDITIVE, no breaking change.** `WorkflowVariableCatalogService`
+> is now composed from sources via `forContext(?WorkflowTriggerType, ?Form)` — `forForm()` is a
+> thin `FORM_SUBMITTED` specialization of it — so a new `GET /workflows/catalog` endpoint serves a
+> real catalog for a form-less workflow (e.g. a `schedule` trigger) instead of the frontend
+> maintaining a static mirror of the trigger-system variables / step-output templates. Both catalog
+> responses also gained a `types` key — `[{ id, primitive, operators }]`, one entry per
+> `WorkflowVariableType` — describing the full type vocabulary label-lessly (the FE localizes),
+> the same pattern `operations`/`ai_personas` already use. See
+> **ADR-0021-workflows-variable-catalog-composable-roots.md** for the "adding a root is a 3-point
+> change" recipe this groundwork sets up for the rest of the rework (global variables, a loop item,
+> a template slot, campaign inputs), and "GET /api/workflows/catalog" / the `types` key below for
+> the wire contract.
 
 ---
 
@@ -777,6 +791,70 @@ See ADR-0009 §7.
 
 ---
 
+### GET /api/workflows/catalog
+
+The FORM-INDEPENDENT variable catalog — the same catalog contract as
+`GET /api/forms/{form}/workflow-catalog` above, but assembled from sources
+(`WorkflowVariableCatalogService::forContext()`) so a workflow with **no form at all** — a
+`schedule` trigger, or a `form_submitted` workflow before a form is chosen — still gets a real
+catalog instead of the frontend maintaining a static mirror of the trigger-system variables and
+step-output templates. A static `workflows/catalog` path, declared BEFORE the `{workflow}`
+apiResource routes so it never binds as an id. Backed by
+`WorkflowVariableCatalogController::index()` → `IndexWorkflowCatalogRequest` →
+`WorkflowVariableCatalogService::forContext()`.
+
+**Query**
+
+| Param          | Notes                                                                                        |
+|----------------|-------------------------------------------------------------------------------------------------|
+| `trigger_type` | **required WITHOUT `form_id`** (`required_without:form_id`) — one of `WorkflowTriggerType::ids()` (`form_submitted`, `schedule`). Ignored when `form_id` is present (a form implies `form_submitted`, matching `forForm()`). |
+| `form_id`      | optional uuid. When present, layers that form's field variables + condition field descriptors onto the structural catalog, exactly like the form-bound route.                                       |
+
+**Two authorization paths** (`IndexWorkflowCatalogRequest::authorize()`):
+
+- **No `form_id`** — `WorkflowPolicy::viewAny` (`$user !== null`, any authenticated user). The
+  response carries **structural metadata only** — trigger-system vars for `trigger_type`, the
+  `steps.<TYPE>.*` output templates, `operations`, `ai_personas`, `types` — **no tenant rows and no
+  per-form field variables** — so authentication alone is enough to gate it; a workspace header is
+  NOT required to call it (unlike the blanket "all endpoints require ... X-Workspace-Id" note at
+  the top of this document), though membership is still enforced upstream by `ResolveWorkspace`
+  whenever one is sent.
+- **With `form_id`** — the form is resolved under `WorkspaceScope` (`Form::find`) and gated by
+  `FormPolicy::view`, exactly like the `{form}` route-model binding above. A foreign-workspace or
+  nonexistent `form_id` therefore **404s** (mirrors the binding failure), not 403.
+
+**Response** `200 OK` — the identical envelope/shape `GET /api/forms/{form}/workflow-catalog`
+returns (`{ data: { variables, fields, operations, ai_personas, types } }`; see the `types` key
+below); a form-less call simply returns `fields: []` and no `trigger.fields.*` variables. Example
+(`?trigger_type=schedule`, no form):
+
+```json
+{
+  "data": {
+    "variables": [
+      { "source": "trigger", "path": "trigger.scheduled_at", "name": "Scheduled at", "type": "date" },
+      { "source": "steps", "path": "steps.create_task.task_id", "name": "Utwórz zadanie · task_id", "type": "text" }
+    ],
+    "fields": [],
+    "operations": [...],
+    "ai_personas": [{ "id": "neutral" }, { "id": "friendly" }, { "id": "formal" }, { "id": "concise" }],
+    "types": [...]
+  }
+}
+```
+
+**Errors**: `401` unauthenticated. `422` under `trigger_type` when both `trigger_type` and
+`form_id` are absent, or `trigger_type` names an id outside `WorkflowTriggerType::ids()`. `404`
+when `form_id` is a well-formed uuid that does not resolve in the active workspace (foreign or
+missing).
+
+This is why the endpoint exists: before Phase 0 of the variable-typesystem rework, a schedule
+workflow's editor had no server catalog to call at all and carried a hand-maintained mirror of the
+trigger-system variables / step-output templates instead — see
+**ADR-0021-workflows-variable-catalog-composable-roots.md**.
+
+---
+
 ### POST /api/workflows/schedule-assist
 
 AI SCHEDULE ASSIST: turns a natural-language schedule description into the structured v2
@@ -1086,7 +1164,8 @@ An **unknown type/operator combination**, or an operator not in the type's own a
 A **variable identity** is always the triple `{ source: trigger|steps, path, type }` — `path` is
 the FULL dotted path a reference resolves against (e.g. `trigger.fields.status`,
 `steps.create_task.task_id`), identical across both serializations below. This ONE identity is
-served by `GET /forms/{form}/workflow-catalog` and consumed by both step config surfaces.
+served by `GET /forms/{form}/workflow-catalog` (or, for a form-less workflow,
+`GET /workflows/catalog` — see above) and consumed by both step config surfaces.
 
 ### Two serializations, resolved by `WorkflowVariableResolver`
 
@@ -1299,9 +1378,10 @@ field inside the SAME workspace the run belongs to, it is length-capped, and it 
 the whitelisted `trigger`/`steps` context (the same exfiltration-safe whitelist every other
 directive already relies on — see below). This is a documented, ACCEPTED risk, not eliminated.
 
-`GET /forms/{form}/workflow-catalog` now also returns `ai_personas` — the label-less persona
-catalog the ai-text editor's persona picker consumes (the FE localizes via
-`workflows.aiPersona.<id>`):
+Both catalog endpoints — `GET /forms/{form}/workflow-catalog` and, since Phase 0 of the
+variable-typesystem rework, the form-independent `GET /workflows/catalog` (see above) — also
+return `ai_personas` (the label-less persona catalog the ai-text editor's persona picker consumes;
+the FE localizes via `workflows.aiPersona.<id>`) and `types` (see below):
 
 ```json
 {
@@ -1309,7 +1389,16 @@ catalog the ai-text editor's persona picker consumes (the FE localizes via
     "variables": [...],
     "fields": [...],
     "operations": [...],
-    "ai_personas": [{ "id": "neutral" }, { "id": "friendly" }, { "id": "formal" }, { "id": "concise" }]
+    "ai_personas": [{ "id": "neutral" }, { "id": "friendly" }, { "id": "formal" }, { "id": "concise" }],
+    "types": [
+      { "id": "text", "primitive": "text", "operators": ["equals", "not_equals", "contains"] },
+      { "id": "number", "primitive": "number", "operators": ["eq", "neq", "gt", "gte", "lt", "lte"] },
+      { "id": "boolean", "primitive": "boolean", "operators": ["is_true", "is_false"] },
+      { "id": "date", "primitive": "text", "operators": ["before", "after", "on", "between"] },
+      { "id": "enum", "primitive": "text", "operators": ["is", "is_not", "in"] },
+      { "id": "multi", "primitive": "text", "operators": ["includes", "excludes"] },
+      { "id": "file", "primitive": "text", "operators": ["filled", "empty"] }
+    ]
   }
 }
 ```
@@ -1317,6 +1406,25 @@ catalog the ai-text editor's persona picker consumes (the FE localizes via
 (`operations` — the 68-op catalog `WorkflowOperation::catalog()` the directive/value pipelines
 above run on (66 at the time SB1/SB2 shipped `ai_personas` as its sibling key; now 68 after the
 `enum_to_choice`/`match_to_choice` addition — see "Choice fields" below).)
+
+**`types`** (`WorkflowVariableCatalogService::variableTypes()`) — one entry per
+`WorkflowVariableType` case, `{ id, primitive, operators }`, in enum declaration order (text,
+number, boolean, date, enum, multi, file):
+
+- `id` — the `WorkflowVariableType` value.
+- `primitive` — the EDITOR primitive (`WorkflowVariableType::editorPrimitive()`) this type
+  degrades to inside a markdown directive's `data.type`. Only `number` and `boolean` keep their
+  own primitive; `date`/`enum`/`multi`/`file` all degrade to `text` (see "Two serializations"
+  above) — the directive carries no other type hint, so this is how the FE knows which types
+  round-trip losslessly through a directive and which don't.
+- `operators` — exactly `WorkflowVariableType::operators()` for that type, the SAME set already
+  shown per-field in `fields[].operators` and enforced by the condition write-validator (see "The
+  operator × type matrix" below) — one wire source for the type vocabulary instead of a
+  hand-maintained frontend mirror of it.
+
+Label-less like `operations`/`ai_personas` (the FE localizes each type's display name); it exists
+so a form-less catalog can still describe the full type system without a static frontend mirror —
+the same motivation `GET /workflows/catalog` itself was built for.
 
 ### d. Write-time validation — runtime-only vs. validated
 

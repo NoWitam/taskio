@@ -274,7 +274,7 @@ describe('WorkflowEditorDrawer', () => {
     await Promise.resolve();
     await nextTick();
 
-    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form-a');
+    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form_submitted', 'form-a');
     expect(wrapper.get('.conditions-stub').attributes('data-gated')).toBe('false');
     expect(wrapper.get('.steps-stub').attributes('data-has-catalog')).toBe('true');
   });
@@ -297,7 +297,7 @@ describe('WorkflowEditorDrawer', () => {
     await Promise.resolve();
     await nextTick();
 
-    expect(fetchWorkflowCatalog).toHaveBeenLastCalledWith('form-b');
+    expect(fetchWorkflowCatalog).toHaveBeenLastCalledWith('form_submitted', 'form-b');
     expect(wrapper.get('.conditions-stub').attributes('data-count')).toBe('0');
     expect(toastInfo).toHaveBeenCalledTimes(1);
   });
@@ -312,9 +312,14 @@ describe('WorkflowEditorDrawer', () => {
 
     await wrapper.get('.clear-form').trigger('click');
     await nextTick();
+    await Promise.resolve();
+    await nextTick();
 
+    // Conditions are gated (no form). The steps section KEEPS a catalog — clearing the form
+    // now refetches the FORM-INDEPENDENT catalog (trigger vars + step outputs) instead of
+    // nulling it, so a form-less form_submitted still offers step/trigger variables.
     expect(wrapper.get('.conditions-stub').attributes('data-gated')).toBe('true');
-    expect(wrapper.get('.steps-stub').attributes('data-has-catalog')).toBe('false');
+    expect(wrapper.get('.steps-stub').attributes('data-has-catalog')).toBe('true');
     expect(toastInfo).not.toHaveBeenCalled();
   });
 
@@ -469,7 +474,7 @@ describe('WorkflowEditorDrawer', () => {
     await nextTick();
 
     // The seeded form triggers a catalog fetch on mount; the flat list became a 1-child tree.
-    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form-a');
+    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form_submitted', 'form-a');
     expect(wrapper.get('.conditions-stub').attributes('data-count')).toBe('1');
 
     await save(wrapper);

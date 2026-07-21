@@ -18,11 +18,12 @@ import { ref } from 'vue';
 import WorkflowOverviewView from '../WorkflowOverviewView.vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 import { en } from '../../../app/i18n/en';
-import type { WorkflowCatalog, WorkflowDetail } from '../types';
+import type { WorkflowCatalog, WorkflowDetail, WorkflowTriggerType } from '../types';
 
 // --- Store + router mocks ----------------------------------------------------
 const detailRef = ref<WorkflowDetail | null>(null);
-const fetchWorkflowCatalog = vi.fn<(formId: string) => Promise<WorkflowCatalog>>();
+const fetchWorkflowCatalog =
+  vi.fn<(triggerType: WorkflowTriggerType, formId?: string | null) => Promise<WorkflowCatalog>>();
 
 vi.mock('../../../app/stores/workflows', () => ({
   useWorkflowsStore: () => ({
@@ -114,7 +115,7 @@ describe('WorkflowOverviewView — form_submitted trigger sentence (§3.2)', () 
     const text = wrapper.text();
     expect(text).toContain(en.workflows.detail.triggerFormSpecific);
     expect(text).not.toContain('form-abc-uuid');
-    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form-abc-uuid');
+    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form_submitted', 'form-abc-uuid');
   });
 
   it('source subset + anonymous narrow → the matching sub-lines', async () => {

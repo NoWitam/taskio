@@ -369,4 +369,151 @@ class WorkflowVariableCatalogTest extends TestCase
             ->getJson("/api/forms/{$form->id}/workflow-catalog")
             ->assertOk();
     }
+
+    // ---- Form-independent catalog: service (forContext / variableTypes) -------
+
+    public function test_for_context_without_a_form_is_form_independent(): void
+    {
+        // A form-LESS schedule catalog carries the structural sources (trigger-system vars +
+        // step-output templates + operations + personas + the type list) but NO field variables.
+        $catalog = app(WorkflowVariableCatalogService::class)
+            ->forContext(WorkflowTriggerType::SCHEDULE);
+
+        $byPath = $this->fieldsByPath($catalog['variables']);
+
+        // Trigger-system var for schedule + the step-output template vars are present.
+        $this->assertArrayHasKey('trigger.scheduled_at', $byPath);
+        $this->assertArrayHasKey('steps.create_task.task_id', $byPath);
+
+        // No form → no field variables and no condition field descriptors.
+        foreach (array_keys($byPath) as $path) {
+            $this->assertStringStartsNotWith('trigger.fields.', $path);
+        }
+        $this->assertSame([], $catalog['fields']);
+
+        // The structural catalogs are still present (form-independent).
+        $this->assertNotEmpty($catalog['operations']);
+        $this->assertNotEmpty($catalog['ai_personas']);
+        $this->assertNotEmpty($catalog['types']);
+    }
+
+    public function test_for_context_layers_field_variables_when_a_form_is_present(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        // With a form, forContext produces the SAME thing forForm does (its FORM_SUBMITTED
+        // specialization) — field vars + their condition field descriptors are layered in.
+        $catalog = app(WorkflowVariableCatalogService::class)
+            ->forContext(WorkflowTriggerType::FORM_SUBMITTED, $this->richForm($owner));
+
+        $byPath = $this->fieldsByPath($catalog['variables']);
+
+        $this->assertArrayHasKey('trigger.fields.full_name', $byPath);
+        $this->assertNotEmpty($catalog['fields']);
+    }
+
+    public function test_variable_types_list_carries_every_type_with_primitive_and_operators(): void
+    {
+        $types = app(WorkflowVariableCatalogService::class)->variableTypes();
+
+        // Every WorkflowVariableType is described, each as {id, primitive, operators}.
+        $this->assertSame(WorkflowVariableType::ids(), array_column($types, 'id'));
+
+        $byId = [];
+        foreach ($types as $type) {
+            $this->assertSame(['id', 'primitive', 'operators'], array_keys($type));
+            $byId[$type['id']] = $type;
+        }
+
+        // The editor primitive degrade rule (number|boolean keep, everything else → text).
+        $this->assertSame('number', $byId['number']['primitive']);
+        $this->assertSame('text', $byId['date']['primitive']);
+        // The operator set mirrors WorkflowVariableType::operators().
+        $this->assertSame(WorkflowVariableType::ENUM->operators(), $byId['enum']['operators']);
+    }
+
+    // ---- Form-independent catalog: endpoint (GET /workflows/catalog) ----------
+
+    public function test_formless_catalog_endpoint_returns_structural_metadata(): void
+    {
+        $owner = User::factory()->create();
+
+        // No form_id → structural metadata only. A workspace header is not required (no tenant
+        // rows), mirroring how the global runs feed authorizes (viewAny = authenticated member).
+        $response = $this->actingAs($owner)
+            ->getJson('/api/workflows/catalog?trigger_type=schedule')
+            ->assertOk()
+            ->assertJsonStructure([
+                'data' => [
+                    'variables' => ['*' => ['source', 'path', 'name', 'type']],
+                    'fields',
+                    'operations' => ['*' => ['id', 'input', 'output', 'args']],
+                    'ai_personas' => ['*' => ['id']],
+                    'types' => ['*' => ['id', 'primitive', 'operators']],
+                ],
+            ]);
+
+        $paths = collect($response->json('data.variables'))->pluck('path');
+
+        // The schedule chip + the step-output templates are present; NO field variables.
+        $this->assertTrue($paths->contains('trigger.scheduled_at'));
+        $this->assertTrue($paths->contains('steps.create_task.task_id'));
+        $this->assertFalse($paths->contains(fn (string $p) => str_starts_with($p, 'trigger.fields.')));
+        $this->assertSame([], $response->json('data.fields'));
+
+        // The public variable shape must NOT leak the internal field_id key.
+        foreach ($response->json('data.variables') as $variable) {
+            $this->assertArrayNotHasKey('field_id', $variable);
+        }
+    }
+
+    public function test_formless_catalog_requires_a_trigger_type_without_a_form(): void
+    {
+        $owner = User::factory()->create();
+
+        // A form-less call must name its trigger (required_without:form_id).
+        $this->actingAs($owner)
+            ->getJson('/api/workflows/catalog')
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('trigger_type');
+    }
+
+    public function test_formless_catalog_endpoint_is_unauthenticated_for_a_guest(): void
+    {
+        $this->getJson('/api/workflows/catalog?trigger_type=schedule')->assertUnauthorized();
+    }
+
+    public function test_catalog_endpoint_with_form_id_layers_in_field_variables(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->richForm($owner, $workspace);
+
+        // form_id present (trigger_type omitted — a form implies FORM_SUBMITTED): the field vars
+        // + condition field descriptors are layered on, authorized by FormPolicy::view under the
+        // active workspace (the form resolves via WorkspaceScope).
+        $response = $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson("/api/workflows/catalog?form_id={$form->id}")
+            ->assertOk();
+
+        $paths = collect($response->json('data.variables'))->pluck('path');
+        $this->assertTrue($paths->contains('trigger.fields.full_name'));
+        $this->assertNotEmpty($response->json('data.fields'));
+    }
+
+    public function test_catalog_endpoint_with_a_foreign_form_id_is_not_found(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $foreignWorkspace = Workspace::factory()->create(['owner_id' => $owner->id]);
+
+        // A form in ANOTHER workspace than the active one does not resolve under WorkspaceScope,
+        // so it 404s — mirroring the {form} route-model binding on the form-bound catalog route.
+        $foreignForm = $this->richForm($owner, $foreignWorkspace);
+
+        $this->actingAs($owner)->withHeader('X-Workspace-Id', $workspace->id)
+            ->getJson("/api/workflows/catalog?form_id={$foreignForm->id}")
+            ->assertNotFound();
+    }
 }

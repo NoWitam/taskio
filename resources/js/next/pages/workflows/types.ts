@@ -455,7 +455,16 @@ export interface ScheduleAssistResponse {
   data: ScheduleAssistEnvelope;
 }
 
-// --- Variable catalog (GET /forms/{form}/workflow-catalog, §4.7) -----------
+// --- Variable catalog (§4.7) -----------------------------------------------
+//
+// TWO endpoints serve the SAME `WorkflowCatalog` shape:
+//   • GET /forms/{form}/workflow-catalog             — the form-bound catalog (back-compat).
+//   • GET /workflows/catalog?trigger_type=&form_id=  — the FORM-INDEPENDENT catalog: the
+//     trigger-system vars for `trigger_type` + the `steps.<TYPE>.*` step-output templates
+//     + operations + ai_personas + types (empty `fields` / no tenant rows without a
+//     form_id). An OPTIONAL `form_id` layers that form's field vars in, matching forForm.
+// The FE editor now sources its catalog from the form-independent endpoint so a schedule
+// (or any form-less) workflow gets a REAL catalog instead of falling back to a mirror.
 
 /**
  * One reference-able variable (mirrors WorkflowVariableCatalogService::variable):
@@ -534,15 +543,32 @@ export interface CatalogAiPersona {
 }
 
 /**
- * The catalog payload `{variables, fields, operations?, ai_personas?}`. `operations`
- * (B3) + `ai_personas` (SB2) are additive — older responses may omit them, so the FE
- * falls back to the full standard catalog / the closed persona set respectively.
+ * One variable-TYPE descriptor (form-independent catalog `types[]`): the type `id`
+ * (a WorkflowVariableType), the editor `primitive` it degrades to inside a directive
+ * (mirrors `WorkflowVariableType::editorPrimitive`), and its condition `operators`.
+ * Label-less (the FE localizes), mirroring the operations / ai_personas pattern. Lets a
+ * form-less catalog describe the full type vocabulary + the degrade rule without a static
+ * FE mirror. Phase 0 captures it on the contract; wiring the editor's type resolution to
+ * it is a LATER (type-descriptor) phase — the type system itself is unchanged.
+ */
+export interface CatalogType {
+  id: WorkflowVariableType;
+  primitive: WorkflowVariablePrimitive;
+  operators: string[];
+}
+
+/**
+ * The catalog payload `{variables, fields, operations?, ai_personas?, types?}`.
+ * `operations` (B3) + `ai_personas` (SB2) + `types` (form-independent catalog) are
+ * additive — older responses (the form-bound route) may omit them, so the FE falls back
+ * to the full standard catalog / the closed persona set respectively.
  */
 export interface WorkflowCatalog {
   variables: CatalogVariable[];
   fields: CatalogField[];
   operations?: CatalogOperation[];
   ai_personas?: CatalogAiPersona[];
+  types?: CatalogType[];
 }
 
 /** The catalog response wrapper `{ data: WorkflowCatalog }`. */

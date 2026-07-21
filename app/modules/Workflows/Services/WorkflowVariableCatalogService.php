@@ -45,19 +45,39 @@ class WorkflowVariableCatalogService
     ) {}
 
     /**
-     * The full catalog for a form_submitted trigger + a selected Form: system trigger vars,
-     * per-form field vars, and step-output vars, the condition field descriptors, the global
-     * label-less operation catalog the condition-pipeline builder consumes, plus the label-less
-     * ai-text persona catalog (SB2) the ai-text editor's persona picker consumes.
+     * The full catalog for a form_submitted trigger + a selected Form. A thin FORM_SUBMITTED
+     * specialization of forContext() kept for the form-bound route + its existing callers: it
+     * layers the form's field vars onto the form-independent catalog (see forContext()).
      *
-     * @return array{variables: array<int, array<string, mixed>>, fields: array<int, array<string, mixed>>, operations: array<int, array<string, mixed>>, ai_personas: array<int, array{id: string}>}
+     * @return array{variables: array<int, array<string, mixed>>, fields: array<int, array<string, mixed>>, operations: array<int, array<string, mixed>>, ai_personas: array<int, array{id: string}>, types: array<int, array<string, mixed>>}
      */
     public function forForm(Form $form): array
     {
-        $fieldVariables = $this->formFieldVariables($form);
+        return $this->forContext(WorkflowTriggerType::FORM_SUBMITTED, $form);
+    }
+
+    /**
+     * The composable catalog for a workflow CONTEXT, assembled from sources and FORM-INDEPENDENT.
+     * It always carries the structural metadata every editor needs regardless of any form:
+     *   - the trigger-system vars for $triggerType (none when null),
+     *   - the `steps.<TYPE>.*` step-output template vars,
+     *   - the label-less operation catalog + ai-text persona catalog (SB2),
+     *   - the variable-type list (id + editor primitive + operators).
+     * Per-form FIELD variables — and ONLY those, plus their condition field descriptors — are
+     * added when (and only when) a $form is present.
+     *
+     * A form-LESS call (a schedule trigger, or a form_submitted workflow with no form yet chosen)
+     * therefore still yields a real catalog, so the editor no longer needs a static mirror of the
+     * trigger-system vars / step outputs. This is the prerequisite for deleting the FE mirrors.
+     *
+     * @return array{variables: array<int, array<string, mixed>>, fields: array<int, array<string, mixed>>, operations: array<int, array<string, mixed>>, ai_personas: array<int, array{id: string}>, types: array<int, array<string, mixed>>}
+     */
+    public function forContext(?WorkflowTriggerType $triggerType, ?Form $form = null): array
+    {
+        $fieldVariables = $form !== null ? $this->formFieldVariables($form) : [];
 
         $variables = array_merge(
-            $this->triggerSystemVariables(WorkflowTriggerType::FORM_SUBMITTED),
+            $triggerType !== null ? $this->triggerSystemVariables($triggerType) : [],
             $fieldVariables,
             $this->stepOutputVariables(),
         );
@@ -67,7 +87,26 @@ class WorkflowVariableCatalogService
             'fields' => $this->conditionFields($fieldVariables),
             'operations' => WorkflowOperation::catalog(),
             'ai_personas' => WorkflowAiPersona::catalog(),
+            'types' => $this->variableTypes(),
         ];
+    }
+
+    /**
+     * The variable-TYPE list: every WorkflowVariableType with the editor PRIMITIVE it degrades to
+     * inside a directive and its condition operator set. Label-less (the FE localizes), mirroring
+     * the operations / ai_personas descriptor pattern. Lets a form-LESS catalog describe the full
+     * type vocabulary — and the degrade rule — the editor needs without a static FE mirror. Built
+     * from the enum's existing accessors (the type system itself is unchanged).
+     *
+     * @return array<int, array{id: string, primitive: string, operators: array<int, string>}>
+     */
+    public function variableTypes(): array
+    {
+        return array_map(fn (WorkflowVariableType $type): array => [
+            'id' => $type->value,
+            'primitive' => $type->editorPrimitive(),
+            'operators' => $type->operators(),
+        ], WorkflowVariableType::cases());
     }
 
     /**

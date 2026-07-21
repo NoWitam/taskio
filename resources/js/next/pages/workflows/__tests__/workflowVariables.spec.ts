@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   editorPrimitive,
   isIdVariable,
+  positionScopedStepOutputs,
   resolveVariable,
   resolveVariableType,
   stripVariableDirectives,
@@ -17,7 +18,7 @@ import {
   variablesOfType,
   type StepLike,
 } from '../workflowVariables';
-import type { WorkflowCatalog } from '../types';
+import type { CatalogVariable, WorkflowCatalog, WorkflowVariableType } from '../types';
 
 /** Build a `@[variable]("<escaped-json>")` directive the way the editor serializes it. */
 function variableDirective(data: { id: string; name: string; type?: string }): string {
@@ -25,24 +26,48 @@ function variableDirective(data: { id: string; name: string; type?: string }): s
   return `@[variable]("${payload.replace(/"/g, '\\"')}")`;
 }
 
-// A catalog like WorkflowVariableCatalogService::forForm returns: trigger system
-// vars + per-form field vars + the TEMPLATE step outputs (keyed by TYPE). The
-// adapter drops the template step outputs and replaces them with live, KEY-
-// substituted ones from the editor's step list.
+// The live catalog is now FORM-INDEPENDENT (WorkflowVariableCatalogService::forContext):
+// trigger-system vars (source 'trigger', by trigger type) + per-form field vars (when a
+// form_id is layered in) + the TEMPLATE step outputs (keyed by TYPE, for EVERY step type).
+// The adapter drops the template step outputs and replaces them with live, KEY-substituted
+// ones from the editor's step list; trigger-system vars now come straight from the catalog
+// (the static FE mirrors were deleted). CATALOG mirrors a form_submitted catalog WITH a form.
 const CATALOG: WorkflowCatalog = {
   variables: [
+    // trigger-system vars (form_submitted) — the FULL set the backend emits, incl. the ids.
     { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
-    { source: 'trigger', path: 'trigger.submitted_at', name: 'Submitted at', type: 'date' },
+    { source: 'trigger', path: 'trigger.form.id', name: 'Form ID', type: 'text' },
+    { source: 'trigger', path: 'trigger.form.name', name: 'Form name', type: 'text' },
     { source: 'trigger', path: 'trigger.source', name: 'Source', type: 'enum', enumOptions: ['manual', 'task'] },
+    { source: 'trigger', path: 'trigger.submitted_at', name: 'Submitted at', type: 'date' },
+    { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text', nullable: true },
+    // per-form field vars.
     { source: 'trigger', path: 'trigger.fields.age', name: 'Age', type: 'number' },
     { source: 'trigger', path: 'trigger.fields.tags', name: 'Tags', type: 'multi', enumOptions: ['a', 'b'] },
-    // template step outputs (keyed by TYPE — the adapter must DROP these).
+    // template step outputs (keyed by TYPE — the adapter must DROP these). A form-independent
+    // catalog carries EVERY step type's templates regardless of the workflow's steps.
     { source: 'steps', path: 'steps.create_task.task_id', name: 'Create task · task_id', type: 'text' },
     { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_id', name: 'Create report · report_id', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_name', name: 'Create report · report_name', type: 'text' },
   ],
   fields: [
     { path: 'fields.age', field_id: 'age', label: 'Age', type: 'number', operators: ['eq', 'neq', 'gt'] },
   ],
+};
+
+// A form-LESS SCHEDULE catalog (WorkflowVariableCatalogService::forContext(SCHEDULE, null)):
+// the schedule trigger-system var + EVERY step type's output templates, no form fields. This
+// is what a schedule workflow's editor now fetches (it previously had NO catalog).
+const SCHEDULE_CATALOG: WorkflowCatalog = {
+  variables: [
+    { source: 'trigger', path: 'trigger.scheduled_at', name: 'Scheduled at', type: 'date' },
+    { source: 'steps', path: 'steps.create_task.task_id', name: 'Create task · task_id', type: 'text' },
+    { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_id', name: 'Create report · report_id', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_name', name: 'Create report · report_name', type: 'text' },
+  ],
+  fields: [],
 };
 
 const STEPS: StepLike[] = [
@@ -103,10 +128,14 @@ describe('toEditorVariables — system/field vars + position-scoped KEY-substitu
     expect(stepIds).toEqual([]); // the keyless first step yields nothing
   });
 
-  it('works with a null catalog (schedule trigger) — step outputs only', () => {
+  it('works with a form-less SCHEDULE catalog — trigger var + step outputs (no fields)', () => {
     // SF3.2: the `_id` outputs are filtered out of the OFFERED list.
-    const vars = toEditorVariables(null, STEPS, 2);
-    expect(vars.map((v) => v.id)).toEqual(['steps.make.title', 'steps.report.report_name']);
+    const vars = toEditorVariables(SCHEDULE_CATALOG, STEPS, 2);
+    expect(vars.map((v) => v.id)).toEqual([
+      'trigger.scheduled_at',
+      'steps.make.title',
+      'steps.report.report_name',
+    ]);
   });
 });
 
@@ -142,9 +171,9 @@ describe('SF3.2 — identifiers are OFFERED nowhere, but still RESOLVE', () => {
   it('a SAVED id ref still resolves its type (resolving is NOT filtered)', () => {
     // The catalog carries trigger.submission.id; resolution recovers it.
     expect(resolveVariableType('trigger.submission.id', CATALOG, STEPS)).toBe('text');
-    // A trigger SYSTEM id (null catalog) resolves from the RAW mirror by trigger type.
-    expect(resolveVariableType('trigger.form.id', null, STEPS, 'form_submitted')).toBe('text');
-    // A step-output id resolves too.
+    // A trigger SYSTEM id resolves from the catalog (it carries the id vars for resolution).
+    expect(resolveVariableType('trigger.form.id', CATALOG, STEPS)).toBe('text');
+    // A step-output id resolves too (from the catalog's step templates).
     expect(resolveVariableType('steps.make.task_id', CATALOG, STEPS)).toBe('text');
   });
 });
@@ -184,15 +213,15 @@ describe('toEditorVariablesTyped — TRUE type + enum options (SF1)', () => {
   });
 });
 
-describe('triggerSystemVariables — the backend mirror (SF2)', () => {
-  it('schedule exposes ONLY trigger.scheduled_at (date)', () => {
-    const vars = triggerSystemVariables('schedule');
+describe('triggerSystemVariables — the OFFERED system vars, from the live catalog (SF2)', () => {
+  it('schedule catalog exposes ONLY trigger.scheduled_at (date)', () => {
+    const vars = triggerSystemVariables(SCHEDULE_CATALOG);
     expect(vars.map((v) => v.path)).toEqual(['trigger.scheduled_at']);
     expect(vars[0].type).toBe('date');
   });
 
-  it('form_submitted OFFERS the non-id system vars, but NOT the identifiers (SF3.2)', () => {
-    const paths = triggerSystemVariables('form_submitted').map((v) => v.path);
+  it('form_submitted catalog OFFERS the non-id system vars, but NOT the identifiers (SF3.2) or fields', () => {
+    const paths = triggerSystemVariables(CATALOG).map((v) => v.path);
     expect(paths).toContain('trigger.form.name');
     expect(paths).toContain('trigger.source');
     expect(paths).toContain('trigger.submitted_at');
@@ -200,17 +229,19 @@ describe('triggerSystemVariables — the backend mirror (SF2)', () => {
     expect(paths).not.toContain('trigger.submission.id');
     expect(paths).not.toContain('trigger.form.id');
     expect(paths).not.toContain('trigger.task.id');
+    // Form FIELD vars are not "system" vars.
+    expect(paths).not.toContain('trigger.fields.age');
   });
 
-  it('returns [] for a null / unknown trigger type', () => {
+  it('returns [] for a null / empty catalog', () => {
     expect(triggerSystemVariables(null)).toEqual([]);
     expect(triggerSystemVariables(undefined)).toEqual([]);
   });
 });
 
-describe('toEditorVariables — trigger system vars supplement a null catalog (SF2)', () => {
-  it('schedule (null catalog) offers trigger.scheduled_at (date → text) + step outputs', () => {
-    const vars = toEditorVariables(null, STEPS, 2, 'schedule');
+describe('toEditorVariables — the live catalog carries the trigger system vars (SF2)', () => {
+  it('schedule catalog offers trigger.scheduled_at (date → text) + step outputs', () => {
+    const vars = toEditorVariables(SCHEDULE_CATALOG, STEPS, 2);
     const scheduled = vars.find((v) => v.id === 'trigger.scheduled_at');
     // date degrades to the text primitive; id === path (identity-only).
     expect(scheduled).toEqual({ id: 'trigger.scheduled_at', name: 'Scheduled at', type: 'text' });
@@ -218,33 +249,34 @@ describe('toEditorVariables — trigger system vars supplement a null catalog (S
     expect(vars.some((v) => v.id === 'steps.make.title')).toBe(true);
   });
 
-  it('does NOT duplicate a system var already carried by the catalog', () => {
-    // CATALOG already has trigger.submitted_at + trigger.source; the mirror must not double them.
-    const vars = toEditorVariables(CATALOG, STEPS, 0, 'form_submitted');
+  it('never duplicates a system var (the catalog is the single source)', () => {
+    const vars = toEditorVariables(CATALOG, STEPS, 0);
     expect(vars.filter((v) => v.id === 'trigger.submitted_at')).toHaveLength(1);
     expect(vars.filter((v) => v.id === 'trigger.source')).toHaveLength(1);
   });
 
-  it('offers no trigger system vars when no trigger type is passed (back-compat)', () => {
+  it('offers nothing (no trigger vars, no step outputs) for a null catalog', () => {
     const vars = toEditorVariables(null, STEPS, 2);
     expect(vars.some((v) => v.id.startsWith('trigger.'))).toBe(false);
+    // No catalog → no step-output templates → no step outputs either.
+    expect(vars.some((v) => v.id.startsWith('steps.'))).toBe(false);
   });
 });
 
-describe('variablesOfType — trigger system vars for a null catalog (SF2)', () => {
-  it('offers the schedule system date var when the catalog is null', () => {
-    const dates = variablesOfType(null, STEPS, 3, 'date', 'schedule');
+describe('variablesOfType — trigger system vars from the schedule catalog (SF2)', () => {
+  it('offers the schedule system date var from a form-less schedule catalog', () => {
+    const dates = variablesOfType(SCHEDULE_CATALOG, STEPS, 3, 'date');
     expect(dates.map((v) => v.path)).toContain('trigger.scheduled_at');
   });
 });
 
 describe('resolveVariableType / resolveVariable — the by-path type recovery', () => {
-  it('recovers a trigger SYSTEM var type by trigger type when the catalog is null (SF2)', () => {
-    expect(resolveVariableType('trigger.scheduled_at', null, STEPS, 'schedule')).toBe('date');
-    // The wrong trigger type does not expose the path.
-    expect(resolveVariableType('trigger.scheduled_at', null, STEPS, 'form_submitted')).toBeNull();
+  it('recovers a trigger SYSTEM var type from the catalog (SF2)', () => {
+    expect(resolveVariableType('trigger.scheduled_at', SCHEDULE_CATALOG, STEPS)).toBe('date');
+    // A path the catalog does not carry is unknown (CATALOG is form_submitted — no scheduled_at).
+    expect(resolveVariableType('trigger.scheduled_at', CATALOG, STEPS)).toBeNull();
     // resolveVariable returns the full descriptor too.
-    expect(resolveVariable('trigger.scheduled_at', null, STEPS, 'schedule')?.name).toBe('Scheduled at');
+    expect(resolveVariable('trigger.scheduled_at', SCHEDULE_CATALOG, STEPS)?.name).toBe('Scheduled at');
   });
 
   it('recovers the TRUE type from the catalog (not the degraded primitive)', () => {
@@ -332,5 +364,77 @@ describe('variableIcon — the §7.5 workflow-type → icon map', () => {
     expect(variableIcon('date')).toBe('calendar');
     expect(variableIcon('enum')).toBe('list');
     expect(variableIcon('multi')).toBe('list-checks');
+  });
+});
+
+describe('PARITY — the live catalog covers the deleted static mirrors', () => {
+  // FROZEN snapshots of the two mirrors DELETED from workflowVariables.ts (STEP_OUTPUTS +
+  // TRIGGER_SYSTEM_VARIABLES). This block is the "verify parity" gate: it proves the backend
+  // FORM-INDEPENDENT catalog (SCHEDULE_CATALOG / CATALOG fixtures) reproduces EXACTLY what
+  // those hardcoded arrays provided — both the OFFERED set and the resolve-side ids. If the
+  // backend ever changes a trigger-system var or a step output, the fixtures drift from these
+  // frozen values and this fails, flagging the change.
+  const FROZEN_STEP_OUTPUTS: Record<string, Array<{ name: string; type: WorkflowVariableType }>> = {
+    create_task: [
+      { name: 'task_id', type: 'text' },
+      { name: 'title', type: 'text' },
+    ],
+    create_form_report: [
+      { name: 'report_id', type: 'text' },
+      { name: 'report_name', type: 'text' },
+    ],
+  };
+  const FROZEN_TRIGGER_SYSTEM: Record<'schedule' | 'form_submitted', CatalogVariable[]> = {
+    schedule: [
+      { source: 'trigger', path: 'trigger.scheduled_at', name: 'Scheduled at', type: 'date' },
+    ],
+    form_submitted: [
+      { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
+      { source: 'trigger', path: 'trigger.form.id', name: 'Form ID', type: 'text' },
+      { source: 'trigger', path: 'trigger.form.name', name: 'Form name', type: 'text' },
+      { source: 'trigger', path: 'trigger.source', name: 'Source', type: 'enum', enumOptions: ['manual', 'task'] },
+      { source: 'trigger', path: 'trigger.submitted_at', name: 'Submitted at', type: 'date' },
+      { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text', nullable: true },
+    ],
+  };
+
+  /** Reproduce the OLD mirror's key-substituted step outputs for a steps list. */
+  function mirrorStepOutputs(steps: StepLike[]): CatalogVariable[] {
+    const out: CatalogVariable[] = [];
+    for (const step of steps) {
+      const key = step.key.trim();
+      if (!key) continue;
+      for (const o of FROZEN_STEP_OUTPUTS[step.type] ?? []) {
+        out.push({ source: 'steps', path: `steps.${key}.${o.name}`, name: `${key}.${o.name}`, type: o.type });
+      }
+    }
+    return out;
+  }
+
+  it('step outputs: catalog derivation === the deleted STEP_OUTPUTS mirror (key-substituted)', () => {
+    // Full position (all steps) — the raw derivation, before the OFFERED id-filter. Both the
+    // schedule and the form catalog carry every step type's templates, so both reproduce it.
+    expect(positionScopedStepOutputs(SCHEDULE_CATALOG, STEPS, STEPS.length)).toEqual(mirrorStepOutputs(STEPS));
+    expect(positionScopedStepOutputs(CATALOG, STEPS, STEPS.length)).toEqual(mirrorStepOutputs(STEPS));
+  });
+
+  it('trigger-system vars: the schedule catalog OFFERS exactly the (non-id) schedule mirror', () => {
+    const offered = FROZEN_TRIGGER_SYSTEM.schedule.filter((v) => !isIdVariable(v.path));
+    expect(triggerSystemVariables(SCHEDULE_CATALOG)).toEqual(offered);
+  });
+
+  it('trigger-system vars: the form_submitted catalog OFFERS exactly the (non-id) form mirror', () => {
+    const offered = FROZEN_TRIGGER_SYSTEM.form_submitted.filter((v) => !isIdVariable(v.path));
+    expect(triggerSystemVariables(CATALOG)).toEqual(offered);
+  });
+
+  it('the ids the mirror carried are OFFERED nowhere but still RESOLVE (SF3.2 resolve-side)', () => {
+    for (const v of FROZEN_TRIGGER_SYSTEM.form_submitted) {
+      expect(resolveVariableType(v.path, CATALOG, STEPS)).toBe(v.type);
+    }
+    expect(resolveVariableType('trigger.scheduled_at', SCHEDULE_CATALOG, STEPS)).toBe('date');
+    // Step-output ids (task_id / report_id) resolve too.
+    expect(resolveVariableType('steps.make.task_id', CATALOG, STEPS)).toBe('text');
+    expect(resolveVariableType('steps.report.report_id', CATALOG, STEPS)).toBe('text');
   });
 });

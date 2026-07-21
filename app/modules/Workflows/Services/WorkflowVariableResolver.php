@@ -60,8 +60,12 @@ use Throwable;
  */
 class WorkflowVariableResolver
 {
-    /** Roots a reference may read from — anything else is not a reference. */
-    private const ROOTS = ['trigger', 'steps'];
+    /**
+     * Roots a reference may read from — anything else is not a reference. THE single source of truth
+     * for the reference whitelist: the write-side validator ({@see \App\Modules\Workflows\Http\Requests\StoreWorkflowRequest})
+     * reads this too, so adding a root (a new catalog source) is a one-place change here (per ADR-0021).
+     */
+    public const ROOTS = ['trigger', 'steps'];
 
     /** A whole string that is EXACTLY one flat token: {{ path }}. */
     private const FLAT_STANDALONE = '/^\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}$/';
