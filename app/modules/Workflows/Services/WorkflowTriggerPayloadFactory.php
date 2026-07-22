@@ -114,7 +114,7 @@ class WorkflowTriggerPayloadFactory
      * yields an empty map.
      *
      * File answers are the exception: a raw file uuid is enriched into the snapshot list the
-     * FILE variable speaks ({id, name, mime_type, size}), so `{{trigger.fields.<id>}}` and the
+     * FILE variable speaks ({id, name, mime_type, size, url}), so `{{trigger.fields.<id>}}` and the
      * `file` condition operators see a real file rather than an opaque id.
      *
      * @return array<string, mixed>
@@ -166,7 +166,12 @@ class WorkflowTriggerPayloadFactory
      * yields a one-element list; an empty/malformed answer yields []. Files are re-queried under
      * the workspace scope, so a foreign or trashed id simply drops out.
      *
-     * @return array<int, array{id: string, name: string, mime_type: ?string, size: ?int}>
+     * `url` is the file's ACCESS-CONTROLLED serve URL ({@see File::serveUrl} → the `disk.show`
+     * route), NOT the raw storage path — a snapshot must stay safe to persist and log. It points at
+     * the ORIGINAL submission file (the id/name/mime/size do too); a create_task step later COPIES
+     * the file onto the task, and that copy has its own id/url — the snapshot is not rewritten to it.
+     *
+     * @return array<int, array{id: string, name: string, mime_type: ?string, size: ?int, url: string}>
      */
     private function fileSnapshots(mixed $value): array
     {
@@ -186,6 +191,7 @@ class WorkflowTriggerPayloadFactory
                 'name' => $file->name,
                 'mime_type' => $file->mime_type,
                 'size' => $file->size,
+                'url' => $file->serveUrl(),
             ])
             ->all();
     }

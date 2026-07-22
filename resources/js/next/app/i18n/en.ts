@@ -3035,6 +3035,19 @@ export const en = {
       formal: 'Formal',
       concise: 'Concise',
     },
+    // Variable picker structural labels (phase-2c): the qualifier joining a file composite's name
+    // to a subfield, the repeater "list" suffix, and the human labels for a file's subfields.
+    variable: {
+      qualifier: '{parent} › {sub}',
+      collection: '{name} (list)',
+      fileSubfield: {
+        id: 'ID',
+        name: 'Name',
+        type: 'Type',
+        size: 'Size',
+        url: 'URL',
+      },
+    },
     field: {
       modeLabel: 'Value or variable',
       modeValue: 'Value',

@@ -45,6 +45,14 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 ]],
                 ['id' => 'headline', 'type' => 'short_text', 'config' => ['label' => 'Headline']],
                 ['id' => 'upload', 'type' => 'image', 'config' => ['label' => 'Upload']],
+                // A SECTION with a scalar leaf (a flat top-level path) + a REPEATER whose element field
+                // is NOT a top-level path — the two regression anchors for the subfield-index scope.
+                ['id' => 'details', 'type' => 'section', 'config' => ['name' => 'Details', 'children' => [
+                    ['id' => 'note', 'type' => 'long_text', 'config' => ['label' => 'Note']],
+                ]]],
+                ['id' => 'items', 'type' => 'repeater', 'config' => ['name' => 'Items', 'children' => [
+                    ['id' => 'item_name', 'type' => 'short_text', 'config' => ['label' => 'Item name']],
+                ]]],
             ],
         ]);
     }
@@ -347,5 +355,149 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'pipeline' => [['op' => 'file_name', 'args' => []]],
             ],
         ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.attachments.pipeline']);
+    }
+
+    // ---- composite file SUBFIELD references (phase-2b.1) ----------------------
+    //
+    // A `file` variable exposes 5 referenceable scalar subfields (<file>.{id,name,type,size,url};
+    // id/name/type/url=text, size=number). The write-validation reference index now enumerates those
+    // paths, so a PIPELINE-bearing subfield ref in a structured slot type-flows from the SUBFIELD's
+    // type instead of being rejected as an unknown variable. REPEATER element subfields stay
+    // non-referenceable (per-element access is the deferred R2 loop).
+
+    public function test_accepts_a_text_pipeline_on_a_file_name_subfield(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // <file>.name is TEXT: a text op flows into the priority choice mapping. Pins that the subfield
+        // path is a KNOWN variable and its type gate accepts a text op (was a 422 unknown-path before).
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.upload.name', 'type' => 'text'],
+                'pipeline' => [
+                    ['op' => 'text_uppercase', 'args' => []],
+                    ['op' => 'match_to_choice', 'args' => [
+                        'rules' => [['when' => 'RAPORT.PDF', 'then' => 'high']],
+                        'fallback' => 'low',
+                    ]],
+                ],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_a_number_pipeline_on_a_file_size_subfield(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // <file>.size is NUMBER: a number op runs first (proving the subfield is typed number in the
+        // index), then num_to_text bridges into the priority choice mapping.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.upload.size', 'type' => 'number'],
+                'pipeline' => [
+                    ['op' => 'num_to_text', 'args' => []],
+                    ['op' => 'match_to_choice', 'args' => [
+                        'rules' => [['when' => '2048', 'then' => 'high']],
+                        'fallback' => 'low',
+                    ]],
+                ],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_a_file_subfield_pipeline_ref_persists_verbatim(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        $pipeline = [
+            ['op' => 'text_uppercase', 'args' => []],
+            ['op' => 'match_to_choice', 'args' => ['rules' => [['when' => 'RAPORT.PDF', 'then' => 'high']], 'fallback' => 'low']],
+        ];
+
+        $response = $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.upload.name', 'type' => 'text'],
+                'pipeline' => $pipeline,
+            ],
+        ]))->assertCreated();
+
+        // The subfield ref + pipeline round-trips into the stored step config unchanged.
+        $workflow = \App\Modules\Workflows\Models\Workflow::findOrFail($response->json('data.id'));
+        $priority = $workflow->steps[0]['config']['priority'];
+
+        $this->assertSame('fields.upload.name', $priority['ref']['path']);
+        $this->assertSame('text', $priority['ref']['type']);
+        $this->assertSame($pipeline, $priority['pipeline']);
+    }
+
+    public function test_rejects_a_number_op_on_a_text_file_subfield_with_the_type_gate_error(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // num_add expects a number but <file>.name is TEXT: the failure is the INPUT-TYPE gate under
+        // `.pipeline.0.op` (the same error a type-mismatched scalar ref gives), NOT an unknown-path
+        // error — proving the subfield path is now recognised by the reference index.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.upload.name', 'type' => 'text'],
+                'pipeline' => [['op' => 'num_add', 'args' => ['value' => 1]]],
+            ],
+        ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['steps.0.config.deadline.pipeline.0.op'])
+            ->assertJsonMissingValidationErrors(['steps.0.config.deadline.ref.path']);
+    }
+
+    public function test_rejects_a_pipeline_bearing_repeater_element_ref(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // fields.items.item_name is a REPEATER element — deliberately NOT enumerated (per-element
+        // access is deferred to R2), so a pipeline-bearing ref to it stays an unknown variable. The
+        // pipeline shape is otherwise valid, so the ONLY error is the unresolvable path.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.items.item_name', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'fallback' => 'low',
+                ]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.ref.path']);
+    }
+
+    public function test_accepts_a_pipeline_on_a_section_leaf_subfield(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A SECTION leaf (fields.details.note, text) is a flat top-level path already enumerated by the
+        // leaf pass — a pipeline-bearing ref to it keeps validating (unchanged by the file-subfield work).
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.details.note', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => 'urgent', 'then' => 'urgent']],
+                    'fallback' => 'low',
+                ]]],
+            ],
+        ]))->assertCreated();
     }
 }

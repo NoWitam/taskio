@@ -3002,6 +3002,19 @@ export const pl: MessageSchema = {
       formal: 'Formalny',
       concise: 'Zwięzły',
     },
+    // Etykiety struktur w wyborze zmiennych (faza-2c): łącznik nazwy pliku z podpolem, sufiks
+    // „lista" dla repeatera oraz ludzkie etykiety podpól pliku.
+    variable: {
+      qualifier: '{parent} › {sub}',
+      collection: '{name} (lista)',
+      fileSubfield: {
+        id: 'ID',
+        name: 'Nazwa',
+        type: 'Typ',
+        size: 'Rozmiar',
+        url: 'Adres URL',
+      },
+    },
     field: {
       modeLabel: 'Wartość lub zmienna',
       modeValue: 'Wartość',

@@ -102,7 +102,35 @@ class WorkflowFileAttachmentTest extends TestCase
             'name' => 'raport.pdf',
             'mime_type' => 'application/pdf',
             'size' => 1234,
+            'url' => route('disk.show', ['file' => $file->id]),
         ]], $payload['fields']['attachment']);
+    }
+
+    public function test_the_snapshot_url_is_the_access_controlled_serve_route_not_a_storage_path(): void
+    {
+        $form = Form::factory()->enabled()->create([
+            'creator_id' => $this->user->id,
+            'workspace_id' => $this->workspace->id,
+            'content' => [['id' => 'attachment', 'type' => 'image', 'config' => ['label' => 'Attachment']]],
+        ]);
+        $file = $this->diskFile(['name' => 'raport.pdf', 'mime_type' => 'application/pdf', 'size' => 1234]);
+
+        $submission = FormSubmission::factory()->create([
+            'form_id' => $form->id,
+            'workspace_id' => $this->workspace->id,
+            'data' => ['attachment' => $file->id],
+            'approved_at' => now(),
+        ]);
+
+        $url = app(WorkflowTriggerPayloadFactory::class)->fromFormSubmission($submission)['fields']['attachment'][0]['url'];
+
+        // The canonical, ACCESS-CONTROLLED serve route (auth:sanctum + RequireWorkspace + a tenant-
+        // scoped {file} binding) — the SAME builder File::serveUrl() owns and FileResource exposes as
+        // `path`. It must NEVER be the raw storage path (which would be an unguarded blob reference).
+        $this->assertSame(route('disk.show', ['file' => $file->id]), $url);
+        $this->assertSame($file->serveUrl(), $url);
+        $this->assertStringContainsString($file->id, $url);
+        $this->assertStringNotContainsString($file->path, $url);
     }
 
     public function test_an_empty_file_answer_enriches_to_an_empty_list(): void
@@ -159,6 +187,8 @@ class WorkflowFileAttachmentTest extends TestCase
     {
         $source = $this->diskFile(['name' => 'from-var.png', 'mime_type' => 'image/png', 'size' => 9]);
 
+        // The context carries the FULL snapshot shape the payload factory now builds, INCLUDING `url`
+        // — copy-on-attach must still read only the id (coerce → ids), leaving `url` inert.
         $context = [
             'trigger' => [
                 'fields' => [
@@ -167,6 +197,7 @@ class WorkflowFileAttachmentTest extends TestCase
                         'name' => $source->name,
                         'mime_type' => $source->mime_type,
                         'size' => $source->size,
+                        'url' => $source->serveUrl(),
                     ]],
                 ],
             ],
@@ -181,9 +212,12 @@ class WorkflowFileAttachmentTest extends TestCase
         $task = Task::findOrFail($output['task_id']);
         $copy = $task->files()->first();
 
+        // Copied by id via FileService::copyToModel: a NEW file row, same name, off the whole-file
+        // structural ref's ids — the added `url` key did not disturb the copy-on-attach path.
         $this->assertNotNull($copy);
         $this->assertNotSame($source->id, $copy->id);
         $this->assertSame('from-var.png', $copy->name);
+        $this->assertSame($source->name, $copy->name);
     }
 
     public function test_no_attachments_config_creates_a_task_with_no_files(): void

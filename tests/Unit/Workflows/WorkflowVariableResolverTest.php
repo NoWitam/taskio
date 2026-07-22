@@ -656,4 +656,218 @@ class WorkflowVariableResolverTest extends TestCase
         $this->expectException(RuntimeException::class);
         $this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::TEXT);
     }
+
+    // ---- structural container references (phase-2a) ---------------------------
+
+    public function test_whole_object_container_reference_resolves_to_the_nested_map(): void
+    {
+        // A SECTION answer is a nested map. Referencing the whole `object` resolves fail-soft to that
+        // map through the SAME whitelist — it NEVER throws / hits an UnhandledMatchError, because the
+        // flat wire type degrades to text (like TIME) so the resolver's defaultless coerce/normalize
+        // matches are never reached for it. Representation only — no per-element iteration.
+        $context = ['trigger' => ['fields' => ['details' => ['note' => 'hello', 'tags' => ['x', 'y']]]], 'steps' => []];
+
+        $this->assertSame(
+            ['note' => 'hello', 'tags' => ['x', 'y']],
+            $this->resolver->resolve('{{trigger.fields.details}}', $context),
+        );
+    }
+
+    public function test_whole_repeater_container_reference_resolves_to_the_list(): void
+    {
+        // A REPEATER answer is a list of item objects; the whole reference resolves to that list.
+        $context = ['trigger' => ['fields' => ['items' => [['item_name' => 'A'], ['item_name' => 'B']]]], 'steps' => []];
+
+        $this->assertSame(
+            [['item_name' => 'A'], ['item_name' => 'B']],
+            $this->resolver->resolve('{{trigger.fields.items}}', $context),
+        );
+    }
+
+    public function test_nonexistent_nested_container_path_resolves_null(): void
+    {
+        $context = ['trigger' => ['fields' => ['details' => ['note' => 'hello']]], 'steps' => []];
+
+        $this->assertNull($this->resolver->resolve('{{trigger.fields.details.nope}}', $context));
+    }
+
+    public function test_nested_leaf_under_a_container_still_resolves(): void
+    {
+        // A section's scalar CHILD stays individually addressable (the container entry is additive).
+        $context = ['trigger' => ['fields' => ['details' => ['note' => 'hello']]], 'steps' => []];
+
+        $this->assertSame('hello', $this->resolver->resolve('{{trigger.fields.details.note}}', $context));
+    }
+
+    public function test_container_reference_in_a_structured_slot_is_fail_soft_never_throws(): void
+    {
+        // A container value reaching a structured value-or-variable slot must NOT throw an
+        // UnhandledMatchError: it coerces fail-soft to the field's EXPECTED type (a nested map is not a
+        // scalar → null for TEXT; a list is wrapped for MULTI). No `object` type reaches coerce (the
+        // ref carries a degraded scalar type), so the defaultless match is unreachable — mirroring TIME.
+        $objectField = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.details', 'type' => 'text']];
+        $objectContext = ['trigger' => ['fields' => ['details' => ['note' => 'hello']]], 'steps' => []];
+        $this->assertNull($this->resolver->resolveValueOrVariable($objectField, $objectContext, WorkflowVariableType::TEXT));
+
+        $listField = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.items', 'type' => 'multi']];
+        $listContext = ['trigger' => ['fields' => ['items' => [['item_name' => 'A']]]], 'steps' => []];
+        $this->assertSame([['item_name' => 'A']], $this->resolver->resolveValueOrVariable($listField, $listContext, WorkflowVariableType::MULTI));
+    }
+
+    // ---- composite file subfield references (phase-2b) ------------------------
+
+    /**
+     * A run context carrying a single-file answer as the snapshot LIST the payload factory builds:
+     * a one-element list of {id, name, mime_type, size, url}. (A single-file input is a 1-element list.)
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function fileContext(array $overrides = []): array
+    {
+        $snapshot = $overrides + [
+            'id' => 'file-uuid-1',
+            'name' => 'raport.pdf',
+            'mime_type' => 'application/pdf',
+            'size' => 2048,
+            'url' => 'https://taskio.test/api/disk/file-uuid-1',
+        ];
+
+        return ['trigger' => ['fields' => ['attachment' => [$snapshot]]], 'steps' => []];
+    }
+
+    public function test_whole_file_resolution_is_identical_with_or_without_the_new_url_key(): void
+    {
+        // BACK-COMPAT proof: the `url` key added to the snapshot (phase-2b) does NOT change how a WHOLE
+        // file reference resolves — text still renders the name(s), structural still yields the id(s).
+        // The FILE resolver branch (stringify→name, coerce→ids) is untouched by this slice.
+        $withUrl = ['trigger' => ['fields' => ['attachment' => [
+            ['id' => 'f1', 'name' => 'a.pdf', 'mime_type' => 'application/pdf', 'size' => 9, 'url' => 'https://x/f1'],
+        ]]], 'steps' => []];
+        $withoutUrl = ['trigger' => ['fields' => ['attachment' => [
+            ['id' => 'f1', 'name' => 'a.pdf', 'mime_type' => 'application/pdf', 'size' => 9],
+        ]]], 'steps' => []];
+
+        foreach ([$withUrl, $withoutUrl] as $context) {
+            // TEXT: a standalone file directive stringifies to the NAME.
+            $this->assertSame('a.pdf', $this->resolver->resolve($this->directive('trigger.fields.attachment', 'file'), $context));
+            // TEXT: an embedded flat token stringifies to the NAME too.
+            $this->assertSame('File: a.pdf', $this->resolver->resolve('File: {{trigger.fields.attachment}}', $context));
+            // STRUCTURAL: the union coerced to FILE yields the IDS (what copy-on-attach reads).
+            $field = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.attachment', 'type' => 'file']];
+            $this->assertSame(['f1'], $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::FILE));
+        }
+    }
+
+    public function test_file_subfield_id_name_url_type_size_each_resolve(): void
+    {
+        $context = $this->fileContext();
+
+        // A standalone flat token returns the raw typed value: text subfields as strings, size as int.
+        $this->assertSame('file-uuid-1', $this->resolver->resolve('{{trigger.fields.attachment.id}}', $context));
+        $this->assertSame('raport.pdf', $this->resolver->resolve('{{trigger.fields.attachment.name}}', $context));
+        $this->assertSame('https://taskio.test/api/disk/file-uuid-1', $this->resolver->resolve('{{trigger.fields.attachment.url}}', $context));
+        // `type` is the human alias the resolver maps to the snapshot's `mime_type`.
+        $this->assertSame('application/pdf', $this->resolver->resolve('{{trigger.fields.attachment.type}}', $context));
+        // `size` preserves its numeric type through a standalone token.
+        $this->assertSame(2048, $this->resolver->resolve('{{trigger.fields.attachment.size}}', $context));
+    }
+
+    public function test_file_subfield_resolves_through_the_directive_and_union_serializations(): void
+    {
+        $context = $this->fileContext();
+
+        // Directive (embedded) → stringified into the surrounding text.
+        $md = 'File is ' . $this->directive('trigger.fields.attachment.name', 'text');
+        $this->assertSame('File is raport.pdf', $this->resolver->resolve($md, $context));
+
+        // Structured union → coerced to the field's expected scalar type.
+        $field = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.attachment.name', 'type' => 'text']];
+        $this->assertSame('raport.pdf', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_file_subfield_in_an_if_block_condition_resolves(): void
+    {
+        // A file subfield is a plain scalar, so it flows through the condition executor like any text.
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.attachment.type', [$this->step('text_equals', ['value' => 'application/pdf'])]), 'pdf'),
+            $this->branch('ELSE', null, 'other'),
+        );
+
+        $this->assertSame('pdf', $this->resolver->resolve($md, $this->fileContext()));
+    }
+
+    public function test_missing_or_non_file_subfield_is_fail_soft_null(): void
+    {
+        // An unknown tail on a real file → null (not a throw): `nope` is not a file subfield.
+        $this->assertNull($this->resolver->resolve('{{trigger.fields.attachment.nope}}', $this->fileContext()));
+
+        // A file-subfield WORD on a NON-file parent → null (the parent isn't a snapshot).
+        $nonFile = ['trigger' => ['fields' => ['note' => 'hello']], 'steps' => []];
+        $this->assertNull($this->resolver->resolve('{{trigger.fields.note.name}}', $nonFile));
+
+        // An empty file answer ([]) → collapse finds no element → null.
+        $empty = ['trigger' => ['fields' => ['attachment' => []]], 'steps' => []];
+        $this->assertNull($this->resolver->resolve('{{trigger.fields.attachment.name}}', $empty));
+    }
+
+    public function test_multi_file_subfield_takes_the_first_element_fail_soft(): void
+    {
+        // A multi-file answer collapses to its FIRST element (single-file semantics; true per-element
+        // iteration is deferred to the R2 loop) — it must degrade, NEVER crash.
+        $context = ['trigger' => ['fields' => ['attachment' => [
+            ['id' => 'f1', 'name' => 'first.pdf', 'mime_type' => 'application/pdf', 'size' => 1, 'url' => 'https://x/f1'],
+            ['id' => 'f2', 'name' => 'second.png', 'mime_type' => 'image/png', 'size' => 2, 'url' => 'https://x/f2'],
+        ]]], 'steps' => []];
+
+        $this->assertSame('first.pdf', $this->resolver->resolve('{{trigger.fields.attachment.name}}', $context));
+        $this->assertSame('f1', $this->resolver->resolve('{{trigger.fields.attachment.id}}', $context));
+    }
+
+    public function test_file_subfield_in_a_structured_slot_never_throws_unhandled_match(): void
+    {
+        // Same tripwire reasoning as TIME/object: a file subfield ref carries a PLAIN scalar type, so
+        // it coerces fail-soft and NEVER reaches the resolver's defaultless coerce match with an
+        // `object`/unhandled base. The WHOLE-file ref still coerces via the existing FILE arm.
+        $context = $this->fileContext();
+
+        $subfield = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.attachment.size', 'type' => 'number']];
+        $this->assertSame(2048, $this->resolver->resolveValueOrVariable($subfield, $context, WorkflowVariableType::NUMBER));
+
+        $whole = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.attachment', 'type' => 'file']];
+        $this->assertSame(['file-uuid-1'], $this->resolver->resolveValueOrVariable($whole, $context, WorkflowVariableType::FILE));
+    }
+
+    public function test_file_subfield_pipeline_resolves_at_runtime(): void
+    {
+        // The write-side now accepts a pipeline-bearing file-subfield ref; the runtime must actually
+        // execute it. A text pipeline on <file>.name and a number pipeline on <file>.size each flow
+        // from the SUBFIELD's type (carried on the ref) through the executor to the coerced result.
+        $context = $this->fileContext();
+
+        $nameField = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.attachment.name', 'type' => 'text'],
+            'pipeline' => [['op' => 'text_uppercase', 'args' => []]],
+        ];
+        $this->assertSame('RAPORT.PDF', $this->resolver->resolveValueOrVariable($nameField, $context, WorkflowVariableType::TEXT));
+
+        $sizeField = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.attachment.size', 'type' => 'number'],
+            'pipeline' => [['op' => 'num_add', 'args' => ['value' => 1]]],
+        ];
+        // The number executor works in float, so 2048 + 1 → 2049.0 (the coerced numeric terminal).
+        $this->assertSame(2049.0, $this->resolver->resolveValueOrVariable($sizeField, $context, WorkflowVariableType::NUMBER));
+    }
+
+    public function test_a_genuine_nested_field_named_like_a_subfield_still_resolves_directly(): void
+    {
+        // Guard: the subfield collapse is a FALLBACK only when Arr::get misses. A real nested map with
+        // its own `name`/`type` key (e.g. a section child) resolves directly and is never intercepted.
+        $context = ['trigger' => ['fields' => ['details' => ['name' => 'Ada', 'type' => 'admin']]], 'steps' => []];
+
+        $this->assertSame('Ada', $this->resolver->resolve('{{trigger.fields.details.name}}', $context));
+        $this->assertSame('admin', $this->resolver->resolve('{{trigger.fields.details.type}}', $context));
+    }
 }

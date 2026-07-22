@@ -121,6 +121,19 @@ class File extends AbstractModel implements InterfacesHasChangelog
     }
 
     /**
+     * The canonical, ACCESS-CONTROLLED URL that serves this file's bytes — the named `disk.show`
+     * route. It is the ONLY safe public reference to a file: NEVER the raw storage `path`, and gated
+     * end-to-end (auth:sanctum + RequireWorkspace + a tenant-scoped {file} binding that 404s a
+     * foreign/trashed id), so it is not a forever-public or unguarded link. This is the single source
+     * of truth other layers reuse — {@see FileResource} exposes it as `path`, and the Workflows file
+     * snapshot embeds it as `url` — so the serve URL is defined in exactly one place.
+     */
+    public function serveUrl(): string
+    {
+        return route('disk.show', ['file' => $this->id]);
+    }
+
+    /**
      * A temp upload: no container yet — `fileable_type` NULL, an uploaded-but-not-attached file.
      * A disk file (fileable_type 'folder', even at the ROOT where fileable_id is NULL) and a
      * resource file (task attachment, report) both carry a fileable_type, so neither is a temp.

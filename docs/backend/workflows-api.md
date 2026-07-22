@@ -124,6 +124,28 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > PHP format string). See **ADR-0022-workflows-variable-typesystem-phase1.md** for the full design
 > record and "Structured `descriptor`", "Per-reference defaults", and "Presence, null-handling,
 > and date-format ops" below for the wire contracts.
+>
+> **Structural types — `object`/`array<object>` containers + the `file` composite (this revision,
+> Phase 2 of the variable-typesystem rework) — ADDITIVE, representation only, no breaking
+> change.** A catalog variable's `descriptor` may now also carry a recursive `fields` list. A form
+> SECTION additionally surfaces as an `object` catalog variable grouping its children — its
+> existing flat leaf variables (`section.field`) are UNCHANGED and still the only thing a
+> condition/reference actually resolves against. A REPEATER's exclusion (see "Repeaters are
+> EXCLUDED from the catalog" below) is LIFTED the same way: it now surfaces as ONE `array<object>`
+> entry so the editor can see it exists, though it still has no per-element path. Both bases are
+> descriptor-only, mirroring the `TIME` tripwire (Decision 2 of ADR-0022): flat wire `type`
+> degrades to `text`, `operatorCases()` is `[]`. A `file` variable's descriptor now ALSO carries
+> its fixed `{id,name,type,size,url}` subfields — but, unlike `object`, its flat wire `type` stays
+> `file`, so text→name, structural→id(s), copy-on-attach, and the `filled`/`empty` condition
+> operators are all UNCHANGED. The trigger snapshot itself gains a `url` key
+> (`File::serveUrl()` → the access-controlled `disk.show` route, never a raw storage path). All 5
+> subfield paths are individually referenceable, including as PIPELINE-bearing references (the
+> write-validation reference index now enumerates them); a repeater's element subfields are
+> deliberately NOT. This is REPRESENTATION ONLY — looping a repeater or a multi-file answer is
+> explicitly out of scope, deferred to R2-Generator. See
+> **ADR-0023-workflows-variable-typesystem-phase2.md** for the full design record (including why
+> this is a DIFFERENT slice of work than the "Phase 2" items ADR-0022 deferred) and "Structural
+> descriptor: object containers & the file composite" below for the wire contracts.
 
 ---
 
@@ -808,6 +830,13 @@ scalar/flat-set, so emitting a variable for one would be a dead path (a referenc
 resolves to something the condition evaluator or a step config could never meaningfully use).
 See ADR-0009 §7.
 
+**Update (Phase 2a, ADR-0023) — that exclusion is now narrower.** A repeater still has no FLAT
+LEAF variable of its own (the statement above is unchanged for that case), but it now ALSO
+surfaces as ONE `array<object>` container entry — see "Structural descriptor: object containers &
+the file composite" below. A SECTION, similarly, now ALSO surfaces as an `object` container
+alongside its unchanged flat leaves. Neither container is a condition source or offers a
+per-element path.
+
 ---
 
 ### GET /api/workflows/catalog
@@ -1381,6 +1410,137 @@ See **ADR-0022-workflows-variable-typesystem-phase1.md** for the full design rec
 additive `descriptor` field instead of reshaping the flat one, the TIME loud-tripwire trade-off,
 and why the default is a plain literal rather than a nested reference).
 
+### Structural descriptor: object containers & the file composite (phase-2a/2b/2b.1, additive)
+
+`descriptor` may now also carry a recursive `fields` list — `{ base, nullable, array, options?,
+fields? }` — for three structural shapes, layered additively on top of the phase-1a shape above.
+Nothing about the flat `type`/`enumOptions` contract changes for any existing
+scalar/enum/multi/date/boolean/text variable; `fields` is present only where noted below.
+
+**1. A form SECTION also surfaces as an `object` container (`array:false`), additive alongside its
+unchanged flat leaves.** `WorkflowVariableCatalogService::containerVariables()` walks the form's
+top-level schema fragments; a section's own catalog entry groups its children, but every child is
+STILL ALSO emitted as its own flat `section.field` variable exactly as before — a reference to
+`trigger.fields.details.note` keeps resolving unchanged; the container entry is a new, additional
+view of the same data, not a replacement path.
+
+```json
+{ "source": "trigger", "path": "trigger.fields.details", "name": "Details", "type": "text",
+  "descriptor": { "base": "object", "nullable": false, "array": false,
+    "fields": [
+      { "key": "note", "label": "Note", "descriptor": { "base": "text", "nullable": false, "array": false } }
+    ] } }
+```
+
+**2. A REPEATER's exclusion (see "Repeaters are EXCLUDED from the catalog" above) is lifted the
+same way — it now surfaces as ONE `array<object>` container (`array:true`).** Unlike a section, a
+repeater's element fields have NO flat leaf of their own (`fields.items.item_name` is still
+unresolvable — nothing changed there); they exist ONLY inside `descriptor.fields`.
+
+```json
+{ "source": "trigger", "path": "trigger.fields.items", "name": "Items", "type": "text",
+  "descriptor": { "base": "object", "nullable": false, "array": true,
+    "fields": [
+      { "key": "item_name", "label": "Item name", "descriptor": { "base": "text", "nullable": false, "array": false } }
+    ] } }
+```
+
+Both container bases are DESCRIPTOR-ONLY, mirroring the `TIME` tripwire (ADR-0022 Decision 2): the
+flat wire `type` degrades to `text` (`WorkflowVariableCatalogService::flatType()`) and
+`operatorCases()` is `[]` — never a condition source. `conditionFields()` additionally filters out
+every `descriptor.base === 'object'` entry before building the condition-field list, so a
+container never mis-advertises itself as a text-conditionable field. A container carries no
+`field_id` and no flat `enumOptions`. Only a form's TOP-LEVEL section/repeater gets its own catalog
+entry — a container nested inside another container (a section inside a repeater, say) is visible
+only inside its parent's recursive `fields`, with no flat leaf and no reference-index path of its
+own.
+
+**3. A `file` variable's descriptor now ALSO carries its fixed composite subfields — but, unlike
+`object`, the flat wire `type` STAYS `file`.** `id`/`name`/`type`/`url` are `text`, `size` is
+`number` — the single source is `WorkflowVariableType::fileSubfieldTypes()`, which both the
+descriptor and the reference index below read from, so the three can never disagree:
+
+```json
+{ "source": "trigger", "path": "trigger.fields.attachment", "name": "Attachment", "type": "file",
+  "descriptor": { "base": "file", "nullable": false, "array": false,
+    "fields": [
+      { "key": "id",   "label": "id",   "descriptor": { "base": "text",   "nullable": false, "array": false } },
+      { "key": "name", "label": "name", "descriptor": { "base": "text",   "nullable": false, "array": false } },
+      { "key": "type", "label": "type", "descriptor": { "base": "text",   "nullable": false, "array": false } },
+      { "key": "size", "label": "size", "descriptor": { "base": "number", "nullable": false, "array": false } },
+      { "key": "url",  "label": "url",  "descriptor": { "base": "text",   "nullable": false, "array": false } }
+    ] } }
+```
+
+Unlike a section/repeater child (whose `label` is the real human label authored in the form
+builder), a file subfield's backend `label` is just its own key (`'name'`, `'size'`, …) — the
+frontend supplies the human-facing label (`"Name"`/`"Size"`, localized) purely client-side, the
+same way `operations`/`ai_personas`/`types` are already localized. Because the flat wire `type`
+for a FILE variable is untouched (still `file`, never degraded), every existing file behavior is
+unchanged: a text field still stringifies to the name, a structured slot still coerces to the
+id(s) (what `create_task`'s copy-on-attach reads), and the condition operator set stays
+`filled`/`empty`.
+
+**The trigger file snapshot gains a `url` key** (`WorkflowTriggerPayloadFactory::fileSnapshots()`)
+— the file's own access-controlled serve route, built by the new
+`App\Modules\Disk\Models\File::serveUrl()` (`route('disk.show', [...])`), NEVER the raw storage
+path. `disk.show` is gated end-to-end (`auth:sanctum` + `RequireWorkspace` + a tenant-scoped
+`{file}` binding that 404s a foreign/trashed id), so embedding it in a persisted/logged snapshot is
+safe — it is not a forever-public link. The snapshot is built from, and always describes, the
+ORIGINAL submission file; a later `create_task` step's copy-on-attach creates a new file with its
+own id/url, and the trigger snapshot is never rewritten to point at the copy:
+
+```json
+[{ "id": "b1b2c3d4-...", "name": "raport.pdf", "mime_type": "application/pdf", "size": 1234,
+   "url": "https://app.taskio.test/api/disk/b1b2c3d4-..." }]
+```
+
+**File subfield paths are individually referenceable — including as PIPELINE-bearing references
+(phase-2b.1) — because `referenceIndex()` and `runtimeTypeMap()` now enumerate all 5 of them for
+every FILE-typed entry**, single-sourced from `WorkflowVariableType::fileSubfieldTypes()`. A
+value-or-variable pipeline may therefore target e.g. `trigger.fields.attachment.name` (type-flows
+as `text`) or `trigger.fields.attachment.size` (type-flows as `number`) — a wrong-typed op on one
+now fails with the ordinary `422` type-mismatch error under `.pipeline.<m>.op`, not "unknown
+variable". At RUNTIME, `WorkflowVariableResolver` resolves a subfield reference through the SAME
+directive/union/if-block/flat-token machinery every other path already uses — a file answer
+(always a snapshot list, even for one file) collapses to its single element to read the subfield;
+a multi-element list takes the FIRST, fail-soft (true per-element access is out of scope — see
+below). **A REPEATER element's subfield (e.g. `fields.items.item_name`) is deliberately NOT
+enumerated** by either table — a pipeline-bearing reference to one still resolves to an unknown
+variable, `422`.
+
+```
+@[variable]("{\"v\":1,\"data\":{\"id\":\"trigger.fields.attachment.name\",\"name\":\"Attachment › Name\",\"type\":\"text\",\"locked\":false}}")
+```
+
+```json
+{ "kind": "variable", "ref": { "source": "trigger", "path": "trigger.fields.attachment.name", "type": "text" },
+  "pipeline": [{ "op": "text_uppercase", "args": [] }] }
+```
+
+**Frontend consumption.** The editor's variable picker (`expandVariables()` in
+`workflowVariables.ts`, feeding `toEditorVariables`/`toEditorVariablesTyped`/`variablesOfType`)
+expands a FILE composite into its unchanged whole-file entry PLUS one pickable per subfield (path
+`<file>.<key>`, a qualified display name like "Attachment › Name", the subfield's own scalar
+type — including its `.id`, which deliberately bypasses the SF3.2 rule that otherwise hides system
+identifiers). A SECTION contributes NOTHING new to the picker (its leaves are already flat
+top-level entries — re-offering the whole object, which resolves to a nested map, would only
+duplicate/confuse). A REPEATER contributes exactly ONE entry, relabelled with a "(list)" suffix, no
+children. `CatalogVariableDescriptor.base` (TypeScript) widened to accept `'object'`; a new
+recursive `CatalogDescriptorField` interface backs `descriptor.fields`; `CatalogType.id` widened to
+tolerate the two descriptor-only ids (`'time'`, `'object'`) the catalog's `types[]` list now also
+carries — none of this touches the closed, 8-member `WorkflowVariableType` union a variable's own
+flat `type` still uses.
+
+**This is REPRESENTATION ONLY.** Making the whole form structure — and a file's own facets —
+visible/referenceable is the entire scope of this phase; actually LOOPING a repeater or a
+multi-file answer (iterating per element with its own binding) is explicitly OUT OF SCOPE, deferred
+to R2-Generator. See **ADR-0023-workflows-variable-typesystem-phase2.md** for the full design
+record, including why this is a DIFFERENT slice of work than the "Phase 2" items ADR-0022 named as
+deferred (`TIME` runtime semantics, the presence-op `walkPipeline` asymmetry, the two defensive
+hardening items) — none of those three are touched by this phase; see "Accepted residual risks"
+below.
+
 ---
 
 ## Runtime operations, if-blocks, and AI text (SB1 / SB2)
@@ -1543,6 +1703,12 @@ descriptor-only this phase (see "Structured `descriptor`" above), so it carries 
 `operations` grows from 68 to **77** (72 immediately before this phase, +5 append-only —
 `coalesce`/`is_present`/`is_null`/`assert_present`/`date_format`, see "Presence, null-handling,
 and date-format ops" below).
+
+**Phase 2 addition (append-only).** `types` gains a 9th entry, `{ id: "object", primitive: "text",
+operators: [] }` — `WorkflowVariableType::OBJECT` is descriptor-only, the same tripwire as `time`
+(see "Structural descriptor: object containers & the file composite" above). `operations` is
+UNCHANGED at 77 — this phase added no new pipeline operations, only catalog/reference-index/
+resolver-lookup surface.
 
 ### d. Write-time validation — runtime-only vs. validated
 
@@ -2391,6 +2557,32 @@ These are documented, reviewed trade-offs — not a TODO list.
   it means a presence op is only writable at the START of a value-or-variable pipeline when the
   reference is itself `text`-typed. Relaxing `walkPipeline` to mirror the executor's bypass is
   deferred to Phase 2. See ADR-0022.
+- **"Phase 2" of the variable-typesystem rework turned out to be structural types, not the three
+  items named above.** ADR-0022 used "Phase 2" to name three specific follow-ups: `TIME` gaining
+  real runtime semantics, the `walkPipeline` presence-op asymmetry immediately above, and two
+  defensive hardening items (next bullet's `normalizeInput` gap, and write-time `date_format`
+  pattern validation). The actual next batch shipped `object`/`array<object>` containers and the
+  `file` composite instead (ADR-0023) — none of the three files those items live in
+  (`WorkflowConditionTreeValidator`, `WorkflowOperationExecutor`, the TIME resolver/evaluator arms)
+  were touched. All three remain outstanding, now deferred to a later, unnumbered phase — see
+  "Planned / deferred" below.
+- **A structural container (`object`/`array<object>`) is representation-only — no loop, no
+  per-element access (Phase 2a, ADR-0023).** A repeater's own catalog entry, and a file's
+  composite subfields, make the WHOLE form structure and a file's own facets visible/referenceable;
+  they do not add a way to iterate a repeater's elements or a multi-file answer. Actually looping
+  is out of scope, explicitly deferred to R2-Generator (which needs its own element-cardinality /
+  output-binding design).
+- **A file's `descriptor.array` is `false` for every field shipped today, even though the
+  resolver's subfield collapse is already defensively multi-file-aware (Phase 2b, ADR-0023).** No
+  form-builder surface exists to author a field that accepts more than one file, so
+  `WorkflowVariableResolver::collapseFileSnapshot()`'s "take the first element, fail-soft" behavior
+  is forward-defensive plumbing for a shape the type already declares support for, not evidence of
+  a shipped multi-file capability.
+- **A container nested inside another container has no referenceable path of its own (Phase 2a,
+  ADR-0023).** Only a form's TOP-LEVEL section/repeater gets its own catalog entry; a section
+  nested inside a repeater (or vice versa) is visible only inside its parent's recursive
+  `descriptor.fields`, with no flat leaf and no reference-index path — not referenceable at all,
+  not even as a whole object, until a real per-element loop context exists to give it one.
 
 ---
 
@@ -2461,6 +2653,12 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `tests/Unit/Workflows/WorkflowOperationExecutorTest.php`, `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — phase-1b presence/date-format/default coverage
 - `tests/Feature/WorkflowVariableCatalogTest.php` — phase-1a `descriptor` coverage
 - `docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md` — this phase's design record
+- `app/modules/Disk/Models/File.php` — `serveUrl()` (phase-2b), the `disk.show` URL builder the trigger file snapshot's `url` key reuses
+- `tests/Feature/WorkflowFileAttachmentTest.php` — the file snapshot's `url` key, incl. the "not a storage path" pin (phase-2b)
+- `tests/Feature/WorkflowStepValuePipelineValidationTest.php` — file-subfield pipeline write validation, incl. the repeater-element-ref rejection (phase-2b.1)
+- `resources/js/next/pages/workflows/workflowVariables.ts` — `expandVariables()`/`descriptorBaseToType()`, the structural-descriptor FE expansion (phase-2c)
+- `resources/js/next/pages/workflows/types.ts` — `CatalogDescriptorField`, the widened `CatalogVariableDescriptor.base`/`CatalogTypeId` (phase-2c)
+- `docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md` — this phase's design record (object/array<object> containers, the file composite, phase-2a/2b/2b.1/2c)
 
 ## Planned / deferred (not implemented)
 
@@ -2506,3 +2704,14 @@ These are documented, reviewed trade-offs — not a TODO list.
   failing closed (no such call exists today). `date_format`'s `pattern` arg is validated at write
   time only as a generic string, not against the safe-token whitelist — a malformed pattern is
   only caught at RUN time (fails soft), never a `422`. See ADR-0022.
+- **Update: the three items immediately above are STILL deferred — Phase 2 (ADR-0023, this
+  revision) shipped structural types instead.** `object`/`array<object>` containers and the `file`
+  composite (see "Structural descriptor: object containers & the file composite") turned out to be
+  the next batch; none of the three items above were addressed by it. They remain deferred to a
+  later, unnumbered phase.
+- **Repeater / multi-file per-element LOOP execution** (deferred to R2-Generator, named explicitly
+  by ADR-0023): a repeater now has its own `array<object>` catalog entry and a file's composite
+  subfields are individually referenceable (Phase 2a/2b), but nothing added a way to iterate a
+  repeater's elements or a multi-file answer — no per-element path, no loop binding. This needs
+  R2-Generator's own element-cardinality / output-binding design, not an incremental extension of
+  the catalog-visibility work this phase did.

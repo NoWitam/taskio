@@ -159,6 +159,14 @@ additive.
   user has an autosave draft for the file (per-user, computed via a `withExists` subquery — the
   draft endpoints are documented below). It is `false` on every single-file / upload / replace /
   items response, so the grid is its sole consumer.
+- **`path`'s URL is also exposed as a model method, `File::serveUrl()`** — the identical
+  `route('disk.show', ['file' => $this->id])` shape built here, added so a caller OUTSIDE this
+  resource can reuse the same access-controlled URL without constructing the route by hand. The
+  Workflows module's FILE variable trigger snapshot embeds it as a new `url` key (variable-
+  typesystem rework, Phase 2b) — never the raw storage path, gated by the same `auth:sanctum` +
+  `RequireWorkspace` + tenant-scoped binding as this endpoint. See
+  `docs/backend/workflows-api.md`'s "Structural descriptor: object containers & the file composite"
+  and [ADR-0023](../decisions/ADR-0023-workflows-variable-typesystem-phase2.md).
 
 ### FolderResource
 

@@ -99,6 +99,21 @@ class WorkflowVariableResolver
     /** Distinct from null so a genuine null context value is not read as "missing". */
     private const MISSING = "\0__workflow_resolver_missing__\0";
 
+    /**
+     * The composite SUBFIELDS a `<file>.<subfield>` reference may address, mapped to their key in the
+     * file snapshot object. `type` is the human-facing alias for the snapshot's `mime_type`; the rest
+     * are identity. These are exactly the fields WorkflowVariableType's file descriptor advertises
+     * (phase-2b). Resolving one collapses the single-file snapshot LIST to its element (multi-file →
+     * first, fail-soft — true per-element iteration is the deferred R2 loop) then reads the mapped key.
+     */
+    private const FILE_SUBFIELDS = [
+        'id' => 'id',
+        'name' => 'name',
+        'type' => 'mime_type',
+        'size' => 'size',
+        'url' => 'url',
+    ];
+
     /** Recursion cap for nested if-blocks (margin over the editor's default maxDepth=3). */
     private const IF_BLOCK_MAX_DEPTH = 6;
 
@@ -212,7 +227,7 @@ class WorkflowVariableResolver
 
         // Standalone flat token → typed value (transitional).
         if (preg_match(self::FLAT_STANDALONE, $value, $m) === 1) {
-            return $this->isReference($m[1]) ? Arr::get($context, $m[1]) : $value;
+            return $this->isReference($m[1]) ? $this->readContext($context, $m[1]) : $value;
         }
 
         // Embedded: replace directives first, then flat tokens, stringifying each. Each RESOLVED
@@ -241,7 +256,7 @@ class WorkflowVariableResolver
                 return $m[0]; // non-reference flat token: leave literal
             }
 
-            return $this->stringify(Arr::get($context, $m[1]));
+            return $this->stringify($this->readContext($context, $m[1]));
         }, $value);
 
         return $stash === [] ? $value : strtr($value, $stash);
@@ -284,7 +299,7 @@ class WorkflowVariableResolver
     {
         $ref = $field['ref'] ?? null;
         $path = $this->refPath($ref);
-        $raw = $path !== null && $this->isReference($path) ? Arr::get($context, $path) : null;
+        $raw = $path !== null && $this->isReference($path) ? $this->readContext($context, $path) : null;
         $raw = $this->applyDefault($raw, $field['default'] ?? null);
 
         $pipeline = $field['pipeline'] ?? null;
@@ -321,7 +336,7 @@ class WorkflowVariableResolver
             return null;
         }
 
-        $raw = $this->applyDefault(Arr::get($context, $directive['id']), $directive['default']);
+        $raw = $this->applyDefault($this->readContext($context, $directive['id']), $directive['default']);
 
         if ($directive['pipeline'] === []) {
             // A directive ONLY ever lives in a text FIELD (never a structured value-or-variable
@@ -351,7 +366,7 @@ class WorkflowVariableResolver
             return $original;
         }
 
-        $raw = $this->applyDefault(Arr::get($context, $directive['id']), $directive['default']);
+        $raw = $this->applyDefault($this->readContext($context, $directive['id']), $directive['default']);
 
         if ($directive['pipeline'] === []) {
             return $this->stringify($raw);
@@ -807,7 +822,7 @@ class WorkflowVariableResolver
             return false;
         }
 
-        $raw = Arr::get($context, $variableId, self::MISSING);
+        $raw = $this->readContext($context, $variableId, self::MISSING);
 
         if ($raw === self::MISSING) {
             return false;
@@ -916,6 +931,78 @@ class WorkflowVariableResolver
     private function isReference(string $path): bool
     {
         return in_array(explode('.', $path, 2)[0], self::ROOTS, true);
+    }
+
+    /**
+     * Read a whitelisted dotted PATH off the run context. Ordinary paths resolve through Arr::get
+     * exactly as before; the ONE addition (append-only, phase-2b) is FILE-SUBFIELD access — a path
+     * whose tail is `…<file>.name` / `.url` / `.id` / `.size` / `.type` that Arr::get can NOT resolve
+     * directly (a file answer is a snapshot LIST, so the subfield is a level down) is served by
+     * collapsing the parent snapshot to its single file and reading the mapped key. $default is
+     * returned when neither the direct nor the subfield lookup finds anything (callers pass the MISSING
+     * sentinel when they must tell an absent path from a genuine null). The FILE resolver branch
+     * (coerce/stringify of a WHOLE file) is untouched — this only widens PATH lookup, and only the
+     * caller's own whitelist gate decides which paths ever reach here (never a new root).
+     */
+    private function readContext(array $context, string $path, mixed $default = null): mixed
+    {
+        $direct = Arr::get($context, $path, self::MISSING);
+
+        if ($direct !== self::MISSING) {
+            return $direct;
+        }
+
+        return $this->readFileSubfield($context, $path, $default);
+    }
+
+    /**
+     * The FILE-SUBFIELD fallback for readContext: split the path at its LAST segment; when that segment
+     * is a known file subfield AND the parent resolves to a file snapshot (collapsed to a single file),
+     * return the mapped snapshot key (even when its stored value is null — array_key_exists, so a null
+     * mime reads as null, not "absent"). Anything else → $default. NEVER throws: a non-file parent, an
+     * empty list, or an unknown tail all degrade to $default (fail-soft).
+     */
+    private function readFileSubfield(array $context, string $path, mixed $default): mixed
+    {
+        $dot = strrpos($path, '.');
+
+        if ($dot === false) {
+            return $default;
+        }
+
+        $snapshotKey = self::FILE_SUBFIELDS[substr($path, $dot + 1)] ?? null;
+
+        if ($snapshotKey === null) {
+            return $default;
+        }
+
+        $file = $this->collapseFileSnapshot(Arr::get($context, substr($path, 0, $dot)));
+
+        if ($file === null || !array_key_exists($snapshotKey, $file)) {
+            return $default;
+        }
+
+        return $file[$snapshotKey];
+    }
+
+    /**
+     * Collapse a file answer to a SINGLE snapshot object: a bare snapshot passes through; a snapshot
+     * LIST yields its first element (single-file semantics — a multi-file field takes the first,
+     * fail-soft, with true per-element iteration deferred to the R2 loop). A non-snapshot → null.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function collapseFileSnapshot(mixed $value): ?array
+    {
+        if ($this->isFileSnapshot($value)) {
+            return $value;
+        }
+
+        if (is_array($value) && $this->isFileSnapshot($value[0] ?? null)) {
+            return $value[0];
+        }
+
+        return null;
     }
 
     /**

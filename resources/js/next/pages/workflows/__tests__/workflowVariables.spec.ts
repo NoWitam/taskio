@@ -3,8 +3,9 @@
 // the POSITION scoping (a field sees the trigger + EARLIER steps only), and the
 // editor-primitive DEGRADE rule (date/enum/multi → text inside a directive). These
 // are guarded WITHOUT mounting an editor.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  descriptorBaseToType,
   editorPrimitive,
   isIdVariable,
   positionScopedStepOutputs,
@@ -20,6 +21,7 @@ import {
   variablesOfType,
   type StepLike,
 } from '../workflowVariables';
+import { setLocale } from '../../../app/i18n';
 import type { CatalogVariable, WorkflowCatalog, WorkflowVariableType } from '../types';
 
 /** Build a `@[variable]("<escaped-json>")` directive the way the editor serializes it. */
@@ -553,5 +555,180 @@ describe('PARITY — the live catalog covers the deleted static mirrors', () => 
     // Step-output ids (task_id / report_id) resolve too.
     expect(resolveVariableType('steps.make.task_id', CATALOG, STEPS)).toBe('text');
     expect(resolveVariableType('steps.report.report_id', CATALOG, STEPS)).toBe('text');
+  });
+});
+
+describe('structural descriptors — file subfields / section / repeater (phase-2c)', () => {
+  // Force `en` so the qualified-name assertions read the English labels (the module localizes
+  // the subfield labels + the qualifier/list suffix via the shared i18n singleton).
+  beforeEach(() => setLocale('en'));
+
+  // A catalog mirroring the phase-2a/2b backend shapes (WorkflowVariableCatalogTest):
+  //   • a FILE composite (whole-file entry type 'file' + the fixed {id,name,type,size,url} fields),
+  //   • a SECTION container (base object, array:false) WITH its flat leaves also emitted,
+  //   • a REPEATER container (base object, array:true) with NO flat leaves.
+  const STRUCTURAL_CATALOG: WorkflowCatalog = {
+    variables: [
+      {
+        source: 'trigger',
+        path: 'trigger.fields.attachment',
+        name: 'Attachment',
+        type: 'file',
+        descriptor: {
+          base: 'file',
+          nullable: false,
+          array: false,
+          fields: [
+            { key: 'id', label: 'id', descriptor: { base: 'text', nullable: false, array: false } },
+            { key: 'name', label: 'name', descriptor: { base: 'text', nullable: false, array: false } },
+            { key: 'type', label: 'type', descriptor: { base: 'text', nullable: false, array: false } },
+            { key: 'size', label: 'size', descriptor: { base: 'number', nullable: false, array: false } },
+            { key: 'url', label: 'url', descriptor: { base: 'text', nullable: false, array: false } },
+          ],
+        },
+      },
+      // The SECTION container (flat wire type degrades object → text) …
+      {
+        source: 'trigger',
+        path: 'trigger.fields.details',
+        name: 'Details',
+        type: 'text',
+        descriptor: {
+          base: 'object',
+          nullable: false,
+          array: false,
+          fields: [
+            { key: 'note', label: 'Note', descriptor: { base: 'text', nullable: false, array: false } },
+          ],
+        },
+      },
+      // … and its flat leaves, ALSO emitted top-level by the backend leaf pass.
+      { source: 'trigger', path: 'trigger.fields.details.note', name: 'Note', type: 'text' },
+      { source: 'trigger', path: 'trigger.fields.details.section_tags', name: 'Section tags', type: 'multi', enumOptions: ['x', 'y'] },
+      // The REPEATER container (flat wire type degrades object → text), NO flat leaves.
+      {
+        source: 'trigger',
+        path: 'trigger.fields.items',
+        name: 'Items',
+        type: 'text',
+        descriptor: {
+          base: 'object',
+          nullable: false,
+          array: true,
+          fields: [
+            { key: 'item_name', label: 'Item name', descriptor: { base: 'text', nullable: false, array: false } },
+          ],
+        },
+      },
+    ],
+    fields: [],
+  };
+
+  const sub = (vars: Array<{ id: string; type: string; name: string }>, key: string) =>
+    vars.find((v) => v.id === `trigger.fields.attachment.${key}`);
+
+  it('expands a FILE composite into the whole-file entry + 5 subfield pickables with scalar types', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+
+    // The whole-file entry is preserved unchanged (type stays 'file').
+    expect(vars.find((v) => v.id === 'trigger.fields.attachment')?.type).toBe('file');
+
+    // One pickable per subfield, path `<file>.<key>`, scalar type (size = number, the rest text).
+    expect(sub(vars, 'id')?.type).toBe('text');
+    expect(sub(vars, 'name')?.type).toBe('text');
+    expect(sub(vars, 'type')?.type).toBe('text');
+    expect(sub(vars, 'size')?.type).toBe('number');
+    expect(sub(vars, 'url')?.type).toBe('text');
+
+    // Exactly whole-file + 5 subfields for the attachment path family.
+    expect(vars.filter((v) => v.id.startsWith('trigger.fields.attachment')).length).toBe(6);
+  });
+
+  it('gives each file subfield a QUALIFIED `<parent> › <sub>` display name (localized sub label)', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+    expect(sub(vars, 'name')?.name).toBe('Attachment › Name');
+    expect(sub(vars, 'size')?.name).toBe('Attachment › Size');
+    expect(sub(vars, 'url')?.name).toBe('Attachment › URL');
+  });
+
+  it('offers file subfields at their scalar type through variablesOfType (incl. the `.id` subfield)', () => {
+    const text = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'text').map((v) => v.path);
+    const number = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'number').map((v) => v.path);
+    const file = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'file').map((v) => v.path);
+
+    // `.name`/`.type`/`.url`/`.id` are text; `.size` is number — flowing to the right typed fields.
+    expect(text).toContain('trigger.fields.attachment.name');
+    expect(text).toContain('trigger.fields.attachment.url');
+    // A file's `.id` IS pickable (it BYPASSES the SF3.2 id-strip that hides system ids).
+    expect(text).toContain('trigger.fields.attachment.id');
+    expect(number).toContain('trigger.fields.attachment.size');
+    // The file-typed picker still sees ONLY the whole-file entry, never a subfield.
+    expect(file).toEqual(['trigger.fields.attachment']);
+  });
+
+  it('surfaces a REPEATER as ONE list entry (relabelled) with NO per-element subfields', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+    const items = vars.filter((v) => v.id === 'trigger.fields.items');
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe('Items (list)'); // clearly labelled as a collection
+    expect(items[0].type).toBe('text'); // the flat wire type (object degrades to text)
+    // No per-element subfield is pickable (per-element access is deferred to R2).
+    expect(vars.some((v) => v.id.startsWith('trigger.fields.items.'))).toBe(false);
+  });
+
+  it('drops the SECTION whole-object entry and does NOT duplicate its flat leaves', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+    // The confusing whole-section object entry (resolves to a map) is not offered.
+    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(false);
+    // Its flat leaves appear EXACTLY once (they are already top-level variables).
+    expect(vars.filter((v) => v.id === 'trigger.fields.details.note')).toHaveLength(1);
+    expect(vars.filter((v) => v.id === 'trigger.fields.details.section_tags')).toHaveLength(1);
+  });
+
+  it('the primitive feed expands the same way (file subfields degrade to text/number)', () => {
+    const vars = toEditorVariables(STRUCTURAL_CATALOG, [], 0);
+    expect(sub(vars, 'name')?.type).toBe('text');
+    expect(sub(vars, 'size')?.type).toBe('number');
+    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(false); // section dropped
+    expect(vars.filter((v) => v.id === 'trigger.fields.items')).toHaveLength(1); // repeater once
+  });
+
+  it('descriptorBaseToType degrades the DESCRIPTOR-ONLY bases to text, mirroring `time`', () => {
+    // `object` (section/repeater) + `time` both degrade to the flat text type — the closed FE
+    // union never receives them; file/number/enum-array map to their real FE type.
+    expect(descriptorBaseToType({ base: 'object', nullable: false, array: false })).toBe('text');
+    expect(descriptorBaseToType({ base: 'time', nullable: false, array: false })).toBe('text');
+    expect(descriptorBaseToType({ base: 'file', nullable: false, array: false })).toBe('file');
+    expect(descriptorBaseToType({ base: 'number', nullable: false, array: false })).toBe('number');
+    expect(descriptorBaseToType({ base: 'enum', nullable: false, array: true })).toBe('multi');
+    expect(descriptorBaseToType({ base: 'enum', nullable: false, array: false })).toBe('enum');
+  });
+
+  it('tolerates an `object` entry in types[] and an `object` descriptor.base (no crash)', () => {
+    const catalog: WorkflowCatalog = {
+      variables: [
+        // An empty-section object container: dropped without touching the closed type match.
+        {
+          source: 'trigger',
+          path: 'trigger.fields.empty_section',
+          name: 'Empty',
+          type: 'text',
+          descriptor: { base: 'object', nullable: false, array: false, fields: [] },
+        },
+      ],
+      fields: [],
+      // The form-independent catalog now lists `time` + `object` in types[] (mirrors
+      // WorkflowVariableType::cases()); nothing consumes it, so it must simply not break lookups.
+      types: [
+        { id: 'text', primitive: 'text', operators: ['equals', 'not_equals', 'contains'] },
+        { id: 'time', primitive: 'text', operators: [] },
+        { id: 'object', primitive: 'text', operators: [] },
+      ],
+    };
+
+    expect(() => toEditorVariablesTyped(catalog, [], 0)).not.toThrow();
+    expect(() => variablesOfType(catalog, [], 0, 'text')).not.toThrow();
+    // The empty section is dropped (no whole-object entry surfaces).
+    expect(toEditorVariablesTyped(catalog, [], 0)).toEqual([]);
   });
 });

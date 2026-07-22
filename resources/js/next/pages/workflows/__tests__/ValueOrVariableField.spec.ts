@@ -116,6 +116,34 @@ describe('ValueOrVariableField', () => {
     wrapper.unmount();
   });
 
+  it('picking a FILE SUBFIELD emits a ref carrying the composed <file>.<key> path + scalar type', async () => {
+    // The host feeds the expanded file subfields (phase-2c). Picking one must build a plain
+    // identity ref at the composed path with the subfield's SCALAR type — the existing ref
+    // machinery, no special-casing.
+    const fileSubfields: CatalogVariable[] = [
+      { source: 'trigger', path: 'trigger.fields.attachment.name', name: 'Attachment › Name', type: 'text' },
+      { source: 'trigger', path: 'trigger.fields.attachment.size', name: 'Attachment › Size', type: 'number' },
+    ];
+    const wrapper = mountField({ variables: fileSubfields });
+
+    await setMode(wrapper, 'Variable');
+    await wrapper.get('[role="combobox"]').trigger('click');
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+
+    // The first option is the text `.name` subfield → a text ref at the composed path.
+    document.body.querySelectorAll<HTMLElement>('[role="option"]')[0].click();
+    await nextTick();
+
+    const emitted = wrapper.emitted('update:modelValue');
+    expect(emitted?.[emitted.length - 1]).toEqual([
+      { kind: 'variable', ref: { source: 'trigger', path: 'trigger.fields.attachment.name', type: 'text' } },
+    ]);
+
+    wrapper.unmount();
+  });
+
   it('renders a chip INSIDE the field for a pre-selected variable and removes it back to value mode', async () => {
     const wrapper = mountField({
       modelValue: { kind: 'variable', ref: { source: 'trigger', path: 'fields.name', type: 'text' } },

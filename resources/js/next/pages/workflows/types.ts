@@ -481,22 +481,41 @@ export interface CatalogDescriptorOption {
 }
 
 /**
+ * One structural subfield of a composite/container descriptor (phase-2b) — the recursive
+ * `{key, label, descriptor}` the backend now emits under a `file` / `object` descriptor's
+ * `fields`. `key` is the wire segment appended to the parent path (`<parent>.<key>`), `label`
+ * the human name (a file's system subfields fall back to the key), `descriptor` a full nested
+ * descriptor (so a section-in-repeater edge stays inspectable). Mirrors the backend's field entry.
+ */
+export interface CatalogDescriptorField {
+  key: string;
+  label: string;
+  descriptor: CatalogVariableDescriptor;
+}
+
+/**
  * The ADDITIVE structured type descriptor a catalog variable now ALSO carries (phase-1a)
  * alongside the unchanged flat `type`. Mirrors `WorkflowVariableType::descriptor`:
  *   - `base`     the REAL scalar base — incl. `time` (whose flat `type` still degrades to
- *                `text`) and `enum` (a MULTI is `base:'enum'` + `array:true`).
+ *                `text`), `enum` (a MULTI is `base:'enum'` + `array:true`), `file` (a COMPOSITE),
+ *                and `object` (a STRUCTURAL container — a SECTION is `array:false`, a REPEATER
+ *                `array:true`; both degrade their flat `type` to `text`, phase-2a/2b).
  *   - `nullable` the path is only sometimes present.
- *   - `array`    true for a multi (an array of the enum base).
+ *   - `array`    true for a multi (an array of the enum base) or a repeater (an array<object>).
  *   - `options`  present ONLY for an enum base (enum/multi); carries the REAL `{key,label}`
  *                human labels. The FE shows the `label`, stores/emits the `key`.
+ *   - `fields`   present for a `file` composite (its fixed {id,name,type,size,url} subfields) or
+ *                an `object` container (a section's / repeater-element's children) — the recursive
+ *                `{key,label,descriptor}` list the editor expands into pickable subfield variables.
  * Optional on `CatalogVariable` so older / label-less responses (and existing fixtures)
  * that omit it still parse — consumers fall back to `enumOptions` (values) for choices.
  */
 export interface CatalogVariableDescriptor {
-  base: 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'time' | 'file';
+  base: 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'time' | 'file' | 'object';
   nullable: boolean;
   array: boolean;
   options?: CatalogDescriptorOption[];
+  fields?: CatalogDescriptorField[];
 }
 
 /**
@@ -586,8 +605,19 @@ export interface CatalogAiPersona {
  * FE mirror. Phase 0 captures it on the contract; wiring the editor's type resolution to
  * it is a LATER (type-descriptor) phase — the type system itself is unchanged.
  */
+/**
+ * The type-id vocabulary the form-independent catalog's `types[]` may list: the closed
+ * `WorkflowVariableType` union PLUS the two DESCRIPTOR-ONLY bases (`time`, `object`) the backend
+ * now emits (its `variableTypes()` maps over EVERY `WorkflowVariableType::case`, incl. TIME +
+ * OBJECT). These two never reach the FE as a variable `type` — they degrade to `text` on the flat
+ * wire — so the closed `WorkflowVariableType` union stays intact; they surface ONLY here and in
+ * `descriptor.base`. Widening the id keeps a `types[]` carrying `{id:'object'}` / `{id:'time'}`
+ * from being a type error (mirroring how the descriptor already tolerates `time`).
+ */
+export type CatalogTypeId = WorkflowVariableType | 'time' | 'object';
+
 export interface CatalogType {
-  id: WorkflowVariableType;
+  id: CatalogTypeId;
   primitive: WorkflowVariablePrimitive;
   operators: string[];
 }

@@ -212,6 +212,15 @@ const dateFormatTokenRows: ApiRow[] = [
   { name: 'HH',   type: 'renders', description: '2-digit hour' },
   { name: 'mm',   type: 'renders', description: '2-digit minute' },
 ];
+
+// ── Variable typesystem Phase 2 (object/array<object> containers + file composite, ADR-0023) ──
+const fileSubfieldRows: ApiRow[] = [
+  { name: '<file>.id',   type: 'text',   description: "The disk file's id (uuid). Deliberately pickable — bypasses the picker's usual \"never offer an id\" rule for this one case." },
+  { name: '<file>.name', type: 'text',   description: 'The uploaded/picked file\'s name.' },
+  { name: '<file>.type', type: 'text',   description: "A human-friendly alias for the snapshot's mime_type." },
+  { name: '<file>.size', type: 'number', description: 'Byte size.' },
+  { name: '<file>.url',  type: 'text',   description: 'The access-controlled disk.show serve URL (File::serveUrl()) — never the raw storage path.' },
+];
 </script>
 
 <template>
@@ -536,6 +545,13 @@ WorkflowRun (one execution)
           path (ADR-0009 §7 — honest catalog, not an oversight).
         </p>
 
+        <p class="text-next-xs text-next-muted-foreground">
+          <strong>Update (Phase 2a, ADR-0023):</strong> that exclusion is now narrower — a repeater
+          still has no FLAT LEAF variable of its own, but it now ALSO gets ONE catalog entry as an
+          <code class="font-next-mono">array&lt;object&gt;</code> container, so the editor can see
+          it exists. See "Structural containers" further below.
+        </p>
+
         <Alert variant="info" size="sm">
           <strong>Structured <code class="font-next-mono">descriptor</code> + a <code class="font-next-mono">time</code> type
           (Phase 1a of the variable-typesystem rework, ADR-0022) — additive, alongside the
@@ -601,6 +617,60 @@ WorkflowRun (one execution)
           for the full design record (incl. why <code class="font-next-mono">WorkflowConditionTreeValidator</code>'s
           write-time type gate does not YET special-case the presence ops the way the runtime
           executor does — a deferred Phase 2 relaxation, inert today).
+        </Alert>
+
+        <Alert variant="info" size="sm">
+          <strong>Structural containers — <code class="font-next-mono">object</code> /
+          <code class="font-next-mono">array&lt;object&gt;</code> (Phase 2a of the
+          variable-typesystem rework, ADR-0023) — additive, representation only.</strong> A form
+          SECTION now ALSO surfaces as an <code class="font-next-mono">object</code> catalog
+          variable grouping its children — its flat leaf variables
+          (<code class="font-next-mono">section.field</code>) are UNCHANGED and still the only
+          thing offered for insertion, so the whole-section entry never duplicates them in the
+          picker. The REPEATER exclusion noted above is LIFTED the same way: it now surfaces as
+          ONE <code class="font-next-mono">array&lt;object&gt;</code> entry so the editor can see
+          it exists, but its per-element fields live only inside
+          <code class="font-next-mono">descriptor.fields</code> — there is still NO per-element
+          PATH (<code class="font-next-mono">items.item_name</code> stays unresolvable) and no
+          loop. Both bases are DESCRIPTOR-ONLY, mirroring the <code class="font-next-mono">time</code>
+          tripwire: flat wire <code class="font-next-mono">type</code> degrades to
+          <code class="font-next-mono">text</code> and <code class="font-next-mono">operatorCases()</code>
+          is empty (never a condition source). Only a TOP-LEVEL section/repeater gets its own
+          catalog entry — a container nested inside another (a section inside a repeater) is
+          visible only inside its parent's <code class="font-next-mono">fields</code>, with no
+          path of its own.
+        </Alert>
+
+        <Alert variant="info" size="sm">
+          <strong>The <code class="font-next-mono">file</code> variable is a COMPOSITE (Phase 2b,
+          ADR-0023) — its flat wire <code class="font-next-mono">type</code> stays
+          <code class="font-next-mono">file</code>, unlike <code class="font-next-mono">object</code>.</strong>
+          Its descriptor now also carries the 5 fixed subfields below, but every existing file
+          behavior is untouched: text still renders the name, a structural slot still coerces to
+          the id(s) (what <code class="font-next-mono">create_task</code>'s copy-on-attach reads),
+          and the <code class="font-next-mono">filled</code>/<code class="font-next-mono">empty</code>
+          condition operators are unchanged. The snapshot also gains a
+          <code class="font-next-mono">url</code> key —
+          <code class="font-next-mono">File::serveUrl()</code>, the access-controlled
+          <code class="font-next-mono">disk.show</code> route, NEVER a raw storage path — for the
+          ORIGINAL submission file (a later copy-on-attach gets its own id/url). Each subfield is
+          individually PICKABLE and REFERENCEABLE, including with its OWN operation pipeline (the
+          write-validation reference index now enumerates all 5 paths) — a multi-file answer
+          collapses to its FIRST element when a subfield is read (fail-soft).
+        </Alert>
+        <ApiTable title="File composite subfields (&lt;file&gt;.&lt;key&gt;)" type-header="Type" :rows="fileSubfieldRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong>Representation only — loop / per-element execution is OUT OF SCOPE (deferred to
+          R2-Generator).</strong> This phase makes the WHOLE form structure visible to the editor
+          (every section and repeater has a catalog entry) and makes a file's OWN subfields
+          addressable — it does NOT add a way to iterate a repeater's elements or a multi-file
+          list. In the variable picker: a file offers its whole-file entry PLUS 5 subfield
+          pickables (qualified names like "Attachment › Name"); a section contributes nothing new
+          (its leaves were already flat); a repeater contributes exactly ONE relabelled "(list)"
+          entry with no children. See
+          <code class="font-next-mono">docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md</code>
+          for the full design record.
         </Alert>
       </div>
     </StorySection>
@@ -1288,6 +1358,8 @@ WHERE id = ? AND state = 'pending'</pre>
           <li><strong>TIME real runtime semantics</strong> (variable-typesystem Phase 2) — <code class="font-next-mono">WorkflowVariableType::TIME</code> (Phase 1a, ADR-0022) is catalog/descriptor-only: no condition operators, and its flat wire <code class="font-next-mono">type</code> still degrades to <code class="font-next-mono">text</code>. Needs its own resolver/evaluator/executor arms plus a closed-union update on the FE before it can flow as a first-class type.</li>
           <li><strong>Presence-op write validation is stricter than the runtime</strong> (variable-typesystem Phase 2) — <code class="font-next-mono">WorkflowConditionTreeValidator::walkPipeline</code>'s exact-type gate does not yet special-case <code class="font-next-mono">coalesce</code>/<code class="font-next-mono">is_present</code>/<code class="font-next-mono">is_null</code>/<code class="font-next-mono">assert_present</code> the way <code class="font-next-mono">WorkflowOperationExecutor</code> already does — inert today (no shipped pipeline needs it), tracked in ADR-0022.</li>
           <li><strong>Two Phase-2 hardening items, neither reachable today</strong> — a defensive default arm in <code class="font-next-mono">WorkflowOperationExecutor::normalizeInput()</code> (currently an exhaustive match over the original 7 types, so a hypothetical <code class="font-next-mono">TIME</code>-typed pipeline call would throw rather than fail closed) and write-time validation of <code class="font-next-mono">date_format</code>'s <code class="font-next-mono">pattern</code> arg against its safe-token whitelist (today only checked as a generic string — a malformed pattern is caught at run time, not as a 422). See ADR-0022.</li>
+          <li><strong>Update: the three items above are STILL deferred.</strong> Phase 2 of the variable-typesystem rework (ADR-0023, this revision) shipped <code class="font-next-mono">object</code>/<code class="font-next-mono">array&lt;object&gt;</code> containers and the <code class="font-next-mono">file</code> composite instead (see "The typed variable system" above) — none of the three items immediately above were addressed by it. They remain deferred to a later, unnumbered phase.</li>
+          <li><strong>Repeater / multi-file per-element LOOP execution</strong> (variable-typesystem Phase 2a/2b, ADR-0023 — deferred to R2-Generator) — a repeater now has its own <code class="font-next-mono">array&lt;object&gt;</code> catalog entry and a file's composite subfields are individually referenceable, but nothing added a way to iterate a repeater's elements or a multi-file answer: no per-element path, no loop binding. Needs R2-Generator's own element-cardinality / output-binding design, not an incremental extension of this catalog-visibility work.</li>
         </ul>
       </div>
     </StorySection>

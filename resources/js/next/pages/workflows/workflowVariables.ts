@@ -17,12 +17,14 @@
 // Identity-only: a variable's `id` IS its `path` (the editor directive stores only
 // `data.id`), so the real type is always recoverable from the catalog by path.
 import type { IconName } from '../../ui/primitives/icons';
+import { translate } from '../../app/i18n';
 import type {
   VariableDefinition,
   VariableOption,
   VariablePrimitive,
 } from '../../ui/editor/extensions/types';
 import type {
+  CatalogDescriptorField,
   CatalogVariable,
   CatalogVariableDescriptor,
   WorkflowCatalog,
@@ -199,6 +201,121 @@ function nonStepVariables(
   return (catalog?.variables ?? []).filter((v) => v.source !== 'steps');
 }
 
+// --- Structural-descriptor expansion (phase-2c) -----------------------------
+//
+// The catalog now carries STRUCTURAL descriptors (phase-2a/2b backend): a FILE composite
+// advertises its {id,name,type,size,url} subfields, a SECTION is an `object` and a REPEATER an
+// `array<object>`. This is where the flat catalog variable list is EXPANDED into the
+// editor-pickable variables those descriptors imply, so a file subfield flows through the
+// EXISTING ref machinery (a composed `<file>.<key>` path + a scalar type) with no new insertion
+// code. Every variable-offering feed (toEditorVariables[Typed] + variablesOfType) routes through
+// `expandVariables`, so the picker, the `{`-insert list and the value-or-variable pickers agree.
+//
+//   • FILE     → the whole-file entry (unchanged) PLUS one pickable per subfield. The subfields
+//                intentionally BYPASS the SF3.2 id-strip rule (a file's `.id` IS meant to be
+//                pickable — see the file-subfield contract).
+//   • REPEATER (object + array:true) → ONE entry, relabelled as a list/collection (no per-element
+//                subfields — per-element access is deferred to the R2 loop).
+//   • SECTION  (object, array:false) → NOTHING: its leaves are ALREADY emitted as flat top-level
+//                variables, so re-surfacing the whole object (which resolves to a map) would only
+//                duplicate + confuse.
+//   • anything else → itself (subject to the SF3.2 id-strip rule) — descriptor-less variables and
+//                the locally-synthesised step outputs pass straight through (a no-op).
+
+/**
+ * Map a structured descriptor's BASE to the FE `WorkflowVariableType` a subfield/leaf carries —
+ * the FE mirror of the backend degrade rule (WorkflowVariableType::flatType + descriptorBase):
+ * `time`/`object` degrade to `text`, an `enum` base with `array:true` is a `multi`, and
+ * file/date/number/boolean/text are themselves. The default arm means a NEW descriptor base can
+ * never fall through a closed match (phase-2c tolerance).
+ */
+export function descriptorBaseToType(descriptor: CatalogVariableDescriptor): WorkflowVariableType {
+  switch (descriptor.base) {
+    case 'number':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'date':
+      return 'date';
+    case 'enum':
+      return descriptor.array ? 'multi' : 'enum';
+    case 'file':
+      return 'file';
+    default:
+      // 'time' + 'object' are DESCRIPTOR-ONLY bases (they degrade to text on the flat wire, exactly
+      // like the backend); 'text' is itself — so the closed FE type-union never receives them.
+      return 'text';
+  }
+}
+
+/**
+ * One pickable editor variable for a file composite's subfield: path `<file>.<key>`, a qualified
+ * `<parent> › <sub>` display name (the sub label localized for the known {id,name,type,size,url}
+ * keys, else the backend field label), and the subfield's scalar type. Carries the child
+ * descriptor so downstream code (icons, option lists) stays uniform.
+ */
+function fileSubfieldVariable(parent: CatalogVariable, field: CatalogDescriptorField): CatalogVariable {
+  const subLabel = translate(`workflows.variable.fileSubfield.${field.key}`, field.label);
+  return {
+    source: parent.source,
+    path: `${parent.path}.${field.key}`,
+    name: translate('workflows.variable.qualifier', `${parent.name} › ${subLabel}`, {
+      parent: parent.name,
+      sub: subLabel,
+    }),
+    type: descriptorBaseToType(field.descriptor),
+    descriptor: field.descriptor,
+  };
+}
+
+/**
+ * The whole-repeater entry, relabelled as a list/collection so a user sees the collection exists
+ * (its per-element fields are NOT pickable — deferred to R2). Keeps the flat text type + the object
+ * descriptor (so the element shape stays inspectable downstream).
+ */
+function repeaterListVariable(variable: CatalogVariable): CatalogVariable {
+  return {
+    ...variable,
+    name: translate('workflows.variable.collection', `${variable.name} (list)`, { name: variable.name }),
+  };
+}
+
+/**
+ * Expand a flat catalog variable list into the editor-pickable variables its structural
+ * descriptors imply (see the section header). Descriptor-less variables — the older/simpler
+ * shape AND the locally-synthesised step outputs — pass through unchanged, so this is a no-op for
+ * every non-structural catalog. Applies the SF3.2 id-strip rule to top-level variables here (file
+ * subfields are exempt, being generated below it).
+ */
+function expandVariables(variables: CatalogVariable[]): CatalogVariable[] {
+  const out: CatalogVariable[] = [];
+  for (const variable of variables) {
+    const descriptor = variable.descriptor;
+    const base = descriptor?.base;
+
+    // FILE composite: the whole-file entry + one pickable per subfield.
+    if (base === 'file' && descriptor?.fields?.length) {
+      if (!isIdVariable(variable.path)) out.push(variable);
+      for (const field of descriptor.fields) {
+        out.push(fileSubfieldVariable(variable, field)); // subfields bypass the id-strip rule
+      }
+      continue;
+    }
+
+    // OBJECT container: a REPEATER (array) → one list entry; a SECTION (non-array) → nothing.
+    if (base === 'object') {
+      if (descriptor?.array && !isIdVariable(variable.path)) {
+        out.push(repeaterListVariable(variable));
+      }
+      continue;
+    }
+
+    // Everything else: itself, subject to the SF3.2 id-strip rule.
+    if (!isIdVariable(variable.path)) out.push(variable);
+  }
+  return out;
+}
+
 // --- toEditorVariables (§4.7.1) ---------------------------------------------
 
 /**
@@ -230,14 +347,13 @@ export function toEditorVariables(
 
   const stepOutputs = positionScopedStepOutputs(catalog, steps, position);
 
-  // SF3.2: identifiers (`*.id` / `*_id`) are never OFFERED for insertion.
-  return [...nonStep, ...stepOutputs]
-    .filter((variable) => !isIdVariable(variable.path))
-    .map((variable) => ({
-      id: variable.path, // identity-only: id === path
-      name: variable.name,
-      type: editorPrimitive(variable.type),
-    }));
+  // Expand structural descriptors (file subfields + repeater list; section leaves stay flat) and
+  // strip SF3.2 identifiers, then degrade each to the editor PRIMITIVE.
+  return expandVariables([...nonStep, ...stepOutputs]).map((variable) => ({
+    id: variable.path, // identity-only: id === path
+    name: variable.name,
+    type: editorPrimitive(variable.type),
+  }));
 }
 
 // --- toEditorVariablesTyped (§4.9 — the TRUE-type + options editor feed) -----
@@ -284,10 +400,9 @@ export function toEditorVariablesTyped(
   const nonStep = nonStepVariables(catalog);
   const stepOutputs = positionScopedStepOutputs(catalog, steps, position);
 
-  // SF3.2: identifiers (`*.id` / `*_id`) are never OFFERED for insertion.
-  return [...nonStep, ...stepOutputs]
-    .filter((variable) => !isIdVariable(variable.path))
-    .map((variable) => {
+  // Expand structural descriptors (file subfields become pickable at their scalar type; a repeater
+  // is one list entry; section leaves stay flat) and strip SF3.2 identifiers.
+  return expandVariables([...nonStep, ...stepOutputs]).map((variable) => {
     const options = variableOptionList(variable);
     const definition: VariableDefinition = {
       id: variable.path, // identity-only: id === path
@@ -381,10 +496,11 @@ export function variablesOfType(
   const nonStep = nonStepVariables(catalog);
   const stepOutputs = positionScopedStepOutputs(catalog, steps, position);
 
-  // SF3.2: identifiers (`*.id` / `*_id`) are never OFFERED for a value-or-variable pick.
-  return [...nonStep, ...stepOutputs].filter(
-    (v) => accepted.has(v.type) && !isIdVariable(v.path),
-  );
+  // Expand structural descriptors then filter to the accepted type(s). `expandVariables` applies
+  // the SF3.2 id-strip to top-level vars (file subfields — incl. `<file>.id` — are exempt); a file
+  // subfield surfaces at its scalar type (text/number), so a `.name` reaches a text/priority field
+  // and a `.size` a number field, while the whole-file entry (type `file`) still feeds a file pick.
+  return expandVariables([...nonStep, ...stepOutputs]).filter((v) => accepted.has(v.type));
 }
 
 /** Every type a value-or-variable field may reference. */

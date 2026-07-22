@@ -14,7 +14,16 @@ namespace App\Modules\Workflows\Enums;
  *   - date     an ISO date string (compared via Carbon)
  *   - enum     a single-choice value drawn from a known option set (single-select)
  *   - multi    a set of values (multi-select, checklist)
- *   - file     uploaded/picked disk file(s), carried as a snapshot list {id,name,mime_type,size}
+ *   - file     uploaded/picked disk file(s), carried as a snapshot list {id,name,mime_type,size,url};
+ *              a COMPOSITE whose subfields (id/name/type/size/url) are individually referenceable —
+ *              its descriptor carries them as `fields`, but the wire `type` stays `file` so every
+ *              existing file semantic (text→name, structural→id, copy-on-attach) is preserved
+ *
+ * Two DESCRIPTOR-ONLY bases are APPENDED past this closed core (append-only): `time` (phase-1a) and
+ * `object` (phase-2a — a SECTION is an `object`, a REPEATER an `array<object>`). They surface ONLY in
+ * the structured descriptor(); their flat wire `type` degrades to text and their operatorCases() are
+ * empty, so the resolver/evaluator/executor's defaultless match sites — and the closed FE type-union —
+ * never receive them (see WorkflowVariableCatalogService::flatType, and ADR-0022 for the tripwire).
  *
  * The EDITOR primitive vocabulary is narrower (text|number|boolean); date/enum/multi/file
  * DEGRADE to text inside a markdown directive (`data.type`). The directive carries NO other
@@ -36,6 +45,13 @@ enum WorkflowVariableType: string
     // descriptor(); the flat wire `type` still degrades to text (WorkflowVariableCatalogService::flatType)
     // until the resolver/evaluator/executor + FE learn it (the deferred runtime-semantics slice).
     case TIME = 'time';
+    // Appended (phase-2a, append-only). A STRUCTURAL container: a form SECTION is an `object`, a
+    // REPEATER an `array<object>` (descriptor `array:true`). It exists so the editor can see the whole
+    // form structure (form-coverage completeness) — REPRESENTATION ONLY; per-element LOOP execution is
+    // out of scope (deferred to R2-Generator). Like TIME it is DESCRIPTOR-ONLY: its flat wire `type`
+    // degrades to text (flatType) and operatorCases() is [] (non-conditionable), so the defaultless
+    // match sites in the resolver/evaluator/executor + the closed FE type-union never receive `object`.
+    case OBJECT = 'object';
 
     /** @return array<int, string> */
     public static function ids(): array
@@ -122,42 +138,126 @@ enum WorkflowVariableType: string
             // time field NON-conditionable (rejected at write, exactly as today), until the deferred
             // runtime-semantics slice adds the evaluator/executor arms + real operators.
             self::TIME => [],
+            // OBJECT is a STRUCTURAL container (section / repeater), never a comparable scalar — it is
+            // NOT a condition source. Same fail-closed reasoning as TIME: an empty set keeps it
+            // non-conditionable at write time, and its flat wire `type` degrades to text so the
+            // evaluator's exhaustive match never sees `object`.
+            self::OBJECT => [],
         };
     }
 
     /**
      * The NORMALIZED structured type DESCRIPTOR for this type (phase-1a) — the legacy-flat → descriptor
-     * shim later phases build on. Shape: `{ base, nullable, array, options? }`:
-     *   - MULTI  → `{ base:'enum', array:true }`   (a multi is an array<enum>)
-     *   - ENUM   → `{ base:'enum', array:false, options }`
-     *   - text|number|boolean|date|time|file → `{ base:<self>, array:false }`
-     * `options` (a list of `{key,label}`) is carried ONLY for an enum base (ENUM/MULTI); the CALLER
-     * resolves the human labels — the JSON schema drops them, they live in the form element config.
+     * shim later phases build on. Shape: `{ base, nullable, array, options?, fields? }`:
+     *   - MULTI   → `{ base:'enum', array:true }`   (a multi is an array<enum>)
+     *   - ENUM    → `{ base:'enum', array:false, options }`
+     *   - OBJECT  → `{ base:'object', array:<false=section|true=repeater>, fields }` (phase-2a) — a
+     *               STRUCTURAL container; `fields` is an ordered `{key,label,descriptor}` list, each
+     *               child descriptor a full (recursive) descriptor. Built by the CALLER (the catalog),
+     *               which owns the child labels/structure the JSON schema drops.
+     *   - FILE    → `{ base:'file', array:<multi-file?>, fields }` (phase-2b) — a COMPOSITE value; its
+     *               `fields` are the FIXED, form-INDEPENDENT subfields {id,name,type,size,url} the type
+     *               owns itself (see fileFields), so no caller has to supply them — the wire `type`
+     *               still degrades to nothing (it stays `file`), only the descriptor is enriched.
+     *   - text|number|boolean|date|time → `{ base:<self>, array:false }`
+     * `options` (a list of `{key,label}`) is carried ONLY for an enum base (ENUM/MULTI); `fields` for an
+     * object base (caller-supplied) OR a file base (self-supplied when the caller passes none). `$array`
+     * OVERRIDES the derived array flag (null = derived: true only for MULTI)
+     * — an OBJECT caller passes it explicitly (section=false, repeater=true). The CALLER resolves the
+     * human labels — the JSON schema drops them, they live in the form element config.
      *
      * @param  array<int, array{key: string, label: string}>  $options
-     * @return array{base: string, nullable: bool, array: bool, options?: array<int, array{key: string, label: string}>}
+     * @param  array<int, array{key: string, label: string, descriptor: array<string, mixed>}>  $fields
+     * @return array{base: string, nullable: bool, array: bool, options?: array<int, array{key: string, label: string}>, fields?: array<int, array{key: string, label: string, descriptor: array<string, mixed>}>}
      */
-    public function descriptor(array $options = [], bool $nullable = false): array
+    public function descriptor(array $options = [], bool $nullable = false, array $fields = [], ?bool $array = null): array
     {
         $base = $this->descriptorBase();
 
         $descriptor = [
             'base' => $base->value,
             'nullable' => $nullable,
-            'array' => $this === self::MULTI,
+            'array' => $array ?? ($this === self::MULTI),
         ];
 
         if ($base === self::ENUM) {
             $descriptor['options'] = array_values($options);
         }
 
+        if ($base === self::OBJECT) {
+            $descriptor['fields'] = array_values($fields);
+        }
+
+        // A FILE is a COMPOSITE (phase-2b): it carries the fixed {id,name,type,size,url} subfields so
+        // the editor can reference `<file>.name` / `.url` etc. Unlike an object container (form-derived
+        // fields), a file's shape is invariant, so the type self-describes it when the caller — as every
+        // caller does — supplies none. The wire `type` stays `file`; only the descriptor grows.
+        if ($base === self::FILE) {
+            $descriptor['fields'] = $fields !== [] ? array_values($fields) : self::fileFields();
+        }
+
         return $descriptor;
     }
 
     /**
+     * The canonical composite file SUBFIELDS mapped to their scalar TYPE — the invariant
+     * {id,name,type,size,url} set a `<file>.<subfield>` reference resolves against, and the SINGLE
+     * source of that set + typing. All are plain scalars (text, except size = number), so a subfield
+     * reference needs NO new type and never reaches the resolver's/evaluator's defaultless `match`
+     * (the `file`/`object` tripwire). `type` is the human name for the snapshot's `mime_type`.
+     *
+     * BOTH the file descriptor (fileFields, below) and the write-validation reference index / runtime
+     * type map (WorkflowVariableCatalogService) enumerate from here, so the three can never disagree on
+     * the subfield set or its types. WorkflowVariableResolver::FILE_SUBFIELDS owns the ORTHOGONAL runtime
+     * snapshot-KEY mapping (`type`→`mime_type`) over this SAME key set — a value-access concern, not a
+     * type, so it stays a separate map (cross-referenced there).
+     *
+     * @return array<string, self>
+     */
+    public static function fileSubfieldTypes(): array
+    {
+        return [
+            'id' => self::TEXT,
+            'name' => self::TEXT,
+            'type' => self::TEXT,
+            'size' => self::NUMBER,
+            'url' => self::TEXT,
+        ];
+    }
+
+    /**
+     * The file descriptor's composite subfield entries {key,label,descriptor}, built from the single
+     * source (fileSubfieldTypes). Labels fall back to the key (system subfields have no form-config
+     * label, like a system enum option).
+     *
+     * @return array<int, array{key: string, label: string, descriptor: array{base: string, nullable: bool, array: bool}}>
+     */
+    private static function fileFields(): array
+    {
+        $fields = [];
+
+        foreach (self::fileSubfieldTypes() as $key => $type) {
+            $fields[] = self::fileField($key, $type);
+        }
+
+        return $fields;
+    }
+
+    /**
+     * One file subfield descriptor entry `{key, label, descriptor}`. The child descriptor is a plain
+     * scalar (text/number) — never a `file`/`object` base — so it can carry no further fields.
+     *
+     * @return array{key: string, label: string, descriptor: array{base: string, nullable: bool, array: bool}}
+     */
+    private static function fileField(string $key, self $type): array
+    {
+        return ['key' => $key, 'label' => $key, 'descriptor' => $type->descriptor()];
+    }
+
+    /**
      * The BASE scalar type of this type's descriptor: MULTI is an array<enum> so its base is ENUM;
-     * every other type (ENUM included) is its own base. The default arm means appending a new case
-     * (e.g. TIME) never breaks it.
+     * every other type (ENUM included) is its own base — including OBJECT, whose base is `object`. The
+     * default arm means appending a new case (e.g. TIME, OBJECT) never breaks it.
      */
     private function descriptorBase(): self
     {

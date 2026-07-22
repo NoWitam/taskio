@@ -205,6 +205,14 @@ a file is fetched as a **blob through the api client** and turned into an object
   the exhaustive `match` arms with **no `default`**, so every resolver/evaluator/executor had to
   handle it in one change (the compiler enforces completeness).
 
+> **Extended by ADR-0023 (variable-typesystem Phase 2b).** The snapshot gained a 5th key, `url` —
+> the file's own access-controlled `disk.show` serve route (`File::serveUrl()`), never the raw
+> storage path — and the FILE variable's catalog descriptor now advertises all five keys
+> (`id`/`name`/`type`/`size`/`url`) as individually referenceable, pipeline-bearing subfields. The
+> snapshot shape pinned above is otherwise unchanged (still always a list; coercion → ids;
+> stringification → name). See `docs/backend/workflows-api.md`'s "Structural descriptor: object
+> containers & the file composite".
+
 **Alternative rejected:** a `file_type_is` operator. Dropped — "is it a PDF?" is `file_name →
 ends_with('.pdf')` and "how many?" is `file_count → gt`, so a dedicated type operator earned its
 keep nowhere.
