@@ -15,6 +15,43 @@ import type {
   VariablePrimitive,
 } from './types';
 
+/**
+ * Maximum ARG-VARIABLE nesting depth (phase-4b). An operation argument may itself be a variable
+ * (a value-or-variable union) whose own pipeline may carry another variable argument … and so on;
+ * this caps how deep the author may build that tree so the FE never produces a config the backend
+ * would 422.
+ *
+ * MUST MATCH the backend `ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH` (currently 3). The pipeline a
+ * value-or-variable field hosts is depth 0; each nested arg-variable's own pipeline increments the
+ * depth. A pipeline at depth `d` may still offer arg-variables while `d < MAX_ARG_VARIABLE_DEPTH`
+ * (the arg it hosts sits at depth `d + 1`); at depth ≥ MAX it renders LITERAL-ONLY — exactly where
+ * the backend rejects (`argDepth + 1 > MAX`).
+ */
+export const MAX_ARG_VARIABLE_DEPTH = 3;
+
+/**
+ * The value TYPE an operation argument coerces to when supplied by a VARIABLE rather than a constant
+ * — the FE mirror of the backend `WorkflowOperationArgType::variableValueType()`. Only the plain
+ * VALUE controls are variable-able (text→text, number→number, boolean→boolean, date→date); the
+ * option/map/rules/select controls are option-set-constrained and stay LITERAL-ONLY (null). An arg
+ * whose type is null here NEVER offers the value/variable toggle.
+ */
+export function argVariableValueType(type: VariableOperationArgumentType): VariablePrimitive | null {
+  switch (type) {
+    case 'text':
+      return 'text';
+    case 'number':
+      return 'number';
+    case 'boolean':
+      return 'boolean';
+    case 'date':
+      return 'date';
+    default:
+      // select / sourceOption / sourceOptions / sourceMap / choiceRules / choiceFallback
+      return null;
+  }
+}
+
 // Icon per primitive. Labels are NOT stored here — they resolve through i18n at
 // call time (see `getVariableIconLabel`) so they follow the active UI language.
 const VARIABLE_TYPE_ICON: Record<VariablePrimitive, IconName> = {

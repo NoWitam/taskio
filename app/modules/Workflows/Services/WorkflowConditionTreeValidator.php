@@ -237,10 +237,18 @@ class WorkflowConditionTreeValidator
      * choice-producing op (producesChoice()), and every choice arg's option value is checked ⊆
      * $targetOptions (threaded through the walk). $targetOptions is null for a plain value field.
      *
+     * ARGUMENT VARIABLES (phase-4a): when $refCtx is supplied (the value-pipeline path always is) an
+     * op's value-typed argument may itself be a variable union, validated against the SAME reference
+     * index the top-level ref uses — its resolved type must match the arg's declared type, its own
+     * sub-pipeline is validated recursively, and the depth cap ($argDepth) is enforced. $refCtx is null
+     * for a CONDITION-tree pipeline, which keeps args LITERAL-only (a variable there fails the literal
+     * checks, matching the trigger gate's runtime, which does not pre-resolve arg-variables).
+     *
      * @param  array<int, mixed>  $pipeline
      * @param  array<int, WorkflowVariableType>  $allowedTerminals
      * @param  array<int, string>|null  $sourceEnumOptions
      * @param  array<int, string>|null  $targetOptions
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
     public function validateValuePipeline(
         ValidatorContract $validator,
@@ -250,8 +258,10 @@ class WorkflowConditionTreeValidator
         array $allowedTerminals,
         ?array $sourceEnumOptions,
         ?array $targetOptions = null,
+        ?array $refCtx = null,
+        int $argDepth = 0,
     ): void {
-        $terminal = $this->walkPipeline($validator, $pipeline, $prefix, $sourceType, $sourceEnumOptions, $targetOptions);
+        $terminal = $this->walkPipeline($validator, $pipeline, $prefix, $sourceType, $sourceEnumOptions, $targetOptions, $refCtx, $argDepth);
 
         // A choice field demands a mapping pipeline that ENDS in a choice-producing op.
         if ($targetOptions !== null) {
@@ -296,8 +306,9 @@ class WorkflowConditionTreeValidator
      * @param  array<int, mixed>  $pipeline
      * @param  array<int, string>|null  $enumOptions
      * @param  array<int, string>|null  $targetOptions
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
-    private function walkPipeline(ValidatorContract $validator, array $pipeline, string $prefix, WorkflowVariableType $sourceType, ?array $enumOptions, ?array $targetOptions = null): ?WorkflowVariableType
+    private function walkPipeline(ValidatorContract $validator, array $pipeline, string $prefix, WorkflowVariableType $sourceType, ?array $enumOptions, ?array $targetOptions = null, ?array $refCtx = null, int $argDepth = 0): ?WorkflowVariableType
     {
         if (count($pipeline) > ConditionTreeLimits::MAX_PIPELINE_STEPS) {
             $validator->errors()->add($prefix, 'A pipeline may hold at most ' . ConditionTreeLimits::MAX_PIPELINE_STEPS . ' steps.');
@@ -331,7 +342,7 @@ class WorkflowConditionTreeValidator
                 return null;
             }
 
-            $this->validateArgs($validator, $op, is_array($step['args'] ?? null) ? $step['args'] : [], $sp . '.args', $enumOptions, $targetOptions);
+            $this->validateArgs($validator, $op, is_array($step['args'] ?? null) ? $step['args'] : [], $sp . '.args', $enumOptions, $targetOptions, $refCtx, $argDepth);
 
             $currentType = $op->outputType();
         }
@@ -346,14 +357,15 @@ class WorkflowConditionTreeValidator
      * @param  array<string, mixed>  $args
      * @param  array<int, string>|null  $enumOptions
      * @param  array<int, string>|null  $targetOptions
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
-    private function validateArgs(ValidatorContract $validator, WorkflowOperation $op, array $args, string $prefix, ?array $enumOptions, ?array $targetOptions = null): void
+    private function validateArgs(ValidatorContract $validator, WorkflowOperation $op, array $args, string $prefix, ?array $enumOptions, ?array $targetOptions = null, ?array $refCtx = null, int $argDepth = 0): void
     {
         $allowed = [];
 
         foreach ($op->argDescriptors() as $arg) {
             $allowed[] = $arg->id;
-            $this->validateArg($validator, $arg, $args, $prefix . '.' . $arg->id, $enumOptions, $targetOptions);
+            $this->validateArg($validator, $arg, $args, $prefix . '.' . $arg->id, $enumOptions, $targetOptions, $refCtx, $argDepth);
         }
 
         foreach (array_keys($args) as $key) {
@@ -368,13 +380,25 @@ class WorkflowConditionTreeValidator
      * variable's options); $targetOptions drives CHOICE-side membership (the destination field's
      * options), applied to the enum_to_choice mapping VALUES and to match_to_choice rules/fallback.
      *
+     * ARGUMENT VARIABLES (phase-4a): when $refCtx is supplied AND the value is a variable union, the arg
+     * is validated as an arg-variable (validateArgVariable) instead of a literal. When $refCtx is null
+     * (the condition-tree path) a variable union falls through to the literal checks below and is
+     * rejected there — the trigger gate stays literal-only at both write and runtime.
+     *
      * @param  array<string, mixed>  $args
      * @param  array<int, string>|null  $enumOptions
      * @param  array<int, string>|null  $targetOptions
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
-    private function validateArg(ValidatorContract $validator, WorkflowOperationArg $arg, array $args, string $key, ?array $enumOptions, ?array $targetOptions = null): void
+    private function validateArg(ValidatorContract $validator, WorkflowOperationArg $arg, array $args, string $key, ?array $enumOptions, ?array $targetOptions = null, ?array $refCtx = null, int $argDepth = 0): void
     {
         $value = $args[$arg->id] ?? null;
+
+        if ($refCtx !== null && $this->isVariableArg($value)) {
+            $this->validateArgVariable($validator, $arg, $value, $key, $refCtx, $argDepth);
+
+            return;
+        }
 
         match ($arg->type) {
             WorkflowOperationArgType::NUMBER => $this->require($validator, is_numeric($value), $key, 'The ' . $arg->id . ' must be a number.'),
@@ -387,6 +411,162 @@ class WorkflowConditionTreeValidator
             WorkflowOperationArgType::CHOICE_RULES => $this->validateChoiceRules($validator, $value, $key, $targetOptions),
             WorkflowOperationArgType::CHOICE_FALLBACK => $this->validateChoiceFallback($validator, $value, $key, $targetOptions),
         };
+    }
+
+    /**
+     * Validate ONE variable-union ARGUMENT (phase-4a). The arg control must be value-typed
+     * (variableValueType() non-null — option/map/rules controls are literal-only); the ref must be a
+     * known, whitelisted variable in $refCtx['index'] whose declared ref.type matches the catalog; and
+     * the arg's RESOLVED type (its sub-pipeline terminal, or the ref type when there is no sub-pipeline)
+     * must equal the arg's declared value type — the SAME type gate a literal arg gets. A present
+     * sub-pipeline is validated recursively (its own arg-variables one level deeper), and the depth cap
+     * is enforced so a config nested beyond MAX_ARG_VARIABLE_DEPTH is rejected with a clear error.
+     *
+     * @param  array<string, mixed>  $field
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}  $refCtx
+     */
+    private function validateArgVariable(ValidatorContract $validator, WorkflowOperationArg $arg, array $field, string $key, array $refCtx, int $argDepth): void
+    {
+        $expectedType = $arg->type->variableValueType();
+
+        if ($expectedType === null) {
+            $validator->errors()->add($key, 'The ' . $arg->id . ' argument does not accept a variable value.');
+
+            return;
+        }
+
+        // Write-time depth cap: this arg-variable sits one level below the pipeline it lives in. Reject
+        // a config nested beyond the cap (the runtime resolver fail-softs at the same boundary).
+        if ($argDepth + 1 > ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH) {
+            $validator->errors()->add($key, 'The argument variables are nested too deeply (max ' . ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH . ' levels).');
+
+            return;
+        }
+
+        $ref = is_array($field['ref'] ?? null) ? $field['ref'] : [];
+        $refType = $this->validateArgVariableRef($validator, $key, $ref, $refCtx);
+
+        if ($refType === null) {
+            return; // a malformed / unknown ref was already reported
+        }
+
+        $sourceEnumOptions = $refCtx['index'][$this->refFullPath($ref)]['enumOptions'] ?? null;
+        $pipeline = $field['pipeline'] ?? null;
+
+        if ($pipeline === null || $pipeline === []) {
+            // Identity arg-variable: the ref type must equal the arg's declared value type.
+            if ($refType !== $expectedType) {
+                $validator->errors()->add($key, 'The ' . $arg->id . ' variable must be a ' . $expectedType->value . ' (it is ' . $refType->value . ').');
+            }
+
+            return;
+        }
+
+        if (!is_array($pipeline)) {
+            $validator->errors()->add($key . '.pipeline', 'The pipeline must be an array of operations.');
+
+            return;
+        }
+
+        // The sub-pipeline must type-flow from the ref type to the arg's declared value type; its own
+        // arg-variables are validated one level deeper (argDepth + 1), enforcing the cap recursively.
+        $this->validateValuePipeline(
+            $validator,
+            $pipeline,
+            $key . '.pipeline',
+            $refType,
+            [$expectedType],
+            $sourceEnumOptions,
+            null,
+            $refCtx,
+            $argDepth + 1,
+        );
+    }
+
+    /**
+     * Validate an arg-variable's ref against the reference index and return its declared
+     * WorkflowVariableType (null when malformed / unknown, with the error already added). Mirrors the
+     * top-level variable-ref checks in StoreWorkflowRequest, reading the SAME reference index threaded
+     * through the walk. A `trigger.fields.*` path is only skippable when the trigger form is unresolved
+     * (fields_available false — its form_id error is already reported); every other unknown ref is a
+     * granular error, so an argument can only reference a real, earlier variable.
+     *
+     * @param  array<string, mixed>  $ref
+     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}  $refCtx
+     */
+    private function validateArgVariableRef(ValidatorContract $validator, string $key, array $ref, array $refCtx): ?WorkflowVariableType
+    {
+        if (!in_array($ref['source'] ?? null, WorkflowVariableResolver::ROOTS, true)) {
+            $validator->errors()->add($key . '.ref.source', 'The reference source must be one of: ' . implode(', ', WorkflowVariableResolver::ROOTS) . '.');
+
+            return null;
+        }
+
+        $fullPath = $this->refFullPath($ref);
+
+        if ($fullPath === null) {
+            $validator->errors()->add($key . '.ref.path', 'The reference path is required.');
+
+            return null;
+        }
+
+        $type = WorkflowVariableType::tryFrom((string) ($ref['type'] ?? ''));
+
+        if ($type === null) {
+            $validator->errors()->add($key . '.ref.type', 'The reference type is invalid.');
+
+            return null;
+        }
+
+        $descriptor = $refCtx['index'][$fullPath] ?? null;
+
+        if ($descriptor === null) {
+            // A form field is only skippable when the form itself is unresolved (already reported).
+            if (str_starts_with($fullPath, 'trigger.fields.') && !$refCtx['fields_available']) {
+                return $type;
+            }
+
+            $validator->errors()->add($key . '.ref.path', 'The reference is not a known variable for this step.');
+
+            return null;
+        }
+
+        if ($descriptor['type']->value !== $type->value) {
+            $validator->errors()->add($key . '.ref.type', 'The reference type does not match the variable type in the catalog.');
+
+            return null;
+        }
+
+        return $type;
+    }
+
+    /**
+     * The full dotted path a ref resolves against (`trigger` + `fields.abc` → `trigger.fields.abc`),
+     * mirroring the resolver — a path already carrying its root is used as-is; null when no path.
+     *
+     * @param  array<string, mixed>  $ref
+     */
+    private function refFullPath(array $ref): ?string
+    {
+        $path = $ref['path'] ?? null;
+
+        if (!is_string($path) || $path === '') {
+            return null;
+        }
+
+        $source = $ref['source'] ?? null;
+
+        if (is_string($source) && $source !== '' && !str_starts_with($path, $source . '.') && $path !== $source) {
+            return $source . '.' . $path;
+        }
+
+        return $path;
+    }
+
+    /** Whether an argument value is a variable union (`{kind:'variable', …}`) rather than a literal. */
+    private function isVariableArg(mixed $value): bool
+    {
+        return is_array($value) && ($value['kind'] ?? null) === 'variable';
     }
 
     /** Add $message under $key unless $ok. */

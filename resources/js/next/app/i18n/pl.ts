@@ -1678,6 +1678,9 @@ export const pl: MessageSchema = {
       addRule: 'Dodaj regułę',
       removeRule: 'Usuń regułę',
       choiceRulesHint: 'Niedopasowany tekst użyje wartości zapasowej.',
+      // Argument typu wartościowego zasilany zmienną (phase-4b) — zwięzła etykieta w kafelku, gdy
+      // ścieżka referencji nie ma czytelnej końcówki.
+      argVariable: 'zmienna',
     },
     types: {
       text: 'Tekst',

@@ -23,4 +23,19 @@ final class ConditionTreeLimits
 
     /** Maximum operation steps a single condition's pipeline may carry. */
     public const MAX_PIPELINE_STEPS = 10;
+
+    /**
+     * Maximum ARG-VARIABLE nesting depth (phase-4a). An operation argument may itself be a variable
+     * (a value-or-variable union) whose own pipeline may carry another variable argument … and so on;
+     * this caps how deep that tree may go (level 1 = a top-level op's argument). Beyond it a config is
+     * REJECTED at write time and an argument resolves FAIL-SOFT (null/empty) at runtime.
+     *
+     * There are NO cycles to guard against: an arg-variable references a whitelisted CONTEXT DATA path
+     * (trigger/steps/globals — a plain Arr::get), NEVER another argument DEFINITION, so resolving one
+     * can never re-enter its own definition. This bound is purely a safety belt against a hostile/huge
+     * stored config's nesting depth (a finite tree), not a loop guard. Both the write-validator
+     * (WorkflowConditionTreeValidator) and the runtime resolver (WorkflowVariableResolver) read it, so
+     * the accepted depth can never drift between validation and evaluation.
+     */
+    public const MAX_ARG_VARIABLE_DEPTH = 3;
 }

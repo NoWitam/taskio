@@ -91,6 +91,45 @@ export interface ChoiceRule {
   then: string;
 }
 
+/**
+ * The variable REFERENCE an arg-variable carries (phase-4b) — mirrors the host workflow ref
+ * (`{source, path, type}`), kept editor-local so this shared editor module has NO dependency on the
+ * workflow page types. `type` is the referenced variable's TRUE type (a full `VariablePrimitive`).
+ */
+export interface ArgVariableRef {
+  source: 'trigger' | 'steps' | 'globals';
+  path: string;
+  type: VariablePrimitive;
+}
+
+/**
+ * A value-typed operation ARGUMENT supplied by a VARIABLE instead of a constant (phase-4b). It is the
+ * SAME `{kind:'variable', ref, pipeline?, default?}` union the host value-or-variable field emits —
+ * mirrored here so a pipeline step's `args` may hold it without importing the workflow page types.
+ * Its OWN `pipeline` is the wire `{op, args}` shape (an arg-variable's pipeline may host value-or-
+ * variable args again, recursively — bounded by `MAX_ARG_VARIABLE_DEPTH`). Only value controls
+ * (text/number/boolean/date) ever carry it; option/map/rules/select args stay literal-only.
+ */
+export interface ArgVariableValue {
+  kind: 'variable';
+  ref: ArgVariableRef;
+  pipeline?: Array<{ op: string; args: Record<string, unknown> }>;
+  default?: string | null;
+}
+
+/**
+ * One argument value inside a pipeline step: a literal (as before) OR — for a value-typed arg in a
+ * value-or-variable pipeline — an `ArgVariableValue` union.
+ */
+export type VariableArgValue =
+  | string
+  | number
+  | boolean
+  | string[]
+  | Record<string, string | number>
+  | ChoiceRule[]
+  | ArgVariableValue;
+
 export interface VariableOperationArgumentDefinition {
   id: string;
   label: string;
@@ -120,9 +159,10 @@ export interface VariablePipelineStep {
   /**
    * Arg values by arg id; `string[]` carries a `sourceOptions` multi-pick, a
    * `Record<optionValue, targetValue>` carries a `sourceMap` per-option mapping, and
-   * a `ChoiceRule[]` carries a `choiceRules` when→then list.
+   * a `ChoiceRule[]` carries a `choiceRules` when→then list. A value-typed arg may ALSO
+   * hold an `ArgVariableValue` variable union (phase-4b).
    */
-  args: Record<string, string | number | boolean | string[] | Record<string, string | number> | ChoiceRule[]>;
+  args: Record<string, VariableArgValue>;
   outputType: VariablePrimitive;
 }
 

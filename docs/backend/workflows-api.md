@@ -1756,6 +1756,75 @@ See **ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full de
 frontend authoring depth) and `resources/js/next/docs/pages/WorkflowsPage.vue` ("Workflow Globals",
 under "The typed variable system") for the in-app docs mirror.
 
+### Operation arguments as variables (Phase 4, additive — completes the rework)
+
+Any VALUE-TYPED operation argument — not just a field's own top-level value — may now ALSO be the
+SAME `{kind:'variable', ref, pipeline?, default?}` union a structured field's value already uses, in
+place of a constant literal, and RECURSIVELY (an argument's own `pipeline` may itself carry another
+such argument). `num_add`'s `value`, `date_add_days`'s `value`, `text_append`'s `value` (any `text` /
+`number` / `boolean` / `date` control) can now be pulled from `trigger`/`steps`/`globals` context
+instead of being typed once at authoring time:
+
+```json
+{ "op": "date_add_days", "args": { "value": {
+  "kind": "variable",
+  "ref": { "source": "trigger", "path": "fields.upload.size", "type": "number" },
+  "pipeline": [{ "op": "num_add", "args": { "value": 2 } }]
+} } }
+```
+
+`WorkflowOperationArgType::variableValueType()` is the single gate both sides read: `text|number|
+boolean|date` map to their matching type; `select`/`sourceOption`/`sourceOptions`/`sourceMap`/
+`choiceRules`/`choiceFallback` return `null` (LITERAL-ONLY — their allowed values are a fixed
+source/destination option set a runtime variable cannot be checked against ahead of time).
+
+**Runtime.** `WorkflowOperationExecutor` is completely UNCHANGED — it still only ever receives
+literal args. `WorkflowVariableResolver::resolvePipelineArgs()` pre-resolves every op's
+variable-shaped argument to a literal BEFORE the executor runs, at all three pipeline call sites (a
+`{kind:'variable'}` field's own pipeline, a text directive's pipeline, an if-block condition's
+pipeline) — via the SAME `resolveValueOrVariable()` a top-level field already uses (read the
+whitelisted ref, apply the argument's own pipeline, coerce to the argument's DECLARED type from
+`WorkflowOperation::argDescriptors()`). An unresolvable ref, a failed sub-pipeline, or nesting beyond
+the depth cap all resolve FAIL-SOFT to the argument's coerced `null` — the op then fails closed on
+the empty argument exactly as it already does for a malformed literal, never a crash. An unresolved
+variable union that somehow reached the executor directly (bypassing the resolver) also fails
+closed, never crashes, and never treats the union as a value — pinned by
+`WorkflowOperationExecutorTest::test_a_variable_union_arg_reaching_the_executor_fails_closed`.
+
+**Depth cap — the only bound needed, because there are no cycles.** An argument's `ref` can only
+point at CONTEXT DATA (`trigger`/`steps`/`globals`, the resolver's existing `ROOTS`), never at
+another argument's own definition, so a cycle is impossible by construction.
+`ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH = 3` gates both sides identically: the write validator
+`422`s a 4th nesting level under the deepest argument's own key
+(each extra level appends another `.pipeline.<m>.args.<key>`), and the runtime resolver fail-softs at
+the identical boundary — an author can never save a config the runtime would reject.
+
+**Write validation — literal-only in a condition-tree pipeline.**
+`StoreWorkflowRequest`'s value-pipeline path (`create_task.deadline`/`.priority`,
+`create_form_report.submissions_from`/`.submissions_to` — the only pipeline that was already
+write-validated, see "d. Write-time validation" below) now validates an argument-variable with the
+SAME machinery a top-level ref gets: the ref must be a KNOWN entry in the reference index
+(`WorkflowVariableCatalogService::referenceIndex()`), its catalog type must equal the argument's
+declared type, and a present sub-pipeline is validated recursively, one level deeper. A
+CONDITION-TREE pipeline (the `form_submitted` trigger gate) stays LITERAL-only — the validator only
+accepts an argument-variable when handed a reference index, and the condition-tree call site never
+supplies one, so a variable union there is rejected under the ordinary literal-shape checks. This is
+deliberate, mirroring the runtime: `WorkflowConditionEngine` (the trigger gate's evaluator) calls the
+executor DIRECTLY, with no resolver/pre-resolution pass at all — an argument-variable there is
+intentionally NOT wired, on EITHER side.
+
+**Injection safety** is inherited, not re-invented: a resolved argument value is used literally by
+the executor and its output rides the SAME NUL-mask placeholder stash a resolved directive value
+already uses (see "Transitional flat `{{...}}` tokens" above) — an argument that resolves to a value
+containing `{{...}}`/`@[...]`-shaped bytes renders it verbatim, never re-interpreted, at any nesting
+level. Pinned by
+`WorkflowVariableResolverTest::test_arg_variable_value_with_reference_like_bytes_is_not_re_interpreted`.
+
+See **ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md** for the full design record —
+this COMPLETES the four-phase variable-typesystem rework (ADR-0021 → ADR-0022 → ADR-0023 →
+ADR-0024 → ADR-0025) — and `resources/js/next/docs/pages/WorkflowsPage.vue` ("The typed variable
+system" and "Frontend module" sections) for the in-app docs mirror.
+
 ---
 
 ## Runtime operations, if-blocks, and AI text (SB1 / SB2)
@@ -2920,6 +2989,24 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `resources/js/next/pages/workflows/workflowGlobals.ts` — the draft⇆descriptor mapping + the client-side `WorkflowGlobalTypeValidator` mirror (Phase 3, frontend)
 - `resources/js/next/app/stores/workflowGlobals.ts` — list/CRUD store, invalidates every cached catalog after a mutation (Phase 3, frontend)
 - `docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md` — this phase's design record (LITERAL-only scope, the `globals` root, dual persistence, the authorable-type boundary, the NUL-reject injection invariant, the deferred FE authoring depth)
+- `app/modules/Workflows/Enums/ConditionTreeLimits.php` — `MAX_ARG_VARIABLE_DEPTH`, the one shared arg-variable nesting cap (Phase 4)
+- `app/modules/Workflows/Enums/WorkflowOperationArgType.php` — `variableValueType()`, the value-typed-only gate (Phase 4)
+- `app/modules/Workflows/Services/WorkflowVariableResolver.php` — `resolvePipelineArgs()`/`resolveStepArgs()`/`resolveArgVariable()`/`isVariableArg()`, the `argDepth`-threaded pre-resolution ahead of the executor (Phase 4)
+- `app/modules/Workflows/Services/WorkflowConditionTreeValidator.php` — `validateArgVariable()`/`validateArgVariableRef()`/`refFullPath()`, the `refCtx`/`argDepth`-threaded write validation (Phase 4)
+- `app/modules/Workflows/Http/Requests/StoreWorkflowRequest.php` — `validateVariablePipeline()` now passes its `$refCtx` + `argDepth: 0` into the value-pipeline walk (Phase 4)
+- `app/modules/Workflows/Services/WorkflowOperationExecutor.php` — unchanged this phase; pinned as the "stays pure" boundary (Phase 4)
+- `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — argument-variable resolution, the depth-cap resolve/fail-soft pair, the injection-safety pin (Phase 4)
+- `tests/Unit/Workflows/WorkflowOperationExecutorTest.php` — `test_a_variable_union_arg_reaching_the_executor_fails_closed`, the executor-stays-pure boundary pin (Phase 4)
+- `tests/Feature/WorkflowStepValuePipelineValidationTest.php` — argument-variable write validation, incl. the depth-cap `422` and the byte-verbatim persistence pin (Phase 4)
+- `resources/js/next/ui/editor/extensions/VariablePipelineEditor.vue` — the `depth` prop + `argVariable` scoped slot (Phase 4)
+- `resources/js/next/ui/editor/extensions/PipelineArgLiteralInput.vue` — the extracted literal arg controls, shared by the editor's own fallback and the arg-variable field's value mode (Phase 4)
+- `resources/js/next/ui/editor/extensions/operationHelpers.ts` — `MAX_ARG_VARIABLE_DEPTH`, `argVariableValueType()` (Phase 4)
+- `resources/js/next/ui/editor/extensions/types.ts` — `ArgVariableRef`, `ArgVariableValue`, `VariableArgValue` (Phase 4)
+- `resources/js/next/pages/workflows/ValueOrVariableField.vue` — the recursive `#argVariable` slot fill + `argToUnion()`/`unionToArg()` adapters (Phase 4)
+- `resources/js/next/pages/workflows/DateOrVariableField.vue`, `resources/js/next/pages/workflows/WorkflowStepCard.vue` — forward the new `arg-variables` pool prop (Phase 4)
+- `resources/js/next/ui/editor/__tests__/pipelineArgVariable.dom.spec.ts` — slot-gating (value-typed only, depth cap) + raw-arg serialization pins (Phase 4, frontend)
+- `resources/js/next/pages/workflows/__tests__/ValueOrVariableField.spec.ts` — the recursive-field pick/round-trip tests (Phase 4, frontend)
+- `docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md` — this phase's design record (the value-typed-only gate, the executor-stays-pure/resolver-pre-resolves split, the cycle-free depth cap, the `refCtx` write split, the deferred trigger-gate wiring and parent-Save-gate UX follow-ups) — completes the four-phase variable-typesystem rework
 
 ## Planned / deferred (not implemented)
 
@@ -2989,3 +3076,16 @@ These are documented, reviewed trade-offs — not a TODO list.
   combination yet (object-field children are scalar-only; the array toggle is disabled for an
   object base, with an in-UI note). A pure frontend follow-up whenever real authoring demand shows
   up, not blocked on a backend change.
+- **Trigger-gate (`WorkflowConditionEngine`) argument-variables** (Phase 4, ADR-0025): an operation
+  argument may be a variable in a value-or-variable pipeline (`create_task.deadline`/`.priority`,
+  `create_form_report.submissions_from`/`.submissions_to`), but NOT in a `form_submitted` condition-
+  tree pipeline — rejected at write, and the trigger gate's runtime (`WorkflowConditionEngine`) calls
+  `WorkflowOperationExecutor` directly with no resolver/pre-resolution pass at all. Wiring it would
+  need a resolver dependency (or an equivalent pre-resolution pass) the condition engine has never
+  had — a genuinely separate structural change, not a byproduct of this phase. See ADR-0025.
+- **Parent ops-modal Save gate for a nested argument-variable mismatch** (Phase 4, ADR-0025): a
+  type-mismatched argument-variable shows its own local "action required" skin in the frontend
+  editor, but the OUTER field's modal Save button is not (yet) disabled by it — `pipelineSatisfies()`
+  only inspects each pipeline step's output type, never a step's `args`. The backend `422`
+  (`WorkflowConditionTreeValidator::validateArgVariable()`) stays fully authoritative regardless, so
+  nothing invalid can be persisted; this is a pure frontend UX follow-up. See ADR-0025.

@@ -376,4 +376,35 @@ class WorkflowOperationExecutorTest extends TestCase
 
         $this->assertTrue($result->failed);
     }
+
+    // ── argument variables: the executor stays a PURE transformer (phase-4a) ───
+
+    public function test_a_literal_arg_is_used_verbatim_the_executor_never_resolves(): void
+    {
+        // The executor receives already-resolved LITERAL args (the resolver pre-resolves any variable
+        // args BEFORE calling it). A plain literal arg behaves exactly as before — the back-compat
+        // anchor for phase-4a: nothing about the executor's arg handling changed.
+        $result = $this->executor->execute(10, WorkflowVariableType::NUMBER, [
+            ['op' => 'num_add', 'args' => ['value' => 5]],
+        ]);
+
+        $this->assertFalse($result->failed);
+        $this->assertSame(15.0, $result->value);
+    }
+
+    public function test_a_variable_union_arg_reaching_the_executor_fails_closed(): void
+    {
+        // The executor holds NO context/resolver handle: if an UNRESOLVED variable-union leaks in as an
+        // arg (the resolver is meant to pre-resolve it to a literal), the executor must fail closed —
+        // never treat the union array as a value, never read context. Pins the pure-transformer boundary.
+        $result = $this->executor->execute(10, WorkflowVariableType::NUMBER, [
+            ['op' => 'num_add', 'args' => ['value' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.n', 'type' => 'number'],
+            ]]],
+        ]);
+
+        $this->assertTrue($result->failed);
+        $this->assertFalse($result->hard);
+    }
 }

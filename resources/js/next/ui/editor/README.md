@@ -24,6 +24,7 @@ language as the rest of the `next` form controls.
 | `extensions/mention.ts` + `MentionChip.vue` + `MentionSuggest.vue` + `suggestionStore.ts` | `@`-mention node + caret-anchored suggestion popup (no tippy). The popup + store are shared with the variable trigger. |
 | `extensions/variable.ts` + `VariableChip.vue` + `VariablePanel.vue` | Template-variable node. Inserted via a `{` **trigger** (same suggestion architecture as mentions, local fuzzy filter over the predefined list); the chip opens a **Modal** with the full operations-pipeline editor. |
 | `extensions/VariablePipelineEditor.vue` + `operationHelpers.ts` | The **shared** operations-pipeline editor (add-operation dropdown filtered by the current running type → steps → per-arg inputs → computed `resultType`) + its pure type-flow helpers. Used by BOTH the VariablePanel and the IF condition editor (DRY). |
+| `extensions/PipelineArgLiteralInput.vue` | The literal text/number/boolean/date controls for a value-typed operation argument, extracted verbatim from `VariablePipelineEditor`'s previous inline controls (Workflows variable-typesystem Phase 4) — rendered both as the editor's own literal fallback and inside a host's `argVariable` slot's value mode, so the two always look/behave identically. |
 | `extensions/aiText.ts` + `AiTextChip.vue` + `AiTextPanel.vue` | AI-text node + **Modal** (persona Select + a nested `MarkdownEditor` for the prompt + labels multi-select). |
 | `extensions/ifBlock.ts` + `IfBlockView.vue` + `IfBranchView.vue` + `IfConditionPanel.vue` | Conditional `if-block` **container** node + `ifBranch` child nodes with **inline-editable bodies** (real editor regions via `contentDOM`), boolean-condition editing (Modal), and a depth cap. |
 | `__tests__/markdown.spec.ts` | Round-trip + fidelity tests for the base serializer. |
@@ -138,6 +139,21 @@ runs; this editor only carries the byte, it does not interpret it.
 rendered as persistent helper text under an arg control by
 `VariablePipelineEditor` — first used by the `date_format` op (Workflows-only, a
 host op) to show its safe-token legend under the pattern field.
+
+**Argument variables — a RECURSIVE `argVariable` slot (Workflows variable-typesystem Phase 4,
+`docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md`, the final phase of
+that rework).** `VariablePipelineEditor` now accepts a `depth` prop (default `0`) and, for a
+value-typed argument (`text`/`number`/`boolean`/`date` — `argVariableValueType()` in
+`operationHelpers.ts`; option/map/rules/select args are excluded), offers a new scoped
+`#argVariable` slot INSTEAD of its own literal control whenever the HOST provides that slot AND
+`depth < MAX_ARG_VARIABLE_DEPTH` (3). This component only decides WHETHER to offer the slot — it
+stays free of any dependency on a host's own variable/field types, exactly like the rest of this
+shared editor. The slot receives `{ arg, value, depth: depth + 1, setValue, disabled }`; when it is
+not provided (a condition builder, an if-block, a markdown pipeline all render `VariablePipelineEditor`
+without it — argument variables are OFF there) or the depth cap is reached, the argument falls back
+to `PipelineArgLiteralInput.vue` — the SAME literal controls, so behavior/serialization for a literal
+argument is unchanged either way. The Workflows module's `ValueOrVariableField.vue` is the one host
+that fills this slot today, recursively, with itself.
 
 ### Variable value types (extended vocabulary)
 

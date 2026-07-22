@@ -27,6 +27,12 @@ withDefaults(
     variables: CatalogVariable[];
     /** The merged operations catalog for the variable-mode pipeline (empty ⇒ no pipeline). */
     operationsCatalog?: VariableOperationDefinition[];
+    /**
+     * The show-all pool an OP ARGUMENT inside the (date) pipeline may reference (phase-4b) —
+     * forwarded to the inner ValueOrVariableField so a value-typed op arg gains the value/variable
+     * toggle. Empty (the default) ⇒ op args stay literal-only.
+     */
+    argVariables?: CatalogVariable[];
     /** aria-label for the variable-mode picker. */
     pickerLabel?: string;
     /** aria-label / placeholder for the literal DatePicker. */
@@ -39,7 +45,7 @@ withDefaults(
     externalErrorPresent?: boolean;
     disabled?: boolean;
   }>(),
-  { operationsCatalog: () => [], externalErrorPresent: false, disabled: false },
+  { operationsCatalog: () => [], argVariables: () => [], externalErrorPresent: false, disabled: false },
 );
 
 const model = defineModel<WorkflowFieldValue<string> | null>({ default: null });
@@ -59,6 +65,7 @@ const { t } = useI18n();
     v-model="model"
     :variables="variables"
     :operations-catalog="operationsCatalog"
+    :arg-variables="argVariables"
     :result-types="[...DATE_RESULT_TYPES]"
     :external-error-present="externalErrorPresent"
     :picker-label="pickerLabel ?? t('workflows.field.pickVariable')"

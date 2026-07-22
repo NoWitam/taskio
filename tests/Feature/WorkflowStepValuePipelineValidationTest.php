@@ -500,4 +500,170 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
             ],
         ]))->assertCreated();
     }
+
+    // ---- operation ARGUMENTS supplied by a variable (phase-4a) ----------------
+    //
+    // An op arg may be a value-or-variable union instead of a constant literal, validated against the
+    // SAME reference index the top-level ref uses: its resolved type must match the arg's DECLARED type,
+    // its sub-pipeline is validated recursively, and nesting is capped (MAX_ARG_VARIABLE_DEPTH).
+
+    /**
+     * A number arg-variable (ref `fields.upload.size`) whose num_add pipeline nests another such
+     * arg-variable, $levels deep. $levels = 1 is a bare ref (no pipeline) — the chain's bottom.
+     */
+    private function numberArgChain(int $levels): array
+    {
+        $ref = ['source' => 'trigger', 'path' => 'fields.upload.size', 'type' => 'number'];
+
+        if ($levels <= 1) {
+            return ['kind' => 'variable', 'ref' => $ref];
+        }
+
+        return [
+            'kind' => 'variable',
+            'ref' => $ref,
+            'pipeline' => [['op' => 'num_add', 'args' => ['value' => $this->numberArgChain($levels - 1)]]],
+        ];
+    }
+
+    public function test_accepts_an_op_argument_supplied_by_a_variable(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // date_add_days' `value` arg (declared NUMBER) is supplied by a variable — the file's `size`
+        // subfield (a NUMBER). The arg's resolved type matches, the pipeline still ends in a DATE.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+                'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'trigger', 'path' => 'fields.upload.size', 'type' => 'number'],
+                ]]]],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_an_op_argument_variable_with_its_own_pipeline(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // The arg-variable itself carries a sub-pipeline (num_add) that still terminates in NUMBER —
+        // the arg's declared type — so the nested transform validates recursively.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+                'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'trigger', 'path' => 'fields.upload.size', 'type' => 'number'],
+                    'pipeline' => [['op' => 'num_add', 'args' => ['value' => 2]]],
+                ]]]],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_rejects_an_op_argument_variable_whose_type_mismatches_the_arg(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // date_add_days' `value` is declared NUMBER but the arg-variable references `fields.headline`
+        // (TEXT) — the SAME type gate a literal arg gets rejects the mismatch under the arg's key.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+                'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+                ]]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.deadline.pipeline.0.args.value']);
+    }
+
+    public function test_rejects_an_op_argument_variable_referencing_an_unknown_variable(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // The arg-variable must be a KNOWN variable in the reference index — `fields.ghost` is not a
+        // field of the form, so it is rejected exactly like an unknown top-level ref.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+                'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'trigger', 'path' => 'fields.ghost', 'type' => 'number'],
+                ]]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.deadline.pipeline.0.args.value.ref.path']);
+    }
+
+    public function test_rejects_an_op_argument_variable_referencing_a_non_whitelisted_root(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // Exfil safety at the arg level: only trigger/steps/globals roots are references — `env` is not.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+                'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'env', 'path' => 'SECRET', 'type' => 'number'],
+                ]]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.deadline.pipeline.0.args.value.ref.source']);
+    }
+
+    public function test_rejects_an_op_argument_variable_nested_beyond_the_cap(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A FOUR-level arg-variable chain exceeds MAX_ARG_VARIABLE_DEPTH (3) and is rejected at the
+        // deepest arg's key — the write-time belt matching the runtime resolver's fail-soft boundary.
+        $deepKey = 'steps.0.config.deadline' . str_repeat('.pipeline.0.args.value', 4);
+
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+                'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => $this->numberArgChain(4)]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors([$deepKey]);
+    }
+
+    public function test_an_op_argument_variable_persists_verbatim(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        $pipeline = [['op' => 'date_add_days', 'args' => ['value' => [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.upload.size', 'type' => 'number'],
+            'pipeline' => [['op' => 'num_add', 'args' => ['value' => 2]]],
+        ]]]];
+
+        $response = $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'], 'pipeline' => $pipeline],
+        ]))->assertCreated();
+
+        // The arg-variable (ref + its own sub-pipeline) round-trips into the stored step config unchanged.
+        $workflow = \App\Modules\Workflows\Models\Workflow::findOrFail($response->json('data.id'));
+
+        $this->assertSame($pipeline, $workflow->steps[0]['config']['deadline']['pipeline']);
+    }
 }

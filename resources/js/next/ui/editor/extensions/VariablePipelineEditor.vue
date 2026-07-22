@@ -9,20 +9,28 @@
 // This is the DRY core used by BOTH the VariablePanel and the IF condition editor
 // (the legacy editor duplicated this logic across VariablePanel + IfBlockPanel).
 //
+// ARG-VARIABLE slot (phase-4b): a VALUE-TYPED arg (text/number/boolean/date) may be supplied by a
+// VARIABLE rather than a constant. This component owns the DECISION (value-typed AND within the
+// `depth` cap AND the host provided the `argVariable` slot) but NOT the value-or-variable UI — the
+// host (ValueOrVariableField) fills the `argVariable` slot with a recursive value-or-variable field,
+// so this shared editor keeps NO dependency on the workflow page. When the slot is absent (conditions
+// / markdown builders) or the depth cap is reached, the arg renders its literal control (unchanged).
+//
 // v-model is the `pipeline` array. The parent owns the base type + catalog. The
 // component is presentation + type-flow only; it never serializes.
-import { computed, ref } from 'vue';
+import { computed, ref, useSlots } from 'vue';
 import Button from '../../primitives/Button.vue';
 import Icon from '../../primitives/Icon.vue';
 import Badge from '../../primitives/Badge.vue';
 import Select from '../../forms/Select.vue';
 import TextInput from '../../forms/TextInput.vue';
 import NumberInput from '../../forms/NumberInput.vue';
-import Switch from '../../forms/Switch.vue';
 import DatePicker from '../../forms/DatePicker.vue';
 import SegmentedControl from '../../forms/SegmentedControl.vue';
 import DropdownMenu from '../../overlay/DropdownMenu.vue';
+import PipelineArgLiteralInput from './PipelineArgLiteralInput.vue';
 import {
+  argVariableValueType,
   buildDefaultArgs,
   computeInputType,
   createPipelineStep,
@@ -30,12 +38,16 @@ import {
   getVariableIconLabel,
   getVariableIconName,
   isChoiceProducingOp,
+  MAX_ARG_VARIABLE_DEPTH,
   operationsForType,
   resolveType,
 } from './operationHelpers';
 import { useI18n } from '../../../app/i18n';
 import type {
+  ArgVariableValue,
   ChoiceRule,
+  VariableArgValue,
+  VariableOperationArgumentDefinition,
   VariableOperationDefinition,
   VariableOption,
   VariablePipelineStep,
@@ -68,11 +80,47 @@ const props = defineProps<{
    * workflow condition builder passes 10). Undefined = no limit (default).
    */
   maxSteps?: number;
+  /**
+   * The ARG-VARIABLE nesting depth of THIS pipeline (phase-4b). A top-level value-or-variable
+   * pipeline is depth 0; each nested arg-variable's own pipeline increments it. A value-typed arg
+   * offers the value/variable toggle (the `argVariable` slot) ONLY while `depth < MAX_ARG_VARIABLE_
+   * DEPTH` — mirroring the backend write cap so the author can never build a config that 422s.
+   * Default 0.
+   */
+  depth?: number;
 }>();
 
 const pipeline = defineModel<VariablePipelineStep[]>({ default: () => [] });
 
+const slots = useSlots();
 const { t } = useI18n();
+
+/** This pipeline's arg-variable nesting depth (0 = a top-level value-or-variable pipeline). */
+const argDepth = computed(() => props.depth ?? 0);
+
+/**
+ * Whether a value-typed arg may become a variable here: the host must provide the `argVariable` slot
+ * (the value-or-variable field does; the conditions / markdown builders do NOT → literal-only) AND
+ * we must be within the depth cap. At/over the cap the arg renders LITERAL-ONLY — exactly where the
+ * backend rejects a deeper nesting.
+ */
+const canOfferArgVariable = computed(() => !!slots.argVariable && argDepth.value < MAX_ARG_VARIABLE_DEPTH);
+
+/** Whether an arg's control is value-typed (text/number/boolean/date) — i.e. variable-able. */
+function isValueTypedArg(arg: VariableOperationArgumentDefinition): boolean {
+  return argVariableValueType(arg.type) !== null;
+}
+
+/** Whether an arg value is a variable union rather than a literal. */
+function isArgVariable(value: unknown): value is ArgVariableValue {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && (value as { kind?: string }).kind === 'variable';
+}
+
+/** The last dotted segment of a path (for a variable arg's compact chip echo). */
+function lastPathSegment(path: string): string {
+  const parts = path.split('.');
+  return parts[parts.length - 1] || path;
+}
 
 const resultType = computed<VariablePrimitive>(() =>
   resolveType(props.catalog, props.baseType, pipeline.value),
@@ -151,6 +199,12 @@ function sourceOptionLabel(value: string): string {
 function formatArgValue(step: VariablePipelineStep, argId: string): string {
   const arg = opArgs(step).find((a) => a.id === argId);
   const raw = step.args[argId];
+  // A value-typed arg supplied by a VARIABLE (phase-4b): echo the referenced variable's path tail
+  // (checked FIRST so a boolean/date variable is not mis-read as a literal by the branches below).
+  if (isArgVariable(raw)) {
+    const path = raw.ref?.path ?? '';
+    return path ? lastPathSegment(path) : t('editor.pipeline.argVariable', 'variable');
+  }
   if (arg?.type === 'boolean') {
     return raw ? t('editor.pipeline.booleanYes', 'yes') : t('editor.pipeline.booleanNo', 'no');
   }
@@ -196,7 +250,7 @@ function updateOperation(stepId: string, opId: string): void {
 function updateArg(
   stepId: string,
   argId: string,
-  value: string | number | boolean | string[] | Record<string, string | number> | ChoiceRule[],
+  value: VariableArgValue,
 ): void {
   pipeline.value = pipeline.value.map((s) =>
     s.stepId === stepId ? { ...s, args: { ...s.args, [argId]: value } } : s,
@@ -376,24 +430,27 @@ function setChoiceRule(
                 {{ arg.label }}
                 <Badge variant="neutral" size="sm" :icon="getArgumentIconName(arg.type)">{{ arg.type }}</Badge>
               </label>
-              <TextInput
-                v-if="arg.type === 'text'"
-                :model-value="String(step.args[arg.id] ?? '')"
-                :placeholder="arg.placeholder"
-                @update:model-value="(v: string) => updateArg(step.stepId, arg.id, v)"
-              />
-              <NumberInput
-                v-else-if="arg.type === 'number'"
-                :model-value="step.args[arg.id] === '' || step.args[arg.id] == null ? null : Number(step.args[arg.id])"
-                :placeholder="arg.placeholder"
-                @update:model-value="(v: number | null) => updateArg(step.stepId, arg.id, v ?? 0)"
-              />
-              <Switch
-                v-else-if="arg.type === 'boolean'"
-                :model-value="Boolean(step.args[arg.id])"
-                :aria-label="arg.label"
-                @update:model-value="(v: boolean) => updateArg(step.stepId, arg.id, v)"
-              />
+              <!-- VALUE-TYPED args (text/number/boolean/date): a value-or-variable editor when the
+                   host enables it (provides the `argVariable` slot) AND we are within the depth cap,
+                   else the literal control — BYTE-IDENTICAL to before (PipelineArgLiteralInput holds
+                   the original controls). option/map/rules/select args are NEVER variable-able. -->
+              <template v-if="isValueTypedArg(arg)">
+                <slot
+                  v-if="canOfferArgVariable"
+                  name="argVariable"
+                  :arg="arg"
+                  :value="step.args[arg.id]"
+                  :depth="argDepth + 1"
+                  :set-value="(v: VariableArgValue) => updateArg(step.stepId, arg.id, v)"
+                  :disabled="false"
+                />
+                <PipelineArgLiteralInput
+                  v-else
+                  :arg="arg"
+                  :value="step.args[arg.id]"
+                  @update:value="(v) => updateArg(step.stepId, arg.id, v)"
+                />
+              </template>
               <Select
                 v-else-if="arg.type === 'select'"
                 :model-value="String(step.args[arg.id] ?? '')"
@@ -402,15 +459,6 @@ function setChoiceRule(
                 :aria-label="arg.label"
                 @update:model-value="(v) => updateArg(step.stepId, arg.id, (v as string) ?? '')"
               />
-              <!-- date — a DatePicker in a fixed-width wrapper (Popover-based fields drop
-                   the class attr; the trigger chain needs the forced w-full). -->
-              <div v-else-if="arg.type === 'date'" class="w-44 [&>div]:w-full">
-                <DatePicker
-                  :model-value="typeof step.args[arg.id] === 'string' && step.args[arg.id] !== '' ? String(step.args[arg.id]) : null"
-                  :aria-label="arg.label"
-                  @update:model-value="(v: string | null) => updateArg(step.stepId, arg.id, v ?? '')"
-                />
-              </div>
               <!-- sourceOption — ONE value picked from the SOURCE variable's options. -->
               <Select
                 v-else-if="arg.type === 'sourceOption'"

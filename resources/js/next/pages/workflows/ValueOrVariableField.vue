@@ -21,6 +21,13 @@
 // identity ref. Hydration is unchanged. The host feeds `:variables` (already filtered
 // to the compatible types via `variablesOfType`), the `:operations-catalog`, and the
 // `:result-types` the pipeline MUST terminate on (priority → enum|text; date → date).
+//
+// ARG-VARIABLES (phase-4b): when the host also feeds `:arg-variables` (the show-all pool), a
+// VALUE-TYPED op argument in the modal pipeline gains the SAME value/variable toggle — this field is
+// RECURSIVE: it fills the pipeline editor's `argVariable` slot with ITSELF (bound to the arg via the
+// arg↔union adapters below), one `:depth` deeper each level. The pipeline editor enforces the depth
+// cap (`MAX_ARG_VARIABLE_DEPTH`), so beyond it an arg is literal-only — the FE can never build past
+// what the backend accepts. A literal arg still serializes byte-identically (no `{kind}` wrapper).
 import { computed, ref, watch } from 'vue';
 import Select, { type SelectOption } from '../../ui/forms/Select.vue';
 import Modal from '../../ui/overlay/Modal.vue';
@@ -30,7 +37,13 @@ import Icon from '../../ui/primitives/Icon.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import Tooltip from '../../ui/overlay/Tooltip.vue';
 import VariablePipelineEditor from '../../ui/editor/extensions/VariablePipelineEditor.vue';
-import { getVariableIconLabel, pipelineSatisfies, resolveType } from '../../ui/editor/extensions/operationHelpers';
+import PipelineArgLiteralInput from '../../ui/editor/extensions/PipelineArgLiteralInput.vue';
+import {
+  argVariableValueType,
+  getVariableIconLabel,
+  pipelineSatisfies,
+  resolveType,
+} from '../../ui/editor/extensions/operationHelpers';
 import { useI18n } from '../../app/i18n';
 import { variableIcon, variableOptionList } from './workflowVariables';
 import { CONDITION_LIMITS } from './workflowConditions';
@@ -42,6 +55,9 @@ import type {
   WorkflowVariableType,
 } from './types';
 import type {
+  ArgVariableValue,
+  VariableArgValue,
+  VariableOperationArgumentDefinition,
   VariableOperationDefinition,
   VariableOption,
   VariablePipelineStep,
@@ -89,6 +105,20 @@ const props = withDefaults(
      * required" pill / aria-invalid remain (they carry no duplicate text).
      */
     externalErrorPresent?: boolean;
+    /**
+     * The show-all pool of variables an OP ARGUMENT inside this field's pipeline may reference
+     * (phase-4b). When provided, a value-typed op argument gains the SAME value/variable toggle this
+     * field has — recursively, bounded by the depth cap. Empty (the default) ⇒ op args stay
+     * literal-only. Usually the SAME `allValueVariables` pool the field's own picker uses.
+     */
+    argVariables?: CatalogVariable[];
+    /**
+     * This field's ARG-VARIABLE nesting depth (phase-4b): the depth of the pipeline it hosts in its
+     * ops modal. A top-level field = 0; a field rendered AS an arg-variable sits one level deeper
+     * (threaded by the parent editor's `argVariable` slot). Passed to the modal's pipeline editor so
+     * a value-typed arg offers the toggle only while `depth < MAX_ARG_VARIABLE_DEPTH`.
+     */
+    depth?: number;
     /** Disable the whole field (toggle + controls). */
     disabled?: boolean;
   }>(),
@@ -97,6 +127,8 @@ const props = withDefaults(
     resultTypes: () => [],
     targetOptions: () => [],
     externalErrorPresent: false,
+    argVariables: () => [],
+    depth: 0,
     disabled: false,
   },
 );
@@ -377,6 +409,54 @@ function saveModal(): void {
   model.value = next;
   modalOpen.value = false;
 }
+
+// --- Op ARGUMENT value-or-variable adapter (phase-4b) ------------------------
+// A pipeline op's value-typed argument is stored as EITHER a bare literal (as today) OR the SAME
+// {kind:'variable', ref, pipeline?, default?} union this field emits. The modal's pipeline editor
+// hosts each such arg through its `argVariable` slot (template below), which renders a RECURSIVE
+// ValueOrVariableField whose v-model is the WorkflowFieldValue union. These adapters translate
+// between that union and the raw arg storage so a LITERAL arg serializes BYTE-IDENTICALLY (no wrapper)
+// while a variable arg rides the union straight through.
+
+/** Whether a raw arg value is a variable union rather than a literal. */
+function isArgVariable(value: unknown): value is ArgVariableValue {
+  return !!value && typeof value === 'object' && !Array.isArray(value) && (value as { kind?: string }).kind === 'variable';
+}
+
+/** The empty literal for a value-typed arg (matches buildDefaultArgs so a toggled-back arg stays valid). */
+function emptyArgLiteral(arg: VariableOperationArgumentDefinition): string | number | boolean {
+  switch (arg.type) {
+    case 'number':
+      return 0;
+    case 'boolean':
+      return false;
+    default: // text | date
+      return '';
+  }
+}
+
+/** The accepted terminal type(s) for an arg-variable's pipeline = the arg's DECLARED value type. */
+function argResultTypes(arg: VariableOperationArgumentDefinition): WorkflowVariableType[] {
+  const type = argVariableValueType(arg.type);
+  return type ? [type as WorkflowVariableType] : [];
+}
+
+/** Project a raw arg value onto the field union the recursive value-or-variable field edits. */
+function argToUnion(raw: VariableArgValue | undefined): WorkflowFieldValue | null {
+  if (isArgVariable(raw)) return raw as unknown as WorkflowFieldValue;
+  return { kind: 'literal', value: raw ?? null };
+}
+
+/**
+ * Project the recursive field's union back onto raw arg storage. A variable arm passes straight
+ * through (`{kind:'variable', …}`); a literal is UNWRAPPED to its bare value (empty ⇒ the arg's typed
+ * empty), so a literal arg is byte-identical to today (no `{kind}` wrapper ever reaches the wire).
+ */
+function unionToArg(union: WorkflowFieldValue | null, arg: VariableOperationArgumentDefinition): VariableArgValue {
+  if (union?.kind === 'variable') return union as unknown as ArgVariableValue;
+  const value = union?.kind === 'literal' ? union.value : null;
+  return (value ?? emptyArgLiteral(arg)) as VariableArgValue;
+}
 </script>
 
 <template>
@@ -510,7 +590,35 @@ function saveModal(): void {
           :source-options="sourceOptions"
           :target-options="targetOptions"
           :max-steps="maxOperations"
-        />
+          :depth="depth"
+        >
+          <!-- ARG-VARIABLE (phase-4b): a value-typed op argument may itself be a variable. The
+               editor decides WHETHER to offer this (value-typed + within the depth cap); we supply
+               the SAME value-or-variable field RECURSIVELY, with the arg's literal control in its
+               VALUE slot and the arg's declared type as the pipeline's required terminal. -->
+          <template #argVariable="{ arg, value, depth: hostedDepth, setValue, disabled: argDisabled }">
+            <ValueOrVariableField
+              :model-value="argToUnion(value)"
+              :variables="argVariables"
+              :arg-variables="argVariables"
+              :operations-catalog="operationsCatalog"
+              :result-types="argResultTypes(arg)"
+              :depth="hostedDepth"
+              :disabled="argDisabled"
+              :picker-label="arg.label"
+              @update:model-value="(u) => setValue(unionToArg(u, arg))"
+            >
+              <template #default="{ value: litValue, setValue: setLit, disabled: litDisabled }">
+                <PipelineArgLiteralInput
+                  :arg="arg"
+                  :value="litValue"
+                  :disabled="litDisabled"
+                  @update:value="setLit"
+                />
+              </template>
+            </ValueOrVariableField>
+          </template>
+        </VariablePipelineEditor>
 
         <!-- Type gate: green when the pipeline returns an accepted type, a warning
              (with the expected type) when it does not. -->

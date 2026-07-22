@@ -957,4 +957,163 @@ class WorkflowVariableResolverTest extends TestCase
         $this->assertSame('Ada', $this->resolver->resolve('{{trigger.fields.details.name}}', $context));
         $this->assertSame('admin', $this->resolver->resolve('{{trigger.fields.details.type}}', $context));
     }
+
+    // ---- operation ARGUMENTS supplied by a variable (phase-4a) ----------------
+
+    public function test_op_argument_supplied_by_a_variable_resolves_from_context(): void
+    {
+        // num_add's `value` arg is a VARIABLE (not a constant): it is pulled from context and coerced
+        // to the arg's DECLARED type (number) before the pure executor runs the op — 10 + 5 = 15.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.base', 'type' => 'number'],
+            'pipeline' => [['op' => 'num_add', 'args' => ['value' => [
+                'kind' => 'variable',
+                // A TEXT context value '5' is coerced to the arg's declared NUMBER type.
+                'ref' => ['source' => 'trigger', 'path' => 'fields.addend', 'type' => 'text'],
+            ]]]],
+        ];
+        $context = ['trigger' => ['fields' => ['base' => 10, 'addend' => '5']], 'steps' => []];
+
+        $this->assertSame(15.0, $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::NUMBER));
+    }
+
+    public function test_op_argument_variable_applies_its_own_pipeline_one_level_deep(): void
+    {
+        // The arg-variable itself carries a pipeline (text_uppercase) — resolved one level deep before
+        // it feeds text_append: 'ada' → 'ADA', appended to 'Hi ' → 'Hi ADA'.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.greeting', 'type' => 'text'],
+            'pipeline' => [['op' => 'text_append', 'args' => ['value' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.name', 'type' => 'text'],
+                'pipeline' => [['op' => 'text_uppercase']],
+            ]]]],
+        ];
+        $context = ['trigger' => ['fields' => ['greeting' => 'Hi ', 'name' => 'ada']], 'steps' => []];
+
+        $this->assertSame('Hi ADA', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_op_argument_literal_is_unchanged_backcompat(): void
+    {
+        // REGRESSION: a pipeline whose op arg is a plain LITERAL resolves byte-identically to before the
+        // arg-variable work — the resolver only rewrites args shaped as a `{kind:'variable'}` union.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.base', 'type' => 'number'],
+            'pipeline' => [['op' => 'num_add', 'args' => ['value' => 3]]],
+        ];
+        $context = ['trigger' => ['fields' => ['base' => 10]], 'steps' => []];
+
+        $this->assertSame(13.0, $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::NUMBER));
+    }
+
+    public function test_op_argument_variable_resolves_in_a_directive_pipeline(): void
+    {
+        // The DIRECTIVE pipeline path pre-resolves arg-variables too: 'high' → 'HIGH', then text_append
+        // whose `value` is a variable (globals.brand = 'Taskio') → 'HIGHTaskio'.
+        $directive = $this->directiveWithPipeline('trigger.fields.priority', 'text', [
+            $this->step('text_uppercase'),
+            $this->step('text_append', ['value' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.brand', 'type' => 'text'],
+            ]]),
+        ]);
+
+        $this->assertSame('HIGHTaskio', $this->resolver->resolve($directive, $this->context()));
+    }
+
+    public function test_op_argument_variable_resolves_in_an_if_block_condition(): void
+    {
+        // The IF-BLOCK condition pipeline path pre-resolves arg-variables too: text_equals compares the
+        // source (fields.a) against a VARIABLE arg (fields.b) — equal → the IF branch wins.
+        $context = ['trigger' => ['fields' => ['a' => 'match', 'b' => 'match']], 'steps' => []];
+        $md = $this->ifBlock(
+            $this->branch('IF', $this->condition('trigger.fields.a', [
+                $this->step('text_equals', ['value' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'trigger', 'path' => 'fields.b', 'type' => 'text'],
+                ]]),
+            ]), 'EQUAL'),
+            $this->branch('ELSE', null, 'DIFFERENT'),
+        );
+
+        $this->assertSame('EQUAL', $this->resolver->resolve($md, $context));
+    }
+
+    public function test_arg_variable_value_with_reference_like_bytes_is_not_re_interpreted(): void
+    {
+        // INJECTION SAFETY: an arg-variable can resolve to a value that literally contains reference
+        // bytes. `trigger.fields.injection` holds "{{trigger.fields.priority}}". Appended by the pure
+        // executor and stashed on the SAME NUL-mask path a resolved value uses, it renders VERBATIM —
+        // never re-scanned into 'high'.
+        $directive = $this->directiveWithPipeline('trigger.title', 'text', [
+            $this->step('text_append', ['value' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.injection', 'type' => 'text'],
+            ]]),
+        ]);
+
+        $this->assertSame(
+            'Out: Trigger title{{trigger.fields.priority}}',
+            $this->resolver->resolve('Out: ' . $directive, $this->context()),
+        );
+    }
+
+    /**
+     * A number arg-variable (ref `trigger.fields.tag` = 't') whose text_append pipeline nests another
+     * such arg-variable, $levels deep. $levels = 1 is a bare ref (no pipeline) — the chain's bottom.
+     *
+     * @return array<string, mixed>
+     */
+    private function nestedArgVariable(int $levels): array
+    {
+        $ref = ['source' => 'trigger', 'path' => 'fields.tag', 'type' => 'text'];
+
+        if ($levels <= 1) {
+            return ['kind' => 'variable', 'ref' => $ref];
+        }
+
+        return [
+            'kind' => 'variable',
+            'ref' => $ref,
+            'pipeline' => [['op' => 'text_append', 'args' => ['value' => $this->nestedArgVariable($levels - 1)]]],
+        ];
+    }
+
+    /** A top-level value field (`fields.base` = 'B') whose text_append appends $argVariable. */
+    private function topFieldAppending(array $argVariable): array
+    {
+        return [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.base', 'type' => 'text'],
+            'pipeline' => [['op' => 'text_append', 'args' => ['value' => $argVariable]]],
+        ];
+    }
+
+    public function test_arg_variable_nesting_within_the_depth_cap_resolves(): void
+    {
+        // Three arg-variable levels (the cap) all resolve: each appends 't' to the deeper result —
+        // 't' → 'tt' → 'ttt' — then the top field prepends its own 'B'.
+        $context = ['trigger' => ['fields' => ['base' => 'B', 'tag' => 't']], 'steps' => []];
+
+        $this->assertSame(
+            'Bttt',
+            $this->resolver->resolveValueOrVariable($this->topFieldAppending($this->nestedArgVariable(3)), $context, WorkflowVariableType::TEXT),
+        );
+    }
+
+    public function test_arg_variable_nesting_beyond_the_depth_cap_fails_soft(): void
+    {
+        // A FOURTH arg-variable level exceeds MAX_ARG_VARIABLE_DEPTH: the deepest arg resolves fail-soft
+        // (null), its op fail-closes, and the whole nested pipeline collapses to the field's soft
+        // default (null) — no crash, no unbounded work (there are no cycles, only bounded nesting).
+        $context = ['trigger' => ['fields' => ['base' => 'B', 'tag' => 't']], 'steps' => []];
+
+        $this->assertNull(
+            $this->resolver->resolveValueOrVariable($this->topFieldAppending($this->nestedArgVariable(4)), $context, WorkflowVariableType::TEXT),
+        );
+    }
 }

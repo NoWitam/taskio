@@ -1711,6 +1711,9 @@ export const en = {
       addRule: 'Add rule',
       removeRule: 'Remove rule',
       choiceRulesHint: 'Unmatched text uses the fallback choice.',
+      // A value-typed op argument supplied by a variable (phase-4b) — the compact chip echo when
+      // the referenced path has no readable tail.
+      argVariable: 'variable',
     },
     types: {
       text: 'Text',

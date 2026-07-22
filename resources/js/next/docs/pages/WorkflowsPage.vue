@@ -235,6 +235,16 @@ const globalAuthorableTypeRows: ApiRow[] = [
   { name: 'file / time',    type: '— NOT authorable —',  description: 'Rejected at descriptor.base. A global holds a plain typed constant, never an uploaded Disk file or a type with no runtime semantics yet.' },
   { name: 'multi',          type: '— not a base —',      description: 'A multi-select is enum + array:true, exactly like every other catalog variable — there is no separate "multi" base to pick.' },
 ];
+
+// ── Variable typesystem Phase 4 (operation arguments as variables, ADR-0025) ────────────────
+const argVariableControlRows: ApiRow[] = [
+  { name: 'text',                                  type: 'text',    description: 'A pipeline op\'s text arg (e.g. text_append\'s value) may be a variable.' },
+  { name: 'number',                                type: 'number',  description: 'e.g. num_add\'s value, date_add_days\' value.' },
+  { name: 'boolean',                                type: 'boolean', description: 'e.g. bool_to_text\'s when_true/when_false.' },
+  { name: 'date',                                  type: 'date',    description: 'e.g. date_before\'s value.' },
+  { name: 'select / sourceOption / sourceOptions',  type: '— literal-only —', description: 'Fixed/source-driven option picks — membership cannot be checked against a runtime variable.' },
+  { name: 'sourceMap / choiceRules / choiceFallback', type: '— literal-only —', description: 'Per-option / destination-option-set targets — same reason.' },
+];
 </script>
 
 <template>
@@ -736,6 +746,48 @@ WorkflowRun (one execution)
           of objects isn't supported here yet — model each object separately."). Both are pure
           frontend follow-ups whenever real authoring demand shows up. See
           <code class="font-next-mono">docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md</code>.
+        </Alert>
+
+        <!-- Workflow variable typesystem Phase 4 (Phase 4, ADR-0025) -->
+        <Alert variant="info" size="sm">
+          <strong>Operation arguments as variables (Phase 4 of the variable-typesystem rework,
+          ADR-0025 — the FINAL phase).</strong> An operation ARGUMENT — not just a field's own
+          top-level value — may now ALSO be the same <code class="font-next-mono">{ kind: 'variable',
+          ref, pipeline? }</code> union a <code class="font-next-mono">create_task.priority</code>/
+          <code class="font-next-mono">.deadline</code> value already carries, RECURSIVELY (an
+          argument's own pipeline may carry another such argument). <code class="font-next-mono">num_add</code>'s
+          <code class="font-next-mono">value</code>, <code class="font-next-mono">date_add_days</code>'s
+          <code class="font-next-mono">value</code>, <code class="font-next-mono">text_append</code>'s
+          <code class="font-next-mono">value</code> — any TEXT/NUMBER/BOOLEAN/DATE arg control — can
+          now be pulled from <code class="font-next-mono">trigger</code>/<code class="font-next-mono">steps</code>/
+          <code class="font-next-mono">globals</code> context instead of being typed once at authoring
+          time. <code class="font-next-mono">WorkflowOperationArgType::variableValueType()</code> is
+          the one gate both sides read (see the table below) — an option/map/rules/select arg (its
+          allowed values are a fixed source/destination option set) stays LITERAL-ONLY, exactly as
+          before. The executor (<code class="font-next-mono">WorkflowOperationExecutor</code>) is
+          completely untouched — <code class="font-next-mono">WorkflowVariableResolver</code>
+          pre-resolves every variable-shaped argument to a literal BEFORE each op runs, so the
+          executor still only ever sees plain literals, exactly as before this phase.
+        </Alert>
+        <ApiTable title="Which argument controls accept a variable (WorkflowOperationArgType::variableValueType())" type-header="Variable type" :rows="argVariableControlRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong>Depth-capped, not cycle-checked — and the condition-tree trigger gate is
+          deliberately NOT wired.</strong> An argument-variable's reference can only point at CONTEXT
+          DATA, never at another argument's own definition, so a cycle is impossible by construction
+          — <code class="font-next-mono">ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH</code> (3) is the
+          ONE shared bound, enforced IDENTICALLY at write (a 4th nesting level is a
+          <code class="font-next-mono">422</code> under the deepest argument's own key) and at
+          runtime (the same boundary fails soft to the argument's coerced <code class="font-next-mono">null</code>,
+          never a crash). A <code class="font-next-mono">form_submitted</code> CONDITION-tree pipeline
+          stays LITERAL-only — an argument-variable there is rejected at write, and
+          <code class="font-next-mono">WorkflowConditionEngine</code> (the trigger gate's runtime)
+          calls the executor DIRECTLY with no pre-resolution pass, so this mirrors the (unwired)
+          runtime exactly. See <code class="font-next-mono">docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md</code>
+          for the full design record, including a known follow-up: a mismatched NESTED
+          argument-variable shows its own local error skin in the editor but does not yet block the
+          parent operations-modal's Save — the backend <code class="font-next-mono">422</code> stays
+          authoritative either way.
         </Alert>
       </div>
     </StorySection>
@@ -1363,6 +1415,36 @@ WHERE id = ? AND state = 'pending'</pre>
             system" above for the full wire contract and
             <code class="font-next-mono">docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md</code>
             for the design record.
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg">Variable typesystem Phase 4 — the RECURSIVE argVariable slot (ADR-0025, the final phase)</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            The SHARED <code class="font-next-mono">VariablePipelineEditor.vue</code> (used by both
+            add-ons AND the IF-condition editor) gained a <code class="font-next-mono">depth</code>
+            prop (default 0) and, for a value-typed argument, offers a new scoped
+            <code class="font-next-mono">#argVariable</code> slot ONLY while
+            <code class="font-next-mono">depth &lt; MAX_ARG_VARIABLE_DEPTH</code> (3,
+            <code class="font-next-mono">operationHelpers.ts</code>, mirrors the backend cap
+            byte-for-byte) AND the host actually provides it. The editor owns WHETHER to offer the
+            slot, never the UI itself — it stays free of any dependency on a host's own
+            variable/field types, exactly like the rest of this shared editor.
+            <code class="font-next-mono">ValueOrVariableField.vue</code> is the one host that fills
+            it today, RECURSIVELY, with ITSELF (one <code class="font-next-mono">depth</code> deeper
+            each level) — a picked argument-variable renders the SAME chip + "Returns …" modal any
+            top-level field gets, adapting the raw argument storage to/from its own
+            <code class="font-next-mono">WorkflowFieldValue</code> union so a LITERAL argument still
+            serializes with NO <code class="font-next-mono">{kind}</code> wrapper, byte-identical to
+            before this phase. <code class="font-next-mono">DateOrVariableField.vue</code> and every
+            operations-modal-enabled field in <code class="font-next-mono">WorkflowStepCard.vue</code>
+            (priority, deadline, the report window dates) now forward a new
+            <code class="font-next-mono">arg-variables</code> pool prop — the SAME show-all variable
+            pool their own picker already uses. option/map/rules/select arguments, and every
+            condition/markdown pipeline (the condition modal, the if-block/directive panels), never
+            offer the slot at all — they render <code class="font-next-mono">PipelineArgLiteralInput.vue</code>
+            (the extracted, unchanged literal controls) exactly as before this phase. See
+            <code class="font-next-mono">docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md</code>.
           </p>
         </div>
 

@@ -781,6 +781,8 @@ class StoreWorkflowRequest extends FormRequest
 
         $sourceEnumOptions = $this->resolveRefEnumOptions($validator, $key, $ref, $refCtx);
 
+        // Pass $refCtx (reference index + form availability) so an op's value-typed ARGUMENT may itself
+        // be a variable, validated against the same reference index; argDepth 0 = this top-level pipeline.
         app(WorkflowConditionTreeValidator::class)->validateValuePipeline(
             $validator,
             $pipeline,
@@ -789,6 +791,8 @@ class StoreWorkflowRequest extends FormRequest
             $allowedTerminals,
             $sourceEnumOptions,
             $targetOptions,
+            $refCtx,
+            0,
         );
     }
 

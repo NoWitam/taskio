@@ -509,4 +509,120 @@ describe('ValueOrVariableField', () => {
 
     wrapper.unmount();
   });
+
+  // --- phase-4b: value-typed op ARGUMENTS may be variables (RECURSIVE) -----------
+
+  const ARG_POOL: CatalogVariable[] = [
+    { source: 'trigger', path: 'trigger.title', name: 'Title', type: 'text' },
+  ];
+
+  it('threads depth 0 + the argVariable slot into the modal pipeline editor', async () => {
+    const wrapper = mountField({
+      operationsCatalog: standardOperationsCatalog(),
+      argVariables: ARG_POOL,
+      resultTypes: ['text'],
+      modelValue: { kind: 'variable', ref: { source: 'trigger', path: 'fields.name', type: 'text' } },
+    });
+    await nextTick();
+    await openOpsModal(wrapper, 'Name');
+
+    const pipeline = wrapper.findComponent(VariablePipelineEditor);
+    // A top-level field hosts a depth-0 pipeline, and it FILLS the argVariable slot (so a value-
+    // typed op arg can become a variable). The conditions/markdown builders pass neither.
+    expect(pipeline.props('depth')).toBe(0);
+    expect(typeof pipeline.vm.$slots.argVariable).toBe('function');
+
+    wrapper.unmount();
+  });
+
+  it('renders a RECURSIVE value-or-variable field for a value-typed (text) op arg, then picks + serializes it', async () => {
+    const wrapper = mountField({
+      operationsCatalog: standardOperationsCatalog(),
+      argVariables: ARG_POOL,
+      resultTypes: ['text'],
+      // A text base var with a text_append op whose `value` arg starts as a LITERAL.
+      modelValue: {
+        kind: 'variable',
+        ref: { source: 'trigger', path: 'fields.name', type: 'text' },
+        pipeline: [{ op: 'text_append', args: { value: '' } }],
+      },
+    });
+    await nextTick();
+    await openOpsModal(wrapper, 'Name');
+
+    // Enter the step's edit mode → the `value` arg renders a NESTED value-or-variable field.
+    const pipeline = wrapper.findComponent(VariablePipelineEditor);
+    await pipeline.get('ol button').trigger('click');
+    await nextTick();
+
+    const nestedFields = wrapper.findAllComponents(ValueOrVariableField);
+    const argField = nestedFields[nestedFields.length - 1];
+    expect(nestedFields.length).toBeGreaterThanOrEqual(1);
+
+    // Toggle the nested arg field to Variable + pick the pooled 'Title' variable.
+    await argField.get('button[aria-label="Variable"]').trigger('click');
+    await nextTick();
+    await argField.get('[role="combobox"]').trigger('click');
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+    document.body.querySelectorAll<HTMLElement>('[role="option"]')[0].click();
+    await nextTick();
+
+    // Saving the field emits the pipeline with the arg carried as a nested variable union.
+    modalButton('Save')!.click();
+    await nextTick();
+
+    const emitted = wrapper.emitted('update:modelValue')!;
+    expect(emitted[emitted.length - 1][0]).toEqual({
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.name', type: 'text' },
+      pipeline: [
+        {
+          op: 'text_append',
+          args: { value: { kind: 'variable', ref: { source: 'trigger', path: 'trigger.title', type: 'text' } } },
+        },
+      ],
+    });
+
+    wrapper.unmount();
+  });
+
+  it('round-trips a saved arg-variable: hydrates the nested chip + re-saves byte-identically', async () => {
+    const saved: WorkflowFieldValue = {
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.name', type: 'text' },
+      pipeline: [
+        {
+          op: 'text_append',
+          args: { value: { kind: 'variable', ref: { source: 'trigger', path: 'trigger.title', type: 'text' } } },
+        },
+      ],
+    };
+    const wrapper = mountField({
+      operationsCatalog: standardOperationsCatalog(),
+      argVariables: ARG_POOL,
+      resultTypes: ['text'],
+      modelValue: saved,
+    });
+    await nextTick();
+    await openOpsModal(wrapper, 'Name');
+
+    // Enter edit mode → the nested arg field hydrates the saved arg-variable as a CHIP ('Title').
+    const pipeline = wrapper.findComponent(VariablePipelineEditor);
+    await pipeline.get('ol button').trigger('click');
+    await nextTick();
+    // Two chip tokens in the document now: the OUTER field's (Name) + the NESTED arg field's
+    // (Title, in the teleported modal). Query the document — teleported nodes are outside `wrapper`.
+    expect(document.body.querySelectorAll('.next-vov__token').length).toBeGreaterThanOrEqual(2);
+    expect(document.body.textContent).toContain('Title');
+
+    // Saving re-emits the SAME structure (the arg-variable union passes through the wire).
+    modalButton('Save')!.click();
+    await nextTick();
+    const emitted = wrapper.emitted('update:modelValue')!;
+    expect(emitted[emitted.length - 1][0]).toEqual(saved);
+
+    wrapper.unmount();
+  });
 });

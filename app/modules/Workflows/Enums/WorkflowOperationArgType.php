@@ -38,4 +38,28 @@ enum WorkflowOperationArgType: string
     case SOURCE_MAP = 'sourceMap';
     case CHOICE_RULES = 'choiceRules';
     case CHOICE_FALLBACK = 'choiceFallback';
+
+    /**
+     * The WorkflowVariableType this arg coerces to when its value is supplied by a VARIABLE rather than
+     * a constant literal (phase-4a) — the single source both the write-validator and the runtime
+     * resolver read so a variable argument is type-gated exactly like a literal one, and never drifts.
+     *
+     * Only the plain VALUE controls are variable-able: text → text, number → number, boolean → boolean,
+     * date → date. The remaining controls return null (LITERAL-ONLY): sourceOption/sourceOptions/
+     * sourceMap/choiceRules/choiceFallback are option-set-constrained (their membership in the source /
+     * destination option set is unverifiable for a runtime variable), and `select` carries the arg's own
+     * fixed options — so this iteration keeps them constant-only. A variable in such a slot is rejected
+     * at write time and fails closed at runtime.
+     */
+    public function variableValueType(): ?WorkflowVariableType
+    {
+        return match ($this) {
+            self::TEXT => WorkflowVariableType::TEXT,
+            self::NUMBER => WorkflowVariableType::NUMBER,
+            self::BOOLEAN => WorkflowVariableType::BOOLEAN,
+            self::DATE => WorkflowVariableType::DATE,
+            self::SELECT, self::SOURCE_OPTION, self::SOURCE_OPTIONS,
+            self::SOURCE_MAP, self::CHOICE_RULES, self::CHOICE_FALLBACK => null,
+        };
+    }
 }

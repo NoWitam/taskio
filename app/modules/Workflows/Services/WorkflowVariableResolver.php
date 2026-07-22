@@ -2,6 +2,8 @@
 
 namespace App\Modules\Workflows\Services;
 
+use App\Modules\Workflows\DTOs\WorkflowOperationArg;
+use App\Modules\Workflows\Enums\ConditionTreeLimits;
 use App\Modules\Workflows\Enums\WorkflowAiPersona;
 use App\Modules\Workflows\Enums\WorkflowOperation;
 use App\Modules\Workflows\Enums\WorkflowVariableType;
@@ -53,6 +55,18 @@ use Throwable;
  * bytes is never re-interpreted. A pipeline may end in the opt-in assert_present op: over an empty
  * value the executor returns a HARD failure this resolver re-raises as the run's standard step-failure
  * (a RuntimeException the runner records) — the one place a variable pipeline is NOT fail-soft.
+ *
+ * ARGUMENT VARIABLES (phase-4a, append-only): an operation's ARGUMENT may itself be a value-or-variable
+ * union (`{kind:'variable', ref, pipeline?, default?}`) instead of a constant literal — recursively
+ * transformable. The executor STAYS A PURE TRANSFORMER: BEFORE it runs each op, THIS resolver
+ * pre-resolves every variable-shaped argument to a LITERAL (via the SAME resolveValueOrVariable
+ * machinery — read the whitelisted context ref, apply the arg's own pipeline, coerce to the arg's
+ * DECLARED type from the op's argDescriptors), then hands the executor literal args exactly as before.
+ * There are NO cycles (an arg-variable references CONTEXT DATA, never another arg definition), so the
+ * only unboundedness is nesting depth, hard-capped by ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH
+ * (beyond it an arg resolves fail-soft to null/empty). A resolved arg value carrying reference-/
+ * directive-like bytes is used LITERALLY by the pure executor and its output rides the SAME NUL-mask
+ * path a resolved value does, so it is never re-interpreted (see resolvePipelineArgs).
  *
  * IF-BLOCKS: a text field may contain fenced `if-block` containers whose branches each carry a
  * boolean condition `{variableId, pipeline}`. resolveString evaluates the branches in order, resolves
@@ -278,16 +292,20 @@ class WorkflowVariableResolver
      * A variable whose ref root is not whitelisted, any unresolvable path, or a pipeline FAILURE →
      * the coerced null (the field's soft default), never an exception.
      *
+     * $argDepth is the ARG-VARIABLE nesting level of THIS field (0 at a top-level slot); it is carried
+     * so that a variable used as an operation ARGUMENT — resolved recursively through here — can be
+     * depth-capped (see resolvePipelineArgs). External callers never pass it.
+     *
      * @param  array<string, mixed>  $context
      */
-    public function resolveValueOrVariable(mixed $field, array $context, WorkflowVariableType $expectedType): mixed
+    public function resolveValueOrVariable(mixed $field, array $context, WorkflowVariableType $expectedType, int $argDepth = 0): mixed
     {
         if (!is_array($field)) {
             return $this->coerce($field, $expectedType);
         }
 
         if (($field['kind'] ?? null) === 'variable') {
-            return $this->resolveVariableUnion($field, $context, $expectedType);
+            return $this->resolveVariableUnion($field, $context, $expectedType, $argDepth);
         }
 
         // literal (default): coerce the literal value.
@@ -297,12 +315,14 @@ class WorkflowVariableResolver
     /**
      * A `{ kind: 'variable', ref, pipeline? }` field. Without a pipeline it is the legacy coerced
      * ref lookup; with one the ref value is transformed from `ref.type` through the executor and the
-     * typed result coerced to $expectedType (a failure → coerced null).
+     * typed result coerced to $expectedType (a failure → coerced null). Each op's variable-shaped
+     * ARGUMENTS are pre-resolved to literals here (resolvePipelineArgs) so the executor stays a pure
+     * transformer; $argDepth carries this field's arg-variable nesting level to enforce the depth cap.
      *
      * @param  array<string, mixed>  $field
      * @param  array<string, mixed>  $context
      */
-    private function resolveVariableUnion(array $field, array $context, WorkflowVariableType $expectedType): mixed
+    private function resolveVariableUnion(array $field, array $context, WorkflowVariableType $expectedType, int $argDepth): mixed
     {
         $ref = $field['ref'] ?? null;
         $path = $this->refPath($ref);
@@ -313,7 +333,7 @@ class WorkflowVariableResolver
 
         if (is_array($pipeline) && $pipeline !== []) {
             $refType = WorkflowVariableType::tryFrom((string) (is_array($ref) ? ($ref['type'] ?? '') : '')) ?? $expectedType;
-            $result = $this->executor->execute($raw, $refType, $pipeline, $context);
+            $result = $this->executor->execute($raw, $refType, $this->resolvePipelineArgs($pipeline, $context, $argDepth), $context);
 
             if ($result->hard) {
                 throw new RuntimeException(self::ASSERT_FAILED_MESSAGE);
@@ -323,6 +343,97 @@ class WorkflowVariableResolver
         }
 
         return $this->coerce($raw, $expectedType);
+    }
+
+    // ---- argument variables (phase-4a) ----------------------------------------
+
+    /**
+     * Pre-resolve every VARIABLE-shaped argument of every op in $pipeline into a LITERAL, returning a
+     * NEW pipeline the (pure) executor can run with literal args exactly as before. Each op is matched
+     * to its WorkflowOperation so only DECLARED args (per argDescriptors) are considered; a foreign key,
+     * a non-array step, or an unknown op is left untouched (the executor fail-closes on it as today).
+     *
+     * $argDepth is the nesting level of the pipeline's OWNING field; an argument therefore sits at level
+     * $argDepth + 1 (see resolveArgVariable's cap check). A plain literal / map / list argument is not a
+     * variable union, so it passes through byte-identically — literal args behave EXACTLY as before.
+     *
+     * INJECTION SAFETY: a resolved argument value is a literal handed to the PURE executor, which never
+     * scans for references; the executor's OUTPUT then rides the SAME NUL-mask path a resolved directive
+     * value does (resolveReferences' stash / the standalone return), so an argument value carrying
+     * `{{…}}` / `@[…]` bytes is never re-interpreted as a second reference.
+     *
+     * @param  array<int, mixed>  $pipeline
+     * @param  array<string, mixed>  $context
+     * @return array<int, mixed>
+     */
+    private function resolvePipelineArgs(array $pipeline, array $context, int $argDepth): array
+    {
+        return array_map(fn ($step) => $this->resolveStepArgs($step, $context, $argDepth), $pipeline);
+    }
+
+    /**
+     * Resolve one pipeline step's variable-shaped arguments. Reads the op id from either the `op` or the
+     * editor's `operationId` key (like the executor), then rewrites only the args declared by the op's
+     * descriptors that are a variable union — every other key (stepId/outputType/foreign) is preserved.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function resolveStepArgs(mixed $step, array $context, int $argDepth): mixed
+    {
+        if (!is_array($step)) {
+            return $step;
+        }
+
+        $op = WorkflowOperation::tryFrom((string) ($step['op'] ?? $step['operationId'] ?? ''));
+
+        if ($op === null) {
+            return $step;
+        }
+
+        $args = is_array($step['args'] ?? null) ? $step['args'] : [];
+
+        foreach ($op->argDescriptors() as $descriptor) {
+            if (array_key_exists($descriptor->id, $args) && $this->isVariableArg($args[$descriptor->id])) {
+                $args[$descriptor->id] = $this->resolveArgVariable($args[$descriptor->id], $context, $descriptor, $argDepth);
+            }
+        }
+
+        $step['args'] = $args;
+
+        return $step;
+    }
+
+    /**
+     * Resolve ONE variable-shaped argument to a literal of the arg's DECLARED value type. Over the
+     * nesting cap → the coerced-null fail-soft (the op then fail-closes on the empty arg, collapsing the
+     * pipeline — never a crash or unbounded work). A control that cannot carry a runtime variable
+     * (option/map/rules args → variableValueType() null) resolves to null so the op fail-closes; the
+     * write-validator rejects such a config, so this is defensive only.
+     *
+     * @param  array<string, mixed>  $field
+     * @param  array<string, mixed>  $context
+     */
+    private function resolveArgVariable(array $field, array $context, WorkflowOperationArg $descriptor, int $argDepth): mixed
+    {
+        $expectedType = $descriptor->type->variableValueType();
+
+        if ($expectedType === null) {
+            return null; // this arg control does not accept a variable (literal-only) → fail-closed
+        }
+
+        // This argument sits one level below the pipeline it lives in. Because there are NO cycles, the
+        // cap only bites pathological nesting; beyond it the argument resolves fail-soft.
+        if ($argDepth + 1 > ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH) {
+            return $this->coerce(null, $expectedType);
+        }
+
+        return $this->resolveValueOrVariable($field, $context, $expectedType, $argDepth + 1);
+    }
+
+    /** Whether a value is a variable-union argument (`{kind:'variable', …}`) rather than a literal. */
+    private function isVariableArg(mixed $value): bool
+    {
+        return is_array($value) && ($value['kind'] ?? null) === 'variable';
     }
 
     // ---- directive resolution -------------------------------------------------
@@ -398,7 +509,9 @@ class WorkflowVariableResolver
             ?? WorkflowVariableType::tryFrom((string) ($directive['type'] ?? ''))
             ?? WorkflowVariableType::TEXT;
 
-        $result = $this->executor->execute($raw, $baseType, $directive['pipeline'], $context);
+        // A directive lives at a text field's top level (arg-variable depth 0); pre-resolve any
+        // variable-shaped op arguments to literals so the executor stays a pure transformer.
+        $result = $this->executor->execute($raw, $baseType, $this->resolvePipelineArgs($directive['pipeline'], $context, 0), $context);
 
         if ($result->hard) {
             throw new RuntimeException(self::ASSERT_FAILED_MESSAGE);
@@ -838,7 +951,9 @@ class WorkflowVariableResolver
         $pipeline = is_array($condition['pipeline'] ?? null) ? $condition['pipeline'] : [];
         $baseType = $this->pipelineBaseType($variableId, $pipeline, $typeMap) ?? WorkflowVariableType::BOOLEAN;
 
-        $result = $this->executor->execute($raw, $baseType, $pipeline, $context);
+        // An if-block condition is a top-level pipeline (arg-variable depth 0); pre-resolve its ops'
+        // variable-shaped arguments to literals before the pure executor evaluates the branch.
+        $result = $this->executor->execute($raw, $baseType, $this->resolvePipelineArgs($pipeline, $context, 0), $context);
 
         return !$result->failed
             && $result->type === WorkflowVariableType::BOOLEAN
