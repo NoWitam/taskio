@@ -11,6 +11,7 @@ use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
 use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\Workflow;
+use App\Modules\Workflows\Models\WorkflowGlobal;
 
 /**
  * Builds the TYPED variable catalog the workflow editor (B6/B7) and AI-assist (B5) consume: the
@@ -87,6 +88,8 @@ class WorkflowVariableCatalogService
             $triggerType !== null ? $this->triggerSystemVariables($triggerType) : [],
             $fieldVariables,
             $this->stepOutputVariables(),
+            // The workspace's GLOBALS — form-independent, so composed for every trigger type.
+            $this->globalVariables(),
         );
 
         return [
@@ -164,6 +167,13 @@ class WorkflowVariableCatalogService
             $this->addTypeMapEntry($map, $path, $type);
         }
 
+        // The workspace GLOBALS resolve in every workflow, so their path → type entries are always
+        // present (form-independent). Lets a directive / if-block pipeline on a `globals.<key>`
+        // recover the global's REAL base type (not the degraded editor primitive on the wire).
+        foreach ($this->globalVariables() as $variable) {
+            $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']));
+        }
+
         return $map;
     }
 
@@ -212,6 +222,13 @@ class WorkflowVariableCatalogService
 
         foreach ($this->stepOutputTypeMap($priorSteps) as $path => $type) {
             $this->addReferenceEntry($index, $path, $type, null);
+        }
+
+        // The workspace GLOBALS are referenceable in every step (form-independent), so a value-or-
+        // variable pipeline targeting a `globals.<key>` write-validates against the global's type +
+        // option list — the same gate a trigger/step reference passes.
+        foreach ($this->globalVariables() as $variable) {
+            $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null);
         }
 
         return $index;
@@ -550,6 +567,80 @@ class WorkflowVariableCatalogService
         }
 
         return $variables;
+    }
+
+    /**
+     * The workspace's GLOBAL variables — user-created LITERAL constants — as catalog variables. A
+     * NEW `globals` source (form-independent: composed for every trigger type), each entry
+     * `globals.<key>` carrying the stored `descriptor` (the authoritative type), the degraded flat
+     * wire `type` (via flatType, recovered from the descriptor), and — for an enum base — the option
+     * key list. Read through the model, so WorkspaceScope / the tenant connection isolate the active
+     * workspace in both db_modes; ordered by name for a stable catalog.
+     *
+     * Kept a clean ADDITIONAL source: it does NOT touch the form container walk, the condition
+     * fields, or any existing variable. A global is not a condition source (conditionFields ignores
+     * the `globals` source), matching a step output.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function globalVariables(): array
+    {
+        return WorkflowGlobal::query()
+            ->orderBy('name')
+            ->get()
+            ->map(fn (WorkflowGlobal $global): array => $this->globalVariable($global))
+            ->all();
+    }
+
+    /**
+     * The workspace's globals as a `{<key>: <literal value>}` map — the payload the step runner
+     * injects into the run context under the `globals` root. Values are the STORED literals (scalar,
+     * list, object, or null); the resolver reads them by a plain whitelisted dotted lookup.
+     *
+     * @return array<string, mixed>
+     */
+    public function globalValues(): array
+    {
+        return WorkflowGlobal::query()
+            ->get()
+            ->mapWithKeys(fn (WorkflowGlobal $global): array => [$global->key => $global->value])
+            ->all();
+    }
+
+    /**
+     * One global catalog variable `{source:'globals', path:'globals.<key>', name, type, descriptor,
+     * enumOptions?}`. `type` is the flat wire type recovered from the stored descriptor
+     * (fromDescriptor → flatType), so an array/object global degrades exactly like the catalog's own
+     * variables and the closed FE union / exhaustive match sites never receive an unknown. The
+     * authoritative type stays in `descriptor`. The source EQUALS the root (`globals`) — mirroring
+     * trigger/steps — so the structured-ref path builder and the write-side source whitelist both
+     * accept it with no special-casing.
+     *
+     * @return array<string, mixed>
+     */
+    private function globalVariable(WorkflowGlobal $global): array
+    {
+        $descriptor = is_array($global->descriptor) ? $global->descriptor : [];
+        $type = WorkflowVariableType::fromDescriptor($descriptor);
+
+        $variable = [
+            'source' => 'globals',
+            'path' => 'globals.' . $global->key,
+            'name' => $global->name,
+            'type' => $this->flatType($type)->value,
+            'descriptor' => $descriptor,
+        ];
+
+        // Surface the enum option KEYS on the flat wire (mirrors a form enum/multi variable) only
+        // when the descriptor is actually enum-based — a plain array<text> global carries none.
+        if (($descriptor['base'] ?? null) === WorkflowVariableType::ENUM->value) {
+            $variable['enumOptions'] = array_values(array_map(
+                fn ($option): string => (string) (is_array($option) ? ($option['key'] ?? '') : $option),
+                is_array($descriptor['options'] ?? null) ? $descriptor['options'] : [],
+            ));
+        }
+
+        return $variable;
     }
 
     /**

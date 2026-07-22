@@ -146,6 +146,24 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > **ADR-0023-workflows-variable-typesystem-phase2.md** for the full design record (including why
 > this is a DIFFERENT slice of work than the "Phase 2" items ADR-0022 deferred) and "Structural
 > descriptor: object containers & the file composite" below for the wire contracts.
+>
+> **User-created LITERAL global variables — a new `globals` catalog source + resolver root (this
+> revision, Phase 3 of the variable-typesystem rework) — ADDITIVE, no breaking change.** A
+> workspace member may now create a **global**: a named, typed LITERAL constant (`WorkflowGlobal`)
+> that becomes a `globals.<key>` reference usable in EVERY workflow — form-independent, resolved
+> from its stored `value` at run time. This phase is deliberately scoped to LITERAL storage only:
+> no computed values, no references to other variables, no cycle detection (a computed global may
+> be a later iteration — see "Planned / deferred"). New CRUD endpoints
+> (`GET/POST /workflow-globals`, `GET/PUT/DELETE /workflow-globals/{id}`) let a workspace member
+> author one; workspace membership gates read, the creator gates mutation.
+> `WorkflowVariableResolver::ROOTS` grows `['trigger','steps']` → `['trigger','steps','globals']`
+> (the ADR-0021 3-point recipe applied verbatim — `globals` was already named there as a planned
+> example root), `WorkflowStepRunner` injects every global's stored value into the run context as
+> a `{<key>: <value>}` map, and `WorkflowVariableCatalogService::globalVariables()` /
+> `globalValues()` compose globals into `forContext()` for EVERY trigger type. See
+> **ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full design record and the
+> new "Workflow GLOBALS" endpoints (below, under Endpoints) / "The `globals` root" (under "The
+> typed variable system") for the wire contracts.
 
 ---
 
@@ -1039,6 +1057,129 @@ is metered by its OWN per-user throttle (`assist_rate_per_minute`), never agains
 
 ---
 
+**Workflow GLOBALS (Phase 3, additive).** The next 5 endpoints are CRUD for **globals** —
+workspace-scoped, user-created, typed LITERAL constants that become `globals.<key>` references in
+every workflow. Module: `WorkflowGlobalController` / `Store`/`UpdateWorkflowGlobalRequest` /
+`WorkflowGlobalService` / `WorkflowGlobalResource` / `WorkflowGlobalPolicy`. See "The `globals`
+root" under "The typed variable system" below for how a global is CONSUMED
+(referenced/resolved) — this block covers only how it is AUTHORED.
+
+### GET /api/workflow-globals
+
+List the workspace's globals. Cursor-paginated, 20 per page, ordered by `name` (ascending — unlike
+the workflow list's "newest first"). Authorization: `WorkflowGlobalPolicy::viewAny` — any
+authenticated user; workspace membership itself is enforced upstream by `ResolveWorkspace` /
+`WorkspaceScope`, the same split the form-less `GET /workflows/catalog` path already uses.
+
+**Query**
+
+| Param    | Required | Notes                                              |
+|----------|----------|------------------------------------------------------|
+| `search` | no       | case-insensitive match on `name` OR `key`          |
+| `cursor` | no       | cursor from `meta.next_cursor` for the next page   |
+
+**Response** `200 OK`
+
+```json
+{ "data": [ WorkflowGlobalResource ], "meta": { "next_cursor": "string | null" } }
+```
+
+---
+
+### POST /api/workflow-globals
+
+Create a global. Authorization: `WorkflowGlobalPolicy::create` (any authenticated user).
+
+**Body**
+
+| Field         | Required | Constraints                                                                 |
+|----------------|----------|------------------------------------------------------------------------------|
+| `name`          | yes      | string, max 255                                                              |
+| `key`             | no       | string, max 63. Omitted ⇒ slugged from `name` (`Str::slug($name, '_')`, underscores); given explicitly, it must match `/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/` and be unique within the active workspace (a name that slugs to `''`, e.g. `"!!!"`, requires an explicit key). |
+| `descriptor`       | yes      | `{ base, nullable?, array?, options?, fields? }` — `base` must be one of `text\|number\|boolean\|date\|enum\|object` (**`file`, `time`, and `multi`-as-a-base are NOT authorable** — see "The `globals` root" below). `nullable`/`array`, when present, must be booleans. `options` (a non-empty `{key,label?}` list, distinct keys) is required when `base:'enum'`; `fields` (a non-empty `{key,label?,descriptor}` list, safe+distinct keys, each child descriptor itself recursively well-formed) is required when `base:'object'`. |
+| `value`             | required-unless-nullable | may be omitted/`null` only when `descriptor.nullable:true`; otherwise a LITERAL matching `descriptor` (a scalar for a single base, a list of the element type for `array:true`, an object matching every declared `fields` key for `base:'object'`) — see the value-validation summary below. |
+
+**Validation summary** (`WorkflowGlobalTypeValidator`, the SINGLE authority shared by
+Store/Update):
+
+| Code | Field                                     | Meaning                                                                 |
+|------|---------------------------------------------|----------------------------------------------------------------------------|
+| 422  | `name`                                        | Required, max 255.                                                        |
+| 422  | `key`                                            | Unsafe identifier, already used in this workspace, or unresolvable (blank slug + no explicit key). |
+| 422  | `descriptor.base`                                  | Not one of the 6 authorable bases.                                    |
+| 422  | `descriptor.<flag>`                                  | `nullable`/`array` present but not a boolean.                       |
+| 422  | `descriptor.options` / `descriptor.options.<i>`         | Missing/empty/non-list options (enum), or an option with a blank/duplicate key. |
+| 422  | `descriptor.fields` / `descriptor.fields.<i>.key` / `descriptor.fields.<i>.descriptor.*` | Missing/empty/non-list fields (object), an unsafe/duplicate field key, or a malformed child descriptor. |
+| 422  | `value`                                                  | Type mismatch (scalar base), non-list for `array:true`, `null` on a non-nullable type, OR the value contains a NUL byte ANYWHERE (a string key or value, any depth) — see "The `globals` root" below. |
+| 422  | `value.<index>`                                            | An array element fails its element-type check.                    |
+| 422  | `value.<field>`                                              | An object field fails its own descriptor check, or is an undeclared key. |
+| 401  | —                                                              | Unauthenticated.                                                |
+
+**Response** `201 Created` — `WorkflowGlobalResource` with `creator` loaded (Laravel's own
+`wasRecentlyCreated` resource-response rule applies here, since `store()` returns the freshly
+saved model directly). Example — the payload
+`{ "name": "Nazwa marki", "descriptor": { "base": "text", "nullable": false, "array": false },
+"value": "Taskio" }`:
+
+```json
+{
+  "data": {
+    "id": "…",
+    "name": "Nazwa marki",
+    "key": "nazwa_marki",
+    "reference": "globals.nazwa_marki",
+    "descriptor": { "base": "text", "nullable": false, "array": false },
+    "value": "Taskio",
+    "creator": { "type": "user", "id": "…", "name": "…" },
+    "is_owner": true,
+    "can_be_edited": true,
+    "can_be_deleted": true,
+    "created_at": "…",
+    "updated_at": "…"
+  }
+}
+```
+
+---
+
+### GET /api/workflow-globals/{id}
+
+Fetch one global. Authorization: `WorkflowGlobalPolicy::view` (any workspace member) — a
+foreign-workspace `{id}` is filtered out by `WorkspaceScope` before route-model binding ever sees
+it, so it 404s, never 403.
+
+**Response** `200 OK` — `WorkflowGlobalResource` with `creator` loaded. **Errors**: `404` not
+found (including a foreign-workspace id).
+
+---
+
+### PUT /api/workflow-globals/{id}
+
+Update a global. Same body/validation rules as `POST` (the key-uniqueness check excludes the
+global's own row). Authorization: creator only (`WorkflowGlobalPolicy::update` →
+`ChecksRecordOwnership::ownsOrManagesSystemRecord` — in practice always the creator, since a
+global's creator is always a human user; the trait's workspace-owner fallback for a creator-less
+SYSTEM record never applies to a global).
+
+**Response** `200 OK` — `WorkflowGlobalResource`. **Errors**: `403` not creator, `404` not found,
+`422` validation (same table as POST).
+
+---
+
+### DELETE /api/workflow-globals/{id}
+
+Permanently delete a global. **No soft-delete, no restore** — unlike `Workflow`, `WorkflowGlobal`
+does not use `SoftDeletes` (no `deleted_at` column); the row is gone immediately
+(`WorkflowGlobalService::delete()` is a hard `Model::delete()`). A workflow that already
+references the deleted global's `globals.<key>` keeps running unaffected — the reference simply
+fails SOFT to `null`/`''` at run time, the same as any other missing path (no orphan-cleanup, the
+module's existing "stale targeting id is a safe no-op" doctrine). Authorization: creator only.
+
+**Response** `200 OK` — `{ "message": "Workflow global deleted successfully" }`. **Errors**: `403`
+not creator, `404` not found.
+
+---
+
 ## Capability flags
 
 `WorkflowResource` (detail) exposes the same server-authoritative capability-flag convention as
@@ -1540,6 +1681,80 @@ record, including why this is a DIFFERENT slice of work than the "Phase 2" items
 deferred (`TIME` runtime semantics, the presence-op `walkPipeline` asymmetry, the two defensive
 hardening items) — none of those three are touched by this phase; see "Accepted residual risks"
 below.
+
+---
+
+### The `globals` root — user-created LITERAL constants (Phase 3, additive)
+
+`globals` is a THIRD reference root, alongside `trigger`/`steps` — `WorkflowVariableResolver::ROOTS`
+is now `['trigger', 'steps', 'globals']`. Unlike `trigger`/`steps`, it is not derived from the
+CURRENT run at all: it is the active workspace's own set of user-created **globals** (see
+"Workflow GLOBALS" under Endpoints above for how one is authored), injected into every run's
+context as a flat `{<key>: <stored value>}` map (`WorkflowStepRunner::run()` →
+`WorkflowVariableCatalogService::globalValues()`) and composed into the catalog for EVERY trigger
+type — `form_submitted`, `schedule`, or even a form-less/trigger-less catalog call — since a global
+has no trigger/form context to be scoped by. A `globals.<key>` reference works in EITHER
+serialization exactly like `trigger.*`/`steps.*` already do: the markdown directive
+(`@[variable]("...{\"id\":\"globals.brand\"}...")`), the transitional flat token
+(`{{globals.brand}}`), and the `{kind:'variable', ref:{source:'globals', path:'globals.brand',
+type:'text'}}` structured union all resolve it identically — no new resolver code path was needed,
+only the whitelist addition and the context binding (see
+**ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full "3-point recipe"
+record). Resolution is FAIL-SOFT like every other root: a deleted or unknown key resolves to
+`null` (standalone) / stays out of the surrounding text (embedded), never an error.
+
+**Catalog shape.** A global's catalog entry is `{ source: 'globals', path: 'globals.<key>', name,
+type, descriptor, enumOptions? }` — `descriptor` is the EXACT stored descriptor (not re-derived),
+and the flat `type` is recovered from it via the new `WorkflowVariableType::fromDescriptor()` (the
+inverse of `descriptor()`):
+
+```json
+{ "source": "globals", "path": "globals.nazwa_marki", "name": "Nazwa marki", "type": "text",
+  "descriptor": { "base": "text", "nullable": false, "array": false } }
+
+{ "source": "globals", "path": "globals.hashtagi", "name": "Hashtagi", "type": "multi",
+  "descriptor": { "base": "text", "nullable": false, "array": true } }
+```
+
+An `array<scalar>` global (e.g. a `text` base with `array:true`, like the `hashtagi` example above)
+rides the PRE-EXISTING `multi` flat type — the one array-carrying case every existing resolver/
+evaluator/executor `match` and the frontend's closed type union already handle — rather than a new
+flat type; its `descriptor.base` still reads the true element base (`text`) and it carries NO
+`enumOptions` key at all (it is not enum-based). An `object`-based global rides the Phase-2 `object`
+descriptor-only tripwire the same way a form SECTION does (flat `type` degrades to `text`,
+`operatorCases()` empty — never a condition source; a global is never offered as a condition field
+regardless of base, the same as a step output). `referenceIndex()` and `runtimeTypeMap()` both
+enumerate every `globals.<key>` path too, so a value-or-variable pipeline (e.g.
+`create_task.deadline`) may target a global with full write-time type-checking, exactly like a
+trigger/step reference.
+
+**Authorable types (write path only — see "Workflow GLOBALS" → `POST` above for the full
+validation table).** A global's `descriptor.base` is one of `text | number | boolean | date | enum
+| object` — **`file` and `time` are NOT authorable** (a global holds a plain typed constant, never
+a Disk file or a type with no runtime semantics yet), and `multi` is not a base at all (it is
+`enum` + `array:true`, the same convention every other catalog variable uses).
+`WorkflowGlobalTypeValidator` is the SINGLE place this is enforced, shared by both
+`Store`/`UpdateWorkflowGlobalRequest`.
+
+**Injection safety (a security invariant, stated explicitly).** A global's `value` is
+user-authored, persisted, and later interpolated into a step's text/structured fields — the exact
+shape untrusted content takes elsewhere in this module. It is protected TWO ways: (1) AT WRITE
+TIME, `WorkflowGlobalTypeValidator` rejects a value containing a NUL byte anywhere (any string key
+or value, any depth) — `workflow_globals.value` is a plain `json` column, which (unlike `jsonb`)
+does not itself refuse one, so this closes the one persistence path in this module that could
+otherwise carry a NUL end to end; (2) AT RESOLVE TIME, a global's value rides the SAME
+NUL-delimited placeholder masking an embedded directive's looked-up value already uses (see
+"Transitional flat `{{...}}` tokens" above) — so a value that merely LOOKS like a reference (e.g.
+literally containing the text `{{trigger.fields.secret}}` or `@[variable]...`) renders completely
+VERBATIM, in every resolution shape, and is never re-interpreted as a second-order reference. Pinned
+by `WorkflowGlobalCrudTest::test_a_value_carrying_a_nul_byte_is_rejected` (write-time) and
+`WorkflowVariableResolverTest::test_a_global_value_with_reference_like_bytes_is_not_re_interpreted`
+(resolve-time, using a fixture literally named `globals.evil`).
+
+See **ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full design record
+(including the LITERAL-only scoping decision, why `file`/`time` are excluded, and the deferred
+frontend authoring depth) and `resources/js/next/docs/pages/WorkflowsPage.vue` ("Workflow Globals",
+under "The typed variable system") for the in-app docs mirror.
 
 ---
 
@@ -2456,6 +2671,7 @@ automatically scoped to the active workspace via `WorkspaceScope`.
 | `workflows`               | `database/migrations/2026_07_07_000200_create_workflows_table.php` | `database/migrations/tenant/0001_01_01_000025_create_workflows_table.php` |
 | `workflow_runs`             | `database/migrations/2026_07_07_000201_create_workflow_runs_table.php` | `database/migrations/tenant/0001_01_01_000026_create_workflow_runs_table.php` |
 | `workflow_run_steps`         | `database/migrations/2026_07_07_000202_create_workflow_run_steps_table.php` | `database/migrations/tenant/0001_01_01_000027_create_workflow_run_steps_table.php` |
+| `workflow_globals`            | `database/migrations/2026_07_22_000000_create_workflow_globals_table.php` | `database/migrations/tenant/0001_01_01_000046_create_workflow_globals_table.php` |
 
 The tenant (own-db) mirrors omit `workspace_id` (one tenant database = one workspace) and carry
 no cross-database foreign keys (`workflow_id`, `creator_id`, `workflow_run_id` are plain UUID
@@ -2463,6 +2679,14 @@ columns, matching the project-wide no-cross-DB-FK convention used by `bot_action
 schedule sweep and the stale-run reaper explicitly iterate every own-database workspace in
 addition to the shared connection (see above) — a workflow living only in one tenant's own
 database would otherwise never be swept.
+
+**`workflow_globals` (Phase 3, additive).** Its central `workspace_id` is a plain nullable,
+indexed UUID column, not a declared foreign key — unlike `workflows.workspace_id`'s
+`foreignIdFor(Workspace::class)` — though both are scoped identically at the QUERY layer by the
+same `WorkspaceScope`/`TenantAware` machinery. The central table's `unique(workspace_id, key)`
+becomes a plain `unique(key)` in the tenant mirror (one tenant database = one workspace, so the
+reference namespace stays per-workspace either way); `creator_id`/`creator_type` follow the same
+nullable, no-cross-DB-FK, auto-stamped-by-`HasCreator` convention as every other table above.
 
 ---
 
@@ -2583,6 +2807,25 @@ These are documented, reviewed trade-offs — not a TODO list.
   nested inside a repeater (or vice versa) is visible only inside its parent's recursive
   `descriptor.fields`, with no flat leaf and no reference-index path — not referenceable at all,
   not even as a whole object, until a real per-element loop context exists to give it one.
+- **A global is LITERAL-only — no computed values, no cross-variable references, no cycle
+  detection (Phase 3, ADR-0024).** `WorkflowGlobal` stores exactly a `descriptor` + a matching
+  literal `value`; nothing reads `value` as an expression or a pointer to another global/trigger/
+  step value. A COMPUTED global (one derived from another variable) is real, plausible future
+  demand, explicitly PLANNED — see "Planned / deferred" below — not built in this phase.
+- **A global has no soft-delete/restore, unlike `Workflow` (Phase 3, ADR-0024).**
+  `WorkflowGlobalService::delete()` is a hard `Model::delete()` — there is no `deleted_at` column
+  and no restore endpoint. A workflow that already embeds a since-deleted global's `globals.<key>`
+  reference keeps running: the reference fails SOFT to `null`/`''` at run time (the same "stale
+  targeting id is a safe no-op" doctrine the module already applies to a deleted form/label), never
+  an error — but the deleted global's own stored value cannot be recovered afterward.
+- **The frontend's global-authoring editor ships a narrower type-authoring depth than the backend
+  validator accepts (Phase 3, ADR-0024).** `WorkflowGlobalTypeValidator` already validates a nested
+  object/array/enum child inside an object's `fields`, and `array:true` on an `object` base
+  (array-of-object), recursively and correctly — but `WorkflowGlobalEditorDrawer.vue`'s type
+  builder does not offer either combination yet (an object field's own type picker is scalar-only;
+  the array toggle is disabled for an object base, with an in-UI note). Sending either shape
+  directly to `POST /workflow-globals` validates and persists normally; only the editor's own
+  picker is narrower. A pure frontend follow-up, not blocked on any backend change.
 
 ---
 
@@ -2659,6 +2902,24 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `resources/js/next/pages/workflows/workflowVariables.ts` — `expandVariables()`/`descriptorBaseToType()`, the structural-descriptor FE expansion (phase-2c)
 - `resources/js/next/pages/workflows/types.ts` — `CatalogDescriptorField`, the widened `CatalogVariableDescriptor.base`/`CatalogTypeId` (phase-2c)
 - `docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md` — this phase's design record (object/array<object> containers, the file composite, phase-2a/2b/2b.1/2c)
+- `app/modules/Workflows/Models/WorkflowGlobal.php` — the LITERAL constant model (Phase 3)
+- `database/migrations/2026_07_22_000000_create_workflow_globals_table.php`, `database/migrations/tenant/0001_01_01_000046_create_workflow_globals_table.php` — the dual central/tenant schema (Phase 3)
+- `app/modules/Workflows/Http/Controllers/WorkflowGlobalController.php` — CRUD (Phase 3)
+- `app/modules/Workflows/Http/Requests/StoreWorkflowGlobalRequest.php`, `UpdateWorkflowGlobalRequest.php` — identity (`name`/`key`) validation + the type-validator hand-off (Phase 3)
+- `app/modules/Workflows/Services/WorkflowGlobalTypeValidator.php` — the single authorable-type + value authority, shared by Store/Update (Phase 3)
+- `app/modules/Workflows/Services/WorkflowGlobalService.php` — CRUD persistence (Phase 3)
+- `app/modules/Workflows/Http/Resources/WorkflowGlobalResource.php` — the `globals.<key>` reference + capability-flag wire shape (Phase 3)
+- `app/modules/Workflows/DTOs/WorkflowGlobalDTO.php` (Phase 3)
+- `app/modules/Workflows/Policies/WorkflowGlobalPolicy.php` — workspace-membership read, creator-only mutation (Phase 3)
+- `database/factories/WorkflowGlobalFactory.php` — `text()`/`number()`/`boolean()`/`date()`/`enum()`/`textList()` states (Phase 3)
+- `app/modules/Workflows/Enums/WorkflowVariableType.php` — `fromDescriptor()`, the inverse of `descriptor()` (Phase 3)
+- `tests/Feature/WorkflowGlobalCrudTest.php` — CRUD, type/value validation, key rules, workspace-scoped authorization (Phase 3)
+- `tests/Feature/WorkflowGlobalCatalogTest.php` — the `globals` catalog source, reference index, runtime type map, workspace scoping (Phase 3)
+- `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — the `globals` root resolution + the injection-safety pin (`test_a_global_value_with_reference_like_bytes_is_not_re_interpreted`) (Phase 3)
+- `resources/js/next/pages/workflows/WorkflowGlobalsView.vue`, `WorkflowGlobalEditorDrawer.vue`, `WorkflowGlobalValueField.vue`, `WorkflowGlobalRow.vue` — the globals management screen (Phase 3, frontend)
+- `resources/js/next/pages/workflows/workflowGlobals.ts` — the draft⇆descriptor mapping + the client-side `WorkflowGlobalTypeValidator` mirror (Phase 3, frontend)
+- `resources/js/next/app/stores/workflowGlobals.ts` — list/CRUD store, invalidates every cached catalog after a mutation (Phase 3, frontend)
+- `docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md` — this phase's design record (LITERAL-only scope, the `globals` root, dual persistence, the authorable-type boundary, the NUL-reject injection invariant, the deferred FE authoring depth)
 
 ## Planned / deferred (not implemented)
 
@@ -2715,3 +2976,16 @@ These are documented, reviewed trade-offs — not a TODO list.
   repeater's elements or a multi-file answer — no per-element path, no loop binding. This needs
   R2-Generator's own element-cardinality / output-binding design, not an incremental extension of
   the catalog-visibility work this phase did.
+- **Computed globals** (Phase 3, ADR-0024): a global that DERIVES its value from another global, a
+  trigger field, or a step output — e.g. a global that doubles another global's numeric value —
+  rather than holding a plain stored literal. `WorkflowGlobal` (this revision) is LITERAL-only; a
+  computed global would need its own dependency-graph and cycle-detection design (the same class of
+  work a fenced if-block or a value-or-variable pipeline needed), not a byproduct of the CRUD/
+  catalog wiring this phase shipped. See ADR-0024 Context.
+- **Frontend authoring for array-of-object / nested object-children globals** (Phase 3, ADR-0024):
+  `WorkflowGlobalTypeValidator` already accepts a nested object/array/enum child inside an object
+  global's `fields`, and `array:true` on an `object` base, when sent directly to
+  `POST /workflow-globals` — `WorkflowGlobalEditorDrawer.vue`'s type builder does not offer either
+  combination yet (object-field children are scalar-only; the array toggle is disabled for an
+  object base, with an in-UI note). A pure frontend follow-up whenever real authoring demand shows
+  up, not blocked on a backend change.

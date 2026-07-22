@@ -52,6 +52,16 @@ class WorkflowVariableResolverTest extends TestCase
             'steps' => [
                 'make_task' => ['task_id' => 'step-task-uuid', 'title' => 'Made task'],
             ],
+            // Phase 3: the workspace's user-created LITERAL constants, injected under the `globals`
+            // root as a {<key>: <value>} map. `evil` holds a value that literally contains a flat
+            // token — the second-order injection probe (a global value must render VERBATIM).
+            'globals' => [
+                'brand' => 'Taskio',
+                'budget' => 5000,
+                'flag' => true,
+                'tags' => ['#ai', '#automatyzacja'],
+                'evil' => '{{trigger.fields.priority}}',
+            ],
         ];
     }
 
@@ -214,6 +224,83 @@ class WorkflowVariableResolverTest extends TestCase
         $md = 'Value: ' . $this->directive('trigger.fields.injection');
 
         $this->assertSame('Value: {{trigger.fields.priority}}', $this->resolver->resolve($md, $this->context()));
+    }
+
+    // ---- globals root (Phase 3) ----------------------------------------------
+
+    public function test_globals_flat_token_resolves_the_stored_literal(): void
+    {
+        // The `globals` root is whitelisted (a plain dotted lookup — no graph, no cycles).
+        $this->assertSame('Taskio', $this->resolver->resolve('{{globals.brand}}', $this->context()));
+    }
+
+    public function test_globals_flat_token_preserves_non_string_types(): void
+    {
+        // A number stays a number, a boolean a boolean, an array an array (standalone flat token
+        // returns the typed value unchanged).
+        $this->assertSame(5000, $this->resolver->resolve('{{globals.budget}}', $this->context()));
+        $this->assertTrue($this->resolver->resolve('{{globals.flag}}', $this->context()));
+        $this->assertSame(['#ai', '#automatyzacja'], $this->resolver->resolve('{{globals.tags}}', $this->context()));
+    }
+
+    public function test_globals_directive_resolves_the_stored_literal(): void
+    {
+        $this->assertSame('Taskio', $this->resolver->resolve($this->directive('globals.brand'), $this->context()));
+    }
+
+    public function test_globals_directive_embeds_and_joins_arrays(): void
+    {
+        $md = 'Brand ' . $this->directive('globals.brand') . ' tags ' . $this->directive('globals.tags');
+
+        $this->assertSame('Brand Taskio tags #ai, #automatyzacja', $this->resolver->resolve($md, $this->context()));
+    }
+
+    public function test_nonexistent_global_fails_soft_to_null(): void
+    {
+        $this->assertNull($this->resolver->resolve('{{globals.nope}}', $this->context()));
+        $this->assertSame('prefix-', $this->resolver->resolve('prefix-{{globals.nope}}', $this->context()));
+    }
+
+    public function test_a_global_value_is_resolved_in_a_structured_slot(): void
+    {
+        // A structured non-text field referencing a global resolves + coerces its literal.
+        $field = ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.budget', 'type' => 'number']];
+
+        $this->assertSame(5000, $this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::NUMBER));
+    }
+
+    /**
+     * INJECTION SAFETY (critical): a global's VALUE is user-authored. A value that literally contains
+     * reference-/directive-like bytes (`{{…}}`, `@[…]`) MUST render VERBATIM — it rides the SAME
+     * NUL-mask path a resolved value / per-ref default uses and is NEVER re-interpreted as a second
+     * reference. `globals.evil` holds the literal string "{{trigger.fields.priority}}".
+     */
+    public function test_a_global_value_with_reference_like_bytes_is_not_re_interpreted(): void
+    {
+        // Standalone flat token: the injected `{{…}}` renders literally, NOT resolved to 'high'.
+        $this->assertSame(
+            '{{trigger.fields.priority}}',
+            $this->resolver->resolve('{{globals.evil}}', $this->context()),
+        );
+
+        // Embedded flat token: same — the surrounding text keeps the literal injected token.
+        $this->assertSame(
+            'Value: {{trigger.fields.priority}}',
+            $this->resolver->resolve('Value: {{globals.evil}}', $this->context()),
+        );
+
+        // Standalone directive: the looked-up value stringifies verbatim (never re-scanned).
+        $this->assertSame(
+            '{{trigger.fields.priority}}',
+            $this->resolver->resolve($this->directive('globals.evil'), $this->context()),
+        );
+
+        // Embedded directive: the substituted value is NUL-masked before the flat pass, so the
+        // injected token cannot be resolved a second time (mirrors the per-ref default guarantee).
+        $this->assertSame(
+            'Value: {{trigger.fields.priority}}',
+            $this->resolver->resolve('Value: ' . $this->directive('globals.evil'), $this->context()),
+        );
     }
 
     public function test_embedded_directive_stringifies_scalar_and_joins_array(): void

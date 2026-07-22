@@ -221,6 +221,20 @@ const fileSubfieldRows: ApiRow[] = [
   { name: '<file>.size', type: 'number', description: 'Byte size.' },
   { name: '<file>.url',  type: 'text',   description: 'The access-controlled disk.show serve URL (File::serveUrl()) — never the raw storage path.' },
 ];
+
+// ── Variable typesystem Phase 3 (user-created LITERAL globals, ADR-0024) ────────────────────
+const globalAuthorableTypeRows: ApiRow[] = [
+  { name: 'text',           type: 'scalar',              description: 'A string literal.' },
+  { name: 'number',         type: 'scalar',              description: 'An int/float (a numeric STRING is also accepted on write, though the editor never sends one).' },
+  { name: 'boolean',        type: 'scalar',              description: 'true / false.' },
+  { name: 'date',           type: 'scalar',              description: 'Any Carbon-parseable string.' },
+  { name: 'enum',           type: 'scalar + options',    description: 'Requires a non-empty options list ({key,label?}); the value must equal one option key.' },
+  { name: 'object',         type: 'structural + fields', description: "Requires a non-empty fields list ({key,label?,descriptor}), each declared field validated recursively. The editor's OWN children are SCALAR only this slice (see below)." },
+  { name: 'array: true',    type: 'orthogonal flag',     description: 'Any base above may also be a list — the value becomes a JSON array of that element type.' },
+  { name: 'nullable: true', type: 'orthogonal flag',     description: 'The value may be null; otherwise a value is required.' },
+  { name: 'file / time',    type: '— NOT authorable —',  description: 'Rejected at descriptor.base. A global holds a plain typed constant, never an uploaded Disk file or a type with no runtime semantics yet.' },
+  { name: 'multi',          type: '— not a base —',      description: 'A multi-select is enum + array:true, exactly like every other catalog variable — there is no separate "multi" base to pick.' },
+];
 </script>
 
 <template>
@@ -671,6 +685,57 @@ WorkflowRun (one execution)
           entry with no children. See
           <code class="font-next-mono">docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md</code>
           for the full design record.
+        </Alert>
+
+        <!-- Workflow Globals (Phase 3, ADR-0024) -->
+        <Alert variant="info" size="sm">
+          <strong>Workflow GLOBALS — user-created LITERAL constants (Phase 3 of the
+          variable-typesystem rework, ADR-0024).</strong> A workspace member can create a
+          <strong>global</strong> from the module's "Globals" nav item
+          (<code class="font-next-mono">/next/workflows/globals</code>): a named, typed LITERAL
+          value — a brand name, a budget number, a hashtag list — that becomes a
+          <code class="font-next-mono">globals.&lt;key&gt;</code> reference usable in EVERY
+          workflow, form-independent (present for a <code class="font-next-mono">schedule</code>
+          trigger exactly as for a <code class="font-next-mono">form_submitted</code> one). A
+          global is LITERAL-only this phase — no computed values, no references to another
+          variable, no cycle detection — resolved by the SAME whitelisted dotted lookup as every
+          other reference (<code class="font-next-mono">WorkflowVariableResolver::ROOTS</code> now
+          includes <code class="font-next-mono">globals</code> alongside
+          <code class="font-next-mono">trigger</code>/<code class="font-next-mono">steps</code>).
+          Reading the list is any workspace member; creating/editing/deleting is creator-only. A
+          global has NO soft-delete — a delete is permanent, and a workflow that still references
+          the deleted key simply resolves it to nothing (the same fail-soft behavior any missing
+          reference already has).
+        </Alert>
+        <ApiTable title="Authorable global types (WorkflowGlobalTypeValidator::AUTHORABLE_BASES)" type-header="Shape" :rows="globalAuthorableTypeRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong>Injection safety — a global's value renders VERBATIM, never re-interpreted (a
+          security invariant, not an implementation detail).</strong> A global's
+          <code class="font-next-mono">value</code> is user-authored and later interpolated into
+          a step's text/structured fields, so it is protected the same way any other resolved
+          value already is: at WRITE time, a value containing a NUL byte anywhere is rejected
+          outright (the one persistence path in this module whose storage column would otherwise
+          allow one); at RESOLVE time, the looked-up value rides the SAME NUL-delimited placeholder
+          mask an embedded directive's result already uses. A global whose value literally reads
+          <code class="font-next-mono">&#123;&#123;trigger.fields.secret&#125;&#125;</code> or
+          contains an <code class="font-next-mono">@[variable]</code>-shaped string still renders
+          that text completely as-is — it is never resolved as a second reference.
+        </Alert>
+
+        <Alert variant="warning" size="sm">
+          <strong>Deferred in the editor today (a frontend limit, not a backend one):
+          array-of-object, and nested object/array/enum children inside an object's
+          fields.</strong> The backend validator already accepts both recursively — an object
+          field's child MAY itself be another object, an enum, or an array, and an object-based
+          global MAY itself be a list — when sent directly to the API. The editor's own type
+          builder ships a narrower authoring surface for this slice: an object field's own type
+          picker offers only <code class="font-next-mono">text | number | boolean | date</code>
+          (no nested object/enum/array child), and the "array" toggle is disabled whenever the
+          base is <code class="font-next-mono">object</code>, with an explanatory note ("A list
+          of objects isn't supported here yet — model each object separately."). Both are pure
+          frontend follow-ups whenever real authoring demand shows up. See
+          <code class="font-next-mono">docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md</code>.
         </Alert>
       </div>
     </StorySection>

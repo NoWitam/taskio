@@ -1,6 +1,7 @@
 <?php
 
 use App\Modules\Workflows\Http\Controllers\WorkflowController;
+use App\Modules\Workflows\Http\Controllers\WorkflowGlobalController;
 use App\Modules\Workflows\Http\Controllers\WorkflowRunController;
 use App\Modules\Workflows\Http\Controllers\WorkflowScheduleAssistController;
 use App\Modules\Workflows\Http\Controllers\WorkflowSchedulePreviewController;
@@ -65,5 +66,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('workflows/{workflow}/runs/{run}/retry', [WorkflowRunController::class, 'retry'])->name('workflows.runs.retry');
 
     Route::apiResource('workflows', WorkflowController::class)
+        ->only(['index', 'show', 'store', 'update', 'destroy']);
+
+    // Workflow GLOBALS: user-created, workspace-scoped typed LITERAL constants exposed as
+    // `globals.<key>` references in every workflow. A distinct path prefix from `workflows`, so no
+    // binding collision; workspace-member read + creator-only mutation (WorkflowGlobalPolicy).
+    Route::apiResource('workflow-globals', WorkflowGlobalController::class)
         ->only(['index', 'show', 'store', 'update', 'destroy']);
 });

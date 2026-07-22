@@ -29,7 +29,7 @@ use Throwable;
  * The ai-text pass runs BEFORE the variable/flat passes and its OUTPUT is masked out of them, so a
  * generated string is inserted verbatim and never re-interpreted as a reference.
  *
- * A variable identity is always `{ source: trigger|steps, path, type }`, serialized two ways:
+ * A variable identity is always `{ source: trigger|steps|globals, path, type }`, serialized two ways:
  *
  *   1. TEXT / markdown fields carry the next editor's VARIABLE DIRECTIVE:
  *
@@ -64,8 +64,9 @@ use Throwable;
  * (a directive's looked-up value) are masked before the flat pass, so an (untrusted) form value
  * that literally contains a `{{…}}` token can not be re-interpreted as a second-order reference.
  *
- * WHITELIST: only the roots `trigger` and `steps` are readable in EVERY serialization; any other
- * root (env, config, __proto__, …) is not a reference, so no context/env exfiltration is possible.
+ * WHITELIST: only the roots `trigger`, `steps`, and `globals` (the {@see self::ROOTS} constant — the
+ * single source) are readable in EVERY serialization; any other root (env, config, __proto__, …) is
+ * not a reference, so no context/env exfiltration is possible.
  */
 class WorkflowVariableResolver
 {
@@ -73,8 +74,14 @@ class WorkflowVariableResolver
      * Roots a reference may read from — anything else is not a reference. THE single source of truth
      * for the reference whitelist: the write-side validator ({@see \App\Modules\Workflows\Http\Requests\StoreWorkflowRequest})
      * reads this too, so adding a root (a new catalog source) is a one-place change here (per ADR-0021).
+     *
+     * `globals` is the workspace's user-created LITERAL constants, injected into the run context as a
+     * `{<key>: <value>}` map by the step runner. Because the values are stored literals, a global ref
+     * is a plain whitelisted dotted lookup (no graph, no cycles) — and a global VALUE that contains
+     * reference-/directive-like bytes rides the SAME NUL-mask path a resolved value does, so it is
+     * never re-interpreted as a reference (see resolveReferences / applyDefault).
      */
-    public const ROOTS = ['trigger', 'steps'];
+    public const ROOTS = ['trigger', 'steps', 'globals'];
 
     /** A whole string that is EXACTLY one flat token: {{ path }}. */
     private const FLAT_STANDALONE = '/^\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}$/';

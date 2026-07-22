@@ -200,7 +200,7 @@ export type WorkflowTone = 'neutral' | 'info' | 'warning' | 'success' | 'danger'
  * workflow type (NOT the editor primitive). Mirrors the backend's ref shape.
  */
 export interface WorkflowVariableRef {
-  source: 'trigger' | 'steps';
+  source: 'trigger' | 'steps' | 'globals';
   path: string;
   type: WorkflowVariableType;
 }
@@ -524,7 +524,12 @@ export interface CatalogVariableDescriptor {
  * ADDITIVE structured type (phase-1a) — the source of an enum's human option LABELS.
  */
 export interface CatalogVariable {
-  source: 'trigger' | 'steps';
+  /**
+   * The variable's ROOT source. `globals` (Phase 3) joins `trigger` / `steps`: the
+   * workspace's user-authored `globals.<key>` literal constants flow through the SAME
+   * catalog as a normal typed variable (form-independent — present for every trigger).
+   */
+  source: 'trigger' | 'steps' | 'globals';
   path: string;
   name: string;
   type: WorkflowVariableType;
@@ -872,3 +877,91 @@ export interface WorkflowRunResponse {
 // The pre-5.1 LEGACY-COMPAT aliases (`LegacyWorkflowTriggerType` /
 // `LegacyWorkflowStepType`) were DELETED by B7e — the last consumers (TargetPickerModal,
 // WorkflowDetailView, workflowMeta) were rebuilt to the strict 2+2 unions above.
+
+// --- Workflow GLOBALS (Phase 3 — user-authored typed literal constants) ------
+//
+// A global is a workspace-scoped, form-independent typed LITERAL exposed as a
+// `globals.<key>` reference in every workflow. These MIRROR the VERIFIED backend
+// contract 1:1 (WorkflowGlobalResource + Store/UpdateWorkflowGlobalRequest +
+// WorkflowGlobalTypeValidator) — no invented fields:
+//   GET/POST   /workflow-globals                 (cursorPaginate(20), orderBy name)
+//   GET/PUT/DELETE /workflow-globals/{id}
+//   body  { name, key?, descriptor:{base,nullable?,array?,options?,fields?}, value }
+
+/**
+ * The AUTHORABLE descriptor bases (WorkflowGlobalTypeValidator::AUTHORABLE_BASES).
+ * `file` / `time` are NOT authorable; `multi` is `enum` + `array:true`, not a base.
+ */
+export type WorkflowGlobalBase = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'object';
+
+/** The scalar bases an OBJECT field child may take (minimal authoring — no containers). */
+export type WorkflowGlobalScalarBase = 'text' | 'number' | 'boolean' | 'date';
+
+/**
+ * One object-field descriptor (`{key, label, descriptor}`) — the recursive child a
+ * global's `object` base carries. Kept scalar in this slice (see WorkflowGlobalScalarBase).
+ */
+export interface WorkflowGlobalField {
+  key: string;
+  label: string;
+  descriptor: WorkflowGlobalDescriptor;
+}
+
+/**
+ * A global's authoritative TYPE descriptor: the authorable `base` + the orthogonal
+ * `nullable` / `array` modifiers, plus `options` (enum) / `fields` (object). Shares
+ * the shape of `CatalogVariableDescriptor` (the catalog re-emits the SAME descriptor),
+ * narrowed to the authorable bases.
+ */
+export interface WorkflowGlobalDescriptor {
+  base: WorkflowGlobalBase;
+  nullable: boolean;
+  array: boolean;
+  options?: CatalogDescriptorOption[];
+  fields?: WorkflowGlobalField[];
+}
+
+/** A workflow GLOBAL (WorkflowGlobalResource). `value` is a scalar/list/object/null literal. */
+export interface WorkflowGlobal {
+  id: string;
+  name: string;
+  key: string;
+  /** The exact dotted reference path an editor uses — always `globals.<key>`. */
+  reference: string;
+  descriptor: WorkflowGlobalDescriptor;
+  value: unknown;
+  /** `whenLoaded('creator')` — polymorphic (user | workflow_run | bot | null). */
+  creator?: Creator | null;
+  is_owner: boolean;
+  can_be_edited: boolean;
+  can_be_deleted: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * The globals write body (Store/Update). `key` is OPTIONAL — omit to let the backend
+ * slug it from `name`; send it to pin/override. `value` matches the descriptor.
+ */
+export interface WorkflowGlobalWritePayload {
+  name: string;
+  key?: string;
+  descriptor: WorkflowGlobalDescriptor;
+  value: unknown;
+}
+
+/** The globals list-screen filter state (mirrors the `/workflow-globals` query — search only). */
+export interface WorkflowGlobalFilters {
+  search?: string;
+}
+
+/** Cursor-paginated globals list envelope. Meta carries cursor fields ONLY (no `total`). */
+export interface WorkflowGlobalListResponse {
+  data: WorkflowGlobal[];
+  meta: { next_cursor: string | null };
+}
+
+/** Detail envelope from a single-global read / create / update. */
+export interface WorkflowGlobalResponse {
+  data: WorkflowGlobal;
+}

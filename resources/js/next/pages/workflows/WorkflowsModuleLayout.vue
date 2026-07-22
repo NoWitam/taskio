@@ -88,6 +88,8 @@ const moduleItems = computed<ModuleNavItem[]>(() => [
   // Distinct key ('allRuns') so it never collides with the resource SECTION 'runs' tab
   // in `isItemActive` (both nav lists share that matcher).
   { key: 'allRuns', label: t('workflows.module.allRuns'), icon: 'clock', to: { name: 'next.workflows.runs' } },
+  // Workspace-level GLOBALS (Phase 3) — form-independent, so a module-level surface.
+  { key: 'globals', label: t('workflows.globals.module.nav'), icon: 'braces', to: { name: 'next.workflows.globals' } },
 ]);
 const resourceItems = computed<ModuleNavItem[]>(() => [
   { key: 'overview', label: t('workflows.detail.tabOverview'), icon: 'layout-dashboard', to: sectionLink('overview') },
@@ -108,6 +110,7 @@ const resource = computed<ModuleResource | null>(() =>
 function isItemActive(item: ModuleNavItem): boolean {
   if (item.key === 'list') return route.name === 'next.workflows';
   if (item.key === 'allRuns') return route.name === 'next.workflows.runs';
+  if (item.key === 'globals') return route.name === 'next.workflows.globals';
   return workflowId.value !== null && currentSection.value === item.key;
 }
 

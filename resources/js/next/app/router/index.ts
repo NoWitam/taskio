@@ -207,6 +207,15 @@ const routes: RouteRecordRaw[] = [
             meta: { requiresAuth: true, titleKey: 'nav.workflows' },
           },
           {
+            // Workspace-level GLOBALS management (Phase 3): user-authored `globals.<key>`
+            // typed literal constants. A static segment declared before the `:id` record
+            // (like `runs`) so it never binds as a workflow id.
+            path: 'globals',
+            name: 'next.workflows.globals',
+            component: () => import('../../pages/workflows/WorkflowGlobalsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.workflows' },
+          },
+          {
             // Detail sections are CHILD ROUTES of the detail SHELL (the shell
             // owns the fetch + action bar and renders the section through its
             // own <RouterView> — Runs needs its own lifecycle). The bare path

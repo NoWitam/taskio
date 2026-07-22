@@ -43,10 +43,13 @@ class WorkflowStepRunner
         $definition = $workflow?->steps ?? [];
 
         // The context steps read: `trigger` = the run's trigger payload, `steps` grows as
-        // each step returns its output.
+        // each step returns its output, `globals` = the workspace's user-created LITERAL constants
+        // as a `{<key>: <value>}` map (form-independent, resolvable in every workflow). The run
+        // executes with the workspace active (QueueTenancy), so globalValues() is workspace-scoped.
         $context = [
             'trigger' => $run->trigger_payload ?? [],
             'steps' => [],
+            'globals' => $this->catalog->globalValues(),
         ];
 
         // The run's path → variable-type map lets the resolver execute directive / if-block

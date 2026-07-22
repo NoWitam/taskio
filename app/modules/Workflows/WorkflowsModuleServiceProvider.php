@@ -5,7 +5,9 @@ namespace App\Modules\Workflows;
 use App\Modules\Workflows\Console\ReapStaleWorkflowRunsCommand;
 use App\Modules\Workflows\Console\RunScheduledWorkflowsCommand;
 use App\Modules\Workflows\Models\Workflow;
+use App\Modules\Workflows\Models\WorkflowGlobal;
 use App\Modules\Workflows\Models\WorkflowRun;
+use App\Modules\Workflows\Policies\WorkflowGlobalPolicy;
 use App\Modules\Workflows\Policies\WorkflowPolicy;
 use App\Modules\Workflows\Services\WorkflowRunContext;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -34,6 +36,7 @@ class WorkflowsModuleServiceProvider extends ServiceProvider
             ->group(__DIR__ . '/routes/api.php');
 
         Gate::policy(Workflow::class, WorkflowPolicy::class);
+        Gate::policy(WorkflowGlobal::class, WorkflowGlobalPolicy::class);
 
         // `workflow_run` MUST be registered: HasCreator now stamps a workflow-run creator
         // polymorphically (creator_type = $run->getMorphClass()), and the repo enforces the

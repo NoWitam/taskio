@@ -281,6 +281,21 @@ function repeaterListVariable(variable: CatalogVariable): CatalogVariable {
 }
 
 /**
+ * A GLOBAL (`source:'globals'`) entry, relabelled with a "Globals ›" qualifier so the flat picker
+ * (which has no group headers) visually groups the workspace's user-authored literal constants
+ * apart from trigger/step variables (phase-3). A global is a SELF-CONTAINED literal — its whole
+ * value is the reference — so it is surfaced AS ITSELF for every base (even an `object`, which a
+ * trigger container would instead drop, its leaves being flat elsewhere). Keeps the descriptor +
+ * enum options so downstream (icons, option lists) stays uniform.
+ */
+function globalVariable(variable: CatalogVariable): CatalogVariable {
+  return {
+    ...variable,
+    name: translate('workflows.variable.global', `Globals › ${variable.name}`, { name: variable.name }),
+  };
+}
+
+/**
  * Expand a flat catalog variable list into the editor-pickable variables its structural
  * descriptors imply (see the section header). Descriptor-less variables — the older/simpler
  * shape AND the locally-synthesised step outputs — pass through unchanged, so this is a no-op for
@@ -292,6 +307,14 @@ function expandVariables(variables: CatalogVariable[]): CatalogVariable[] {
   for (const variable of variables) {
     const descriptor = variable.descriptor;
     const base = descriptor?.base;
+
+    // GLOBAL: a self-contained literal — surfaced as ONE relabelled entry for every base
+    // (its whole value IS the reference), before the container rules that would drop an
+    // object section. Globals paths (`globals.<key>`) never trip the SF3.2 id-strip.
+    if (variable.source === 'globals') {
+      out.push(globalVariable(variable));
+      continue;
+    }
 
     // FILE composite: the whole-file entry + one pickable per subfield.
     if (base === 'file' && descriptor?.fields?.length) {

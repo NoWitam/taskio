@@ -60,6 +60,41 @@ enum WorkflowVariableType: string
     }
 
     /**
+     * The type IDENTITY of a stored DESCRIPTOR — the inverse of descriptor(). Recovers the
+     * WorkflowVariableType a `{ base, array, … }` descriptor represents, so a form-INDEPENDENT
+     * descriptor (a user-authored global's stored type) maps back onto the same closed vocabulary
+     * the catalog/resolver speak:
+     *   - base 'object'                 → OBJECT (a structural container; its flat wire type later
+     *                                     degrades to text via the catalog's flatType).
+     *   - base 'enum', array true       → MULTI  (a multi is an array<enum>).
+     *   - base 'enum', array false      → ENUM.
+     *   - base scalar (text/number/…), array true  → MULTI (the one array-carrying flat type — an
+     *                                     array<scalar> rides it on the wire so it survives coercion
+     *                                     as an array; the descriptor keeps the true element base).
+     *   - base scalar, array false      → that scalar type.
+     * An unknown base falls back to TEXT (defensive — mirrors mapSchemaToVariableType's default).
+     *
+     * @param  array<string, mixed>  $descriptor
+     */
+    public static function fromDescriptor(array $descriptor): self
+    {
+        $base = is_string($descriptor['base'] ?? null) ? $descriptor['base'] : self::TEXT->value;
+        $array = ($descriptor['array'] ?? false) === true;
+
+        if ($base === self::OBJECT->value) {
+            return self::OBJECT;
+        }
+
+        if ($base === self::ENUM->value) {
+            return $array ? self::MULTI : self::ENUM;
+        }
+
+        $scalar = self::tryFrom($base) ?? self::TEXT;
+
+        return $array ? self::MULTI : $scalar;
+    }
+
+    /**
      * The editor PRIMITIVE (text|number|boolean) this type serializes to inside a markdown
      * directive's `data.type`. date/enum/multi have no primitive of their own so they degrade
      * to text; the real type is NOT in the directive — consumers recover it from the catalog

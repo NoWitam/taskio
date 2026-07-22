@@ -406,6 +406,16 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
   }
 
   /**
+   * Drop EVERY cached catalog. Workspace GLOBALS are form-independent — they appear in
+   * the catalog for every (trigger_type, form_id) — so a globals create/update/delete
+   * must invalidate them all, forcing the next editor open to refetch the updated
+   * `globals.*` variables. Called by the globals store after a mutation.
+   */
+  function invalidateAllCatalogs(): void {
+    catalogByKey.value = {};
+  }
+
+  /**
    * Ask the AI schedule assist to turn a natural-language `prompt` into a structured
    * schedule config (`POST /workflows/schedule-assist`). NOT cached (each prompt is
    * unique). The user's active `tz` is sent as a hint. The re-validated envelope is
@@ -483,6 +493,7 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
     // schedule builder catalog / assist / preview (§4.5, §4.7)
     fetchWorkflowCatalog,
     invalidateCatalog,
+    invalidateAllCatalogs,
     scheduleAssist,
     schedulePreview,
   };
