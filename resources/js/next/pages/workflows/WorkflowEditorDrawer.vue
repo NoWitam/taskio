@@ -141,7 +141,9 @@ const form = reactive<{
   scheduleDraft: emptyScheduleDraft(),
   // The B3 condition TREE draft (empty AND group = "always runs").
   conditionsTree: emptyConditionTree(),
-  steps: [makeStepDraft('create_task', [])],
+  // Start with NO step — the author picks the first one themselves (the Save gate + backend
+  // min:1 still require at least one step before the workflow can be created).
+  steps: [],
 });
 
 /** The FormSelect seed (the currently-attached form's name) for the trigger panel. */

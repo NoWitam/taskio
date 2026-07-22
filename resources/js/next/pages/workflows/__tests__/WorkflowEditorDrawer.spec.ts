@@ -19,6 +19,7 @@ import { nextTick, h, ref } from 'vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 import type { WorkflowCatalog, WorkflowDetail } from '../types';
 import type { FormTriggerDraft, StepDraft } from '../workflowEditorModel';
+import { makeStepDraft } from '../workflowEditorModel';
 import type { ScheduleDraft } from '../workflowSchedule';
 
 // --- Store + toast mocks -----------------------------------------------------
@@ -141,7 +142,12 @@ const StepsStub = {
           {
             class: 'fill-step',
             onClick: () => {
-              const next = (props.steps as StepDraft[]).map((s) => ({ ...s, config: { ...s.config, title: 'Do it' } }));
+              // The drawer now starts with NO step (the author adds the first one). Seed a real
+              // create_task draft when the list is empty, then set its title — mirrors a user
+              // adding + filling the first step; the payload shape matches the old default seed.
+              const existing = props.steps as StepDraft[];
+              const base = existing.length > 0 ? existing : [makeStepDraft('create_task', [])];
+              const next = base.map((s) => ({ ...s, config: { ...s.config, title: 'Do it' } }));
               emit('update:steps', next);
             },
           },
@@ -261,6 +267,13 @@ describe('WorkflowEditorDrawer', () => {
     fetchWorkflowCatalog.mockResolvedValue(CATALOG);
   });
   afterEach(() => restoreBrowserMocks());
+
+  it('a NEW workflow starts with NO step — the author adds the first one (no default seed)', () => {
+    const { wrapper } = mountDrawer();
+    // The steps list is seeded empty; the >=1-step Save gate (backend min:1) still requires
+    // the author to add at least one before the workflow can be created.
+    expect((wrapper.findComponent(StepsStub).props('steps') as StepDraft[]).length).toBe(0);
+  });
 
   it('form select → fetches the catalog, conditions become enabled, steps get the catalog', async () => {
     const { wrapper } = mountDrawer();
