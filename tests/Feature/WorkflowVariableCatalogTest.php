@@ -369,6 +369,32 @@ class WorkflowVariableCatalogTest extends TestCase
         $this->assertArrayNotHasKey('trigger.fields.items.item_name', $index);
     }
 
+    public function test_a_sections_flat_leaves_are_not_re_indexed_from_its_object_descriptor(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        // A SECTION is an object CONTAINER whose descriptor declares its children — but those children
+        // are ALREADY emitted as flat `section.leaf` variables by the leaf pass, with their option
+        // lists. The object-subfield indexing (phase-2c) must therefore never overwrite them: the
+        // richer flat entry wins, so nothing about a section reference changes.
+        $index = app(WorkflowVariableCatalogService::class)
+            ->referenceIndex(WorkflowTriggerType::FORM_SUBMITTED, $this->richForm($owner), []);
+
+        $this->assertSame(WorkflowVariableType::TEXT, $index['trigger.fields.details.note']['type']);
+
+        $tags = $index['trigger.fields.details.section_tags'];
+        $this->assertSame(WorkflowVariableType::MULTI, $tags['type']);
+        // The OPTION list survives — the proof the descriptor walk did not re-emit this leaf (a
+        // descriptor-derived subfield entry carries no options).
+        $this->assertSame(['x', 'y'], $tags['enumOptions']);
+
+        // The container itself is still the degraded text entry, and the repeater's ELEMENT is still
+        // absent (an `array:true` object descriptor is never recursed).
+        $this->assertSame(WorkflowVariableType::TEXT, $index['trigger.fields.details']['type']);
+        $this->assertArrayNotHasKey('trigger.fields.items.item_name', $index);
+    }
+
     // ---- Service: structured type descriptors (phase-1a, additive) -----------
 
     public function test_field_variables_carry_a_structured_type_descriptor(): void

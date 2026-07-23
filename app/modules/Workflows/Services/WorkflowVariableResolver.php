@@ -56,12 +56,15 @@ use Throwable;
  * value the executor returns a HARD failure this resolver re-raises as the run's standard step-failure
  * (a RuntimeException the runner records) — the one place a variable pipeline is NOT fail-soft.
  *
- * ARGUMENT VARIABLES (phase-4a, append-only): an operation's ARGUMENT may itself be a value-or-variable
- * union (`{kind:'variable', ref, pipeline?, default?}`) instead of a constant literal — recursively
- * transformable. The executor STAYS A PURE TRANSFORMER: BEFORE it runs each op, THIS resolver
+ * ARGUMENT VARIABLES (phase-4b, append-only): ANY of an operation's ARGUMENTS may itself be a value-or-
+ * variable union (`{kind:'variable', ref, pipeline?, default?}`) instead of a constant literal —
+ * recursively transformable. The executor STAYS A PURE TRANSFORMER: BEFORE it runs each op, THIS resolver
  * pre-resolves every variable-shaped argument to a LITERAL (via the SAME resolveValueOrVariable
- * machinery — read the whitelisted context ref, apply the arg's own pipeline, coerce to the arg's
- * DECLARED type from the op's argDescriptors), then hands the executor literal args exactly as before.
+ * machinery), then hands the executor literal args exactly as before. The per-arg gate is the arg
+ * control's ArgVariablePolicy (the SINGLE source shared with the write-validator): a VALUE arg coerces to
+ * its one type, an OPTION arg to a string (enum|text — option-set membership deferred to runtime
+ * fail-soft), a multi-OPTION arg to an array, and a STRUCTURAL arg (sourceMap/choiceRules) is handed the
+ * RAW context array untouched (its shape deferred to runtime fail-soft — see resolveStructuralArgVariable).
  * There are NO cycles (an arg-variable references CONTEXT DATA, never another arg definition), so the
  * only unboundedness is nesting depth, hard-capped by ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH
  * (beyond it an arg resolves fail-soft to null/empty). A resolved arg value carrying reference-/
@@ -404,30 +407,61 @@ class WorkflowVariableResolver
     }
 
     /**
-     * Resolve ONE variable-shaped argument to a literal of the arg's DECLARED value type. Over the
-     * nesting cap → the coerced-null fail-soft (the op then fail-closes on the empty arg, collapsing the
-     * pipeline — never a crash or unbounded work). A control that cannot carry a runtime variable
-     * (option/map/rules args → variableValueType() null) resolves to null so the op fail-closes; the
-     * write-validator rejects such a config, so this is defensive only.
+     * Resolve ONE variable-shaped argument to the literal the PURE executor's arg reader consumes, driven
+     * by the arg's ArgVariablePolicy (the SINGLE source shared with the write-validator). Over the nesting
+     * cap → fail-soft (the op then fail-closes on the empty/missing arg, collapsing the pipeline — never a
+     * crash or unbounded work). Per category:
+     *   - VALUE / OPTION / OPTIONS   read the ref (+ optional sub-pipeline) via resolveValueOrVariable and
+     *                                coerce to the policy's coerceTo (a scalar for value/option, an array
+     *                                for options). An out-of-set option value is a RUNTIME concern — the
+     *                                op's reader fail-softs on it (not-found / fallback), never a crash.
+     *   - STRUCTURAL (map/rules)     hand the raw context structure through untouched (resolveStructural-
+     *                                ArgVariable); a scalar coercion would destroy the map's keys, and the
+     *                                executor's map/rules reader fail-softs on a malformed value.
      *
      * @param  array<string, mixed>  $field
      * @param  array<string, mixed>  $context
      */
     private function resolveArgVariable(array $field, array $context, WorkflowOperationArg $descriptor, int $argDepth): mixed
     {
-        $expectedType = $descriptor->type->variableValueType();
-
-        if ($expectedType === null) {
-            return null; // this arg control does not accept a variable (literal-only) → fail-closed
-        }
+        $policy = $descriptor->type->argVariablePolicy();
 
         // This argument sits one level below the pipeline it lives in. Because there are NO cycles, the
-        // cap only bites pathological nesting; beyond it the argument resolves fail-soft.
+        // cap only bites pathological nesting; beyond it the argument resolves fail-soft (structural → the
+        // null the map/rules reader fail-closes on; value/option → the coerced-null empty arg).
         if ($argDepth + 1 > ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH) {
-            return $this->coerce(null, $expectedType);
+            return $policy->isStructural() ? null : $this->coerce(null, $policy->coerceTo);
         }
 
-        return $this->resolveValueOrVariable($field, $context, $expectedType, $argDepth + 1);
+        if ($policy->isStructural()) {
+            return $this->resolveStructuralArgVariable($field, $context);
+        }
+
+        return $this->resolveValueOrVariable($field, $context, $policy->coerceTo, $argDepth + 1);
+    }
+
+    /**
+     * Resolve a STRUCTURAL arg-variable (sourceMap / choiceRules) to the raw context structure the PURE
+     * executor's map/rules reader consumes. Reads the whitelisted ref path and returns it VERBATIM when it
+     * is an array (a {option: target} map / a {when, then} list), else null (→ the executor's enumMap /
+     * matchToChoice reader fail-softs). No sub-pipeline is run — no op BUILDS a structure — so any pipeline
+     * a hand-written config carries is inert here (an unexpressible shape is a runtime fail-soft concern).
+     *
+     * INJECTION SAFETY: the returned array is a literal handed to the pure executor, which never scans for
+     * references; the executor's OUTPUT then rides the SAME NUL-mask path a resolved value does (see
+     * resolvePipelineArgs / resolveReferences), so a structure whose values carry `{{…}}` / `@[…]` bytes is
+     * used literally and never re-interpreted as a second reference.
+     *
+     * @param  array<string, mixed>  $field
+     * @param  array<string, mixed>  $context
+     */
+    private function resolveStructuralArgVariable(array $field, array $context): mixed
+    {
+        $ref = $field['ref'] ?? null;
+        $path = $this->refPath($ref);
+        $raw = $path !== null && $this->isReference($path) ? $this->readContext($context, $path) : null;
+
+        return is_array($raw) ? $raw : null;
     }
 
     /** Whether a value is a variable-union argument (`{kind:'variable', …}`) rather than a literal. */

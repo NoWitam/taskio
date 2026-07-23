@@ -1819,7 +1819,7 @@ export const pl: MessageSchema = {
       setCondition: 'ustaw warunek…',
       condition: 'Warunek',
       conditionValid: 'Warunek poprawny',
-      conditionInvalid: 'Warunek niepoprawny (musi być boolean)',
+      conditionInvalid: 'Warunek niepoprawny — musi zwracać wynik typu Warunek.',
       operationsCount: '{count} op.',
       kindIf: 'IF',
       kindElseIf: 'ELSE IF',
@@ -1830,9 +1830,9 @@ export const pl: MessageSchema = {
       conditionVariable: 'Zmienna warunku',
       selectVariable: 'Wybierz zmienną',
       noVariables: 'Dodaj zmienne, aby tworzyć warunki.',
-      mustBeBoolean: 'Warunek musi kończyć się typem boolean.',
-      valid: 'Warunek zwraca boolean.',
-      invalid: 'Uzyskaj wynik boolean, wybierając zmienną i operacje.',
+      mustBeBoolean: 'Warunek musi zwracać wynik typu Warunek.',
+      valid: 'Warunek zwraca wynik typu Warunek.',
+      invalid: 'Uzyskaj wynik typu Warunek, wybierając zmienną i operacje.',
       saveCondition: 'Zapisz warunek',
       cancel: 'Anuluj',
     },
@@ -2807,7 +2807,7 @@ export const pl: MessageSchema = {
       clearedOnFormChange: 'Warunki zostały wyczyszczone, ponieważ zmieniono formularz.',
       validation: {
         incomplete: 'Dokończ ten warunek lub go usuń.',
-        treeIncomplete: 'Dokończ każdy warunek, aby zwracał wynik tak/nie.',
+        treeIncomplete: 'Dokończ każdy warunek, aby zwracał wynik typu Warunek.',
       },
       missingPathHint: 'Jeśli zgłoszenie nie zawiera danego pola, ten warunek jest niespełniony (odczytywany jako „nie”).',
       betweenFrom: 'Od',
@@ -2835,9 +2835,9 @@ export const pl: MessageSchema = {
         fieldLabel: 'Pole',
         fieldPlaceholder: 'Wybierz pole',
         noFields: 'Ten formularz nie ma pól, na których można oprzeć warunki.',
-        mustBeBoolean: 'Buduj sprawdzenie, aż zwróci wynik tak/nie.',
+        mustBeBoolean: 'Buduj sprawdzenie, aż zwróci wynik typu Warunek.',
         ready: 'Warunek gotowy.',
-        notReady: 'Kontynuuj, aż sprawdzenie zwróci wynik tak/nie.',
+        notReady: 'Kontynuuj, aż sprawdzenie zwróci wynik typu Warunek.',
         save: 'Zapisz warunek',
         cancel: 'Anuluj',
         resetTitle: 'Zmienić pole?',
@@ -3018,6 +3018,12 @@ export const pl: MessageSchema = {
         size: 'Rozmiar',
         url: 'Adres URL',
       },
+      // MODYFIKATORY ikony typu (§udoskonalenie 3): zmienna, która może być pusta (nullable) lub
+      // jest kolekcją (array), ma mały znacznik na ikonie typu — to są jego podpowiedzi.
+      marker: {
+        optional: 'Opcjonalna — może być pusta',
+        list: 'Lista wartości',
+      },
     },
     // Zmienne globalne (Faza 3) — utworzone przez użytkownika, typowane stałe dostępne jako
     // `globals.<klucz>` w każdym workflow.
@@ -3034,7 +3040,7 @@ export const pl: MessageSchema = {
       base: {
         text: 'Tekst',
         number: 'Liczba',
-        boolean: 'Tak / Nie',
+        boolean: 'Warunek',
         date: 'Data',
         enum: 'Wybór',
         object: 'Obiekt',
@@ -3159,6 +3165,13 @@ export const pl: MessageSchema = {
       needsChoice: 'zmapuj ją na jedną z wartości tego pola',
       defaultLabel: 'Wartość domyślna, gdy puste',
       defaultPlaceholder: 'Wartość używana, gdy puste',
+      defaultHint: 'Używana, gdy ta zmienna nie ma wartości w trakcie działania.',
+      defaultNone: 'Brak wartości domyślnej',
+      noVariables: 'Brak dostępnych zmiennych',
+      variableTreeLabel: 'Zmienne',
+      toggleGroup: 'Rozwiń lub zwiń {name}',
+      argVariableMapping: 'Użyj zmiennej dla całego mapowania',
+      argVariableRules: 'Użyj zmiennej dla całego zestawu reguł',
     },
     runs: {
       refresh: 'Odśwież',

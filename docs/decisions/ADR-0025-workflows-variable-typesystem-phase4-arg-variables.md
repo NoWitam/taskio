@@ -2,6 +2,8 @@
 
 **Date:** 2026-07-22 (created)
 **Status:** Accepted
+**Updated:** 2026-07-23 — Phase 4b addendum below (EVERY argument control now accepts a variable;
+supersedes Decision 1's value-typed-only gate — see "Addendum" at the end)
 **Module:** `App\Modules\Workflows`
 **Relates to:** ADR-0021 (Phase 0: the composable catalog + the `ROOTS` whitelist,
 `resolveValueOrVariable()`, and the write-time reference-index machinery this phase reuses verbatim
@@ -43,8 +45,9 @@ editor slot). This completes the four-phase variable-typesystem rework that bega
 
 ## Decisions
 
-1. **A value-or-variable union is now legal in ANY value-typed operation argument slot — gated by
-   one new method, `WorkflowOperationArgType::variableValueType()`, the SINGLE source both the
+1. **[WIDENED — see the "Addendum … Phase 4b" section at the end] A value-or-variable union is now
+   legal in ANY value-typed operation argument slot — gated by one new method,
+   `WorkflowOperationArgType::variableValueType()`, the SINGLE source both the
    write-validator and the runtime resolver read.** It returns the matching `WorkflowVariableType`
    for `TEXT`/`NUMBER`/`BOOLEAN`/`DATE` and `null` for `SELECT`/`SOURCE_OPTION`/`SOURCE_OPTIONS`/
    `SOURCE_MAP`/`CHOICE_RULES`/`CHOICE_FALLBACK` — a real, not merely incidental, boundary: those
@@ -229,3 +232,84 @@ subsection under "The typed variable system", plus the Planned/deferred and Rela
 `resources/js/next/docs/pages/WorkflowsPage.vue` ("The typed variable system" and "Frontend module"
 sections), and `resources/js/next/ui/editor/README.md` ("Variable pipeline (shared editor)") for the
 full wire contract and in-app docs mirror this phase shipped.
+
+---
+
+## Addendum (2026-07-23) — Phase 4b: EVERY argument control accepts a variable
+
+Phase 4 (above) shipped a value-typed-only gate: `variableValueType()` returned a matching
+`WorkflowVariableType` for `TEXT`/`NUMBER`/`BOOLEAN`/`DATE` and `null` — meaning LITERAL-ONLY — for
+`SELECT`/`SOURCE_OPTION`/`SOURCE_OPTIONS`/`SOURCE_MAP`/`CHOICE_RULES`/`CHOICE_FALLBACK`, reasoning
+that those controls' allowed values are constrained to a source/destination field's fixed option set
+a runtime variable's value could not be checked against ahead of time. A follow-up batch **widens
+this: every operation-argument control — including the option/map/rules controls above — now
+accepts a variable.** This addendum **supersedes Decision 1** above. Decisions 2-8 (the
+executor-stays-pure split, the depth cap, injection safety, the write-time `$refCtx`/`$argDepth`
+threading, the frontend slot mechanism, the byte-identical-literal regression anchor, and the known
+parent-Save-gate follow-up) all stand **unchanged** — this batch only widens WHICH controls are
+eligible, not HOW an eligible one is validated, resolved, or rendered.
+
+9. **`WorkflowOperationArgType::variableValueType()` is REMOVED and replaced by
+   `argVariablePolicy(): ArgVariablePolicy`** (`app/modules/Workflows/DTOs/ArgVariablePolicy.php`,
+   new) — the SAME single source both the write-validator and the runtime resolver read, now
+   returning TWO facets instead of one nullable type: `$refTypes` (the `WorkflowVariableType`s a ref
+   — and its sub-pipeline terminal, when it carries one — may declare at WRITE time; `null` =
+   STRUCTURAL) and `$coerceTo` (the type a resolved value is coerced to before the pure executor
+   reads it; `null` = STRUCTURAL pass-through). The two nulls always coincide, enforced by
+   `ArgVariablePolicy`'s three named constructors (`value()`, `option()`/`options()`,
+   `structural()`) — there is no "loose write gate but scalar coercion" state. Per category:
+   - **VALUE** (text/number/boolean/date) — `ArgVariablePolicy::value($type)`: unchanged from
+     Decision 1 — a strict single-type ref/terminal/coercion.
+   - **single-OPTION** (select/sourceOption/choiceFallback) — `ArgVariablePolicy::option()`: a ref
+     typed `enum` OR `text` (a value that stringifies to an option key), coerced to a string (ENUM).
+     Option-SET membership is UNVERIFIABLE at write time (the option set is a source/destination
+     field's own list, not part of the static arg descriptor), so it is deferred to RUNTIME fail-soft
+     — an out-of-set value falls to the op's existing not-found/fallback behaviour, never a crash.
+   - **multi-OPTION** (sourceOptions) — `ArgVariablePolicy::options()`: a ref typed `multi`, coerced
+     to an array; per-element membership is likewise a runtime fail-soft concern.
+   - **STRUCTURAL** (sourceMap/choiceRules) — `ArgVariablePolicy::structural()`: the flat variable
+     type vocabulary cannot express a `{option: target}` map or a `{when, then}` rule list, so the
+     ref is gated LOOSELY (whitelisted root + present in the reference index — no type-equality
+     check) and the exact shape is deferred entirely to runtime fail-soft (the executor's existing
+     map/rules reader already fail-softs on a malformed value — untouched by this addendum).
+   `WorkflowConditionTreeValidator::validateArgVariableRef()` and
+   `WorkflowVariableResolver::resolveArgVariable()` both branch on `$policy->isStructural()` as their
+   ONE new decision point; everything else in the write-walk / pre-resolution machinery Decisions 2
+   and 5 built is unchanged.
+
+10. **A STRUCTURAL arg-variable supplies the WHOLE map/rule-list from ONE reference — it never gets a
+    sub-pipeline, because no operation BUILDS a structure.**
+    `WorkflowVariableResolver::resolveStructuralArgVariable()` reads the ref's whitelisted path and
+    hands the raw context value straight to the executor's map/rules reader when it is an array, else
+    `null` (→ that reader's own pre-existing fail-soft). `WorkflowConditionTreeValidator::validateArgVariable()`
+    stops at the loose ref check for a structural policy — no sub-pipeline is type-flowed, because
+    the write-side gate has nothing to type-flow FROM (a map/rule-list is not one of the seven flat
+    `WorkflowVariableType`s a pipeline can start from).
+
+11. **The frontend mirror is `operationHelpers.ts`'s `argVariablePolicy()` (+ a new `isStructuralArg()`
+    helper), case-for-case identical to the backend's match, and `PipelineArgLiteralInput.vue` becomes
+    the ONE literal control for every arg kind.** Phase 4a extracted the value-typed controls
+    (text/number/boolean/date) into `PipelineArgLiteralInput.vue` verbatim; this batch ADDS the
+    option/map/rules controls (select/sourceOption/sourceOptions/sourceMap/choiceRules/choiceFallback)
+    to the SAME component, so `VariablePipelineEditor.vue` no longer inlines any literal control
+    itself — every arg (value or option/structural) renders through `PipelineArgLiteralInput` when
+    literal, or through the host's `#argVariable` slot when variable (still gated by
+    `depth < MAX_ARG_VARIABLE_DEPTH`, unchanged from Decision 6). The arg-variable PICKER offers the
+    FULL show-all variable pool for EVERY arg — the same pool the field-level picker uses — rather
+    than a type-prefiltered list: type-appropriateness is enforced by the terminal gate
+    (`argResultTypes()` in `ValueOrVariableField.vue`, empty for a structural arg — no filter) plus
+    the existing mismatch skin, never by hiding variables from the picker. A STRUCTURAL arg's
+    recursive field gets NO operations catalog (`argOperationsCatalog()` returns `[]` for it) — a
+    plain pick-a-variable chip with no ops modal, since there is no sub-pipeline to build.
+
+**Consequence of this addendum.** Decision 6's `#argVariable` slot mechanism is UNCHANGED in shape;
+only the SET of arg kinds that can reach it grew. Every config saved under the phase-4a (value-only)
+gate keeps validating and resolving identically — this is a pure WIDENING of what is ACCEPTED, not a
+change to any previously-accepted shape (no new test asserts different behavior for a
+text/number/boolean/date arg-variable; the widening tests target the newly-eligible option/structural
+controls only).
+
+See `docs/backend/workflows-api.md` ("Operation arguments as variables") and
+`resources/js/next/docs/pages/WorkflowsPage.vue` ("The typed variable system" / "Frontend module")
+for the updated wire contract and in-app docs mirror, and `resources/js/next/ui/editor/README.md`
+("Variable pipeline") for the component-level description.

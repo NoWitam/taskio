@@ -1852,7 +1852,7 @@ export const en = {
       setCondition: 'Set condition…',
       condition: 'Condition',
       conditionValid: 'Condition is valid',
-      conditionInvalid: 'Condition is invalid (must be a boolean)',
+      conditionInvalid: 'Condition is invalid — it must return a Condition.',
       operationsCount: '{count} op.',
       kindIf: 'IF',
       kindElseIf: 'ELSE IF',
@@ -1863,9 +1863,9 @@ export const en = {
       conditionVariable: 'Condition variable',
       selectVariable: 'Select a variable',
       noVariables: 'Add variables to build conditions.',
-      mustBeBoolean: 'The condition must end with a boolean type.',
-      valid: 'The condition returns a boolean.',
-      invalid: 'Reach a boolean result by choosing a variable and operations.',
+      mustBeBoolean: 'The condition must return a Condition.',
+      valid: 'The condition returns a Condition.',
+      invalid: 'Reach a Condition result by choosing a variable and operations.',
       saveCondition: 'Save condition',
       cancel: 'Cancel',
     },
@@ -2840,7 +2840,7 @@ export const en = {
       clearedOnFormChange: 'Conditions were cleared because the form changed.',
       validation: {
         incomplete: 'Finish this condition or remove it.',
-        treeIncomplete: 'Finish every condition so each returns a yes/no result.',
+        treeIncomplete: 'Finish every condition so each returns a Condition result.',
       },
       missingPathHint: 'If a submission doesn’t include a field, that condition fails (it reads as “no”).',
       betweenFrom: 'From',
@@ -2868,9 +2868,9 @@ export const en = {
         fieldLabel: 'Field',
         fieldPlaceholder: 'Choose a field',
         noFields: 'This form has no fields to build conditions on.',
-        mustBeBoolean: 'Build the check until it returns a yes/no result.',
+        mustBeBoolean: 'Build the check until it returns a Condition result.',
         ready: 'The condition is ready.',
-        notReady: 'Keep going until the check returns a yes/no result.',
+        notReady: 'Keep going until the check returns a Condition result.',
         save: 'Save condition',
         cancel: 'Cancel',
         resetTitle: 'Change the field?',
@@ -3051,6 +3051,12 @@ export const en = {
         size: 'Size',
         url: 'URL',
       },
+      // Type-icon MODIFIERS (§refinement 3): a variable that may be empty (nullable) or is a
+      // collection (array) carries a small marker on its type icon — these are its tooltips.
+      marker: {
+        optional: 'Optional — may be empty',
+        list: 'List of values',
+      },
     },
     // Workspace GLOBALS (Phase 3) — user-authored typed literal constants surfaced as
     // `globals.<key>` variables in every workflow.
@@ -3067,7 +3073,7 @@ export const en = {
       base: {
         text: 'Text',
         number: 'Number',
-        boolean: 'Yes / No',
+        boolean: 'Condition',
         date: 'Date',
         enum: 'Choice',
         object: 'Object',
@@ -3192,6 +3198,13 @@ export const en = {
       needsChoice: 'map it to one of this field’s choices',
       defaultLabel: 'Default when empty',
       defaultPlaceholder: 'Value to use when empty',
+      defaultHint: 'Used when this variable resolves to nothing at run time.',
+      defaultNone: 'No default',
+      noVariables: 'No variables available',
+      variableTreeLabel: 'Variables',
+      toggleGroup: 'Expand or collapse {name}',
+      argVariableMapping: 'Use a variable for the whole mapping',
+      argVariableRules: 'Use a variable for the whole rule set',
     },
     runs: {
       refresh: 'Refresh',

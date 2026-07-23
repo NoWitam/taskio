@@ -91,7 +91,7 @@ describe('WorkflowConditionModal', () => {
   it('a non-boolean pipeline (enum_to_text) blocks Save', () => {
     const wrapper = mountModal(seeded([step('enum_to_text', { mapping: {} }, 'text')]));
     expect(saveButton()?.disabled).toBe(true);
-    expect(document.body.textContent).toContain('Keep going until the check returns a yes/no result.');
+    expect(document.body.textContent).toContain('Keep going until the check returns a Condition result.');
     wrapper.unmount();
   });
 

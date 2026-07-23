@@ -4,10 +4,12 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
+use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workflows\Models\WorkflowGlobal;
 use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
 use App\Modules\Workspaces\Models\Workspace;
+use Database\Factories\WorkflowGlobalFactory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -105,6 +107,126 @@ class WorkflowGlobalCatalogTest extends TestCase
         $typeMap = $this->catalog()->runtimeTypeMap($workflow);
         $this->assertArrayHasKey('globals.budzet', $typeMap);
         $this->assertSame('number', $typeMap['globals.budzet']->value);
+    }
+
+    // ---- OBJECT globals: subfield paths (phase-2c) ----------------------------
+    //
+    // An object global is SELF-CONTAINED: unlike a form section (whose leaves are also emitted as flat
+    // `section.leaf` variables) its interior lives only inside the descriptor. The editor's picker tree
+    // expands `descriptor.fields` into pickable `globals.<key>.<sub>` refs, so the write-validation
+    // reference index + the runtime type map must know those paths — otherwise a valid pick 422s.
+
+    /**
+     * The descriptor `fields` of the `firma` object global: a scalar of each kind, an enum, an
+     * array<text>, a NESTED object (geo) and an array<object> element list (kontakty — a repeater,
+     * whose interior stays non-referenceable).
+     *
+     * @return array<int, array{key: string, label: string, descriptor: array<string, mixed>}>
+     */
+    private function companyFields(): array
+    {
+        return [
+            WorkflowGlobalFactory::field('miasto', WorkflowVariableType::TEXT->descriptor()),
+            WorkflowGlobalFactory::field('pracownicy', WorkflowVariableType::NUMBER->descriptor()),
+            WorkflowGlobalFactory::field('zalozona', WorkflowVariableType::DATE->descriptor()),
+            WorkflowGlobalFactory::field('branza', WorkflowVariableType::ENUM->descriptor([
+                ['key' => 'it', 'label' => 'IT'],
+                ['key' => 'media', 'label' => 'Media'],
+            ])),
+            WorkflowGlobalFactory::field('tagi', WorkflowVariableType::TEXT->descriptor(array: true)),
+            WorkflowGlobalFactory::field('geo', WorkflowVariableType::OBJECT->descriptor(fields: [
+                WorkflowGlobalFactory::field('lat', WorkflowVariableType::NUMBER->descriptor()),
+                WorkflowGlobalFactory::field('lng', WorkflowVariableType::NUMBER->descriptor()),
+            ], array: false)),
+            WorkflowGlobalFactory::field('kontakty', WorkflowVariableType::OBJECT->descriptor(fields: [
+                WorkflowGlobalFactory::field('email', WorkflowVariableType::TEXT->descriptor()),
+            ], array: true)),
+        ];
+    }
+
+    /** The literal matching companyFields(). @return array<string, mixed> */
+    private function companyValue(): array
+    {
+        return [
+            'miasto' => 'Warszawa',
+            'pracownicy' => 12,
+            'zalozona' => '2019-04-01',
+            'branza' => 'it',
+            'tagi' => ['#ai'],
+            'geo' => ['lat' => 52.23, 'lng' => 21.01],
+            'kontakty' => [['email' => 'kontakt@taskio.test']],
+        ];
+    }
+
+    private function createCompanyGlobal(User $user): WorkflowGlobal
+    {
+        return WorkflowGlobal::factory()
+            ->object('firma', $this->companyFields(), $this->companyValue())
+            ->create(['creator_id' => $user->id, 'name' => 'Firma']);
+    }
+
+    public function test_object_global_subfields_are_known_references_in_the_index_and_type_map(): void
+    {
+        $user = User::factory()->create();
+        $this->createCompanyGlobal($user);
+
+        $index = $this->catalog()->referenceIndex(WorkflowTriggerType::SCHEDULE, null, []);
+        $workflow = Workflow::factory()->scheduled()->create(['creator_id' => $user->id]);
+        $typeMap = $this->catalog()->runtimeTypeMap($workflow);
+
+        // The whole-object entry is UNCHANGED: degraded to text (never `object`).
+        $this->assertSame('text', $index['globals.firma']['type']->value);
+        $this->assertSame('text', $typeMap['globals.firma']->value);
+
+        // Every declared subfield is a known reference carrying its own flat type — recursively.
+        $expected = [
+            'globals.firma.miasto' => 'text',
+            'globals.firma.pracownicy' => 'number',
+            'globals.firma.zalozona' => 'date',
+            'globals.firma.branza' => 'enum',
+            // An array<text> rides `multi` on the flat wire (the descriptor keeps the element base).
+            'globals.firma.tagi' => 'multi',
+            // A nested container degrades to text exactly like its parent, and RECURSES.
+            'globals.firma.geo' => 'text',
+            'globals.firma.geo.lat' => 'number',
+            'globals.firma.geo.lng' => 'number',
+            // The array<object> field itself is referenceable (as a degraded container).
+            'globals.firma.kontakty' => 'text',
+        ];
+
+        foreach ($expected as $path => $type) {
+            $this->assertArrayHasKey($path, $index, $path . ' must be write-validatable');
+            $this->assertSame($type, $index[$path]['type']->value, $path . ' index type');
+            $this->assertArrayHasKey($path, $typeMap, $path . ' must be typed at runtime');
+            $this->assertSame($type, $typeMap[$path]->value, $path . ' runtime type');
+        }
+
+        // A REPEATER's ELEMENT subfield stays non-referenceable (per-element access is the deferred
+        // R2 loop) — at every nesting level, exactly like a form repeater's element.
+        $this->assertArrayNotHasKey('globals.firma.kontakty.email', $index);
+        $this->assertArrayNotHasKey('globals.firma.kontakty.email', $typeMap);
+    }
+
+    public function test_object_global_subfields_add_no_new_catalog_variables(): void
+    {
+        $user = User::factory()->create();
+        $this->createCompanyGlobal($user);
+
+        // The editor builds its picker children from `descriptor.fields`, so this is an INDEX /
+        // type-map widening ONLY: the flat `variables[]` contract still carries ONE entry per global.
+        $variables = $this->catalog()->forContext(null)['variables'];
+
+        $global = $this->variableByPath($variables, 'globals.firma');
+        $this->assertNotNull($global);
+        $this->assertNull($this->variableByPath($variables, 'globals.firma.miasto'));
+        $this->assertNull($this->variableByPath($variables, 'globals.firma.geo.lat'));
+
+        // …and the descriptor the FE expands is untouched (base object + the ordered field keys).
+        $this->assertSame('object', $global['descriptor']['base']);
+        $this->assertSame(
+            ['miasto', 'pracownicy', 'zalozona', 'branza', 'tagi', 'geo', 'kontakty'],
+            array_column($global['descriptor']['fields'], 'key'),
+        );
     }
 
     public function test_global_values_map_returns_the_stored_literals(): void

@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   descriptorBaseToType,
   editorPrimitive,
+  flattenPickerNodes,
   isIdVariable,
   positionScopedStepOutputs,
   resolveVariable,
@@ -17,7 +18,9 @@ import {
   toEditorVariablesTyped,
   triggerSystemVariables,
   variableIcon,
+  variableNodeIcon,
   variableOptionList,
+  variablePickerTree,
   variablesOfType,
   type StepLike,
 } from '../workflowVariables';
@@ -730,5 +733,99 @@ describe('structural descriptors — file subfields / section / repeater (phase-
     expect(() => variablesOfType(catalog, [], 0, 'text')).not.toThrow();
     // The empty section is dropped (no whole-object entry surfaces).
     expect(toEditorVariablesTyped(catalog, [], 0)).toEqual([]);
+  });
+});
+
+describe('variablePickerTree — the expandable picker tree (§refinement 5)', () => {
+  it('nests a file composite: the whole-file entry is expandable, its flat subfields become children', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.attachment', name: 'Attachment', type: 'file',
+        descriptor: { base: 'file', nullable: false, array: false, fields: [] },
+      },
+      { source: 'trigger', path: 'trigger.fields.attachment.name', name: 'Attachment › Name', type: 'text' },
+      { source: 'trigger', path: 'trigger.fields.attachment.size', name: 'Attachment › Size', type: 'number' },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(1); // ONE root (the file); the subfields nest under it
+    const file = tree[0];
+    expect(file.variable.path).toBe('trigger.fields.attachment');
+    expect(file.selectable).toBe(true); // the whole file is pickable
+    expect(file.children?.map((c) => c.variable.path)).toEqual([
+      'trigger.fields.attachment.name',
+      'trigger.fields.attachment.size',
+    ]);
+    // Picking a child still emits the composed path + its scalar type (byte-identical ref).
+    const nameChild = file.children!.find((c) => c.variable.path.endsWith('.name'))!;
+    expect(nameChild.variable).toMatchObject({ source: 'trigger', type: 'text' });
+    expect(nameChild.selectable).toBe(true);
+  });
+
+  it('expands an object global from its descriptor.fields (no flat children exist)', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'globals', path: 'globals.address', name: 'Globals › Address', type: 'text',
+        descriptor: {
+          base: 'object', nullable: false, array: false,
+          fields: [{ key: 'city', label: 'City', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(1);
+    expect(tree[0].selectable).toBe(true); // a global is self-contained → pickable whole
+    expect(tree[0].children).toHaveLength(1);
+    expect(tree[0].children![0].variable).toMatchObject({
+      source: 'globals', path: 'globals.address.city', type: 'text',
+    });
+  });
+
+  it('keeps a repeater as a single NON-expandable list entry (per-element access deferred)', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.items', name: 'Items (list)', type: 'text',
+        descriptor: {
+          base: 'object', nullable: false, array: true,
+          fields: [{ key: 'item_name', label: 'Item name', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(1);
+    expect(tree[0].children).toBeUndefined(); // NOT expandable
+    expect(tree[0].selectable).toBe(true);
+    expect(tree[0].variable.descriptor?.array).toBe(true); // drives the §3 list marker
+  });
+
+  it('a trigger SECTION container (were it offered) expands but is NOT itself selectable', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.details', name: 'Details', type: 'text',
+        descriptor: {
+          base: 'object', nullable: false, array: false,
+          fields: [{ key: 'note', label: 'Note', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree[0].selectable).toBe(false); // a whole section resolves to a map → not pickable
+    expect(tree[0].children).toHaveLength(1);
+  });
+
+  it('passes plain leaves through unchanged (a no-op for a non-structural catalog)', () => {
+    const flat: CatalogVariable[] = [
+      { source: 'trigger', path: 'fields.name', name: 'Name', type: 'text' },
+      { source: 'trigger', path: 'fields.count', name: 'Count', type: 'number' },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(2);
+    expect(tree.every((n) => n.selectable && !n.children)).toBe(true);
+    expect(flattenPickerNodes(tree)).toHaveLength(2);
+  });
+
+  it('variableNodeIcon prefers the object base (braces) over the degraded flat text type', () => {
+    expect(variableNodeIcon({ type: 'text', descriptor: { base: 'object', nullable: false, array: false } })).toBe('braces');
+    expect(variableNodeIcon({ type: 'file' })).toBe(variableIcon('file'));
+    expect(variableNodeIcon({ type: 'number' })).toBe('hash');
   });
 });

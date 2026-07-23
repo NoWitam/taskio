@@ -148,7 +148,7 @@ class WorkflowVariableCatalogService
 
         if ($triggerType instanceof WorkflowTriggerType) {
             foreach ($this->triggerSystemVariables($triggerType) as $variable) {
-                $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']));
+                $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['descriptor'] ?? null);
             }
 
             if ($triggerType === WorkflowTriggerType::FORM_SUBMITTED) {
@@ -157,7 +157,7 @@ class WorkflowVariableCatalogService
 
                 if ($form !== null) {
                     foreach ($this->formFieldVariables($form) as $variable) {
-                        $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']));
+                        $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['descriptor'] ?? null);
                     }
                 }
             }
@@ -171,27 +171,32 @@ class WorkflowVariableCatalogService
         // present (form-independent). Lets a directive / if-block pipeline on a `globals.<key>`
         // recover the global's REAL base type (not the degraded editor primitive on the wire).
         foreach ($this->globalVariables() as $variable) {
-            $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']));
+            $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['descriptor'] ?? null);
         }
 
         return $map;
     }
 
     /**
-     * Add one path → type entry to the runtime type map, PLUS a FILE variable's composite subfield paths
-     * (phase-2b), so a directive / if-block pipeline on a `<file>.name` / `.size` recovers the SUBFIELD's
-     * real base type by path (not the whole-file `file`, nor the first-op fallback). Built from the SAME
-     * source as the write-side reference index (fileSubfieldTypeMap), keeping the two maps aligned — as
+     * Add one path → type entry to the runtime type map, PLUS the variable's DESCRIPTOR subfield paths
+     * (a FILE composite's `<file>.name` / `.size`, an OBJECT container's declared fields — see
+     * descriptorSubfieldTypeMap), so a directive / if-block pipeline on a subfield recovers the
+     * SUBFIELD's real base type by path (not the degraded container type, nor the first-op fallback).
+     * Built from the SAME source as the write-side reference index, keeping the two maps aligned — as
      * they already are for the container paths.
      *
+     * A subfield NEVER overwrites an entry an earlier (flat) variable already owns: a form section's
+     * leaves are emitted flat by formFieldVariables and keep their own authoritative entry.
+     *
      * @param  array<string, WorkflowVariableType>  $map
+     * @param  array<string, mixed>|null  $descriptor  the variable's structured descriptor, when it has one
      */
-    private function addTypeMapEntry(array &$map, string $path, WorkflowVariableType $type): void
+    private function addTypeMapEntry(array &$map, string $path, WorkflowVariableType $type, ?array $descriptor = null): void
     {
         $map[$path] = $type;
 
-        foreach ($this->fileSubfieldTypeMap($path, $type) as $subPath => $subType) {
-            $map[$subPath] = $subType;
+        foreach ($this->descriptorSubfieldTypeMap($path, $type, $descriptor) as $subPath => $subType) {
+            $map[$subPath] ??= $subType;
         }
     }
 
@@ -210,13 +215,13 @@ class WorkflowVariableCatalogService
 
         if ($triggerType !== null) {
             foreach ($this->triggerSystemVariables($triggerType) as $variable) {
-                $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null);
+                $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
             }
         }
 
         if ($form !== null) {
             foreach ($this->formFieldVariables($form) as $variable) {
-                $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null);
+                $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
             }
         }
 
@@ -228,31 +233,51 @@ class WorkflowVariableCatalogService
         // variable pipeline targeting a `globals.<key>` write-validates against the global's type +
         // option list — the same gate a trigger/step reference passes.
         foreach ($this->globalVariables() as $variable) {
-            $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null);
+            $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
         }
 
         return $index;
     }
 
     /**
-     * Add one variable's reference-index entry {type, enumOptions} at $path, PLUS — for a FILE variable
-     * — its composite subfield leaf entries (phase-2b, append-only). A `<file>.{id,name,type,size,url}`
-     * subfield is a plain scalar (text, size=number) referenceable in its own right, so a pipeline-bearing
-     * subfield ref (e.g. a text op on `<file>.name`) write-validates and type-flows from the SUBFIELD's
-     * type instead of being rejected as an unknown path. The container entry itself is unchanged. A
-     * non-file type adds no subfields; REPEATER element subfields are intentionally NOT enumerated
-     * (per-element access is the deferred R2 loop), so a repeater-element ref stays unknown → rejected.
+     * Add one variable's reference-index entry {type, enumOptions} at $path, PLUS the SUBFIELD leaf
+     * entries its DESCRIPTOR declares (append-only — see descriptorSubfieldTypeMap): a FILE composite's
+     * `<file>.{id,name,type,size,url}` (phase-2b) and an OBJECT container's own `fields` (phase-2c).
+     * Each is a referenceable value in its own right, so a subfield ref — plain, pipeline-bearing, or as
+     * an op ARGUMENT — write-validates and type-flows from the SUBFIELD's type instead of being rejected
+     * as an unknown path. The container entry itself is unchanged.
+     *
+     * A subfield NEVER overwrites an entry an earlier (flat) variable already owns: a form SECTION emits
+     * its leaves as flat `section.leaf` variables in the pass BEFORE its container entry, so those keep
+     * their own richer entry (their enumOptions) and are not re-emitted from the descriptor.
      *
      * @param  array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>  $index
      * @param  array<int, string>|null  $enumOptions
+     * @param  array<string, mixed>|null  $descriptor  the variable's structured descriptor, when it has one
      */
-    private function addReferenceEntry(array &$index, string $path, WorkflowVariableType $type, ?array $enumOptions): void
+    private function addReferenceEntry(array &$index, string $path, WorkflowVariableType $type, ?array $enumOptions, ?array $descriptor = null): void
     {
         $index[$path] = ['type' => $type, 'enumOptions' => $enumOptions];
 
-        foreach ($this->fileSubfieldTypeMap($path, $type) as $subPath => $subType) {
-            $index[$subPath] = ['type' => $subType, 'enumOptions' => null];
+        foreach ($this->descriptorSubfieldTypeMap($path, $type, $descriptor) as $subPath => $subType) {
+            $index[$subPath] ??= ['type' => $subType, 'enumOptions' => null];
         }
+    }
+
+    /**
+     * Every SUBFIELD path a variable's type + descriptor makes referenceable, as `path => flat type` —
+     * the ONE source both the write-validation reference index and the runtime type map enumerate from,
+     * so the two can never disagree (nor drift from what the resolver actually reads):
+     *   - a FILE composite's fixed {id,name,type,size,url} (fileSubfieldTypeMap),
+     *   - an OBJECT container's declared `fields`, recursively (objectSubfieldTypeMap).
+     * Anything else adds nothing.
+     *
+     * @param  array<string, mixed>|null  $descriptor
+     * @return array<string, WorkflowVariableType>
+     */
+    private function descriptorSubfieldTypeMap(string $path, WorkflowVariableType $type, ?array $descriptor): array
+    {
+        return $this->fileSubfieldTypeMap($path, $type) + $this->objectSubfieldTypeMap($path, $descriptor);
     }
 
     /**
@@ -277,6 +302,71 @@ class WorkflowVariableCatalogService
         }
 
         return $map;
+    }
+
+    /**
+     * The `<object>.<key>` PATH → flat-type entries an OBJECT container's descriptor declares, RECURSING
+     * into nested containers (phase-2c). Mirrors fileSubfieldTypeMap exactly: it only widens which PATHS
+     * are known — no new catalog `variables[]` entry is emitted (the editor already builds its picker
+     * children from `descriptor.fields`).
+     *
+     * This is what makes an object GLOBAL's subfield (`globals.address.city`) a KNOWN reference: unlike a
+     * form section — whose leaves are ALSO emitted flat by formFieldVariables — a global object is
+     * self-contained, so its interior existed only inside the descriptor. The runtime already resolves
+     * these paths (a plain whitelisted Arr::get over the injected `globals` map), so this closes the
+     * write-side gap without touching the resolver. Each child's type is the flat wire type recovered
+     * from its own descriptor (fromDescriptor → flatType), so a nested container degrades to text exactly
+     * like its parent and nothing downstream can ever receive `object`.
+     *
+     * NOT recursed for a REPEATER (`object` + `array:true`): per-element access is the deferred R2 loop,
+     * so a repeater's element subfield stays unknown → rejected at write, at every nesting level. The
+     * repeater's own path is still enumerated (as a degraded text container), like every other child.
+     * Fail-soft on a malformed stored descriptor: a field without a safe key / child descriptor is
+     * skipped rather than throwing.
+     *
+     * @param  array<string, mixed>|null  $descriptor
+     * @return array<string, WorkflowVariableType>
+     */
+    private function objectSubfieldTypeMap(string $path, ?array $descriptor): array
+    {
+        if (!$this->isObjectContainer($descriptor)) {
+            return [];
+        }
+
+        $map = [];
+
+        foreach ($descriptor['fields'] as $field) {
+            $key = is_array($field) ? ($field['key'] ?? null) : null;
+            $childDescriptor = is_array($field) && is_array($field['descriptor'] ?? null) ? $field['descriptor'] : null;
+
+            if (!is_string($key) || $key === '' || $childDescriptor === null) {
+                continue;
+            }
+
+            $childPath = $path . '.' . $key;
+            $childType = $this->flatType(WorkflowVariableType::fromDescriptor($childDescriptor));
+
+            $map[$childPath] = $childType;
+            $map += $this->descriptorSubfieldTypeMap($childPath, $childType, $childDescriptor);
+        }
+
+        return $map;
+    }
+
+    /**
+     * Whether a descriptor is a NON-ARRAY object container carrying `fields` — the only shape whose
+     * interior is referenceable (an `array:true` object is a repeater: per-element access is deferred).
+     * Matches the editor's own picker-tree rule (isObjectContainer in workflowVariables.ts), so what the
+     * tree offers is exactly what the index accepts.
+     *
+     * @param  array<string, mixed>|null  $descriptor
+     */
+    private function isObjectContainer(?array $descriptor): bool
+    {
+        return $descriptor !== null
+            && ($descriptor['base'] ?? null) === WorkflowVariableType::OBJECT->value
+            && ($descriptor['array'] ?? false) !== true
+            && is_array($descriptor['fields'] ?? null);
     }
 
     /**

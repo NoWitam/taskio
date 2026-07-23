@@ -141,7 +141,10 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > (`File::serveUrl()` → the access-controlled `disk.show` route, never a raw storage path). All 5
 > subfield paths are individually referenceable, including as PIPELINE-bearing references (the
 > write-validation reference index now enumerates them); a repeater's element subfields are
-> deliberately NOT. This is REPRESENTATION ONLY — looping a repeater or a multi-file answer is
+> deliberately NOT. (A LATER batch extends this SAME mechanism to a non-array `object` descriptor's
+> own declared fields too — recursively, e.g. a Phase-3 global's interior — leaving the
+> repeater/array boundary exactly as stated here; see "Structural descriptor" below.) This is
+> REPRESENTATION ONLY — looping a repeater or a multi-file answer is
 > explicitly out of scope, deferred to R2-Generator. See
 > **ADR-0023-workflows-variable-typesystem-phase2.md** for the full design record (including why
 > this is a DIFFERENT slice of work than the "Phase 2" items ADR-0022 deferred) and "Structural
@@ -1659,6 +1662,37 @@ variable, `422`.
   "pipeline": [{ "op": "text_uppercase", "args": [] }] }
 ```
 
+**Update (a later batch): non-array OBJECT descriptor fields join the SAME mechanism, recursively.**
+`descriptorSubfieldTypeMap()` — the single source `addReferenceEntry()`/`addTypeMapEntry()` both
+call — is now `fileSubfieldTypeMap() + objectSubfieldTypeMap()`. The new
+`objectSubfieldTypeMap()` walks a **non-array** `object` descriptor's own declared `fields`
+RECURSIVELY into `<path>.<key>` entries, guarded by `isObjectContainer($descriptor)`
+(`base === 'object' && array !== true`) — the identical rule the editor's picker tree
+(`isObjectContainer()` in `workflowVariables.ts`) uses to decide what expands, so the two can never
+disagree. This reaches EVERY non-array object descriptor: a form SECTION's own container entry is
+now redundantly covered too (harmlessly — its pre-existing FLAT leaf entry always wins via the
+existing `??=` dedupe guard, so it keeps its `enumOptions`), and — the practical unlock — a
+Phase-3 `globals.<key>` object's interior, which has NO separate flat-leaf pass at all (see "The
+`globals` root" below). Recursion STOPS the instant it reaches an `array:true` object descriptor
+(a REPEATER), so a repeater's element subfields remain UNREFERENCEABLE at every nesting depth,
+exactly as stated above — this update widens the non-array case only. A descriptor-derived
+subfield entry — FILE or OBJECT — carries NO `enumOptions`, an accepted limitation unchanged from
+the file-subfield case. See
+**ADR-0023-workflows-variable-typesystem-phase2.md**'s addendum for the full record.
+
+```json
+{ "source": "globals", "path": "globals.address", "name": "Address", "type": "text",
+  "descriptor": { "base": "object", "nullable": false, "array": false,
+    "fields": [
+      { "key": "city", "label": "city", "descriptor": { "base": "text", "nullable": false, "array": false } }
+    ] } }
+```
+
+`globals.address.city` is now a KNOWN `text` entry in `referenceIndex()`/`runtimeTypeMap()` (it was
+not, before this update) — a value-or-variable pipeline may target it with full write-time
+type-checking, exactly like `globals.address` itself; the runtime needed no change (a plain
+whitelisted `Arr::get` over the injected `globals` map already resolved it).
+
 **Frontend consumption.** The editor's variable picker (`expandVariables()` in
 `workflowVariables.ts`, feeding `toEditorVariables`/`toEditorVariablesTyped`/`variablesOfType`)
 expands a FILE composite into its unchanged whole-file entry PLUS one pickable per subfield (path
@@ -1751,19 +1785,32 @@ by `WorkflowGlobalCrudTest::test_a_value_carrying_a_nul_byte_is_rejected` (write
 `WorkflowVariableResolverTest::test_a_global_value_with_reference_like_bytes_is_not_re_interpreted`
 (resolve-time, using a fixture literally named `globals.evil`).
 
+**Update (a later batch): an OBJECT global's own declared fields are now referenceable too.** At
+Phase 3 ship time, only a global's TOP-LEVEL `globals.<key>` path was indexed — an `object`-based
+global's own interior fields (`globals.address.city`) were not yet their own reference-index
+entries, even though the variable picker (once it grew an expandable tree — see "The typed variable
+system" → the arg-variables/Phase-4 area for the batch this shipped alongside) could already offer
+them for picking. `objectSubfieldTypeMap()` (see "Structural descriptor: object containers & the
+file composite" above) closes that gap: an object global's `descriptor.fields` are now enumerated
+recursively into the reference index and the runtime type map, so a value-or-variable pipeline may
+target `globals.address.city` with full write-time type-checking — the picker and the validator now
+agree on every node the picker can emit a ref for. See
+**ADR-0024-workflows-variable-typesystem-phase3-globals.md**'s addendum for the full record.
+
 See **ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full design record
 (including the LITERAL-only scoping decision, why `file`/`time` are excluded, and the deferred
 frontend authoring depth) and `resources/js/next/docs/pages/WorkflowsPage.vue` ("Workflow Globals",
 under "The typed variable system") for the in-app docs mirror.
 
-### Operation arguments as variables (Phase 4, additive — completes the rework)
+### Operation arguments as variables (Phase 4, additive — completes the rework; widened in a later "Phase 4b" batch)
 
-Any VALUE-TYPED operation argument — not just a field's own top-level value — may now ALSO be the
-SAME `{kind:'variable', ref, pipeline?, default?}` union a structured field's value already uses, in
-place of a constant literal, and RECURSIVELY (an argument's own `pipeline` may itself carry another
-such argument). `num_add`'s `value`, `date_add_days`'s `value`, `text_append`'s `value` (any `text` /
-`number` / `boolean` / `date` control) can now be pulled from `trigger`/`steps`/`globals` context
-instead of being typed once at authoring time:
+ANY operation argument — value-typed OR option/structural, not just a field's own top-level value —
+may now be the SAME `{kind:'variable', ref, pipeline?, default?}` union a structured field's value
+already uses, in place of a constant literal, and RECURSIVELY (an argument's own `pipeline` may
+itself carry another such argument). `num_add`'s `value`, `date_add_days`'s `value`,
+`text_append`'s `value`, but ALSO `enum_to_choice`'s `mapping`, `match_to_choice`'s `rules`/
+`fallback`, a `select`/`sourceOption` pick — every control — can now be pulled from
+`trigger`/`steps`/`globals` context instead of being typed once at authoring time:
 
 ```json
 { "op": "date_add_days", "args": { "value": {
@@ -1773,57 +1820,97 @@ instead of being typed once at authoring time:
 } } }
 ```
 
-`WorkflowOperationArgType::variableValueType()` is the single gate both sides read: `text|number|
-boolean|date` map to their matching type; `select`/`sourceOption`/`sourceOptions`/`sourceMap`/
-`choiceRules`/`choiceFallback` return `null` (LITERAL-ONLY — their allowed values are a fixed
-source/destination option set a runtime variable cannot be checked against ahead of time).
+```json
+{ "op": "enum_to_choice", "args": { "mapping": {
+  "kind": "variable",
+  "ref": { "source": "globals", "path": "globals.category_map", "type": "text" }
+} } }
+```
+
+**`WorkflowOperationArgType::argVariablePolicy(): ArgVariablePolicy` is the single gate both sides
+read** (`app/modules/Workflows/DTOs/ArgVariablePolicy.php`) — it REPLACED the earlier, narrower
+`variableValueType()`, which returned a type only for the four value controls and `null`
+(LITERAL-ONLY) for every option/map/rules/select control. `ArgVariablePolicy` carries two facets:
+`$refTypes` (the `WorkflowVariableType`s a ref/terminal may declare at WRITE time; `null` =
+STRUCTURAL) and `$coerceTo` (the RUNTIME coercion target; `null` = STRUCTURAL pass-through) — the
+two nulls always coincide, enforced by three named constructors (`value()`, `option()`/`options()`,
+`structural()`).
+
+| Arg control | `$refTypes` (write gate) | `$coerceTo` (runtime) |
+| --- | --- | --- |
+| `text` / `number` / `boolean` / `date` | its own one type (strict) | its own type — unchanged from phase 4a |
+| `select` / `sourceOption` / `choiceFallback` | `enum` \| `text` | `enum` (a string) — option-SET membership is a RUNTIME fail-soft concern, unverifiable at write time |
+| `sourceOptions` | `multi` | `multi` (an array) — per-element membership likewise deferred to runtime |
+| `sourceMap` / `choiceRules` | `null` — STRUCTURAL | `null` — the raw context array passes through untouched |
+
+A STRUCTURAL arg-variable supplies the WHOLE `{option: target}` map / `{when, then}` rule list from
+ONE reference — it never gets a sub-pipeline (no operation BUILDS a structure), so its "coercion" is
+simply handing the resolved ref's raw array value to the executor's existing map/rules reader
+(`WorkflowVariableResolver::resolveStructuralArgVariable()`), which already fail-softs on a
+malformed value exactly as it does for a malformed literal.
 
 **Runtime.** `WorkflowOperationExecutor` is completely UNCHANGED — it still only ever receives
-literal args. `WorkflowVariableResolver::resolvePipelineArgs()` pre-resolves every op's
-variable-shaped argument to a literal BEFORE the executor runs, at all three pipeline call sites (a
-`{kind:'variable'}` field's own pipeline, a text directive's pipeline, an if-block condition's
-pipeline) — via the SAME `resolveValueOrVariable()` a top-level field already uses (read the
-whitelisted ref, apply the argument's own pipeline, coerce to the argument's DECLARED type from
-`WorkflowOperation::argDescriptors()`). An unresolvable ref, a failed sub-pipeline, or nesting beyond
-the depth cap all resolve FAIL-SOFT to the argument's coerced `null` — the op then fails closed on
-the empty argument exactly as it already does for a malformed literal, never a crash. An unresolved
-variable union that somehow reached the executor directly (bypassing the resolver) also fails
-closed, never crashes, and never treats the union as a value — pinned by
+literal args (a STRUCTURAL arg's "literal" is the raw map/rule-list array itself).
+`WorkflowVariableResolver::resolvePipelineArgs()` pre-resolves every op's variable-shaped argument to
+a literal BEFORE the executor runs, at all three pipeline call sites (a `{kind:'variable'}` field's
+own pipeline, a text directive's pipeline, an if-block condition's pipeline) — a VALUE/OPTION
+argument goes through the SAME `resolveValueOrVariable()` a top-level field already uses (read the
+whitelisted ref, apply the argument's own pipeline, coerce via the policy's `$coerceTo`); a
+STRUCTURAL argument goes through `resolveStructuralArgVariable()` instead (no sub-pipeline, no
+coercion — the raw array or `null`). An unresolvable ref, a failed sub-pipeline, or nesting beyond
+the depth cap all resolve FAIL-SOFT (the policy's coerced `null` for VALUE/OPTION, bare `null` for
+STRUCTURAL) — the op then fails closed on the empty argument exactly as it already does for a
+malformed literal, never a crash. An unresolved variable union that somehow reached the executor
+directly (bypassing the resolver) also fails closed, never crashes, and never treats the union as a
+value — pinned by
 `WorkflowOperationExecutorTest::test_a_variable_union_arg_reaching_the_executor_fails_closed`.
 
 **Depth cap — the only bound needed, because there are no cycles.** An argument's `ref` can only
 point at CONTEXT DATA (`trigger`/`steps`/`globals`, the resolver's existing `ROOTS`), never at
 another argument's own definition, so a cycle is impossible by construction.
-`ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH = 3` gates both sides identically: the write validator
-`422`s a 4th nesting level under the deepest argument's own key
+`ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH = 3` gates both sides identically, for every category:
+the write validator `422`s a 4th nesting level under the deepest argument's own key
 (each extra level appends another `.pipeline.<m>.args.<key>`), and the runtime resolver fail-softs at
 the identical boundary — an author can never save a config the runtime would reject.
 
-**Write validation — literal-only in a condition-tree pipeline.**
+**Write validation — literal-only in a condition-tree pipeline; STRUCTURAL args skip the type-equality check.**
 `StoreWorkflowRequest`'s value-pipeline path (`create_task.deadline`/`.priority`,
 `create_form_report.submissions_from`/`.submissions_to` — the only pipeline that was already
-write-validated, see "d. Write-time validation" below) now validates an argument-variable with the
-SAME machinery a top-level ref gets: the ref must be a KNOWN entry in the reference index
-(`WorkflowVariableCatalogService::referenceIndex()`), its catalog type must equal the argument's
-declared type, and a present sub-pipeline is validated recursively, one level deeper. A
-CONDITION-TREE pipeline (the `form_submitted` trigger gate) stays LITERAL-only — the validator only
-accepts an argument-variable when handed a reference index, and the condition-tree call site never
-supplies one, so a variable union there is rejected under the ordinary literal-shape checks. This is
-deliberate, mirroring the runtime: `WorkflowConditionEngine` (the trigger gate's evaluator) calls the
-executor DIRECTLY, with no resolver/pre-resolution pass at all — an argument-variable there is
-intentionally NOT wired, on EITHER side.
+write-validated, see "d. Write-time validation" below) validates an argument-variable with the SAME
+machinery a top-level ref gets: the ref must be a KNOWN entry in the reference index
+(`WorkflowVariableCatalogService::referenceIndex()`). For a VALUE/OPTION control its catalog type
+must equal the argument's accepted type(s), and a present sub-pipeline is validated recursively, one
+level deeper; for a STRUCTURAL control (`$policy->isStructural()`) the strict type-equality check is
+SKIPPED — a whitelisted + indexed ref is the whole gate, because the flat variable-type vocabulary
+cannot express a map/rule-list to check against, and no sub-pipeline is type-flowed (there is nothing
+to type-flow FROM). A CONDITION-TREE pipeline (the `form_submitted` trigger gate) stays LITERAL-only
+for EVERY control — the validator only accepts an argument-variable when handed a reference index,
+and the condition-tree call site never supplies one, so a variable union there is rejected under the
+ordinary literal-shape checks. This is deliberate, mirroring the runtime: `WorkflowConditionEngine`
+(the trigger gate's evaluator) calls the executor DIRECTLY, with no resolver/pre-resolution pass at
+all — an argument-variable there is intentionally NOT wired, on EITHER side, for any control.
 
-**Injection safety** is inherited, not re-invented: a resolved argument value is used literally by
-the executor and its output rides the SAME NUL-mask placeholder stash a resolved directive value
-already uses (see "Transitional flat `{{...}}` tokens" above) — an argument that resolves to a value
-containing `{{...}}`/`@[...]`-shaped bytes renders it verbatim, never re-interpreted, at any nesting
-level. Pinned by
+**Injection safety** is inherited, not re-invented: a resolved argument value — VALUE/OPTION scalar
+or STRUCTURAL array alike — is used literally by the executor and its output rides the SAME NUL-mask
+placeholder stash a resolved directive value already uses (see "Transitional flat `{{...}}` tokens"
+above) — an argument that resolves to a value containing `{{...}}`/`@[...]`-shaped bytes (at any
+depth inside a structural map/rule-list too) renders it verbatim, never re-interpreted, at any
+nesting level. Pinned by
 `WorkflowVariableResolverTest::test_arg_variable_value_with_reference_like_bytes_is_not_re_interpreted`.
 
-See **ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md** for the full design record —
-this COMPLETES the four-phase variable-typesystem rework (ADR-0021 → ADR-0022 → ADR-0023 →
-ADR-0024 → ADR-0025) — and `resources/js/next/docs/pages/WorkflowsPage.vue` ("The typed variable
-system" and "Frontend module" sections) for the in-app docs mirror.
+**Frontend.** `operationHelpers.ts`'s `argVariablePolicy()` (+ `isStructuralArg()`) mirrors the
+backend match case-for-case; `PipelineArgLiteralInput.vue` is now the SINGLE literal control for
+EVERY arg kind (value control, phase-4a's original scope, AND option/map/rules), so
+`VariablePipelineEditor.vue` no longer inlines any literal control of its own. The recursive
+arg-variable picker (`ValueOrVariableField.vue` filling the shared editor's `#argVariable` slot with
+itself) offers the FULL show-all variable pool for every arg, unfiltered by type — the terminal gate
+plus the mismatch skin enforce appropriateness, not the picker's contents — and a STRUCTURAL arg's
+recursive field gets no operations catalog at all (no sub-pipeline to build).
+
+See **ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md** (incl. its Phase 4b addendum)
+for the full design record — this COMPLETES the four-phase variable-typesystem rework (ADR-0021 →
+ADR-0022 → ADR-0023 → ADR-0024 → ADR-0025) — and `resources/js/next/docs/pages/WorkflowsPage.vue`
+("The typed variable system" and "Frontend module" sections) for the in-app docs mirror.
 
 ---
 
@@ -2875,7 +2962,11 @@ These are documented, reviewed trade-offs — not a TODO list.
   ADR-0023).** Only a form's TOP-LEVEL section/repeater gets its own catalog entry; a section
   nested inside a repeater (or vice versa) is visible only inside its parent's recursive
   `descriptor.fields`, with no flat leaf and no reference-index path — not referenceable at all,
-  not even as a whole object, until a real per-element loop context exists to give it one.
+  not even as a whole object, until a real per-element loop context exists to give it one. (This
+  is about the CONTAINER's own identity, unchanged by the later `objectSubfieldTypeMap()` update
+  above — a non-array container's individual DECLARED FIELDS are, since that update, indexed by
+  path one level down from wherever the container itself sits; only a REPEATER still blocks
+  everything beneath it, at every depth.)
 - **A global is LITERAL-only — no computed values, no cross-variable references, no cycle
   detection (Phase 3, ADR-0024).** `WorkflowGlobal` stores exactly a `descriptor` + a matching
   literal `value`; nothing reads `value` as an expression or a pointer to another global/trigger/
@@ -2990,23 +3081,28 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `resources/js/next/app/stores/workflowGlobals.ts` — list/CRUD store, invalidates every cached catalog after a mutation (Phase 3, frontend)
 - `docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md` — this phase's design record (LITERAL-only scope, the `globals` root, dual persistence, the authorable-type boundary, the NUL-reject injection invariant, the deferred FE authoring depth)
 - `app/modules/Workflows/Enums/ConditionTreeLimits.php` — `MAX_ARG_VARIABLE_DEPTH`, the one shared arg-variable nesting cap (Phase 4)
-- `app/modules/Workflows/Enums/WorkflowOperationArgType.php` — `variableValueType()`, the value-typed-only gate (Phase 4)
-- `app/modules/Workflows/Services/WorkflowVariableResolver.php` — `resolvePipelineArgs()`/`resolveStepArgs()`/`resolveArgVariable()`/`isVariableArg()`, the `argDepth`-threaded pre-resolution ahead of the executor (Phase 4)
-- `app/modules/Workflows/Services/WorkflowConditionTreeValidator.php` — `validateArgVariable()`/`validateArgVariableRef()`/`refFullPath()`, the `refCtx`/`argDepth`-threaded write validation (Phase 4)
+- `app/modules/Workflows/Enums/WorkflowOperationArgType.php` — `argVariablePolicy()`, the per-category gate (Phase 4; renamed from the value-typed-only `variableValueType()` in the Phase 4b widening)
+- `app/modules/Workflows/DTOs/ArgVariablePolicy.php` — the two-facet (`refTypes`/`coerceTo`) per-arg-control policy DTO `argVariablePolicy()` returns; `null`/`null` = STRUCTURAL (Phase 4b)
+- `app/modules/Workflows/Services/WorkflowVariableResolver.php` — `resolvePipelineArgs()`/`resolveStepArgs()`/`resolveArgVariable()`/`resolveStructuralArgVariable()`/`isVariableArg()`, the `argDepth`-threaded pre-resolution ahead of the executor (Phase 4; `resolveStructuralArgVariable()` added in Phase 4b)
+- `app/modules/Workflows/Services/WorkflowConditionTreeValidator.php` — `validateArgVariable()`/`validateArgVariableRef()`/`refFullPath()`, the `refCtx`/`argDepth`-threaded write validation, incl. the STRUCTURAL loose-gate branch (Phase 4 / 4b)
+- `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — `descriptorSubfieldTypeMap()`/`objectSubfieldTypeMap()`, indexing a non-array OBJECT descriptor's own fields recursively into the reference index + runtime type map (structural-referenceability follow-up, shipped alongside Phase 4b)
 - `app/modules/Workflows/Http/Requests/StoreWorkflowRequest.php` — `validateVariablePipeline()` now passes its `$refCtx` + `argDepth: 0` into the value-pipeline walk (Phase 4)
 - `app/modules/Workflows/Services/WorkflowOperationExecutor.php` — unchanged this phase; pinned as the "stays pure" boundary (Phase 4)
 - `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — argument-variable resolution, the depth-cap resolve/fail-soft pair, the injection-safety pin (Phase 4)
 - `tests/Unit/Workflows/WorkflowOperationExecutorTest.php` — `test_a_variable_union_arg_reaching_the_executor_fails_closed`, the executor-stays-pure boundary pin (Phase 4)
-- `tests/Feature/WorkflowStepValuePipelineValidationTest.php` — argument-variable write validation, incl. the depth-cap `422` and the byte-verbatim persistence pin (Phase 4)
-- `resources/js/next/ui/editor/extensions/VariablePipelineEditor.vue` — the `depth` prop + `argVariable` scoped slot (Phase 4)
-- `resources/js/next/ui/editor/extensions/PipelineArgLiteralInput.vue` — the extracted literal arg controls, shared by the editor's own fallback and the arg-variable field's value mode (Phase 4)
-- `resources/js/next/ui/editor/extensions/operationHelpers.ts` — `MAX_ARG_VARIABLE_DEPTH`, `argVariableValueType()` (Phase 4)
+- `tests/Feature/WorkflowStepValuePipelineValidationTest.php` — argument-variable write validation, incl. the depth-cap `422`, the byte-verbatim persistence pin, and (Phase 4b) the widened option/structural-control coverage
+- `resources/js/next/ui/editor/extensions/VariablePipelineEditor.vue` — the `depth` prop + `argVariable` scoped slot, offered for EVERY arg control since Phase 4b (Phase 4)
+- `resources/js/next/ui/editor/extensions/PipelineArgLiteralInput.vue` — the literal control for EVERY arg kind (value AND, since Phase 4b, option/map/rules), shared by the editor's own fallback and the arg-variable field's value mode (Phase 4)
+- `resources/js/next/ui/editor/extensions/operationHelpers.ts` — `MAX_ARG_VARIABLE_DEPTH`, `argVariablePolicy()` + `isStructuralArg()` (Phase 4; renamed/widened from `argVariableValueType()` in Phase 4b)
 - `resources/js/next/ui/editor/extensions/types.ts` — `ArgVariableRef`, `ArgVariableValue`, `VariableArgValue` (Phase 4)
-- `resources/js/next/pages/workflows/ValueOrVariableField.vue` — the recursive `#argVariable` slot fill + `argToUnion()`/`unionToArg()` adapters (Phase 4)
+- `resources/js/next/ui/editor/extensions/VariableTypeIcon.vue` — the shared type-icon + `nullable`("?")/`array`("[]") modifier markers, incl. an sr-only `typeLabel` (UX refinement batch, shipped alongside Phase 4b)
+- `resources/js/next/pages/workflows/ValueOrVariableField.vue` — the recursive `#argVariable` slot fill (now for every arg control) + `argToUnion()`/`unionToArg()` adapters; the per-reference "Default when empty" control relocated here into the ops modal, nullable-gated + typed via `WorkflowGlobalValueField.vue` (Phase 4 / UX refinement batch)
+- `resources/js/next/pages/workflows/VariableTreePicker.vue` — the expandable ARIA-tree variable picker (`role="tree"`/`treeitem`, keyboard expand/collapse/select/type-ahead), replacing the flat qualified-name Select (UX refinement batch)
+- `resources/js/next/pages/workflows/workflowVariables.ts` — `variablePickerTree()`/`flattenPickerNodes()`, building the picker tree from a flat, already-filtered variable list (UX refinement batch)
 - `resources/js/next/pages/workflows/DateOrVariableField.vue`, `resources/js/next/pages/workflows/WorkflowStepCard.vue` — forward the new `arg-variables` pool prop (Phase 4)
-- `resources/js/next/ui/editor/__tests__/pipelineArgVariable.dom.spec.ts` — slot-gating (value-typed only, depth cap) + raw-arg serialization pins (Phase 4, frontend)
+- `resources/js/next/ui/editor/__tests__/pipelineArgVariable.dom.spec.ts` — slot-gating (every control, depth cap) + raw-arg serialization pins (Phase 4, frontend)
 - `resources/js/next/pages/workflows/__tests__/ValueOrVariableField.spec.ts` — the recursive-field pick/round-trip tests (Phase 4, frontend)
-- `docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md` — this phase's design record (the value-typed-only gate, the executor-stays-pure/resolver-pre-resolves split, the cycle-free depth cap, the `refCtx` write split, the deferred trigger-gate wiring and parent-Save-gate UX follow-ups) — completes the four-phase variable-typesystem rework
+- `docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md` — this phase's design record (the write-split/resolver-pre-resolves split, the cycle-free depth cap, the `refCtx` write split, the deferred trigger-gate wiring and parent-Save-gate UX follow-ups) plus its Phase 4b addendum (the per-category `ArgVariablePolicy` gate replacing the value-typed-only rule) — completes the four-phase variable-typesystem rework
 
 ## Planned / deferred (not implemented)
 

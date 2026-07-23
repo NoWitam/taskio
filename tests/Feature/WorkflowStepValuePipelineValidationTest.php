@@ -4,7 +4,10 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Forms\Models\Form;
+use App\Modules\Workflows\Enums\WorkflowVariableType;
+use App\Modules\Workflows\Models\WorkflowGlobal;
 use App\Modules\Workspaces\Models\Workspace;
+use Database\Factories\WorkflowGlobalFactory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -42,6 +45,12 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 ['id' => 'category', 'type' => 'select', 'config' => [
                     'label' => 'Category', 'multiple' => false,
                     'options' => [['value' => 'blog'], ['value' => 'news']],
+                ]],
+                // A MULTI-select (multiple:true → a `multi` variable) — the sourceOptions arg-variable
+                // target (phase-4b): a multi op arg supplied by a variable needs a multi ref in the index.
+                ['id' => 'tags', 'type' => 'select', 'config' => [
+                    'label' => 'Tags', 'multiple' => true,
+                    'options' => [['value' => 'a'], ['value' => 'b']],
                 ]],
                 ['id' => 'headline', 'type' => 'short_text', 'config' => ['label' => 'Headline']],
                 ['id' => 'upload', 'type' => 'image', 'config' => ['label' => 'Upload']],
@@ -665,5 +674,336 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
         $workflow = \App\Modules\Workflows\Models\Workflow::findOrFail($response->json('data.id'));
 
         $this->assertSame($pipeline, $workflow->steps[0]['config']['deadline']['pipeline']);
+    }
+
+    // ---- op ARGUMENTS: option / multi-option / structural variables (phase-4b) ----
+    //
+    // Beyond the value args, EVERY op-arg control now accepts a variable: single/multi OPTION args
+    // (enum|text / multi ref, option-set membership deferred to runtime) and STRUCTURAL args
+    // (sourceMap/choiceRules, gated LOOSELY — any whitelisted + indexed ref, exact shape deferred to
+    // runtime fail-soft). All are validated against the SAME reference index the top-level ref uses.
+
+    public function test_accepts_a_source_map_arg_supplied_by_a_variable(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // enum_to_choice's `mapping` (a sourceMap = STRUCTURAL arg) is a VARIABLE, not a literal map. The
+        // loose gate accepts any whitelisted + indexed ref (fields.details is an object container in the
+        // index); the exact {option: target} shape is deferred to runtime fail-soft.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'trigger', 'path' => 'fields.details', 'type' => 'object'],
+                ]]]],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_choice_rules_and_fallback_args_supplied_by_variables(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // match_to_choice's `rules` (choiceRules = STRUCTURAL) AND `fallback` (choiceFallback = single
+        // OPTION) are BOTH variables: rules → a loose indexed ref, fallback → an enum|text ref. Target
+        // option-set membership is unverifiable for a variable, so it is deferred to runtime fail-soft.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.details', 'type' => 'object']],
+                    'fallback' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text']],
+                ]]],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_a_source_option_arg_supplied_by_a_variable(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // enum_is' `value` (sourceOption = single OPTION arg) is an enum variable; its boolean is bridged
+        // through bool_to_text into a choice terminal so it fits the priority field.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [
+                    ['op' => 'enum_is', 'args' => ['value' => [
+                        'kind' => 'variable',
+                        'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                    ]]],
+                    ['op' => 'bool_to_text', 'args' => ['when_true' => 'hot', 'when_false' => 'cold']],
+                    ['op' => 'match_to_choice', 'args' => [
+                        'rules' => [['when' => 'hot', 'then' => 'high'], ['when' => 'cold', 'then' => 'low']],
+                        'fallback' => 'medium',
+                    ]],
+                ],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_a_source_options_arg_supplied_by_a_multi_variable(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // enum_in's `values` (sourceOptions = multi OPTION arg) is a MULTI variable (fields.tags); same
+        // boolean → choice bridge. A multi ref is the only type this control accepts.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [
+                    ['op' => 'enum_in', 'args' => ['values' => [
+                        'kind' => 'variable',
+                        'ref' => ['source' => 'trigger', 'path' => 'fields.tags', 'type' => 'multi'],
+                    ]]],
+                    ['op' => 'bool_to_text', 'args' => ['when_true' => 'hot', 'when_false' => 'cold']],
+                    ['op' => 'match_to_choice', 'args' => [
+                        'rules' => [['when' => 'hot', 'then' => 'high'], ['when' => 'cold', 'then' => 'low']],
+                        'fallback' => 'medium',
+                    ]],
+                ],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_rejects_a_structural_arg_variable_referencing_an_unknown_path(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // The loose STRUCTURAL gate still requires a RESOLVABLE ref: fields.ghost is not in the index, so
+        // the sourceMap variable is rejected exactly like an unknown value ref — under the arg's ref.path.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'trigger', 'path' => 'fields.ghost', 'type' => 'object'],
+                ]]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.mapping.ref.path']);
+    }
+
+    public function test_rejects_a_structural_arg_variable_referencing_a_non_whitelisted_root(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // Exfil safety at a structural arg: only trigger/steps/globals are references — `env` is not.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'env', 'path' => 'SECRET', 'type' => 'object'],
+                ]]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.mapping.ref.source']);
+    }
+
+    public function test_rejects_an_option_arg_variable_whose_type_is_not_enum_or_text(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A single-OPTION arg (choiceFallback) accepts only an enum|text variable. A DATE ref (fields.due)
+        // is rejected under the arg's own key — the same per-arg gate a value arg gets.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'fallback' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date']],
+                ]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.fallback']);
+    }
+
+    public function test_a_structural_arg_variable_persists_verbatim(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        $mapping = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.details', 'type' => 'object']];
+        $pipeline = [['op' => 'enum_to_choice', 'args' => ['mapping' => $mapping]]];
+
+        $response = $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'], 'pipeline' => $pipeline],
+        ]))->assertCreated();
+
+        // The structural arg-variable round-trips into the stored step config unchanged (no coercion).
+        $workflow = \App\Modules\Workflows\Models\Workflow::findOrFail($response->json('data.id'));
+
+        $this->assertSame($mapping, $workflow->steps[0]['config']['priority']['pipeline'][0]['args']['mapping']);
+    }
+
+    // ---- OBJECT GLOBAL subfield references (phase-2c) -------------------------
+    //
+    // A workspace object GLOBAL is self-contained: its interior lives only in its descriptor, which the
+    // editor's picker tree expands into pickable `globals.<key>.<sub>` refs. Those paths are now
+    // enumerated in the reference index, so such a pick write-validates and type-flows from the
+    // SUBFIELD's own type instead of being rejected as an unknown variable. An `array<object>` field
+    // (a repeater) keeps its ELEMENTS non-referenceable (per-element access is the deferred R2 loop).
+
+    /** The workspace's `firma` object global: scalars, a nested object, and an array<object> list. */
+    private function objectGlobal(User $owner, Workspace $workspace): WorkflowGlobal
+    {
+        return WorkflowGlobal::factory()->object('firma', [
+            WorkflowGlobalFactory::field('miasto', WorkflowVariableType::TEXT->descriptor()),
+            WorkflowGlobalFactory::field('pracownicy', WorkflowVariableType::NUMBER->descriptor()),
+            WorkflowGlobalFactory::field('zalozona', WorkflowVariableType::DATE->descriptor()),
+            WorkflowGlobalFactory::field('geo', WorkflowVariableType::OBJECT->descriptor(fields: [
+                WorkflowGlobalFactory::field('lat', WorkflowVariableType::NUMBER->descriptor()),
+            ], array: false)),
+            WorkflowGlobalFactory::field('kontakty', WorkflowVariableType::OBJECT->descriptor(fields: [
+                WorkflowGlobalFactory::field('email', WorkflowVariableType::TEXT->descriptor()),
+            ], array: true)),
+        ], [
+            'miasto' => 'Warszawa',
+            'pracownicy' => 12,
+            'zalozona' => '2019-04-01',
+            'geo' => ['lat' => 52.23],
+            'kontakty' => [['email' => 'kontakt@taskio.test']],
+        ])->create(['creator_id' => $owner->id, 'workspace_id' => $workspace->id, 'name' => 'Firma']);
+    }
+
+    public function test_accepts_a_pipeline_on_an_object_global_subfield(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+        $this->objectGlobal($owner, $workspace);
+
+        // `globals.firma.miasto` is TEXT: the text op proves the subfield path is a KNOWN variable AND
+        // that it type-flows from the SUBFIELD's type (this was a 422 unknown-path before).
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.firma.miasto', 'type' => 'text'],
+                'pipeline' => [
+                    ['op' => 'text_uppercase', 'args' => []],
+                    ['op' => 'match_to_choice', 'args' => [
+                        'rules' => [['when' => 'WARSZAWA', 'then' => 'high']],
+                        'fallback' => 'low',
+                    ]],
+                ],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_a_plain_ref_and_a_nested_object_global_subfield_pipeline(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+        $this->objectGlobal($owner, $workspace);
+
+        // deadline: a PLAIN (pipeline-less) subfield ref, written in the short `source` + relative
+        // `path` shape. priority: a NESTED subfield (`globals.firma.geo.lat`, a NUMBER two levels deep)
+        // whose pipeline bridges into the choice mapping — both in one step, so the reference index is
+        // actually built and consulted.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'firma.zalozona', 'type' => 'date'],
+            ],
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.firma.geo.lat', 'type' => 'number'],
+                'pipeline' => [
+                    ['op' => 'num_to_text', 'args' => []],
+                    ['op' => 'match_to_choice', 'args' => [
+                        'rules' => [['when' => '52.23', 'then' => 'high']],
+                        'fallback' => 'low',
+                    ]],
+                ],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_rejects_a_wrongly_typed_object_global_subfield_ref(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+        $this->objectGlobal($owner, $workspace);
+
+        // The subfield is indexed with its REAL type (number), so a ref DECLARING text is the catalog
+        // type-mismatch error — not an unknown-path error: the path itself is now known.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.firma.pracownicy', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'fallback' => 'low',
+                ]]],
+            ],
+        ]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['steps.0.config.priority.ref.type'])
+            ->assertJsonMissingValidationErrors(['steps.0.config.priority.ref.path']);
+    }
+
+    public function test_rejects_an_element_subfield_of_an_array_object_global(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+        $this->objectGlobal($owner, $workspace);
+
+        // `kontakty` is an array<object> (a repeater): its own path is referenceable but its ELEMENT
+        // subfield is not, so the ref stays an unknown variable — the same rule a form repeater gets.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.firma.kontakty.email', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'fallback' => 'low',
+                ]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.ref.path']);
+    }
+
+    public function test_accepts_an_op_argument_variable_from_an_object_global_subfield(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+        $this->objectGlobal($owner, $workspace);
+
+        // The arg-variable path reads the SAME reference index: date_add_days' `value` (NUMBER) is
+        // supplied by the object global's `pracownicy` subfield.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date'],
+                'pipeline' => [['op' => 'date_add_days', 'args' => ['value' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'globals', 'path' => 'globals.firma.pracownicy', 'type' => 'number'],
+                ]]]],
+            ],
+        ]))->assertCreated();
     }
 }

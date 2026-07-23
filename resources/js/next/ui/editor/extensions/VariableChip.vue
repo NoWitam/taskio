@@ -6,9 +6,8 @@
 // attrs (name, locked, pipeline, resultType).
 import { computed, ref } from 'vue';
 import { NodeViewWrapper } from '@tiptap/vue-3';
-import Icon from '../../primitives/Icon.vue';
 import VariablePanel from './VariablePanel.vue';
-import { useI18n } from '../../../app/i18n';
+import VariableTypeIcon from './VariableTypeIcon.vue';
 import { getVariableIconLabel, getVariableIconName } from './operationHelpers';
 import type {
   VariableDefinition,
@@ -23,8 +22,6 @@ const props = defineProps<{
   deleteNode: () => void;
   selected?: boolean;
 }>();
-
-const { t } = useI18n();
 
 const open = ref(false);
 
@@ -42,6 +39,10 @@ const storage = computed(
 );
 const definitions = computed(() => storage.value.definitions ?? []);
 const catalog = computed(() => storage.value.catalog ?? []);
+
+// The source definition (by id) carries the type-icon MODIFIERS (§refinement 3): nullable when the
+// variable may resolve empty, array when it is a collection. Absent for an off-catalog / stale ref.
+const definition = computed(() => definitions.value.find((d) => d.id === props.node.attrs.id));
 
 function onSave(attrs: VariableNodeAttrs): void {
   props.updateAttributes(attrs);
@@ -70,7 +71,13 @@ function onKeydown(event: KeyboardEvent): void {
       @click="open = true"
       @keydown="onKeydown"
     >
-      <Icon :name="getVariableIconName(resultType)" class="next-var-chip__type" :label="t('editor.types.typeLabel', 'Type: {type}', { type: getVariableIconLabel(resultType) })" />
+      <VariableTypeIcon
+        :icon="getVariableIconName(resultType)"
+        :type-label="getVariableIconLabel(resultType)"
+        :nullable="definition?.nullable"
+        :array="definition?.array"
+        class="next-var-chip__type"
+      />
       <span class="next-var-chip__label">{{ label }}</span>
     </button>
 

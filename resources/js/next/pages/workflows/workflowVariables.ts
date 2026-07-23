@@ -434,6 +434,10 @@ export function toEditorVariablesTyped(
       type: variable.type as VariablePrimitive,
     };
     if (options) definition.options = options;
+    // Type-icon MODIFIERS (§refinement 3): carry the descriptor's nullable / array flags so the
+    // editor chip can mark an optional / list variable. Emit-or-omit keeps definitions lean.
+    if (variable.descriptor?.nullable) definition.nullable = true;
+    if (variable.descriptor?.array) definition.array = true;
     return definition;
   });
 }
@@ -554,7 +558,7 @@ export function allValueVariables(
  * hash, boolean → check-circle (mirroring the editor), date → calendar, enum → list,
  * multi → list-checks.
  */
-const VARIABLE_ICONS: Record<WorkflowVariableType, IconName> = {
+const VARIABLE_ICONS: Record<WorkflowVariableType | 'object', IconName> = {
   text: 'type',
   number: 'hash',
   boolean: 'check-circle',
@@ -562,10 +566,171 @@ const VARIABLE_ICONS: Record<WorkflowVariableType, IconName> = {
   enum: 'list',
   multi: 'list-checks',
   file: 'file-text',
+  // The structural OBJECT base (a file composite / section / object global) — it degrades to the
+  // `text` flat type, so its icon is keyed OFF the descriptor base, not the flat type (§refinement 5).
+  object: 'braces',
 };
 
-export function variableIcon(type: WorkflowVariableType): IconName {
+/**
+ * The per-type icon for a variable chip / picker row (§7.5). Accepts the `object` DESCRIPTOR base in
+ * addition to the closed `WorkflowVariableType` union so an object-shaped variable (which degrades to
+ * `text` on the flat wire) can still carry a distinct braces glyph.
+ */
+export function variableIcon(type: WorkflowVariableType | 'object'): IconName {
   return VARIABLE_ICONS[type] ?? 'type';
+}
+
+/**
+ * The icon for a whole catalog variable — prefers the structured `object` base (braces) over the
+ * degraded flat `text` type, so a file composite / section / object global reads as a container. Every
+ * other base falls through to the flat-type icon (`file` → file-text, `enum` → list, …).
+ */
+export function variableNodeIcon(
+  variable: { type: WorkflowVariableType; descriptor?: CatalogVariableDescriptor },
+): IconName {
+  if (variable.descriptor?.base === 'object') return variableIcon('object');
+  return variableIcon(variable.type);
+}
+
+// --- Variable PICKER tree (§refinement 5) -----------------------------------
+//
+// The structured field's Variable picker presents its offered variables as an EXPANDABLE TREE rather
+// than a flat qualified list: an object-shaped entry (a `file` composite, an `object` global, a form
+// section) renders as an expandable NODE whose children are its subfields; picking a leaf child emits a
+// ref at the composed `<parent>.<key>` path with the child's type (the SAME ref the flat list emitted).
+// A repeater (`object` + `array:true`) stays a single, non-expandable LIST entry (per-element picking is
+// deferred). This is PRESENTATION ONLY — the emitted ref shape is byte-identical.
+//
+// The builder works on the SAME flat `CatalogVariable[]` the host already feeds the picker (post
+// type-filter, `allValueVariables` / `variablesOfType`), reconstructing the hierarchy TWO ways so the
+// host's filtering is always respected:
+//   • PATH-PREFIX nesting — a file composite's subfields already ride in the list as flat `<file>.<key>`
+//     entries (expandVariables), so they nest under the whole-file entry by their dotted path. A file
+//     with NO offered subfields (e.g. a file-only picker) stays a selectable leaf.
+//   • DESCRIPTOR expansion — a SELF-CONTAINED object (an `object` global) rides as ONE entry with no
+//     flat children, so its `descriptor.fields` are expanded into composed child nodes.
+// A form section the flat feed dropped keeps its leaves flat (no regression); were it present it would
+// nest/expand the same way (non-selectable, since a whole object resolves to a map).
+
+export interface VariablePickerNode {
+  /**
+   * The variable this node represents — a real catalog entry OR a synthesized descriptor child. Its
+   * `{source, path, type}` is the ref a pick emits; its descriptor drives the icon + markers + options.
+   */
+  variable: CatalogVariable;
+  /**
+   * True when picking THIS node emits a ref. A non-array `object` container from a NON-global source (a
+   * form section) resolves to a map, so it only expands — it is never itself pickable.
+   */
+  selectable: boolean;
+  /** Child nodes; present ⇒ the node is expandable. */
+  children?: VariablePickerNode[];
+}
+
+/** Whether a descriptor is a non-array OBJECT container (a section / object global — expandable). */
+function isObjectContainer(descriptor: CatalogVariableDescriptor | undefined): boolean {
+  return descriptor?.base === 'object' && !descriptor.array;
+}
+
+/** Whether a descriptor is a REPEATER (an array<object> — a single non-expandable list entry). */
+function isRepeater(descriptor: CatalogVariableDescriptor | undefined): boolean {
+  return descriptor?.base === 'object' && descriptor.array === true;
+}
+
+/** Selectable unless it is a non-array object container from a non-globals source (a form section). */
+function nodeSelectable(variable: CatalogVariable): boolean {
+  return !(isObjectContainer(variable.descriptor) && variable.source !== 'globals');
+}
+
+/**
+ * One child node synthesized from a container descriptor's `{key, label, descriptor}` field — used for a
+ * SELF-CONTAINED object whose children are not flat entries (an object global). Composes the
+ * `<parent>.<key>` path, localizes a file's system subfield labels, and recurses into nested containers.
+ */
+function descriptorChildNode(parent: CatalogVariable, field: CatalogDescriptorField): VariablePickerNode {
+  const isFileParent = parent.descriptor?.base === 'file';
+  const child: CatalogVariable = {
+    source: parent.source,
+    path: `${parent.path}.${field.key}`,
+    name: isFileParent
+      ? translate(`workflows.variable.fileSubfield.${field.key}`, field.label)
+      : field.label,
+    type: descriptorBaseToType(field.descriptor),
+    descriptor: field.descriptor,
+  };
+  const node: VariablePickerNode = { variable: child, selectable: nodeSelectable(child) };
+  const grandchildren = field.descriptor.fields;
+  if ((isObjectContainer(field.descriptor) || field.descriptor.base === 'file') && grandchildren?.length) {
+    node.children = grandchildren.map((f) => descriptorChildNode(child, f));
+  }
+  return node;
+}
+
+/** The node whose path is the LONGEST strict dotted prefix of `path`, or null (top-level). */
+function longestPrefixParent(
+  path: string,
+  byPath: Map<string, VariablePickerNode>,
+): VariablePickerNode | null {
+  let best: VariablePickerNode | null = null;
+  for (const [candidatePath, node] of byPath) {
+    if (candidatePath !== path && path.startsWith(`${candidatePath}.`)) {
+      if (!best || candidatePath.length > best.variable.path.length) best = node;
+    }
+  }
+  return best;
+}
+
+/**
+ * Build the picker TREE for a flat, already-filtered `CatalogVariable[]` (see the section header).
+ * Descriptor-less variables + step outputs pass straight through as flat leaves, so this is a no-op for
+ * every non-structural catalog.
+ */
+export function variablePickerTree(variables: CatalogVariable[]): VariablePickerNode[] {
+  const nodes: VariablePickerNode[] = variables.map((variable) => ({
+    variable,
+    selectable: nodeSelectable(variable),
+  }));
+
+  // 1. PATH-PREFIX nesting: attach each node under the entry that is its LONGEST strict dotted prefix,
+  //    so flat `<file>.<key>` subfields nest under the whole-file entry. A repeater never receives
+  //    children (per-element access is deferred).
+  const byPath = new Map<string, VariablePickerNode>();
+  for (const node of nodes) byPath.set(node.variable.path, node);
+  const roots: VariablePickerNode[] = [];
+  for (const node of nodes) {
+    const parent = longestPrefixParent(node.variable.path, byPath);
+    if (parent && !isRepeater(parent.variable.descriptor)) {
+      (parent.children ??= []).push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  // 2. DESCRIPTOR expansion: a self-contained object container (an object global) has no flat children,
+  //    so surface its `descriptor.fields` as composed child nodes. Files rely on the flat nesting above
+  //    (a file with no offered subfields stays a selectable leaf).
+  for (const node of nodes) {
+    if (node.children) continue;
+    const descriptor = node.variable.descriptor;
+    if (isObjectContainer(descriptor) && descriptor?.fields?.length) {
+      node.children = descriptor.fields.map((f) => descriptorChildNode(node.variable, f));
+    }
+  }
+
+  return roots;
+}
+
+/** Flatten a picker tree to every node in pre-order (for path→node lookup + selection resolution). */
+export function flattenPickerNodes(nodes: VariablePickerNode[]): VariablePickerNode[] {
+  const out: VariablePickerNode[] = [];
+  const walk = (list: VariablePickerNode[]): void => {
+    for (const node of list) {
+      out.push(node);
+      if (node.children) walk(node.children);
+    }
+  };
+  walk(nodes);
+  return out;
 }
 
 // --- stripVariableDirectives (§3.2 read-side echo) --------------------------

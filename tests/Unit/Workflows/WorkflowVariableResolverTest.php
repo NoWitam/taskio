@@ -948,6 +948,96 @@ class WorkflowVariableResolverTest extends TestCase
         $this->assertSame(2049.0, $this->resolver->resolveValueOrVariable($sizeField, $context, WorkflowVariableType::NUMBER));
     }
 
+    // ---- object GLOBAL subfield references (phase-2c) -------------------------
+
+    /**
+     * A run context whose `globals` root carries a STRUCTURED constant (an object global's stored
+     * literal), including a nested object and an array<object> element list.
+     *
+     * @return array<string, mixed>
+     */
+    private function objectGlobalContext(): array
+    {
+        return [
+            'trigger' => ['fields' => ['priority' => 'high']],
+            'steps' => [],
+            'globals' => [
+                'firma' => [
+                    'miasto' => 'Warszawa',
+                    'pracownicy' => 12,
+                    'geo' => ['lat' => 52.23, 'lng' => 21.01],
+                    'kontakty' => [['email' => 'kontakt@taskio.test']],
+                    // The second-order injection probe, one level INSIDE the object.
+                    'evil' => '{{trigger.fields.priority}}',
+                ],
+            ],
+        ];
+    }
+
+    public function test_object_global_subfield_resolves_through_every_serialization(): void
+    {
+        $context = $this->objectGlobalContext();
+
+        // The write-side now accepts `globals.<key>.<sub>` refs; the runtime resolves them as a plain
+        // whitelisted dotted lookup (no new mechanism) — in each serialization.
+        $this->assertSame('Warszawa', $this->resolver->resolve('{{globals.firma.miasto}}', $context));
+        $this->assertSame(12, $this->resolver->resolve('{{globals.firma.pracownicy}}', $context));
+        $this->assertSame('Warszawa', $this->resolver->resolve($this->directive('globals.firma.miasto'), $context));
+        $this->assertSame('Miasto: Warszawa', $this->resolver->resolve('Miasto: ' . $this->directive('globals.firma.miasto'), $context));
+
+        $field = ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.firma.miasto', 'type' => 'text']];
+        $this->assertSame('Warszawa', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_nested_object_global_subfield_resolves_and_an_unknown_one_is_fail_soft(): void
+    {
+        $context = $this->objectGlobalContext();
+
+        // Two levels deep — the index enumerates it recursively, and so does Arr::get.
+        $this->assertSame(52.23, $this->resolver->resolve('{{globals.firma.geo.lat}}', $context));
+
+        $nested = ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.firma.geo.lat', 'type' => 'number']];
+        $this->assertSame(52.23, $this->resolver->resolveValueOrVariable($nested, $context, WorkflowVariableType::NUMBER));
+
+        // An undeclared subfield (and a repeater ELEMENT, which the index deliberately never offers)
+        // resolves fail-soft to null — never a throw.
+        $this->assertNull($this->resolver->resolve('{{globals.firma.nieznane}}', $context));
+        $this->assertNull($this->resolver->resolve('{{globals.firma.kontakty.email}}', $context));
+    }
+
+    public function test_object_global_subfield_pipeline_runs_against_the_subfield_type(): void
+    {
+        $context = $this->objectGlobalContext();
+
+        // The runtime type map carries the SUBFIELD's real type (the same entries the write-validator
+        // type-flowed), so a directive pipeline executes as a number — not as the container's text.
+        $typeMap = ['globals.firma.pracownicy' => WorkflowVariableType::NUMBER];
+        $directive = $this->directiveWithPipeline('globals.firma.pracownicy', 'text', [$this->step('num_add', ['value' => 3])]);
+
+        $this->assertSame('15', $this->resolver->resolve($directive, $context, $typeMap));
+
+        // The structured union carries the subfield type on the ref itself.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'globals', 'path' => 'globals.firma.miasto', 'type' => 'text'],
+            'pipeline' => [['op' => 'text_uppercase', 'args' => []]],
+        ];
+        $this->assertSame('WARSZAWA', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_an_object_global_subfield_value_with_reference_like_bytes_is_not_re_interpreted(): void
+    {
+        // INJECTION SAFETY carries into the object interior: a subfield value holding `{{…}}` bytes
+        // rides the SAME NUL-mask path and renders VERBATIM (never resolved to 'high').
+        $context = $this->objectGlobalContext();
+
+        $this->assertSame('{{trigger.fields.priority}}', $this->resolver->resolve('{{globals.firma.evil}}', $context));
+        $this->assertSame(
+            'Value: {{trigger.fields.priority}}',
+            $this->resolver->resolve('Value: ' . $this->directive('globals.firma.evil'), $context),
+        );
+    }
+
     public function test_a_genuine_nested_field_named_like_a_subfield_still_resolves_directly(): void
     {
         // Guard: the subfield collapse is a FALLBACK only when Arr::get misses. A real nested map with
@@ -1114,6 +1204,147 @@ class WorkflowVariableResolverTest extends TestCase
 
         $this->assertNull(
             $this->resolver->resolveValueOrVariable($this->topFieldAppending($this->nestedArgVariable(4)), $context, WorkflowVariableType::TEXT),
+        );
+    }
+
+    // ---- op ARGUMENTS: option / multi-option / structural variables (phase-4b) ----
+
+    public function test_op_single_option_argument_supplied_by_a_variable_resolves(): void
+    {
+        // enum_is' `value` (a single-OPTION arg) is a VARIABLE: pulled from context and coerced to a
+        // string option key before the compare. 'high' === 'high' → true.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_is', 'args' => ['value' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.match', 'type' => 'enum'],
+            ]]]],
+        ];
+        $context = ['trigger' => ['fields' => ['priority' => 'high', 'match' => 'high']], 'steps' => []];
+
+        $this->assertTrue($this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::BOOLEAN));
+    }
+
+    public function test_op_multi_option_argument_supplied_by_a_variable_resolves(): void
+    {
+        // enum_in's `values` (a multi-OPTION arg) is a VARIABLE resolving to a set; membership is checked
+        // against it at runtime. 'b' ∈ ['a','b'] → true.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_in', 'args' => ['values' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.set', 'type' => 'multi'],
+            ]]]],
+        ];
+        $context = ['trigger' => ['fields' => ['priority' => 'b', 'set' => ['a', 'b']]], 'steps' => []];
+
+        $this->assertTrue($this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::BOOLEAN));
+    }
+
+    public function test_op_source_map_argument_supplied_by_a_variable_resolves(): void
+    {
+        // enum_to_text's `mapping` (a STRUCTURAL arg) is a VARIABLE resolving to the WHOLE {option: target}
+        // map from context — handed to the pure executor untouched (its string keys preserved).
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_to_text', 'args' => ['mapping' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.map', 'type' => 'object'],
+            ]]]],
+        ];
+        $context = [
+            'trigger' => ['fields' => ['priority' => 'high']],
+            'steps' => [],
+            'globals' => ['map' => ['high' => 'urgent', 'low' => 'normal']],
+        ];
+
+        $this->assertSame('urgent', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_op_choice_rules_argument_supplied_by_a_variable_resolves(): void
+    {
+        // match_to_choice's `rules` (a STRUCTURAL arg) is a VARIABLE resolving to the whole {when,then}
+        // list from context. 'BREAKING' matches the first rule → 'high'.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+            'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                'rules' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.rules', 'type' => 'object']],
+                'fallback' => 'low',
+            ]]],
+        ];
+        $context = [
+            'trigger' => ['fields' => ['headline' => 'BREAKING']],
+            'steps' => [],
+            'globals' => ['rules' => [['when' => 'BREAKING', 'then' => 'high']]],
+        ];
+
+        $this->assertSame('high', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::ENUM));
+    }
+
+    public function test_op_choice_fallback_variable_out_of_set_returns_the_value_fail_soft(): void
+    {
+        // match_to_choice's `fallback` (a single-OPTION arg) is a VARIABLE resolving to a value OUTSIDE the
+        // destination option set. Membership is a RUNTIME concern: the op returns the resolved fallback
+        // as-is (no crash) — the downstream consumer soft-defaults an unknown choice (e.g. priority → MED).
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+            'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                'rules' => [['when' => 'x', 'then' => 'high']],
+                'fallback' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.brand', 'type' => 'text']],
+            ]]],
+        ];
+        // headline is not 'x' → no rule matches → the (variable, out-of-set) fallback 'Taskio' is returned.
+        $context = ['trigger' => ['fields' => ['headline' => 'whatever']], 'steps' => [], 'globals' => ['brand' => 'Taskio']];
+
+        $this->assertSame('Taskio', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::ENUM));
+    }
+
+    public function test_op_source_map_variable_malformed_shape_fails_soft(): void
+    {
+        // The STRUCTURAL mapping resolves to a NON-map (a scalar). The executor's enumMap fail-softs (not a
+        // map → FAIL), so the pipeline soft-resolves to null. Never a crash / UnhandledMatchError.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_to_text', 'args' => ['mapping' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.map', 'type' => 'object'],
+            ]]]],
+        ];
+        $context = [
+            'trigger' => ['fields' => ['priority' => 'high']],
+            'steps' => [],
+            'globals' => ['map' => 'not-a-map'],
+        ];
+
+        $this->assertNull($this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_structural_arg_variable_value_with_reference_like_bytes_is_not_re_interpreted(): void
+    {
+        // INJECTION SAFETY (structural): a mapping VALUE from context literally contains `{{…}}` bytes. The
+        // pure executor maps to it verbatim and the OUTPUT rides the SAME NUL-mask as any resolved value —
+        // so an embedded directive pipeline renders it literally, never re-scanning it back into 'high'.
+        $directive = $this->directiveWithPipeline('trigger.fields.priority', 'text', [
+            $this->step('enum_to_text', ['mapping' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'globals.map', 'type' => 'object'],
+            ]]),
+        ]);
+        $context = [
+            'trigger' => ['fields' => ['priority' => 'high']],
+            'steps' => [],
+            'globals' => ['map' => ['high' => '{{trigger.fields.priority}}']],
+        ];
+
+        $this->assertSame(
+            'Out: {{trigger.fields.priority}}',
+            $this->resolver->resolve('Out: ' . $directive, $context),
         );
     }
 }

@@ -2,6 +2,9 @@
 
 **Date:** 2026-07-22 (created)
 **Status:** Accepted
+**Updated:** 2026-07-23 — Addendum below: an object global's own DECLARED FIELDS join the write-side
+reference index (closes a picker/validator asymmetry a later UX batch's tree picker would otherwise
+have opened)
 **Module:** `App\Modules\Workflows`
 **Relates to:** ADR-0021 (Phase 0: the composable, form-independent catalog + the resolver
 whitelist recipe this phase applies to a genuinely new root — `globals` was already named there
@@ -246,3 +249,39 @@ See `docs/backend/workflows-api.md` (the new "Workflow GLOBALS" endpoints under 
 variable system") for the full wire contracts this phase shipped, and
 `resources/js/next/docs/pages/WorkflowsPage.vue` (the "Workflow Globals" subsection under "The
 typed variable system") for the in-app docs mirror.
+
+---
+
+## Addendum (2026-07-23) — an object global's interior is now write-validatable (closes the picker/validator asymmetry)
+
+Decision 2 above extended `referenceIndex()`/`runtimeTypeMap()` to enumerate every `globals.<key>`
+TOP-LEVEL path, so a value-or-variable pipeline could already target `globals.brand` as a whole. It
+did NOT, at the time, enumerate an OBJECT global's own DECLARED FIELDS (`globals.address.city`, say)
+as their own referenceable paths — only the top-level `globals.address` entry (flat type `text`, the
+Phase-2 `object` degrade) existed in the index. A later UX batch's variable picker
+(`VariableTreePicker.vue` / `descriptorChildNode()` in `workflowVariables.ts`) expands a
+self-contained object — an object global is one, via `isObjectContainer()` — into its declared
+`descriptor.fields` as pickable composed child nodes, exactly the way a FILE composite's subfields
+already expand. Without a matching write-side change, the picker could construct a
+`globals.address.city` ref the write validator would then REJECT as "not a known variable for this
+step" — a picker/validator asymmetry, not a soundness bug (nothing invalid could ever persist,
+since the validator is authoritative regardless of what the picker offers), but a broken authoring
+loop: pick a field the UI shows you, save, get a 422.
+
+`WorkflowVariableCatalogService::objectSubfieldTypeMap()` (see the
+`docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md` addendum for the mechanism) closes
+this: `addReferenceEntry()`/`addTypeMapEntry()` now enumerate a non-array `object` descriptor's own
+`fields` recursively, so `globals.address.city` (and any deeper nesting an object global declares) is
+a KNOWN entry in the reference index and the runtime type map — a value-or-variable pipeline may
+target it with full write-time type-checking, exactly like `globals.address` itself. The RUNTIME side
+needed no change at all: `globals.address.city` was already a plain whitelisted `Arr::get` over the
+injected `globals` map, which resolves a nested key without any special-casing — only the WRITE-side
+index was missing the entry. The picker and the validator now agree on every node the tree can emit a
+ref for.
+
+This is scoped to the non-array case only, matching ADR-0023's own boundary: an `array:true` global
+(an array-of-object, when hand-authored directly against the API — Decision 7's frontend gap) is
+unaffected by this addendum, and per-element access into it remains out of scope, exactly as
+ADR-0023 established for a form repeater. See
+`docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md`'s addendum for the shared mechanism
+and `docs/backend/workflows-api.md` for the updated wire description.

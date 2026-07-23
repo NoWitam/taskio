@@ -86,7 +86,7 @@ describe('picking a global in ValueOrVariableField', () => {
       },
     });
 
-    // Switch to variable mode, open the picker, choose the global.
+    // Switch to variable mode, open the picker, choose the global (a flat leaf tree row).
     await wrapper.get('button[aria-label="Variable"]').trigger('click');
     await nextTick();
     await wrapper.get('[role="combobox"]').trigger('click');
@@ -94,12 +94,64 @@ describe('picking a global in ValueOrVariableField', () => {
     await Promise.resolve();
     await nextTick();
 
-    document.body.querySelectorAll<HTMLElement>('[role="option"]')[0].click();
+    document.body.querySelectorAll<HTMLElement>('[role="treeitem"]')[0].click();
     await nextTick();
 
     const emitted = wrapper.emitted('update:modelValue');
     expect(emitted?.[emitted.length - 1]).toEqual([
       { kind: 'variable', ref: { source: 'globals', path: 'globals.brand', type: 'text' } },
+    ]);
+
+    wrapper.unmount();
+  });
+
+  it('an OBJECT global expands as a tree; picking a field emits globals.<key>.<field> (§refinement 5)', async () => {
+    const addressGlobal: CatalogVariable = {
+      source: 'globals',
+      path: 'globals.address',
+      name: 'Globals › Address',
+      type: 'text',
+      descriptor: {
+        base: 'object',
+        nullable: false,
+        array: false,
+        fields: [{ key: 'city', label: 'City', descriptor: { base: 'text', nullable: false, array: false } }],
+      },
+    };
+    const wrapper = mount(ValueOrVariableField, {
+      attachTo: document.body,
+      props: { variables: [addressGlobal] },
+      slots: {
+        default: (slotProps: { value: unknown; setValue: (v: unknown) => void }) =>
+          h('input', {
+            class: 'literal-input',
+            value: (slotProps.value as string) ?? '',
+            onInput: (e: Event) => slotProps.setValue((e.target as HTMLInputElement).value),
+          }),
+      },
+    });
+
+    await wrapper.get('button[aria-label="Variable"]').trigger('click');
+    await nextTick();
+    await wrapper.get('[role="combobox"]').trigger('click');
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+
+    const rows = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="treeitem"]'));
+    // The object global is a single expandable node (its descriptor.fields are not flat entries).
+    expect(rows().length).toBe(1);
+    expect(rows()[0].getAttribute('aria-expanded')).toBe('false');
+    rows()[0].querySelector('button')!.click();
+    await nextTick();
+
+    // Picking the composed `city` child emits a ref at globals.address.city.
+    rows().find((r) => r.textContent?.includes('City'))!.click();
+    await nextTick();
+
+    const emitted = wrapper.emitted('update:modelValue');
+    expect(emitted?.[emitted.length - 1]).toEqual([
+      { kind: 'variable', ref: { source: 'globals', path: 'globals.address.city', type: 'text' } },
     ]);
 
     wrapper.unmount();

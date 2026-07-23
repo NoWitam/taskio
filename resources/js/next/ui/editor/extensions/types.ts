@@ -57,6 +57,13 @@ export interface VariableDefinition {
   type: VariablePrimitive;
   /** The selectable options of an `enum`/`multi` source (feed `sourceOption(s)` args). */
   options?: VariableOption[];
+  /**
+   * Type-icon MODIFIERS (§refinement 3), mirrored from the catalog descriptor: `nullable` when the
+   * source may resolve empty, `array` when it is a collection (a multi / repeater). Optional +
+   * emit-or-omit; the chip reads them to mark its type icon. NOT serialized into the directive.
+   */
+  nullable?: boolean;
+  array?: boolean;
 }
 
 /**
@@ -107,8 +114,9 @@ export interface ArgVariableRef {
  * SAME `{kind:'variable', ref, pipeline?, default?}` union the host value-or-variable field emits —
  * mirrored here so a pipeline step's `args` may hold it without importing the workflow page types.
  * Its OWN `pipeline` is the wire `{op, args}` shape (an arg-variable's pipeline may host value-or-
- * variable args again, recursively — bounded by `MAX_ARG_VARIABLE_DEPTH`). Only value controls
- * (text/number/boolean/date) ever carry it; option/map/rules/select args stay literal-only.
+ * variable args again, recursively — bounded by `MAX_ARG_VARIABLE_DEPTH`). EVERY arg control can now
+ * carry it (phase-4b): value args coerce to their type, option args to enum|text, and STRUCTURAL args
+ * (sourceMap/choiceRules) hold a raw whole-structure ref with no sub-pipeline — see `argVariablePolicy`.
  */
 export interface ArgVariableValue {
   kind: 'variable';

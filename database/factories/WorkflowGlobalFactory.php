@@ -98,4 +98,33 @@ class WorkflowGlobalFactory extends Factory
             'value' => array_values($value),
         ]);
     }
+
+    /**
+     * An OBJECT literal global (a structured constant, e.g. a brand/company record). $fields is the
+     * descriptor's ordered `{key, label, descriptor}` list — build each entry with self::field() — and
+     * $value the matching `{key: literal}` map.
+     *
+     * @param  array<int, array{key: string, label: string, descriptor: array<string, mixed>}>  $fields
+     * @param  array<string, mixed>  $value
+     */
+    public function object(string $key, array $fields, array $value): static
+    {
+        return $this->state(fn () => [
+            'key' => $key,
+            'descriptor' => WorkflowVariableType::OBJECT->descriptor(fields: $fields, array: false),
+            'value' => $value,
+        ]);
+    }
+
+    /**
+     * One object-descriptor FIELD entry `{key, label, descriptor}` — the child shape both an object
+     * global's descriptor and the catalog's container descriptors use.
+     *
+     * @param  array<string, mixed>  $descriptor
+     * @return array{key: string, label: string, descriptor: array<string, mixed>}
+     */
+    public static function field(string $key, array $descriptor, ?string $label = null): array
+    {
+        return ['key' => $key, 'label' => $label ?? ucfirst($key), 'descriptor' => $descriptor];
+    }
 }

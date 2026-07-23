@@ -3,6 +3,7 @@
 namespace App\Modules\Workflows\Services;
 
 use App\Modules\Forms\Models\Form;
+use App\Modules\Workflows\DTOs\ArgVariablePolicy;
 use App\Modules\Workflows\DTOs\WorkflowOperationArg;
 use App\Modules\Workflows\Enums\ConditionTreeLimits;
 use App\Modules\Workflows\Enums\WorkflowOperation;
@@ -237,12 +238,15 @@ class WorkflowConditionTreeValidator
      * choice-producing op (producesChoice()), and every choice arg's option value is checked ⊆
      * $targetOptions (threaded through the walk). $targetOptions is null for a plain value field.
      *
-     * ARGUMENT VARIABLES (phase-4a): when $refCtx is supplied (the value-pipeline path always is) an
-     * op's value-typed argument may itself be a variable union, validated against the SAME reference
-     * index the top-level ref uses — its resolved type must match the arg's declared type, its own
-     * sub-pipeline is validated recursively, and the depth cap ($argDepth) is enforced. $refCtx is null
-     * for a CONDITION-tree pipeline, which keeps args LITERAL-only (a variable there fails the literal
-     * checks, matching the trigger gate's runtime, which does not pre-resolve arg-variables).
+     * ARGUMENT VARIABLES (phase-4b): when $refCtx is supplied (the value-pipeline path always is) ANY of
+     * an op's arguments may itself be a variable union, validated against the SAME reference index the
+     * top-level ref uses. The gate is per arg CONTROL (ArgVariablePolicy): a VALUE arg keeps the strict
+     * type match, an OPTION arg accepts enum|text (multi for sourceOptions) with membership deferred to
+     * runtime, and a STRUCTURAL arg (sourceMap/choiceRules) is gated LOOSELY (whitelisted + indexed ref,
+     * shape deferred to runtime). Its own sub-pipeline is validated recursively and the depth cap
+     * ($argDepth) is enforced. $refCtx is null for a CONDITION-tree pipeline, which keeps args
+     * LITERAL-only (a variable there fails the literal checks, matching the trigger gate's runtime, which
+     * does not pre-resolve arg-variables).
      *
      * @param  array<int, mixed>  $pipeline
      * @param  array<int, WorkflowVariableType>  $allowedTerminals
@@ -414,29 +418,29 @@ class WorkflowConditionTreeValidator
     }
 
     /**
-     * Validate ONE variable-union ARGUMENT (phase-4a). The arg control must be value-typed
-     * (variableValueType() non-null — option/map/rules controls are literal-only); the ref must be a
-     * known, whitelisted variable in $refCtx['index'] whose declared ref.type matches the catalog; and
-     * the arg's RESOLVED type (its sub-pipeline terminal, or the ref type when there is no sub-pipeline)
-     * must equal the arg's declared value type — the SAME type gate a literal arg gets. A present
-     * sub-pipeline is validated recursively (its own arg-variables one level deeper), and the depth cap
-     * is enforced so a config nested beyond MAX_ARG_VARIABLE_DEPTH is rejected with a clear error.
+     * Validate ONE variable-union ARGUMENT (phase-4b). Every arg control accepts a variable; the gate is
+     * driven by the arg's ArgVariablePolicy (the SINGLE source shared with the runtime resolver). The ref
+     * must be a known, whitelisted variable in $refCtx['index']; a present sub-pipeline is validated
+     * recursively (its own arg-variables one level deeper), and the depth cap is enforced so a config
+     * nested beyond MAX_ARG_VARIABLE_DEPTH is rejected with a clear error. Per category:
+     *   - VALUE                    ref.type + terminal must equal the arg's one value type (strict).
+     *   - single/multi OPTION      ref.type + terminal must be one of the policy's accepted types
+     *                              (enum|text, resp. multi); option-set membership is a RUNTIME concern.
+     *   - STRUCTURAL (map/rules)   the ref is gated LOOSELY (whitelisted + indexed, validateArgVariableRef
+     *                              with the structural policy) and the exact shape is deferred entirely to
+     *                              runtime fail-soft — there is no strict type gate and no sub-pipeline to
+     *                              type-flow (no op BUILDS a structure), so validation stops at the ref.
      *
      * @param  array<string, mixed>  $field
      * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}  $refCtx
      */
     private function validateArgVariable(ValidatorContract $validator, WorkflowOperationArg $arg, array $field, string $key, array $refCtx, int $argDepth): void
     {
-        $expectedType = $arg->type->variableValueType();
+        $policy = $arg->type->argVariablePolicy();
 
-        if ($expectedType === null) {
-            $validator->errors()->add($key, 'The ' . $arg->id . ' argument does not accept a variable value.');
-
-            return;
-        }
-
-        // Write-time depth cap: this arg-variable sits one level below the pipeline it lives in. Reject
-        // a config nested beyond the cap (the runtime resolver fail-softs at the same boundary).
+        // Write-time depth cap: this arg-variable sits one level below the pipeline it lives in. Reject a
+        // config nested beyond the cap (the runtime resolver fail-softs at the same boundary). Checked
+        // FIRST so the DEEPEST offending arg reports the cap error, matching the runtime boundary exactly.
         if ($argDepth + 1 > ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH) {
             $validator->errors()->add($key, 'The argument variables are nested too deeply (max ' . ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH . ' levels).');
 
@@ -444,19 +448,27 @@ class WorkflowConditionTreeValidator
         }
 
         $ref = is_array($field['ref'] ?? null) ? $field['ref'] : [];
-        $refType = $this->validateArgVariableRef($validator, $key, $ref, $refCtx);
+        $refType = $this->validateArgVariableRef($validator, $key, $ref, $refCtx, $policy);
 
         if ($refType === null) {
-            return; // a malformed / unknown ref was already reported
+            return; // a malformed / unknown ref (or a structural ref failing the loose gate) was reported
+        }
+
+        // STRUCTURAL controls (sourceMap / choiceRules): the loose ref gate above is the whole check — the
+        // flat variable type cannot express the structure, so its exact shape is deferred to runtime
+        // fail-soft. A sub-pipeline (which no op can use to BUILD a structure) is not type-flowed here.
+        if ($policy->isStructural()) {
+            return;
         }
 
         $sourceEnumOptions = $refCtx['index'][$this->refFullPath($ref)]['enumOptions'] ?? null;
         $pipeline = $field['pipeline'] ?? null;
 
         if ($pipeline === null || $pipeline === []) {
-            // Identity arg-variable: the ref type must equal the arg's declared value type.
-            if ($refType !== $expectedType) {
-                $validator->errors()->add($key, 'The ' . $arg->id . ' variable must be a ' . $expectedType->value . ' (it is ' . $refType->value . ').');
+            // Identity arg-variable: the ref type must be one the arg control accepts (VALUE = its one
+            // type; single OPTION = enum|text; multi OPTION = multi).
+            if (!in_array($refType, $policy->refTypes, true)) {
+                $validator->errors()->add($key, 'The ' . $arg->id . ' variable must be ' . $this->refTypesLabel($policy->refTypes) . ' (it is ' . $refType->value . ').');
             }
 
             return;
@@ -468,14 +480,14 @@ class WorkflowConditionTreeValidator
             return;
         }
 
-        // The sub-pipeline must type-flow from the ref type to the arg's declared value type; its own
-        // arg-variables are validated one level deeper (argDepth + 1), enforcing the cap recursively.
+        // The sub-pipeline must type-flow from the ref type to one of the arg's accepted terminals; its
+        // own arg-variables are validated one level deeper (argDepth + 1), enforcing the cap recursively.
         $this->validateValuePipeline(
             $validator,
             $pipeline,
             $key . '.pipeline',
             $refType,
-            [$expectedType],
+            $policy->refTypes,
             $sourceEnumOptions,
             null,
             $refCtx,
@@ -491,10 +503,15 @@ class WorkflowConditionTreeValidator
      * (fields_available false — its form_id error is already reported); every other unknown ref is a
      * granular error, so an argument can only reference a real, earlier variable.
      *
+     * STRUCTURAL gate ($policy->isStructural()): a whitelisted + indexed ref is enough — the strict
+     * flat-type equality is SKIPPED, because the flat variable type cannot express a {option: target} map
+     * / a {when, then} list, and the exact shape is deferred to runtime fail-soft. A VALUE/OPTION control
+     * keeps the strict equality gate (its coercion + type-flow depend on the ref's real type).
+     *
      * @param  array<string, mixed>  $ref
      * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}  $refCtx
      */
-    private function validateArgVariableRef(ValidatorContract $validator, string $key, array $ref, array $refCtx): ?WorkflowVariableType
+    private function validateArgVariableRef(ValidatorContract $validator, string $key, array $ref, array $refCtx, ArgVariablePolicy $policy): ?WorkflowVariableType
     {
         if (!in_array($ref['source'] ?? null, WorkflowVariableResolver::ROOTS, true)) {
             $validator->errors()->add($key . '.ref.source', 'The reference source must be one of: ' . implode(', ', WorkflowVariableResolver::ROOTS) . '.');
@@ -531,13 +548,26 @@ class WorkflowConditionTreeValidator
             return null;
         }
 
-        if ($descriptor['type']->value !== $type->value) {
+        // STRUCTURAL controls skip the strict flat-type equality (shape deferred to runtime); VALUE/OPTION
+        // controls keep it so their coercion + type-flow run against the ref's real catalog type.
+        if (!$policy->isStructural() && $descriptor['type']->value !== $type->value) {
             $validator->errors()->add($key . '.ref.type', 'The reference type does not match the variable type in the catalog.');
 
             return null;
         }
 
         return $type;
+    }
+
+    /**
+     * A human "a or b" label of an arg control's accepted variable ref types, for the identity mismatch
+     * error (e.g. "enum or text"). Never called for a structural control (its refTypes is null).
+     *
+     * @param  array<int, WorkflowVariableType>  $types
+     */
+    private function refTypesLabel(array $types): string
+    {
+        return implode(' or ', array_map(fn (WorkflowVariableType $type) => $type->value, $types));
     }
 
     /**

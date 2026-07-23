@@ -141,7 +141,8 @@ describe('WorkflowStepCard — create_task', () => {
     await Promise.resolve();
     await nextTick();
 
-    const options = document.body.querySelectorAll<HTMLElement>('[role="option"]');
+    // The Variable picker is now an expandable TREE (§refinement 5); these are flat leaf rows.
+    const options = document.body.querySelectorAll<HTMLElement>('[role="treeitem"]');
     // SHOW-ALL: the picker no longer pre-filters by type — every referenceable
     // variable is offered (Status, Title, Submitted at) and the user coerces it.
     expect(options.length).toBe(3);

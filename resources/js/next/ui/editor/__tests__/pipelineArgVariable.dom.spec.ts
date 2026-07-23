@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
-// pipelineArgVariable.dom.spec — phase-4b: a VALUE-TYPED operation argument may be a
-// VARIABLE. VariablePipelineEditor decides WHETHER to offer it (value-typed arg + the
-// host provides the `argVariable` slot + within the depth cap) and hands the slot the
-// arg + a `setValue`; the value-or-variable UI itself is the host's (a stub here). These
-// tests pin the GATING (which arg types, which depths) + the raw-arg serialization
-// (literal stays byte-identical, a variable rides through as `{kind:'variable', …}`).
+// pipelineArgVariable.dom.spec — phase-4b: ANY operation argument — value, option OR
+// structural — may be a VARIABLE. VariablePipelineEditor decides WHETHER to offer it (the
+// host provides the `argVariable` slot + within the depth cap) and hands the slot the arg
+// + its running source/target options + a `setValue`; the value-or-variable UI itself is
+// the host's (a stub here). These tests pin the GATING (every control, which depths) + the
+// raw-arg serialization (literal stays byte-identical, a variable rides through as
+// `{kind:'variable', …}`).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { h } from 'vue';
@@ -101,7 +102,7 @@ function lastPipeline(wrapper: ReturnType<typeof mountEditor>): VariablePipeline
   return emitted![emitted!.length - 1][0] as VariablePipelineStep[];
 }
 
-describe('VariablePipelineEditor — value-typed arg variables (phase-4b)', () => {
+describe('VariablePipelineEditor — arg variables (phase-4b, every control)', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
   });
@@ -176,21 +177,21 @@ describe('VariablePipelineEditor — value-typed arg variables (phase-4b)', () =
     wrapper.unmount();
   });
 
-  it('does NOT offer the slot for a sourceMap (map) arg — it stays literal-only', async () => {
+  it('OFFERS the slot for a STRUCTURAL sourceMap (map) arg — phase-4b widened it past value args', async () => {
     const wrapper = mountEditor(
       [{ stepId: 's1', operationId: 'enum_to_text', args: { mapping: {} }, outputType: 'text' }],
       { baseType: 'enum', sourceOptions: SOURCE_OPTIONS },
     );
     await edit(wrapper);
 
-    expect(wrapper.find('.arg-var-slot').exists()).toBe(false);
-    // The sourceMap per-option inputs render instead.
-    expect(wrapper.findAll('input[aria-label^="Value per option:"]').length).toBe(2);
+    // The structural arg now offers the value/variable toggle (the stub slot replaces the map editor).
+    expect(wrapper.find('.arg-var-slot').exists()).toBe(true);
+    expect(wrapper.findAll('input[aria-label^="Value per option:"]').length).toBe(0);
 
     wrapper.unmount();
   });
 
-  it('does NOT offer the slot for choiceRules / choiceFallback args', async () => {
+  it('OFFERS the slot for choiceRules AND choiceFallback args (one per arg)', async () => {
     const wrapper = mountEditor(
       [
         {
@@ -204,7 +205,35 @@ describe('VariablePipelineEditor — value-typed arg variables (phase-4b)', () =
     );
     await edit(wrapper);
 
-    expect(wrapper.find('.arg-var-slot').exists()).toBe(false);
+    // BOTH the choiceRules and the choiceFallback arg offer the toggle slot.
+    expect(wrapper.findAll('.arg-var-slot').length).toBe(2);
+
+    wrapper.unmount();
+  });
+
+  it('the slot receives the running source + target options (for the recursive literal control)', async () => {
+    // A stub cannot echo scoped props, so we assert the passthrough via a dedicated capturing slot.
+    const captured: Array<{ sourceOptions: unknown; targetOptions: unknown }> = [];
+    const wrapper = mount(VariablePipelineEditor, {
+      props: {
+        baseType: 'enum',
+        catalog: CATALOG,
+        sourceOptions: SOURCE_OPTIONS,
+        targetOptions: TARGET_OPTIONS,
+        modelValue: [{ stepId: 's1', operationId: 'enum_to_text', args: { mapping: {} }, outputType: 'text' }],
+      },
+      slots: {
+        argVariable: (p: { sourceOptions: unknown; targetOptions: unknown }) => {
+          captured.push({ sourceOptions: p.sourceOptions, targetOptions: p.targetOptions });
+          return h('div', { class: 'arg-var-slot' });
+        },
+      },
+      attachTo: document.body,
+    });
+    await edit(wrapper);
+
+    expect(captured[captured.length - 1].sourceOptions).toEqual(SOURCE_OPTIONS);
+    expect(captured[captured.length - 1].targetOptions).toEqual(TARGET_OPTIONS);
 
     wrapper.unmount();
   });
@@ -219,6 +248,20 @@ describe('VariablePipelineEditor — value-typed arg variables (phase-4b)', () =
     // At/over the cap the arg is a plain literal — no toggle slot.
     expect(wrapper.find('.arg-var-slot').exists()).toBe(false);
     expect(wrapper.find('input').exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it(`renders a STRUCTURAL arg LITERAL-ONLY at the depth cap (its bespoke editor, no slot)`, async () => {
+    const wrapper = mountEditor(
+      [{ stepId: 's1', operationId: 'enum_to_text', args: { mapping: {} }, outputType: 'text' }],
+      { baseType: 'enum', sourceOptions: SOURCE_OPTIONS, depth: MAX_ARG_VARIABLE_DEPTH },
+    );
+    await edit(wrapper);
+
+    // The depth gate is arg-type-agnostic: a structural arg at the cap is its literal map editor.
+    expect(wrapper.find('.arg-var-slot').exists()).toBe(false);
+    expect(wrapper.findAll('input[aria-label^="Value per option:"]').length).toBe(2);
 
     wrapper.unmount();
   });

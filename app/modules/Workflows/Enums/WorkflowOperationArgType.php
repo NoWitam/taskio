@@ -2,6 +2,8 @@
 
 namespace App\Modules\Workflows\Enums;
 
+use App\Modules\Workflows\DTOs\ArgVariablePolicy;
+
 /**
  * The CONTROL type of a single operation argument — the backend mirror of the FE
  * `VariableOperationArgumentType` union (extensions/types.ts). It is NOT a value type
@@ -40,26 +42,36 @@ enum WorkflowOperationArgType: string
     case CHOICE_FALLBACK = 'choiceFallback';
 
     /**
-     * The WorkflowVariableType this arg coerces to when its value is supplied by a VARIABLE rather than
-     * a constant literal (phase-4a) — the single source both the write-validator and the runtime
-     * resolver read so a variable argument is type-gated exactly like a literal one, and never drifts.
+     * The policy for accepting a VARIABLE-supplied value in this arg — the SINGLE source both the
+     * write-validator and the runtime resolver read, so a variable argument is gated at write time and
+     * coerced at run time identically and can never drift (mirrors how this enum owns the arg contract).
      *
-     * Only the plain VALUE controls are variable-able: text → text, number → number, boolean → boolean,
-     * date → date. The remaining controls return null (LITERAL-ONLY): sourceOption/sourceOptions/
-     * sourceMap/choiceRules/choiceFallback are option-set-constrained (their membership in the source /
-     * destination option set is unverifiable for a runtime variable), and `select` carries the arg's own
-     * fixed options — so this iteration keeps them constant-only. A variable in such a slot is rejected
-     * at write time and fails closed at runtime.
+     * EVERY control now accepts a variable (phase-4b widened phase-4a's value-only rule). Per category:
+     *   - VALUE (text/number/boolean/date)          strict single-type match — unchanged from phase-4a.
+     *   - single-OPTION (select/sourceOption/         a variable whose type is enum OR text (a value that
+     *     choiceFallback)                            stringifies to an option key); coerced to a string.
+     *                                                Option-set membership is deferred to runtime fail-soft.
+     *   - multi-OPTION (sourceOptions)               a variable whose type is multi; per-element membership
+     *                                                deferred to runtime fail-soft.
+     *   - STRUCTURAL (sourceMap/choiceRules)         a ref for the WHOLE structure — the flat variable type
+     *                                                cannot express a map / rule list, so the ref is gated
+     *                                                LOOSELY (whitelisted root + present in the reference
+     *                                                index) and the exact shape is deferred to runtime
+     *                                                fail-soft (the executor's map/rules reader fail-softs).
+     *
+     * See ArgVariablePolicy for how each side consumes the two facets (refTypes + coerceTo). The FE
+     * mirror (operationHelpers.ts `argVariablePolicy`) must track this per-arg gate.
      */
-    public function variableValueType(): ?WorkflowVariableType
+    public function argVariablePolicy(): ArgVariablePolicy
     {
         return match ($this) {
-            self::TEXT => WorkflowVariableType::TEXT,
-            self::NUMBER => WorkflowVariableType::NUMBER,
-            self::BOOLEAN => WorkflowVariableType::BOOLEAN,
-            self::DATE => WorkflowVariableType::DATE,
-            self::SELECT, self::SOURCE_OPTION, self::SOURCE_OPTIONS,
-            self::SOURCE_MAP, self::CHOICE_RULES, self::CHOICE_FALLBACK => null,
+            self::TEXT => ArgVariablePolicy::value(WorkflowVariableType::TEXT),
+            self::NUMBER => ArgVariablePolicy::value(WorkflowVariableType::NUMBER),
+            self::BOOLEAN => ArgVariablePolicy::value(WorkflowVariableType::BOOLEAN),
+            self::DATE => ArgVariablePolicy::value(WorkflowVariableType::DATE),
+            self::SELECT, self::SOURCE_OPTION, self::CHOICE_FALLBACK => ArgVariablePolicy::option(),
+            self::SOURCE_OPTIONS => ArgVariablePolicy::options(),
+            self::SOURCE_MAP, self::CHOICE_RULES => ArgVariablePolicy::structural(),
         };
     }
 }

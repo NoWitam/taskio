@@ -30,26 +30,63 @@ import type {
 export const MAX_ARG_VARIABLE_DEPTH = 3;
 
 /**
- * The value TYPE an operation argument coerces to when supplied by a VARIABLE rather than a constant
- * — the FE mirror of the backend `WorkflowOperationArgType::variableValueType()`. Only the plain
- * VALUE controls are variable-able (text→text, number→number, boolean→boolean, date→date); the
- * option/map/rules/select controls are option-set-constrained and stay LITERAL-ONLY (null). An arg
- * whose type is null here NEVER offers the value/variable toggle.
+ * The per-arg-control policy for accepting a VARIABLE-supplied operation argument (phase-4b) — the FE
+ * mirror of the backend `WorkflowOperationArgType::argVariablePolicy()` (→ `ArgVariablePolicy`). This
+ * is the SINGLE FE source for the two decisions the editor makes per arg control, so the FE can never
+ * offer a config the write-validator would 422:
+ *   1. WHETHER the control accepts a variable — since phase-4b, EVERY control does (the phase-4a
+ *      value-only rule is retired), so there is no "null policy" arm.
+ *   2. The `refTypes` TYPE FILTER — the variable types the picker offers AND the terminal type the
+ *      (optional) coercion pipeline must produce. `null` = STRUCTURAL: the flat variable type cannot
+ *      express a `{option: target}` map / a `{when, then}` rule list, so ANY variable is offered (no
+ *      filter, loose write-gate) and its exact shape is deferred to runtime fail-soft.
+ *
+ * MUST MATCH the backend `WorkflowOperationArgType::argVariablePolicy()` case-for-case (see
+ * `app/modules/Workflows/Enums/WorkflowOperationArgType.php` + `DTOs/ArgVariablePolicy.php`). The
+ * backend's second facet — `coerceTo` (the runtime coercion target) — is a RESOLVER concern with no
+ * FE equivalent, so only `refTypes` is mirrored here.
  */
-export function argVariableValueType(type: VariableOperationArgumentType): VariablePrimitive | null {
+export interface ArgVariablePolicy {
+  /**
+   * The variable types this control accepts (the picker filter + the pipeline terminal gate), or
+   * `null` for a STRUCTURAL control (sourceMap / choiceRules) that accepts ANY variable unfiltered.
+   */
+  refTypes: VariablePrimitive[] | null;
+}
+
+/**
+ * The `ArgVariablePolicy` for one arg control — mirrors the backend match case-for-case:
+ *   - VALUE (text/number/boolean/date)            strict single type.
+ *   - single OPTION (select/sourceOption/          `enum` OR `text` (a value that stringifies to an
+ *     choiceFallback)                              option key); membership is a RUNTIME concern.
+ *   - multi OPTION (sourceOptions)                 `multi` (an array of option values).
+ *   - STRUCTURAL (sourceMap/choiceRules)           `null` — any variable; shape runtime-checked.
+ */
+export function argVariablePolicy(type: VariableOperationArgumentType): ArgVariablePolicy {
   switch (type) {
     case 'text':
-      return 'text';
+      return { refTypes: ['text'] };
     case 'number':
-      return 'number';
+      return { refTypes: ['number'] };
     case 'boolean':
-      return 'boolean';
+      return { refTypes: ['boolean'] };
     case 'date':
-      return 'date';
-    default:
-      // select / sourceOption / sourceOptions / sourceMap / choiceRules / choiceFallback
-      return null;
+      return { refTypes: ['date'] };
+    case 'select':
+    case 'sourceOption':
+    case 'choiceFallback':
+      return { refTypes: ['enum', 'text'] };
+    case 'sourceOptions':
+      return { refTypes: ['multi'] };
+    case 'sourceMap':
+    case 'choiceRules':
+      return { refTypes: null };
   }
+}
+
+/** Whether an arg control is STRUCTURAL (a `{option:target}` map / a `{when,then}` rule list). */
+export function isStructuralArg(type: VariableOperationArgumentType): boolean {
+  return argVariablePolicy(type).refTypes === null;
 }
 
 // Icon per primitive. Labels are NOT stored here — they resolve through i18n at

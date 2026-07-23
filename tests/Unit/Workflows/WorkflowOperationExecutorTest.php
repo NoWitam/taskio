@@ -407,4 +407,68 @@ class WorkflowOperationExecutorTest extends TestCase
         $this->assertTrue($result->failed);
         $this->assertFalse($result->hard);
     }
+
+    // ── structural/option args resolve to a malformed shape → fail-soft (phase-4b) ──
+    //
+    // The executor receives already-resolved args (the resolver pre-resolves a variable arg to a literal).
+    // Since option/structural args may now be supplied by a variable, a resolved value of the WRONG shape
+    // must fail SOFT at the pure-transformer boundary — never a crash / TypeError.
+
+    public function test_enum_map_fails_soft_on_a_list_shaped_mapping_arg(): void
+    {
+        // A sourceMap variable that resolved to a LIST (not a {option: target} map): the source option is
+        // not a key → FAIL, not a crash.
+        $result = $this->executor->execute('high', WorkflowVariableType::ENUM, [
+            ['op' => 'enum_to_text', 'args' => ['mapping' => ['a', 'b']]],
+        ]);
+
+        $this->assertTrue($result->failed);
+        $this->assertFalse($result->hard);
+    }
+
+    public function test_enum_map_fails_soft_on_a_non_array_mapping_arg(): void
+    {
+        // A sourceMap variable that resolved to null/scalar (its ref was a non-array) → FAIL.
+        foreach (['not-a-map', null, 42] as $mapping) {
+            $result = $this->executor->execute('high', WorkflowVariableType::ENUM, [
+                ['op' => 'enum_to_text', 'args' => ['mapping' => $mapping]],
+            ]);
+
+            $this->assertTrue($result->failed);
+        }
+    }
+
+    public function test_match_to_choice_fails_soft_on_a_non_array_rules_arg(): void
+    {
+        // A choiceRules variable that resolved to a scalar (a malformed shape) → FAIL, never a type error.
+        $result = $this->executor->execute('x', WorkflowVariableType::TEXT, [
+            ['op' => 'match_to_choice', 'args' => ['rules' => 'not-a-list', 'fallback' => 'low']],
+        ]);
+
+        $this->assertTrue($result->failed);
+    }
+
+    public function test_match_to_choice_treats_a_null_rules_arg_as_no_rules(): void
+    {
+        // A null `rules` (what a structural variable resolves to when its ref is a non-array / missing) is
+        // treated as "no rules" → the fallback is returned. Fail-soft, no crash.
+        $result = $this->executor->execute('x', WorkflowVariableType::TEXT, [
+            ['op' => 'match_to_choice', 'args' => ['rules' => null, 'fallback' => 'low']],
+        ]);
+
+        $this->assertSame('low', $result->value);
+    }
+
+    public function test_option_arg_fails_soft_when_it_resolved_to_a_non_scalar(): void
+    {
+        // A single-OPTION arg (enum_is `value`) that resolved to a non-scalar (a fail-soft null/array) →
+        // withStringArg returns FAIL rather than casting an array to string.
+        foreach ([null, ['a', 'b']] as $value) {
+            $result = $this->executor->execute('high', WorkflowVariableType::ENUM, [
+                ['op' => 'enum_is', 'args' => ['value' => $value]],
+            ]);
+
+            $this->assertTrue($result->failed);
+        }
+    }
 }

@@ -2,6 +2,10 @@
 
 **Date:** 2026-07-22 (created)
 **Status:** Accepted
+**Updated:** 2026-07-23 — Addendum below: non-array `object` descriptor fields join the reference
+index/type map, recursively (partially supersedes the "Rejected: enumerating a repeater element's
+subfields" note — for the non-array case only; the REPEATER/array boundary Decision 5 established is
+unchanged)
 **Module:** `App\Modules\Workflows` (one cross-module addition: `App\Modules\Disk\Models\File`)
 **Relates to:** ADR-0021 (Phase 0: the composable, form-independent catalog this phase's container
 walk builds on), ADR-0022 (Phase 1: the `descriptor` spine and the `TIME` descriptor-only tripwire
@@ -252,3 +256,45 @@ composite" under "The typed variable system") for the full wire contracts this p
 `docs/backend/disk-api.md` and `docs/decisions/ADR-0016-disk-resources.md` for the `serveUrl()` /
 snapshot cross-reference, and `resources/js/next/docs/pages/WorkflowsPage.vue` (Section 6) for the
 in-app docs mirror.
+
+---
+
+## Addendum (2026-07-23) — non-array OBJECT descriptor fields are now referenceable, recursively
+
+Decision 5 above enumerated a FILE composite's fixed subfields into the reference index / runtime
+type map via `fileSubfieldTypeMap()`, and explicitly left a REPEATER element's subfields
+unenumerated ("Rejected: enumerating a repeater element's subfields in the reference index today").
+A later batch generalizes that mechanism to a SECOND descriptor shape — a **non-array** `object`
+container's own declared `fields` — while leaving the REPEATER (array) case exactly as Decision 5
+and the Rejected note describe.
+
+`WorkflowVariableCatalogService::descriptorSubfieldTypeMap()` (renamed from the phase-2b-only
+file-subfield wrapper) is now `fileSubfieldTypeMap() + objectSubfieldTypeMap()` — the new
+`objectSubfieldTypeMap()` walks a descriptor's `fields` RECURSIVELY into `<path>.<key>` entries
+whenever `isObjectContainer($descriptor)` (`base === 'object' && array !== true`), mirroring the
+editor's own picker-tree rule of the same name in `workflowVariables.ts` so what the tree offers is
+exactly what the write-side index accepts. `addReferenceEntry()`/`addTypeMapEntry()` both call it
+unconditionally now (not just for a FILE-typed entry), so this reaches EVERY non-array object
+descriptor — a form SECTION's own container entry (redundant with its pre-existing flat leaves, see
+below), and, more consequentially, a Phase-3 GLOBAL's interior, which has no separate flat-leaf pass
+at all. Recursion STOPS the instant it reaches an `array:true` object descriptor (a REPEATER) —
+`isObjectContainer()` returns `false` for it, so `objectSubfieldTypeMap()` returns `[]` immediately —
+so a repeater's element subfields remain UNREFERENCEABLE at every nesting depth, exactly as Decision
+5 established; this addendum widens the non-array case only, at any depth of non-array nesting (an
+object nested inside another non-array object is indexed too, recursively).
+
+**Section-leaf dedupe.** A form section's own flat leaves are emitted by the pre-existing
+`formFieldVariables()` leaf pass BEFORE its container entry, so `addReferenceEntry()`'s existing
+`??=` guard means the section's own richer flat entry (carrying its `enumOptions`) always wins over
+the descriptor-derived duplicate — no behavior change for any existing section reference. A
+descriptor-derived subfield entry (whether from a FILE or now an OBJECT) carries NO `enumOptions` —
+an accepted, unchanged limitation (Decision 5's file subfields already had it).
+
+This closes the write-side gap Decision 5 left open for a SELF-CONTAINED object with no separate
+flat-leaf pass — see `docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md`'s own
+addendum for the GLOBAL-specific consequence (an object global's interior is now write-validatable,
+matching what its picker tree already exposed). The "Rejected: enumerating a repeater element's
+subfields" note above is otherwise UNCHANGED — a repeater element's subfield is still, deliberately,
+not a correctness-safe reference until R2's loop model defines what "the" element means. See
+`docs/backend/workflows-api.md` ("Structural descriptor: object containers & the file composite")
+for the updated wire description.
