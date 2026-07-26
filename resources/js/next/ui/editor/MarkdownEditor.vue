@@ -143,8 +143,17 @@ const contentAttributes = computed<Record<string, string>>(() => ({
 // PART 2: assemble the enabled app nodes (mention/variable/if-block/AI). Variable
 // /mention/AI nodes share the schema, so they work inside if-block branch bodies
 // automatically. The direct `extensions` prop is appended last.
+//
+// The extension set is built ONCE (the Tiptap schema is fixed for an editor's lifetime),
+// so any part of a feature config read HERE is a SNAPSHOT. That is why the variable
+// feature's LIVE getters are forwarded as functions: `source()` / `catalog()` are re-read
+// by the extension (and by the chip / if-branch NodeViews) at call time, so a host feed
+// that arrives async or changes later still reaches this editor. Hosts that pass only the
+// arrays keep the previous (snapshot) behavior, and a host with no `variables` prop at all
+// (e.g. pages/tasks) never builds the node in the first place.
 const features: Part2Features = {
   mentions: props.mentions,
+  // Forwarded whole, INCLUDING the optional `source()` / `catalog()` getters.
   variables: props.variables,
   ifBlocks: props.ifBlocks,
   aiText: props.aiText,

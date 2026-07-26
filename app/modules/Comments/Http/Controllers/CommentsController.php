@@ -67,6 +67,11 @@ class CommentsController extends Controller
     {
         $modelClass = match ($module) {
             'tasks' => \App\Modules\Tasks\Models\Task::class,
+            // Disk items use their SINGULAR morph aliases — the same {module} convention the
+            // generic changelog endpoint rides (/file/{id}/changelog). All TenantAware, so
+            // findOrFail is workspace-scoped exactly like tasks.
+            'file' => \App\Modules\Disk\Models\File::class,
+            'folder' => \App\Modules\Disk\Models\Folder::class,
             // Dodaj tutaj inne moduły w przyszłości
             default => throw new \Exception("Module {$module} not supported for comments")
         };

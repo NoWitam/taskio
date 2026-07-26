@@ -46,6 +46,7 @@ import type {
   WorkflowRunResponse,
   WorkflowStatus,
   WorkflowStatusPayload,
+  WorkflowTriggerType,
   WorkflowWritePayload,
 } from '../../pages/workflows/types';
 
@@ -132,11 +133,18 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
   // label and mirrors the numeric bounds as constants (workflowSchedule.ts). The REV3
   // `scheduleFamilies` cache + `fetchScheduleFamilies` were REMOVED.
 
-  // --- Variable-catalog cache, keyed per form id (§4.7) --------------------
-  // Each form's catalog is cached so switching steps/fields on one form doesn't
-  // refetch; a per-form-id in-flight guard de-dupes concurrent requests.
-  const catalogByForm = ref<Record<string, WorkflowCatalog>>({});
+  // --- Variable-catalog cache, keyed per (trigger_type, form_id) (§4.7) -----
+  // The catalog is now FORM-INDEPENDENT: EVERY workflow (schedule included) gets a real
+  // catalog from `GET /workflows/catalog?trigger_type=&form_id=`. It is cached per
+  // (trigger_type + form_id) composite so switching steps/fields doesn't refetch; a
+  // per-key in-flight guard de-dupes concurrent requests.
+  const catalogByKey = ref<Record<string, WorkflowCatalog>>({});
   const catalogInFlight = new Map<string, Promise<WorkflowCatalog>>();
+
+  /** The composite cache key for a (trigger_type, form_id) catalog. */
+  function catalogKey(triggerType: WorkflowTriggerType, formId?: string | null): string {
+    return `${triggerType}:${formId ?? ''}`;
+  }
 
   // --- List helpers --------------------------------------------------------
   /**
@@ -349,40 +357,62 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
   // --- Schedule builder catalog / assist / preview (§4.5, §4.7) ------------
 
   /**
-   * Fetch the TYPED variable catalog for a form
-   * (`GET /forms/{formId}/workflow-catalog`). CACHED PER FORM ID — the second call
-   * for the same form returns the cached catalog; concurrent calls for one form
-   * share a request. The catalog feeds every variable-capable control on the
-   * workflow (all step editors + add-on fields + the condition builder).
+   * Fetch the FORM-INDEPENDENT variable catalog
+   * (`GET /workflows/catalog?trigger_type=&form_id=`). `triggerType` selects the
+   * trigger-system vars; an OPTIONAL `formId` layers in that form's field vars (matching
+   * the old `GET /forms/{formId}/workflow-catalog` exactly). So a schedule (or form-less
+   * form_submitted) workflow now gets a REAL catalog — trigger vars + `steps.<TYPE>.*`
+   * step outputs + operations + types — where it previously had none. CACHED PER
+   * (triggerType, formId) — the second call for the same pair returns the cached catalog;
+   * concurrent calls share a request. Feeds every variable-capable control on the workflow
+   * (all step editors + add-on fields + the condition builder).
    */
-  async function fetchWorkflowCatalog(formId: string): Promise<WorkflowCatalog> {
-    const cached = catalogByForm.value[formId];
+  async function fetchWorkflowCatalog(
+    triggerType: WorkflowTriggerType,
+    formId?: string | null,
+  ): Promise<WorkflowCatalog> {
+    const key = catalogKey(triggerType, formId);
+    const cached = catalogByKey.value[key];
     if (cached) return cached;
 
-    const inFlight = catalogInFlight.get(formId);
+    const inFlight = catalogInFlight.get(key);
     if (inFlight) return inFlight;
 
+    const params = new URLSearchParams({ trigger_type: triggerType });
+    if (formId) params.set('form_id', formId);
+
     const request = api
-      .get<WorkflowCatalogResponse>(`/forms/${formId}/workflow-catalog`)
+      .get<WorkflowCatalogResponse>(`/workflows/catalog?${params.toString()}`)
       .then((res) => {
         const catalog = res.data ?? { variables: [], fields: [] };
-        catalogByForm.value = { ...catalogByForm.value, [formId]: catalog };
+        catalogByKey.value = { ...catalogByKey.value, [key]: catalog };
         return catalog;
       })
       .finally(() => {
-        catalogInFlight.delete(formId);
+        catalogInFlight.delete(key);
       });
 
-    catalogInFlight.set(formId, request);
+    catalogInFlight.set(key, request);
     return request;
   }
 
-  /** Drop the cached catalog for a form (e.g. after a form edit invalidates it). */
-  function invalidateCatalog(formId: string): void {
-    if (!(formId in catalogByForm.value)) return;
-    const next = { ...catalogByForm.value };
-    delete next[formId];
-    catalogByForm.value = next;
+  /** Drop the cached catalog for a (trigger_type, form_id) (e.g. after a form edit). */
+  function invalidateCatalog(triggerType: WorkflowTriggerType, formId?: string | null): void {
+    const key = catalogKey(triggerType, formId);
+    if (!(key in catalogByKey.value)) return;
+    const next = { ...catalogByKey.value };
+    delete next[key];
+    catalogByKey.value = next;
+  }
+
+  /**
+   * Drop EVERY cached catalog. Workspace GLOBALS are form-independent — they appear in
+   * the catalog for every (trigger_type, form_id) — so a globals create/update/delete
+   * must invalidate them all, forcing the next editor open to refetch the updated
+   * `globals.*` variables. Called by the globals store after a mutation.
+   */
+  function invalidateAllCatalogs(): void {
+    catalogByKey.value = {};
   }
 
   /**
@@ -442,7 +472,7 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
     detailLoading,
     detailError,
     // schedule builder catalog cache
-    catalogByForm,
+    catalogByKey,
     // list actions
     fetchWorkflows,
     loadMore,
@@ -463,6 +493,7 @@ export const useWorkflowsStore = defineStore('next-workflows', () => {
     // schedule builder catalog / assist / preview (§4.5, §4.7)
     fetchWorkflowCatalog,
     invalidateCatalog,
+    invalidateAllCatalogs,
     scheduleAssist,
     schedulePreview,
   };

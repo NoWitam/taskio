@@ -2,8 +2,8 @@
 
 namespace App\Modules\Workflows\Steps;
 
+use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Workflows\Enums\WorkflowStepType;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\WorkflowRun;
 
 /**
@@ -36,7 +36,7 @@ interface WorkflowStep
      * variables (`steps.<key>.<name>`) WITHOUT the catalog knowing each step's internals. B4
      * adds new step outputs by implementing this on the new step class only.
      *
-     * @return array<int, array{name: string, type: WorkflowVariableType}>
+     * @return array<int, array{name: string, type: VariableType}>
      */
     public static function outputDescriptors(): array;
 }

@@ -4,10 +4,8 @@ namespace App\Modules\Bot\Tools\Registry;
 
 use App\Modules\Bot\Enums\BotActionType;
 use App\Modules\Bot\Tools\BotToolContext;
-use App\Modules\Disk\Enums\FileType;
-use App\Modules\Disk\Models\File;
+use App\Modules\Disk\Services\FileService;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Laravel\Ai\Contracts\Tool;
 use Laravel\Ai\Tools\Request;
@@ -56,24 +54,21 @@ class GenerateFileTool implements Tool
             return 'Treść pliku przekracza dozwolony rozmiar.';
         }
 
-        $path = 'uploads/' . Str::uuid() . '.' . $extension;
-        Storage::put($path, $content);
-
+        // Through FileService so a bot's output is stored exactly like every other file
+        // (per-workspace blob prefix, FileType derived from the mime, one place to change).
+        //
         // uploader_id is NOT NULL; a bot has no user, so attribute the file to the
         // task's (human) creator. fileable = the task, so it shows as a task attachment.
         // NOTE (S1, documented compromise): attributing a bot-generated file to the task
         // creator is a deliberate stopgap until a future schema pass makes uploader_id
         // nullable and adds an explicit bot-uploader marker (B6). Do not "fix" here.
-        File::create([
-            'name' => $filename,
-            'path' => $path,
-            'type' => FileType::fromMimeType(self::ALLOWED[$extension]),
-            'mime_type' => self::ALLOWED[$extension],
-            'size' => strlen($content),
-            'uploader_id' => $this->ctx->task->creator_id,
-            'fileable_type' => $this->ctx->task->getMorphClass(),
-            'fileable_id' => $this->ctx->task->getKey(),
-        ]);
+        app(FileService::class)->storeContent(
+            content: $content,
+            name: $filename,
+            mimeType: self::ALLOWED[$extension],
+            parent: $this->ctx->task,
+            attributes: ['uploader_id' => $this->ctx->task->creator_id],
+        );
 
         $this->ctx->actions->record($this->ctx->bot, $this->ctx->task, BotActionType::ToolUsed, [
             'tool' => 'generate_file',

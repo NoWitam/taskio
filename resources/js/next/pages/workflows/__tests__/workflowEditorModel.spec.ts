@@ -36,6 +36,7 @@ describe('emptyStepConfig — the seeded draft shape (§4.6)', () => {
       priority: null,
       deadline: null,
       labels: [],
+      attachments: null,
       assignee_type: null,
       assignee_id: null,
       form_id: null,
@@ -94,6 +95,16 @@ describe('buildStepConfig — create_task wire (strip empties, unions through, a
     // Stripped empties are absent, not null.
     expect('description' in cfg).toBe(false);
     expect('approval_pipeline_id' in cfg).toBe(false);
+  });
+
+  it('passes an attachments union through and omits an empty one', () => {
+    const literal: WorkflowFieldValue = { kind: 'literal', value: '11111111-1111-4111-8111-111111111111' };
+    const withFile = buildStepConfig(step('create_task', { title: 'A', attachments: literal }));
+    expect(withFile.attachments).toEqual(literal);
+
+    // An empty literal (no file chosen) is stripped, not emitted as null.
+    const empty = buildStepConfig(step('create_task', { title: 'A', attachments: { kind: 'literal', value: null } }));
+    expect('attachments' in empty).toBe(false);
   });
 
   it('drops BOTH assignee keys when only one side is set', () => {

@@ -3,39 +3,36 @@
 namespace App\Modules\Workflows\Services;
 
 use App\Modules\Forms\Models\Form;
-use App\Modules\Workflows\DTOs\WorkflowOperationArg;
+use App\Modules\Variables\Enums\VariableType;
+use App\Modules\Variables\Services\PipelineValidator;
 use App\Modules\Workflows\Enums\ConditionTreeLimits;
-use App\Modules\Workflows\Enums\WorkflowOperation;
-use App\Modules\Workflows\Enums\WorkflowOperationArgType;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use Illuminate\Contracts\Validation\Validator as ValidatorContract;
 
 /**
  * The ONE place the NEW condition-TREE shape ({ logic, children[] } of groups + conditions) is
  * write-validated — extracted from StoreWorkflowRequest exactly as WorkflowScheduleRulesValidator
- * was for the schedule descriptor, so the recursive structure/limits/type-flow rules live in one
- * cohesive place and the request stays thin. Errors are added to the request's Validator under the
- * caller's `conditions` prefix with INDEXED paths (conditions.children.0.pipeline.1.args.value …)
- * so the FE can map each message to the offending node.
+ * was for the schedule descriptor, so the recursive structure/limits rules live in one cohesive place
+ * and the request stays thin. Errors are added to the request's Validator under the caller's
+ * `conditions` prefix with INDEXED paths (conditions.children.0.pipeline.1.args.value …) so the FE can
+ * map each message to the offending node.
  *
  * The LEGACY flat-clause shape is NOT handled here — StoreWorkflowRequest keeps validating that
  * inline (unchanged). This validator runs only when `conditions` is an object (associative) tree.
  *
- * What it enforces:
+ * TREE structure lives here; the per-leaf PIPELINE type-flow (op walk, args, argument variables,
+ * element pipelines, choice mapping) lives in the Variables module's PipelineValidator, which this
+ * class CALLS per condition. What THIS class enforces:
  *   - STRUCTURE + HARD LIMITS: group/condition kinds, logic ∈ {and, or}, depth ≤ 5 (root = 1),
- *     ≤ 10 children per group, ≤ 10 pipeline steps, non-empty groups (ConditionTreeLimits).
- *   - SOURCE: `source` must be a field in the form's condition catalog and `source_type` must equal
- *     that field's type. (Sources are the form's field descriptors — `fields.<id>` — matching the
- *     legacy condition contract and the runtime payload; system/step variables are out of scope.)
- *   - TYPE-FLOW: starting from `source_type`, each op must exist, accept the current type, and the
- *     pipeline must TERMINATE in boolean.
- *   - ARGS per descriptor: required presence + shape (scalar/list/map), sourceOption ∈ the source
- *     field's options, sourceOptions ⊆ options (non-empty), sourceMap keys ⊆ options with non-empty
- *     values (number/date targets parseable), literal date args strict Y-m-d, and no foreign arg keys.
- *   - CHOICE args (value pipelines targeting a destination field with a fixed option set, e.g. a task
- *     priority — the target options are injected per field, NOT in the static descriptor): the
- *     enum_to_choice mapping VALUES, and match_to_choice rule `then`/`fallback`, must all be ⊆ those
- *     target options; a value pipeline for such a field must END in a choice-producing op.
+ *     ≤ 10 children per group, non-empty groups (ConditionTreeLimits).
+ *   - SOURCE: `source` must be an entry of the condition-source catalog
+ *     (WorkflowVariableCatalogService::conditionFieldsFor) and `source_type` must equal that entry's
+ *     type. TWO VOCABULARIES, one table: a FORM FIELD keeps the legacy unprefixed `fields.<id>` path
+ *     (matching the flat clause contract and the runtime payload), while a workspace GLOBAL uses its
+ *     full catalog path `globals.<key>[.<sub>]` (its catalog source IS its root). Only a global's
+ *     SCALAR leaves are offered — an object global, like a form container, is not conditionable.
+ *     Trigger system vars and `steps.*` are NOT condition sources.
+ *   - Then it hands each condition's `default` + `pipeline` (seeded with the source's real descriptor)
+ *     to PipelineValidator for the type-flow / literal / argument-variable checks.
  *
  * When the form cannot be resolved (a missing/foreign form_id — already reported by the request's own
  * rule) the catalog-dependent checks (source existence/type + option membership) are SKIPPED; every
@@ -45,24 +42,35 @@ class WorkflowConditionTreeValidator
 {
     public function __construct(
         private WorkflowVariableCatalogService $catalog,
+        private PipelineValidator $pipeline,
     ) {}
 
     /**
      * Validate the tree under $prefix, adding granular errors to $validator. $form is the resolved
      * trigger form (or null when it could not be resolved — catalog checks are then skipped).
      *
+     * $refCtx is the reference index an operation ARGUMENT may reference (B6). The caller
+     * (StoreWorkflowRequest) builds it with NO prior steps, so a gate can reference the trigger's
+     * variables and the workspace globals but never a `steps.*` output — nothing has run yet. Its
+     * `sources` list is the roots a ref may name (WorkflowVariableResolver::ROOTS), which the caller
+     * supplies so the Variables pipeline validator needs no back-dependency on the resolver. Null keeps
+     * the pre-B6 behaviour (arguments are literal-only).
+     *
      * @param  array<string, mixed>  $tree
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool, sources: array<int, string>}|null  $refCtx
      */
-    public function validate(ValidatorContract $validator, array $tree, string $prefix, ?Form $form): void
+    public function validate(ValidatorContract $validator, array $tree, string $prefix, ?Form $form, ?array $refCtx = null): void
     {
         $fields = $form !== null ? $this->fieldTable($form) : null;
 
-        $this->validateGroup($validator, $tree, $prefix, $fields, 1);
+        $this->validateGroup($validator, $tree, $prefix, $fields, 1, $refCtx);
     }
 
     /**
-     * The form's condition-field descriptors keyed by their `fields.<id>` path — the set of valid
-     * condition sources, each carrying its type and (for enum/multi) its option values.
+     * The condition-SOURCE descriptors keyed by their path — the set of valid condition sources, each
+     * carrying its type and (for enum/multi) its option values. Two vocabularies live in this one
+     * table: the form's fields as `fields.<id>` and the workspace globals as `globals.<key>` (see the
+     * class docblock and WorkflowVariableCatalogService::conditionFieldsFor).
      *
      * @return array<string, array<string, mixed>>
      */
@@ -83,8 +91,9 @@ class WorkflowConditionTreeValidator
      *
      * @param  array<string, mixed>  $node
      * @param  array<string, array<string, mixed>>|null  $fields
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool, sources: array<int, string>}|null  $refCtx
      */
-    private function validateGroup(ValidatorContract $validator, array $node, string $prefix, ?array $fields, int $depth): void
+    private function validateGroup(ValidatorContract $validator, array $node, string $prefix, ?array $fields, int $depth, ?array $refCtx = null): void
     {
         if ($depth > ConditionTreeLimits::MAX_DEPTH) {
             $validator->errors()->add($prefix, 'The conditions are nested too deeply (max ' . ConditionTreeLimits::MAX_DEPTH . ' levels).');
@@ -113,7 +122,7 @@ class WorkflowConditionTreeValidator
         }
 
         foreach ($children as $index => $child) {
-            $this->validateChild($validator, $child, $prefix . '.children.' . $index, $fields, $depth + 1);
+            $this->validateChild($validator, $child, $prefix . '.children.' . $index, $fields, $depth + 1, $refCtx);
         }
     }
 
@@ -121,8 +130,9 @@ class WorkflowConditionTreeValidator
      * Dispatch a child by kind: a condition leaf or a nested group. Anything else is rejected.
      *
      * @param  array<string, array<string, mixed>>|null  $fields
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool, sources: array<int, string>}|null  $refCtx
      */
-    private function validateChild(ValidatorContract $validator, mixed $child, string $prefix, ?array $fields, int $depth): void
+    private function validateChild(ValidatorContract $validator, mixed $child, string $prefix, ?array $fields, int $depth, ?array $refCtx = null): void
     {
         if (!is_array($child)) {
             $validator->errors()->add($prefix, 'A condition node must be an object.');
@@ -131,22 +141,24 @@ class WorkflowConditionTreeValidator
         }
 
         match ($child['kind'] ?? null) {
-            'condition' => $this->validateCondition($validator, $child, $prefix, $fields),
-            'group' => $this->validateGroup($validator, $child, $prefix, $fields, $depth),
+            'condition' => $this->validateCondition($validator, $child, $prefix, $fields, $refCtx),
+            'group' => $this->validateGroup($validator, $child, $prefix, $fields, $depth, $refCtx),
             default => $validator->errors()->add($prefix . '.kind', 'A node kind must be group or condition.'),
         };
     }
 
     /**
-     * A leaf condition: a catalog source + matching source_type, and a typed pipeline that flows from
-     * source_type through valid ops to a boolean.
+     * A leaf condition: a catalog source + matching source_type, then its type-compatible `default`
+     * and its typed pipeline are handed to PipelineValidator (the pipeline flows from source_type
+     * through valid ops to a boolean).
      *
      * @param  array<string, mixed>  $node
      * @param  array<string, array<string, mixed>>|null  $fields
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool, sources: array<int, string>}|null  $refCtx
      */
-    private function validateCondition(ValidatorContract $validator, array $node, string $prefix, ?array $fields): void
+    private function validateCondition(ValidatorContract $validator, array $node, string $prefix, ?array $fields, ?array $refCtx = null): void
     {
-        $type = WorkflowVariableType::tryFrom((string) ($node['source_type'] ?? ''));
+        $type = VariableType::tryFrom((string) ($node['source_type'] ?? ''));
 
         if ($type === null) {
             $validator->errors()->add($prefix . '.source_type', 'The source_type is not a valid variable type.');
@@ -158,7 +170,32 @@ class WorkflowConditionTreeValidator
             return; // cannot type-flow the pipeline without a valid source type
         }
 
-        $this->validatePipeline($validator, $node, $prefix, $type, $enumOptions);
+        $this->pipeline->validateDefault($validator, $node, $prefix, $type, $enumOptions);
+        $this->pipeline->validateConditionPipeline($validator, $node, $prefix, $type, $enumOptions, $refCtx, $this->sourceDescriptor($fields, $node));
+    }
+
+    /**
+     * The REAL structured descriptor of a condition source (array-ops F2), read off the field table by the
+     * node's `source` path — the ONE way an array<object> (repeater) / array<file> condition source keeps
+     * its array-ness + element `fields` when the pipeline walk seeds (its degraded flat wire type is `multi`,
+     * so the flat seed alone would expose no element subfields). Null for a scalar/enum leaf (no threaded
+     * descriptor — the flat seed then applies, a provable no-op).
+     *
+     * @param  array<string, array<string, mixed>>|null  $fields
+     * @param  array<string, mixed>  $node
+     * @return array<string, mixed>|null
+     */
+    private function sourceDescriptor(?array $fields, array $node): ?array
+    {
+        $source = $node['source'] ?? null;
+
+        if ($fields === null || !is_string($source)) {
+            return null;
+        }
+
+        $descriptor = $fields[$source]['descriptor'] ?? null;
+
+        return is_array($descriptor) ? $descriptor : null;
     }
 
     /**
@@ -170,7 +207,7 @@ class WorkflowConditionTreeValidator
      * @param  array<string, array<string, mixed>>|null  $fields
      * @return array<int, string>|null
      */
-    private function validateSource(ValidatorContract $validator, array $node, string $prefix, ?array $fields, ?WorkflowVariableType $type): ?array
+    private function validateSource(ValidatorContract $validator, array $node, string $prefix, ?array $fields, ?VariableType $type): ?array
     {
         $source = $node['source'] ?? null;
 
@@ -187,7 +224,7 @@ class WorkflowConditionTreeValidator
         $descriptor = $fields[$source] ?? null;
 
         if ($descriptor === null) {
-            $validator->errors()->add($prefix . '.source', 'The source is not a condition field of the selected form.');
+            $validator->errors()->add($prefix . '.source', 'The source is not a condition field of the selected form or a workspace global.');
 
             return null;
         }
@@ -199,351 +236,5 @@ class WorkflowConditionTreeValidator
         $options = $descriptor['enumOptions'] ?? null;
 
         return is_array($options) ? array_values(array_map('strval', $options)) : null;
-    }
-
-    /**
-     * Walk a CONDITION's pipeline from $sourceType and require a boolean terminal.
-     *
-     * @param  array<string, mixed>  $node
-     * @param  array<int, string>|null  $enumOptions
-     */
-    private function validatePipeline(ValidatorContract $validator, array $node, string $prefix, WorkflowVariableType $sourceType, ?array $enumOptions): void
-    {
-        $pipeline = $node['pipeline'] ?? null;
-
-        if (!is_array($pipeline)) {
-            $validator->errors()->add($prefix . '.pipeline', 'A condition requires a pipeline of operations.');
-
-            return;
-        }
-
-        $terminal = $this->walkPipeline($validator, $pipeline, $prefix . '.pipeline', $sourceType, $enumOptions);
-
-        if ($terminal !== null && $terminal !== WorkflowVariableType::BOOLEAN) {
-            $validator->errors()->add($prefix . '.pipeline', 'A condition pipeline must end in a boolean (it ends in ' . $terminal->value . ').');
-        }
-    }
-
-    /**
-     * Validate a VALUE-OR-VARIABLE field's optional pipeline (SB1): walk from the ref's declared
-     * $sourceType and require the terminal to be one of the target field's $allowedTerminals
-     * (deadline / submissions_* → date). Errors land under indexed keys (…pipeline.M.op /
-     * …pipeline.M.args.KEY) exactly like a condition pipeline, so the FE can map each message. Args
-     * are checked identically to conditions, with the source variable's own option list
-     * ($sourceEnumOptions) driving sourceOption/sourceMap membership.
-     *
-     * CHOICE FIELDS: when $targetOptions is non-null the destination field carries a fixed option set
-     * (e.g. a task priority → TaskPriority::ids()). The pipeline must then be NON-EMPTY and END in a
-     * choice-producing op (producesChoice()), and every choice arg's option value is checked ⊆
-     * $targetOptions (threaded through the walk). $targetOptions is null for a plain value field.
-     *
-     * @param  array<int, mixed>  $pipeline
-     * @param  array<int, WorkflowVariableType>  $allowedTerminals
-     * @param  array<int, string>|null  $sourceEnumOptions
-     * @param  array<int, string>|null  $targetOptions
-     */
-    public function validateValuePipeline(
-        ValidatorContract $validator,
-        array $pipeline,
-        string $prefix,
-        WorkflowVariableType $sourceType,
-        array $allowedTerminals,
-        ?array $sourceEnumOptions,
-        ?array $targetOptions = null,
-    ): void {
-        $terminal = $this->walkPipeline($validator, $pipeline, $prefix, $sourceType, $sourceEnumOptions, $targetOptions);
-
-        // A choice field demands a mapping pipeline that ENDS in a choice-producing op.
-        if ($targetOptions !== null) {
-            $last = $this->lastOperation($pipeline);
-
-            if ($last === null || !$last->producesChoice()) {
-                $validator->errors()->add($prefix, 'The pipeline must map the value to a valid choice.');
-            }
-
-            return;
-        }
-
-        if ($terminal !== null && !in_array($terminal, $allowedTerminals, true)) {
-            $expected = implode(' or ', array_map(fn (WorkflowVariableType $t) => $t->value, $allowedTerminals));
-            $validator->errors()->add($prefix, 'The pipeline must produce a ' . $expected . ' value (it produces ' . $terminal->value . ').');
-        }
-    }
-
-    /**
-     * The LAST operation of a pipeline (null when empty or the last step's op is unknown) — used by
-     * the choice terminal rule, which requires a value pipeline to END in a choice-producing op.
-     *
-     * @param  array<int, mixed>  $pipeline
-     */
-    private function lastOperation(array $pipeline): ?WorkflowOperation
-    {
-        if ($pipeline === []) {
-            return null;
-        }
-
-        $last = end($pipeline);
-
-        return is_array($last) ? WorkflowOperation::tryFrom((string) ($last['op'] ?? '')) : null;
-    }
-
-    /**
-     * Walk a pipeline of ops from $sourceType, validating bounded length, each op known + accepting
-     * the running type, and per-op args. Returns the TERMINAL type, or null when a structural failure
-     * already added an error (so the caller skips its terminal check). Shared by the condition and
-     * value-pipeline paths — the only difference is which terminal type the caller demands.
-     *
-     * @param  array<int, mixed>  $pipeline
-     * @param  array<int, string>|null  $enumOptions
-     * @param  array<int, string>|null  $targetOptions
-     */
-    private function walkPipeline(ValidatorContract $validator, array $pipeline, string $prefix, WorkflowVariableType $sourceType, ?array $enumOptions, ?array $targetOptions = null): ?WorkflowVariableType
-    {
-        if (count($pipeline) > ConditionTreeLimits::MAX_PIPELINE_STEPS) {
-            $validator->errors()->add($prefix, 'A pipeline may hold at most ' . ConditionTreeLimits::MAX_PIPELINE_STEPS . ' steps.');
-        }
-
-        $currentType = $sourceType;
-
-        foreach ($pipeline as $index => $step) {
-            $sp = $prefix . '.' . $index;
-
-            if (!is_array($step)) {
-                $validator->errors()->add($sp, 'A pipeline step must be an object.');
-
-                return null;
-            }
-
-            $op = WorkflowOperation::tryFrom((string) ($step['op'] ?? ''));
-
-            if ($op === null) {
-                $validator->errors()->add($sp . '.op', 'The operation is unknown.');
-
-                return null;
-            }
-
-            if ($op->inputType() !== $currentType) {
-                $validator->errors()->add(
-                    $sp . '.op',
-                    'The ' . $op->value . ' operation expects a ' . $op->inputType()->value . ' input but the value is ' . $currentType->value . '.',
-                );
-
-                return null;
-            }
-
-            $this->validateArgs($validator, $op, is_array($step['args'] ?? null) ? $step['args'] : [], $sp . '.args', $enumOptions, $targetOptions);
-
-            $currentType = $op->outputType();
-        }
-
-        return $currentType;
-    }
-
-    /**
-     * Validate every declared arg of $op and reject any foreign arg key (descriptor-driven, like the
-     * rest of the module).
-     *
-     * @param  array<string, mixed>  $args
-     * @param  array<int, string>|null  $enumOptions
-     * @param  array<int, string>|null  $targetOptions
-     */
-    private function validateArgs(ValidatorContract $validator, WorkflowOperation $op, array $args, string $prefix, ?array $enumOptions, ?array $targetOptions = null): void
-    {
-        $allowed = [];
-
-        foreach ($op->argDescriptors() as $arg) {
-            $allowed[] = $arg->id;
-            $this->validateArg($validator, $arg, $args, $prefix . '.' . $arg->id, $enumOptions, $targetOptions);
-        }
-
-        foreach (array_keys($args) as $key) {
-            if (!in_array((string) $key, $allowed, true)) {
-                $validator->errors()->add($prefix . '.' . $key, 'The ' . $key . ' argument is not allowed for this operation.');
-            }
-        }
-    }
-
-    /**
-     * One argument by its control type. $enumOptions drives SOURCE-side membership (the source
-     * variable's options); $targetOptions drives CHOICE-side membership (the destination field's
-     * options), applied to the enum_to_choice mapping VALUES and to match_to_choice rules/fallback.
-     *
-     * @param  array<string, mixed>  $args
-     * @param  array<int, string>|null  $enumOptions
-     * @param  array<int, string>|null  $targetOptions
-     */
-    private function validateArg(ValidatorContract $validator, WorkflowOperationArg $arg, array $args, string $key, ?array $enumOptions, ?array $targetOptions = null): void
-    {
-        $value = $args[$arg->id] ?? null;
-
-        match ($arg->type) {
-            WorkflowOperationArgType::NUMBER => $this->require($validator, is_numeric($value), $key, 'The ' . $arg->id . ' must be a number.'),
-            WorkflowOperationArgType::TEXT, WorkflowOperationArgType::SELECT => $this->require($validator, is_string($value), $key, 'The ' . $arg->id . ' must be text.'),
-            WorkflowOperationArgType::BOOLEAN => $this->require($validator, is_bool($value), $key, 'The ' . $arg->id . ' must be a boolean.'),
-            WorkflowOperationArgType::DATE => $this->require($validator, $this->isYmd($value), $key, 'The ' . $arg->id . ' must be a Y-m-d date.'),
-            WorkflowOperationArgType::SOURCE_OPTION => $this->validateOption($validator, $value, $key, $enumOptions),
-            WorkflowOperationArgType::SOURCE_OPTIONS => $this->validateOptions($validator, $value, $key, $enumOptions),
-            WorkflowOperationArgType::SOURCE_MAP => $this->validateSourceMap($validator, $value, $key, $arg->mapType, $enumOptions, $targetOptions),
-            WorkflowOperationArgType::CHOICE_RULES => $this->validateChoiceRules($validator, $value, $key, $targetOptions),
-            WorkflowOperationArgType::CHOICE_FALLBACK => $this->validateChoiceFallback($validator, $value, $key, $targetOptions),
-        };
-    }
-
-    /** Add $message under $key unless $ok. */
-    private function require(ValidatorContract $validator, bool $ok, string $key, string $message): void
-    {
-        if (!$ok) {
-            $validator->errors()->add($key, $message);
-        }
-    }
-
-    /** A single source option: a string that is one of the source field's option values. @param array<int, string>|null $enumOptions */
-    private function validateOption(ValidatorContract $validator, mixed $value, string $key, ?array $enumOptions): void
-    {
-        if (!is_string($value)) {
-            $validator->errors()->add($key, 'The value must be one of the source options.');
-
-            return;
-        }
-
-        if ($enumOptions !== null && !in_array($value, $enumOptions, true)) {
-            $validator->errors()->add($key, 'The value is not an option of the source field.');
-        }
-    }
-
-    /** A non-empty subset of the source field's option values. @param array<int, string>|null $enumOptions */
-    private function validateOptions(ValidatorContract $validator, mixed $value, string $key, ?array $enumOptions): void
-    {
-        if (!is_array($value) || $value === []) {
-            $validator->errors()->add($key, 'The values must be a non-empty list of source options.');
-
-            return;
-        }
-
-        foreach ($value as $index => $option) {
-            if (!is_string($option)) {
-                $validator->errors()->add($key . '.' . $index, 'Each value must be a source option.');
-
-                continue;
-            }
-
-            if ($enumOptions !== null && !in_array($option, $enumOptions, true)) {
-                $validator->errors()->add($key . '.' . $index, 'The value is not an option of the source field.');
-            }
-        }
-    }
-
-    /**
-     * A per-option map: keys ⊆ the source options, values non-empty (and number/date targets
-     * parseable for those mapType kinds). For an ENUM mapType (enum_to_choice) each mapped VALUE
-     * must additionally be one of the destination field's $targetOptions (when supplied).
-     *
-     * @param  array<int, string>|null  $enumOptions
-     * @param  array<int, string>|null  $targetOptions
-     */
-    private function validateSourceMap(ValidatorContract $validator, mixed $value, string $key, ?WorkflowVariableType $mapType, ?array $enumOptions, ?array $targetOptions = null): void
-    {
-        if (!is_array($value)) {
-            $validator->errors()->add($key, 'The mapping must be a value-per-option object.');
-
-            return;
-        }
-
-        foreach ($value as $option => $target) {
-            $option = (string) $option;
-            $entryKey = $key . '.' . $option;
-
-            if ($enumOptions !== null && !in_array($option, $enumOptions, true)) {
-                $validator->errors()->add($entryKey, 'The mapping key is not an option of the source field.');
-            }
-
-            if ($target === null || $target === '') {
-                $validator->errors()->add($entryKey, 'The mapping value for this option is required.');
-
-                continue;
-            }
-
-            if ($mapType === WorkflowVariableType::NUMBER && !is_numeric($target)) {
-                $validator->errors()->add($entryKey, 'The mapping value must be a number.');
-            } elseif ($mapType === WorkflowVariableType::DATE && !$this->isYmd($target)) {
-                $validator->errors()->add($entryKey, 'The mapping value must be a Y-m-d date.');
-            } elseif ($mapType === WorkflowVariableType::ENUM && $targetOptions !== null && !in_array($target, $targetOptions, true)) {
-                $validator->errors()->add($entryKey, "The mapping value must be one of the target field's options.");
-            }
-        }
-    }
-
-    /**
-     * The `rules` arg of match_to_choice: a list of {when, then} rules. `when` is the text value the
-     * source is compared against; `then` is a TARGET option (∈ the destination field's option set,
-     * checked when $targetOptions is supplied). An empty list is allowed — the required fallback keeps
-     * the op total. A non-array `rules` (or a malformed entry) is a granular error under the arg path.
-     *
-     * @param  array<int, string>|null  $targetOptions
-     */
-    private function validateChoiceRules(ValidatorContract $validator, mixed $value, string $key, ?array $targetOptions): void
-    {
-        if (!is_array($value)) {
-            $validator->errors()->add($key, 'The rules must be a list of match rules.');
-
-            return;
-        }
-
-        foreach ($value as $index => $rule) {
-            $entryKey = $key . '.' . $index;
-
-            if (!is_array($rule)) {
-                $validator->errors()->add($entryKey, 'Each rule must be a when/then object.');
-
-                continue;
-            }
-
-            if (!is_string($rule['when'] ?? null)) {
-                $validator->errors()->add($entryKey . '.when', 'The rule when must be text.');
-            }
-
-            $then = $rule['then'] ?? null;
-
-            if (!is_string($then)) {
-                $validator->errors()->add($entryKey . '.then', 'The rule then must be a target option.');
-
-                continue;
-            }
-
-            if ($targetOptions !== null && !in_array($then, $targetOptions, true)) {
-                $validator->errors()->add($entryKey . '.then', "The rule then must be one of the target field's options.");
-            }
-        }
-    }
-
-    /**
-     * The `fallback` arg of match_to_choice: a REQUIRED target option (∈ the destination field's
-     * option set when $targetOptions is supplied). It is what the op yields when no rule matched.
-     *
-     * @param  array<int, string>|null  $targetOptions
-     */
-    private function validateChoiceFallback(ValidatorContract $validator, mixed $value, string $key, ?array $targetOptions): void
-    {
-        if (!is_string($value) || $value === '') {
-            $validator->errors()->add($key, 'A fallback option is required.');
-
-            return;
-        }
-
-        if ($targetOptions !== null && !in_array($value, $targetOptions, true)) {
-            $validator->errors()->add($key, "The fallback must be one of the target field's options.");
-        }
-    }
-
-    /** Whether a value is a STRICT ISO Y-m-d date string (rejecting roll-over / missing padding). */
-    private function isYmd(mixed $value): bool
-    {
-        if (!is_string($value)) {
-            return false;
-        }
-
-        $date = \DateTime::createFromFormat('!Y-m-d', $value);
-
-        return $date !== false && $date->format('Y-m-d') === $value;
     }
 }

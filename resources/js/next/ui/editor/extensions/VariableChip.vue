@@ -6,15 +6,12 @@
 // attrs (name, locked, pipeline, resultType).
 import { computed, ref } from 'vue';
 import { NodeViewWrapper } from '@tiptap/vue-3';
-import Icon from '../../primitives/Icon.vue';
 import VariablePanel from './VariablePanel.vue';
-import { useI18n } from '../../../app/i18n';
+import VariableTypeIcon from './VariableTypeIcon.vue';
 import { getVariableIconLabel, getVariableIconName } from './operationHelpers';
-import type {
-  VariableDefinition,
-  VariableNodeAttrs,
-  VariableOperationDefinition,
-} from './types';
+import { variableFeedTree, variableSourceFeed } from './variableFeed';
+import { findNodeByPath } from '../../variables/variableTree';
+import type { VariableNodeAttrs, VariableStorage } from './types';
 
 const props = defineProps<{
   editor: { storage?: Record<string, unknown> };
@@ -24,24 +21,41 @@ const props = defineProps<{
   selected?: boolean;
 }>();
 
-const { t } = useI18n();
-
 const open = ref(false);
 
 const label = computed(() => props.node.attrs.name || props.node.attrs.id || 'variable');
 const resultType = computed(() => props.node.attrs.resultType ?? 'text');
 
-// Feature config (predefined variables + operations catalog) seeded by the
-// extension storage so the panel can build the pipeline + resolve the base type.
+// Feature config (offered variables + operations catalog) read from the extension
+// storage so the panel can build the pipeline + resolve the base type.
+//
+// LIVE, not a snapshot: we call the storage's `getDefinitions()` / `getCatalog()`
+// readers INSIDE these computeds, so (a) the host's CURRENT feed is read on every
+// evaluation and (b) any reactive source behind the getter is tracked as a dependency —
+// an async catalog, a renamed step key or a switched trigger form now reaches an
+// already-open editor. The frozen arrays remain the fallback for an older host.
 const storage = computed(
-  () =>
-    (props.editor.storage?.variable as {
-      definitions?: VariableDefinition[];
-      catalog?: VariableOperationDefinition[];
-    }) ?? {},
+  () => (props.editor.storage?.variable as Partial<VariableStorage> | undefined) ?? {},
 );
-const definitions = computed(() => storage.value.definitions ?? []);
-const catalog = computed(() => storage.value.catalog ?? []);
+const definitions = computed(
+  () => storage.value.getDefinitions?.() ?? storage.value.definitions ?? [],
+);
+const catalog = computed(() => storage.value.getCatalog?.() ?? storage.value.catalog ?? []);
+
+// The SHARED-model feed behind this editor: the host's live `VariableSourceVar[]` when it has one,
+// else its flat definitions promoted back (see ./variableFeed). It is what the panel browses AND
+// the pool an op ARGUMENT inside the panel's pipeline may reference.
+const sourceVars = computed(() => variableSourceFeed(storage.value.getSource?.(), definitions.value));
+/** The offered TREE — ONE resolution path for the chip, its panel and the `{` popup alike. */
+const nodes = computed(() => variableFeedTree(sourceVars.value, definitions.value));
+
+// The referenced variable's tree node carries the type-icon MODIFIERS (§refinement 3): nullable when
+// the variable may resolve empty, array when it is a collection. Null for an off-catalog / stale ref
+// (the chip then falls back to its own stored attrs, as it always did).
+const referenced = computed(() => findNodeByPath(nodes.value, props.node.attrs.id));
+
+/** The host-injected value-or-variable control for ONE pipeline argument (B4; may be absent). */
+const argVariableField = computed(() => storage.value.argVariableField);
 
 function onSave(attrs: VariableNodeAttrs): void {
   props.updateAttributes(attrs);
@@ -70,15 +84,23 @@ function onKeydown(event: KeyboardEvent): void {
       @click="open = true"
       @keydown="onKeydown"
     >
-      <Icon :name="getVariableIconName(resultType)" class="next-var-chip__type" :label="t('editor.types.typeLabel', 'Type: {type}', { type: getVariableIconLabel(resultType) })" />
+      <VariableTypeIcon
+        :icon="getVariableIconName(resultType)"
+        :type-label="getVariableIconLabel(resultType)"
+        :nullable="referenced?.nullable"
+        :array="referenced?.array"
+        class="next-var-chip__type"
+      />
       <span class="next-var-chip__label">{{ label }}</span>
     </button>
 
     <VariablePanel
       v-model:open="open"
       :state="node.attrs"
-      :definitions="definitions"
+      :nodes="nodes"
       :catalog="catalog"
+      :arg-variables="sourceVars"
+      :arg-variable-field="argVariableField"
       @save="onSave"
       @remove="onRemove"
     />

@@ -17,13 +17,15 @@
 //   • trigger TYPE → SegmentedControl here (step 1); switching type resets the new
 //     type's sub-state + clears conditions/catalog (side-effects live in the drawer).
 //   • trigger fields → WorkflowTriggerFields (:type / v-model:formConfig / :scheduleDraft).
-//   • CATALOG LIFECYCLE (§4.8 host duties): when the trigger is form_submitted AND a
-//     form is selected → fetchWorkflowCatalog(form_id) (loading/error/retry); the
-//     catalog's `fields` gate the conditions section and its `variables` feed the
-//     steps. When the form CHANGES → refetch + CLEAR conditions with a one-time toast
-//     (workflows.condition.clearedOnFormChange). When form_id is null → conditions
-//     cleared + disabled (§4.4a) + steps get catalog null. When the trigger is
-//     schedule → catalog null + the conditions section is HIDDEN entirely (the backend
+//   • CATALOG LIFECYCLE (§4.8 host duties): the editor ALWAYS fetches a catalog for the
+//     current trigger via fetchWorkflowCatalog(triggerType, form_id?). A schedule/form-less
+//     workflow gets a form-INDEPENDENT catalog (trigger-system + step-output variables); a
+//     form_submitted workflow with a form selected ALSO layers that form's field vars. The
+//     conditions loading/error/retry UI is gated on formSelected (conditions need the FORM
+//     catalog's `fields`); the STEPS section surfaces catalog errors too (ungated) so a
+//     form-less fetch failure is never a silent empty picker. When the form CHANGES →
+//     refetch + CLEAR conditions with a one-time toast (workflows.condition.clearedOnFormChange).
+//     When the trigger is schedule → the conditions section is HIDDEN entirely (the backend
 //     rejects conditions on a schedule trigger).
 //   • SAVE (step 3) → builds the EXACT WorkflowWritePayload: trigger_config per type
 //     (form: {form_id, source?, anonymous?}, schedule: draftToConfig), typed conditions
@@ -139,7 +141,9 @@ const form = reactive<{
   scheduleDraft: emptyScheduleDraft(),
   // The B3 condition TREE draft (empty AND group = "always runs").
   conditionsTree: emptyConditionTree(),
-  steps: [makeStepDraft('create_task', [])],
+  // Start with NO step — the author picks the first one themselves (the Save gate + backend
+  // min:1 still require at least one step before the workflow can be created).
+  steps: [],
 });
 
 /** The FormSelect seed (the currently-attached form's name) for the trigger panel. */
@@ -271,11 +275,18 @@ function onTypeChange(next: WorkflowTriggerType | null): void {
 }
 
 // --- Catalog lifecycle (§4.8 host duties) ----------------------------------
+// The catalog is now FORM-INDEPENDENT: EVERY trigger (schedule included) fetches a real
+// catalog (trigger-system vars + `steps.<TYPE>.*` step outputs + operations + types) via
+// the store's `GET /workflows/catalog?trigger_type=&form_id=`. A form_submitted workflow
+// ALSO layers in the selected form's field vars (form_id). `catalogKey` tracks the
+// (triggerType, formId) the current catalog belongs to so a form change knows to clear
+// conditions. The conditions section's loading/error UI stays gated on `formSelected`
+// (the FORM catalog); the steps section silently benefits from the form-independent one.
 const catalog = ref<WorkflowCatalog | null>(null);
 const catalogLoading = ref(false);
 const catalogError = ref(false);
-/** The form id the current catalog belongs to (guards clear-on-form-change). */
-let catalogFormId: string | null = null;
+/** The (triggerType, formId) the current catalog belongs to (guards clear-on-form-change). */
+let catalogKey: string | null = null;
 
 /** Whether the conditions section is shown at all (hidden for schedule, §4.8). */
 const showConditions = computed(() => form.triggerType === 'form_submitted');
@@ -286,29 +297,44 @@ const formSelected = computed(
 /** The merged operations catalog — the condition save gate (isTreeComplete) needs it. */
 const operationsCatalog = computed(() => resolveOperationCatalog(catalog.value));
 
-async function loadCatalog(formId: string): Promise<void> {
+/** The form id that scopes the catalog (form_submitted only; schedule carries none). */
+function catalogFormId(): string | null {
+  return form.triggerType === 'form_submitted' ? form.formTrigger.form_id : null;
+}
+function keyOf(triggerType: WorkflowTriggerType, formId: string | null): string {
+  return `${triggerType}:${formId ?? ''}`;
+}
+
+async function loadCatalog(triggerType: WorkflowTriggerType, formId: string | null): Promise<void> {
   catalogLoading.value = true;
   catalogError.value = false;
   try {
-    catalog.value = await store.fetchWorkflowCatalog(formId);
-    catalogFormId = formId;
+    catalog.value = await store.fetchWorkflowCatalog(triggerType, formId);
+    catalogKey = keyOf(triggerType, formId);
   } catch {
     catalogError.value = true;
     catalog.value = null;
+    catalogKey = null;
   } finally {
     catalogLoading.value = false;
   }
 }
 
+/** (Re)load the catalog for the CURRENT trigger type + form selection. */
+function reloadCatalog(): void {
+  void loadCatalog(form.triggerType, catalogFormId());
+}
+
 /**
- * React to a form_id change from the trigger panel (§4.4a / §4.8). A different (or
- * cleared) form invalidates the conditions (their field paths belong to the old
- * form's schema) → clear them with a one-time toast when clearing actually dropped
- * rows. A non-null new form → (re)fetch its catalog; a null form → drop the catalog.
+ * React to a form_id change from the trigger panel (§4.4a / §4.8) — also the path a
+ * trigger-TYPE change funnels through (onTypeChange → onFormChange(null)). A different
+ * (triggerType, formId) invalidates the conditions (their field paths belong to the old
+ * form's schema) → clear them with a one-time toast when clearing actually dropped rows,
+ * then (re)fetch the FORM-INDEPENDENT catalog for the new target. Schedule / form-less now
+ * fetches a REAL catalog (trigger vars + step outputs) instead of nulling it.
  */
 function onFormChange(nextFormId: string | null): void {
-  const previous = catalogFormId;
-  if (nextFormId === previous) return;
+  if (keyOf(form.triggerType, nextFormId) === catalogKey) return;
 
   const hadConditions = form.conditionsTree.children.length > 0;
   form.conditionsTree = emptyConditionTree();
@@ -316,18 +342,11 @@ function onFormChange(nextFormId: string | null): void {
 
   clearScopedErrors();
 
-  if (nextFormId) {
-    void loadCatalog(nextFormId);
-  } else {
-    catalog.value = null;
-    catalogFormId = null;
-  }
+  void loadCatalog(form.triggerType, nextFormId);
 }
 
-/** On mount / seed: fetch the catalog for an already-selected form (edit path). */
-if (formSelected.value && form.formTrigger.form_id) {
-  void loadCatalog(form.formTrigger.form_id);
-}
+/** On mount / seed: fetch the form-independent catalog for the seeded trigger + form. */
+reloadCatalog();
 
 function onStepsUpdate(next: StepDraft[]): void {
   form.steps = next;
@@ -745,21 +764,24 @@ function onStepClick(value: WizardStep): void {
             @form-change="onFormChange"
           />
 
-          <!-- CONDITIONS — form_submitted only (hidden for schedule, §4.8). -->
+          <!-- CONDITIONS — form_submitted only (hidden for schedule, §4.8). The
+               loading/error UI is gated on formSelected: the FORM catalog (its field
+               vars) is what the conditions need, so a form-less form_submitted goes
+               straight to the "pick a form" state while the form-independent catalog
+               loads silently for the steps section. -->
           <template v-if="showConditions">
-            <div v-if="catalogLoading" class="flex flex-col gap-next-2" role="status" :aria-label="t('workflows.editor.catalogLoading')">
+            <div v-if="catalogLoading && formSelected" class="flex flex-col gap-next-2" role="status" :aria-label="t('workflows.editor.catalogLoading')">
               <Skeleton variant="rect" height="2rem" width="16rem" />
               <Skeleton variant="rect" height="3rem" />
             </div>
-            <Alert v-else-if="catalogError" variant="danger" size="sm">
+            <Alert v-else-if="catalogError && formSelected" variant="danger" size="sm">
               {{ t('workflows.editor.catalogError') }}
               <template #actions>
                 <Button
-                  v-if="form.formTrigger.form_id"
                   variant="outline"
                   size="sm"
                   leading-icon="rotate-ccw"
-                  @click="loadCatalog(form.formTrigger.form_id)"
+                  @click="reloadCatalog()"
                 >
                   {{ t('workflows.editor.catalogRetry') }}
                 </Button>
@@ -775,9 +797,19 @@ function onStepClick(value: WizardStep): void {
           </template>
         </section>
 
-        <!-- STEP 3 — Steps. The catalog feeds each card's variable pickers; null
-             (no form / schedule trigger) degrades to step-output variables only. -->
+        <!-- STEP 3 — Steps. The catalog feeds each card's variable pickers. A catalog fetch
+             failure must NOT leave the pickers silently empty — surface it here too (ungated,
+             unlike the conditions error which is formSelected-gated), so a schedule/form-less
+             workflow gets an error + retry instead of zero offered variables. -->
         <section v-show="activeStep === 'steps'" class="flex flex-col gap-next-6">
+          <Alert v-if="catalogError" variant="danger" size="sm">
+            {{ t('workflows.editor.catalogError') }}
+            <template #actions>
+              <Button variant="outline" size="sm" leading-icon="rotate-ccw" @click="reloadCatalog()">
+                {{ t('workflows.editor.catalogRetry') }}
+              </Button>
+            </template>
+          </Alert>
           <WorkflowStepListEditor
             :steps="form.steps"
             :catalog="catalog"

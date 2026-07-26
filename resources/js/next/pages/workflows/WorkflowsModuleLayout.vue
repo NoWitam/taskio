@@ -88,6 +88,8 @@ const moduleItems = computed<ModuleNavItem[]>(() => [
   // Distinct key ('allRuns') so it never collides with the resource SECTION 'runs' tab
   // in `isItemActive` (both nav lists share that matcher).
   { key: 'allRuns', label: t('workflows.module.allRuns'), icon: 'clock', to: { name: 'next.workflows.runs' } },
+  // NOTE: workspace CONSTS (formerly "globals") moved OUT to the top-level Variables area
+  // (`next.variables.consts`) — no longer a workflows module page.
 ]);
 const resourceItems = computed<ModuleNavItem[]>(() => [
   { key: 'overview', label: t('workflows.detail.tabOverview'), icon: 'layout-dashboard', to: sectionLink('overview') },

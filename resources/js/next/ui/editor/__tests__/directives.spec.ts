@@ -124,6 +124,61 @@ describe('variable directive', () => {
     expect(roundTrip(MD)).toBe(MD);
   });
 
+  it('serializes + parses the OPTIONAL default (phase-1b): present → data.default, empty → omitted', () => {
+    // Present: `data.default` is appended (last), parses back, and round-trips.
+    const withDefault = { ...ATTRS, default: 'N/A' };
+    const mdWithDefault =
+      '@[variable]("' + JSON.stringify({ v: 1, data: withDefault }).replace(/"/g, '\\"') + '")';
+    const docWith: MarkdownDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'variable', attrs: withDefault }] }],
+    };
+    expect(ser(docWith)).toBe(mdWithDefault);
+    expect(firstInline(mdWithDefault, 'variable')?.attrs?.default).toBe('N/A');
+    expect(roundTrip(mdWithDefault)).toBe(mdWithDefault);
+
+    // Empty / null default is OMITTED — byte-identical to the ATTRS-only directive (MD).
+    const docNull: MarkdownDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'variable', attrs: { ...ATTRS, default: null } }] }],
+    };
+    expect(ser(docNull)).toBe(MD);
+    expect(ser(docNull)).not.toContain('default');
+
+    // …and so is an EMPTY STRING (a cleared text control), so "cleared" == "never set".
+    const docEmpty: MarkdownDoc = {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'variable', attrs: { ...ATTRS, default: '' } }] }],
+    };
+    expect(ser(docEmpty)).toBe(MD);
+  });
+
+  // B4 — the panel's default control is TYPED now (number → NumberInput, boolean → tri-state,
+  // date → DatePicker, enum → Select), so the value reaching the directive is a real JS scalar.
+  // It must serialize as a JSON scalar and parse back AS THAT TYPE — the old unconditional text
+  // input could only ever produce (and restore) a string.
+  it('round-trips a TYPED default as a JSON scalar — number, boolean and false/0 survive', () => {
+    const cases: Array<{ value: unknown; json: string }> = [
+      { value: 12, json: '\\"default\\":12' },
+      { value: 0, json: '\\"default\\":0' }, // 0 is a VALUE, not "unset"
+      { value: true, json: '\\"default\\":true' },
+      { value: false, json: '\\"default\\":false' }, // …and so is false (hence the tri-state)
+      { value: '2026-07-24', json: '\\"default\\":\\"2026-07-24\\"' }, // an ISO date stays a string
+    ];
+
+    for (const { value, json } of cases) {
+      const doc: MarkdownDoc = {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'variable', attrs: { ...ATTRS, default: value } }] }],
+      };
+      const md = ser(doc);
+      expect(md).toContain(json);
+      // Parsed back with its TYPE intact (never "12" / "false"), and byte-stable on re-serialize.
+      expect(firstInline(md, 'variable')?.attrs?.default).toBe(value);
+      expect(roundTrip(md)).toBe(md);
+    }
+  });
+
   it('round-trips when the payload contains brackets and sits next to a real link', () => {
     const data = {
       id: 'a',

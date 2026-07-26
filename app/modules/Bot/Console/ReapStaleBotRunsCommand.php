@@ -4,6 +4,7 @@ namespace App\Modules\Bot\Console;
 
 use App\Modules\Bot\Services\BotTaskRunManager;
 use App\Modules\Workspaces\Enums\WorkspaceDbMode;
+use App\Modules\Workspaces\Enums\WorkspaceStatus;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Modules\Workspaces\Services\TenantManager;
 use App\Tenancy\TenantContext;
@@ -38,8 +39,13 @@ class ReapStaleBotRunsCommand extends Command
         $total += $runManager->reapStaleRuns();
 
         // Each own-database workspace has its own tasks table: activate its context so the
-        // tenant-aware models route to the dedicated connection, then reap there.
-        $ownWorkspaces = Workspace::query()->where('db_mode', WorkspaceDbMode::Own)->get();
+        // tenant-aware models route to the dedicated connection, then reap there. Only READY
+        // ones have a database to reap (connectionConfig() refuses to describe a tenant whose
+        // provisioning has not finished).
+        $ownWorkspaces = Workspace::query()
+            ->where('db_mode', WorkspaceDbMode::Own)
+            ->where('status', WorkspaceStatus::Ready)
+            ->get();
 
         foreach ($ownWorkspaces as $workspace) {
             // One broken tenant (unreachable DB, bad connection config) must not stop the

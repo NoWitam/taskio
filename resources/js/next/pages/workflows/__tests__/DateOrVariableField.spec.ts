@@ -64,8 +64,8 @@ describe('DateOrVariableField', () => {
     await Promise.resolve();
     await nextTick();
 
-    const options = document.body.querySelectorAll<HTMLElement>('[role="option"]');
-    options[0].click();
+    // The Variable picker is the shared inline TREE (B3); a flat date var is a leaf treeitem.
+    document.body.querySelectorAll<HTMLElement>('[role="treeitem"]')[0].click();
     await nextTick();
 
     const emitted = wrapper.emitted('update:modelValue');

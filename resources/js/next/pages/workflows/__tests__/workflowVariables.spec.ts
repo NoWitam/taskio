@@ -3,21 +3,33 @@
 // the POSITION scoping (a field sees the trigger + EARLIER steps only), and the
 // editor-primitive DEGRADE rule (date/enum/multi → text inside a directive). These
 // are guarded WITHOUT mounting an editor.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  allValueVariables,
+  conditionSourceVariables,
+  descriptorBaseToType,
   editorPrimitive,
+  flattenPickerNodes,
   isIdVariable,
+  positionScopedStepOutputs,
   resolveVariable,
+  resolveVariableDescriptor,
   resolveVariableType,
   stripVariableDirectives,
   toEditorVariables,
   toEditorVariablesTyped,
   triggerSystemVariables,
   variableIcon,
+  variableNodeIcon,
+  variableOptionList,
+  variablePickerTree,
   variablesOfType,
   type StepLike,
 } from '../workflowVariables';
-import type { WorkflowCatalog } from '../types';
+import { setLocale } from '../../../app/i18n';
+import { buildVariableTree, flattenNodes } from '../../../ui/variables/variableTree';
+import { variableFeedTree } from '../../../ui/editor/extensions/variableFeed';
+import type { CatalogField, CatalogVariable, WorkflowCatalog, WorkflowVariableType } from '../types';
 
 /** Build a `@[variable]("<escaped-json>")` directive the way the editor serializes it. */
 function variableDirective(data: { id: string; name: string; type?: string }): string {
@@ -25,24 +37,48 @@ function variableDirective(data: { id: string; name: string; type?: string }): s
   return `@[variable]("${payload.replace(/"/g, '\\"')}")`;
 }
 
-// A catalog like WorkflowVariableCatalogService::forForm returns: trigger system
-// vars + per-form field vars + the TEMPLATE step outputs (keyed by TYPE). The
-// adapter drops the template step outputs and replaces them with live, KEY-
-// substituted ones from the editor's step list.
+// The live catalog is now FORM-INDEPENDENT (WorkflowVariableCatalogService::forContext):
+// trigger-system vars (source 'trigger', by trigger type) + per-form field vars (when a
+// form_id is layered in) + the TEMPLATE step outputs (keyed by TYPE, for EVERY step type).
+// The adapter drops the template step outputs and replaces them with live, KEY-substituted
+// ones from the editor's step list; trigger-system vars now come straight from the catalog
+// (the static FE mirrors were deleted). CATALOG mirrors a form_submitted catalog WITH a form.
 const CATALOG: WorkflowCatalog = {
   variables: [
+    // trigger-system vars (form_submitted) — the FULL set the backend emits, incl. the ids.
     { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
-    { source: 'trigger', path: 'trigger.submitted_at', name: 'Submitted at', type: 'date' },
+    { source: 'trigger', path: 'trigger.form.id', name: 'Form ID', type: 'text' },
+    { source: 'trigger', path: 'trigger.form.name', name: 'Form name', type: 'text' },
     { source: 'trigger', path: 'trigger.source', name: 'Source', type: 'enum', enumOptions: ['manual', 'task'] },
+    { source: 'trigger', path: 'trigger.submitted_at', name: 'Submitted at', type: 'date' },
+    { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text', nullable: true },
+    // per-form field vars.
     { source: 'trigger', path: 'trigger.fields.age', name: 'Age', type: 'number' },
     { source: 'trigger', path: 'trigger.fields.tags', name: 'Tags', type: 'multi', enumOptions: ['a', 'b'] },
-    // template step outputs (keyed by TYPE — the adapter must DROP these).
+    // template step outputs (keyed by TYPE — the adapter must DROP these). A form-independent
+    // catalog carries EVERY step type's templates regardless of the workflow's steps.
     { source: 'steps', path: 'steps.create_task.task_id', name: 'Create task · task_id', type: 'text' },
     { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_id', name: 'Create report · report_id', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_name', name: 'Create report · report_name', type: 'text' },
   ],
   fields: [
     { path: 'fields.age', field_id: 'age', label: 'Age', type: 'number', operators: ['eq', 'neq', 'gt'] },
   ],
+};
+
+// A form-LESS SCHEDULE catalog (WorkflowVariableCatalogService::forContext(SCHEDULE, null)):
+// the schedule trigger-system var + EVERY step type's output templates, no form fields. This
+// is what a schedule workflow's editor now fetches (it previously had NO catalog).
+const SCHEDULE_CATALOG: WorkflowCatalog = {
+  variables: [
+    { source: 'trigger', path: 'trigger.scheduled_at', name: 'Scheduled at', type: 'date' },
+    { source: 'steps', path: 'steps.create_task.task_id', name: 'Create task · task_id', type: 'text' },
+    { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_id', name: 'Create report · report_id', type: 'text' },
+    { source: 'steps', path: 'steps.create_form_report.report_name', name: 'Create report · report_name', type: 'text' },
+  ],
+  fields: [],
 };
 
 const STEPS: StepLike[] = [
@@ -103,10 +139,14 @@ describe('toEditorVariables — system/field vars + position-scoped KEY-substitu
     expect(stepIds).toEqual([]); // the keyless first step yields nothing
   });
 
-  it('works with a null catalog (schedule trigger) — step outputs only', () => {
+  it('works with a form-less SCHEDULE catalog — trigger var + step outputs (no fields)', () => {
     // SF3.2: the `_id` outputs are filtered out of the OFFERED list.
-    const vars = toEditorVariables(null, STEPS, 2);
-    expect(vars.map((v) => v.id)).toEqual(['steps.make.title', 'steps.report.report_name']);
+    const vars = toEditorVariables(SCHEDULE_CATALOG, STEPS, 2);
+    expect(vars.map((v) => v.id)).toEqual([
+      'trigger.scheduled_at',
+      'steps.make.title',
+      'steps.report.report_name',
+    ]);
   });
 });
 
@@ -142,9 +182,9 @@ describe('SF3.2 — identifiers are OFFERED nowhere, but still RESOLVE', () => {
   it('a SAVED id ref still resolves its type (resolving is NOT filtered)', () => {
     // The catalog carries trigger.submission.id; resolution recovers it.
     expect(resolveVariableType('trigger.submission.id', CATALOG, STEPS)).toBe('text');
-    // A trigger SYSTEM id (null catalog) resolves from the RAW mirror by trigger type.
-    expect(resolveVariableType('trigger.form.id', null, STEPS, 'form_submitted')).toBe('text');
-    // A step-output id resolves too.
+    // A trigger SYSTEM id resolves from the catalog (it carries the id vars for resolution).
+    expect(resolveVariableType('trigger.form.id', CATALOG, STEPS)).toBe('text');
+    // A step-output id resolves too (from the catalog's step templates).
     expect(resolveVariableType('steps.make.task_id', CATALOG, STEPS)).toBe('text');
   });
 });
@@ -184,15 +224,15 @@ describe('toEditorVariablesTyped — TRUE type + enum options (SF1)', () => {
   });
 });
 
-describe('triggerSystemVariables — the backend mirror (SF2)', () => {
-  it('schedule exposes ONLY trigger.scheduled_at (date)', () => {
-    const vars = triggerSystemVariables('schedule');
+describe('triggerSystemVariables — the OFFERED system vars, from the live catalog (SF2)', () => {
+  it('schedule catalog exposes ONLY trigger.scheduled_at (date)', () => {
+    const vars = triggerSystemVariables(SCHEDULE_CATALOG);
     expect(vars.map((v) => v.path)).toEqual(['trigger.scheduled_at']);
     expect(vars[0].type).toBe('date');
   });
 
-  it('form_submitted OFFERS the non-id system vars, but NOT the identifiers (SF3.2)', () => {
-    const paths = triggerSystemVariables('form_submitted').map((v) => v.path);
+  it('form_submitted catalog OFFERS the non-id system vars, but NOT the identifiers (SF3.2) or fields', () => {
+    const paths = triggerSystemVariables(CATALOG).map((v) => v.path);
     expect(paths).toContain('trigger.form.name');
     expect(paths).toContain('trigger.source');
     expect(paths).toContain('trigger.submitted_at');
@@ -200,17 +240,19 @@ describe('triggerSystemVariables — the backend mirror (SF2)', () => {
     expect(paths).not.toContain('trigger.submission.id');
     expect(paths).not.toContain('trigger.form.id');
     expect(paths).not.toContain('trigger.task.id');
+    // Form FIELD vars are not "system" vars.
+    expect(paths).not.toContain('trigger.fields.age');
   });
 
-  it('returns [] for a null / unknown trigger type', () => {
+  it('returns [] for a null / empty catalog', () => {
     expect(triggerSystemVariables(null)).toEqual([]);
     expect(triggerSystemVariables(undefined)).toEqual([]);
   });
 });
 
-describe('toEditorVariables — trigger system vars supplement a null catalog (SF2)', () => {
-  it('schedule (null catalog) offers trigger.scheduled_at (date → text) + step outputs', () => {
-    const vars = toEditorVariables(null, STEPS, 2, 'schedule');
+describe('toEditorVariables — the live catalog carries the trigger system vars (SF2)', () => {
+  it('schedule catalog offers trigger.scheduled_at (date → text) + step outputs', () => {
+    const vars = toEditorVariables(SCHEDULE_CATALOG, STEPS, 2);
     const scheduled = vars.find((v) => v.id === 'trigger.scheduled_at');
     // date degrades to the text primitive; id === path (identity-only).
     expect(scheduled).toEqual({ id: 'trigger.scheduled_at', name: 'Scheduled at', type: 'text' });
@@ -218,33 +260,34 @@ describe('toEditorVariables — trigger system vars supplement a null catalog (S
     expect(vars.some((v) => v.id === 'steps.make.title')).toBe(true);
   });
 
-  it('does NOT duplicate a system var already carried by the catalog', () => {
-    // CATALOG already has trigger.submitted_at + trigger.source; the mirror must not double them.
-    const vars = toEditorVariables(CATALOG, STEPS, 0, 'form_submitted');
+  it('never duplicates a system var (the catalog is the single source)', () => {
+    const vars = toEditorVariables(CATALOG, STEPS, 0);
     expect(vars.filter((v) => v.id === 'trigger.submitted_at')).toHaveLength(1);
     expect(vars.filter((v) => v.id === 'trigger.source')).toHaveLength(1);
   });
 
-  it('offers no trigger system vars when no trigger type is passed (back-compat)', () => {
+  it('offers nothing (no trigger vars, no step outputs) for a null catalog', () => {
     const vars = toEditorVariables(null, STEPS, 2);
     expect(vars.some((v) => v.id.startsWith('trigger.'))).toBe(false);
+    // No catalog → no step-output templates → no step outputs either.
+    expect(vars.some((v) => v.id.startsWith('steps.'))).toBe(false);
   });
 });
 
-describe('variablesOfType — trigger system vars for a null catalog (SF2)', () => {
-  it('offers the schedule system date var when the catalog is null', () => {
-    const dates = variablesOfType(null, STEPS, 3, 'date', 'schedule');
+describe('variablesOfType — trigger system vars from the schedule catalog (SF2)', () => {
+  it('offers the schedule system date var from a form-less schedule catalog', () => {
+    const dates = variablesOfType(SCHEDULE_CATALOG, STEPS, 3, 'date');
     expect(dates.map((v) => v.path)).toContain('trigger.scheduled_at');
   });
 });
 
 describe('resolveVariableType / resolveVariable — the by-path type recovery', () => {
-  it('recovers a trigger SYSTEM var type by trigger type when the catalog is null (SF2)', () => {
-    expect(resolveVariableType('trigger.scheduled_at', null, STEPS, 'schedule')).toBe('date');
-    // The wrong trigger type does not expose the path.
-    expect(resolveVariableType('trigger.scheduled_at', null, STEPS, 'form_submitted')).toBeNull();
+  it('recovers a trigger SYSTEM var type from the catalog (SF2)', () => {
+    expect(resolveVariableType('trigger.scheduled_at', SCHEDULE_CATALOG, STEPS)).toBe('date');
+    // A path the catalog does not carry is unknown (CATALOG is form_submitted — no scheduled_at).
+    expect(resolveVariableType('trigger.scheduled_at', CATALOG, STEPS)).toBeNull();
     // resolveVariable returns the full descriptor too.
-    expect(resolveVariable('trigger.scheduled_at', null, STEPS, 'schedule')?.name).toBe('Scheduled at');
+    expect(resolveVariable('trigger.scheduled_at', SCHEDULE_CATALOG, STEPS)?.name).toBe('Scheduled at');
   });
 
   it('recovers the TRUE type from the catalog (not the degraded primitive)', () => {
@@ -324,6 +367,121 @@ describe('stripVariableDirectives — the read-side echo (§3.2)', () => {
   });
 });
 
+describe('descriptor-based enum labels (phase-1a)', () => {
+  // A catalog whose enum/multi vars ALSO carry the structured descriptor with REAL human
+  // labels (DISTINCT from the wire keys). Older fixtures omit the descriptor → the code
+  // falls back to `enumOptions` (label = value).
+  const DESCRIPTOR_CATALOG: WorkflowCatalog = {
+    variables: [
+      {
+        source: 'trigger',
+        path: 'trigger.fields.status',
+        name: 'Status',
+        type: 'enum',
+        enumOptions: ['open', 'done'],
+        descriptor: {
+          base: 'enum',
+          nullable: false,
+          array: false,
+          options: [
+            { key: 'open', label: 'Open ticket' },
+            { key: 'done', label: 'Resolved' },
+          ],
+        },
+      },
+      {
+        source: 'trigger',
+        path: 'trigger.fields.tags',
+        name: 'Tags',
+        type: 'multi',
+        enumOptions: ['a', 'b'],
+        descriptor: {
+          base: 'enum',
+          nullable: false,
+          array: true,
+          options: [
+            { key: 'a', label: 'Alpha' },
+            { key: 'b', label: 'Beta' },
+          ],
+        },
+      },
+      // No descriptor → falls back to enumOptions (label = value).
+      { source: 'trigger', path: 'trigger.source', name: 'Source', type: 'enum', enumOptions: ['manual', 'task'] },
+    ],
+    fields: [],
+  };
+
+  it('variableOptionList prefers descriptor {key,label} — human label, key stays the wire value', () => {
+    expect(variableOptionList(DESCRIPTOR_CATALOG.variables[0])).toEqual([
+      { label: 'Open ticket', value: 'open' },
+      { label: 'Resolved', value: 'done' },
+    ]);
+  });
+
+  it('variableOptionList falls back to enumOptions (label = value) when no descriptor', () => {
+    expect(variableOptionList(DESCRIPTOR_CATALOG.variables[2])).toEqual([
+      { label: 'manual', value: 'manual' },
+      { label: 'task', value: 'task' },
+    ]);
+  });
+
+  it('variableOptionList returns undefined for a non-choice variable', () => {
+    expect(
+      variableOptionList({ source: 'trigger', path: 'trigger.fields.age', name: 'Age', type: 'number' }),
+    ).toBeUndefined();
+  });
+
+  it('toEditorVariablesTyped surfaces the HUMAN labels (≠ their values) from the descriptor', () => {
+    const vars = toEditorVariablesTyped(DESCRIPTOR_CATALOG, [], 0);
+    expect(vars.find((v) => v.id === 'trigger.fields.status')?.options).toEqual([
+      { label: 'Open ticket', value: 'open' },
+      { label: 'Resolved', value: 'done' },
+    ]);
+    expect(vars.find((v) => v.id === 'trigger.fields.tags')?.options).toEqual([
+      { label: 'Alpha', value: 'a' },
+      { label: 'Beta', value: 'b' },
+    ]);
+    // The descriptor-less var still carries label = value (fallback preserved).
+    expect(vars.find((v) => v.id === 'trigger.source')?.options).toEqual([
+      { label: 'manual', value: 'manual' },
+      { label: 'task', value: 'task' },
+    ]);
+  });
+
+  it('resolveVariableDescriptor recovers the descriptor by path (null when absent / unknown)', () => {
+    expect(resolveVariableDescriptor('trigger.fields.status', DESCRIPTOR_CATALOG, [])).toMatchObject({
+      base: 'enum',
+      array: false,
+      options: [
+        { key: 'open', label: 'Open ticket' },
+        { key: 'done', label: 'Resolved' },
+      ],
+    });
+    // A var carrying no descriptor → null.
+    expect(resolveVariableDescriptor('trigger.source', DESCRIPTOR_CATALOG, [])).toBeNull();
+    // Unknown path → null.
+    expect(resolveVariableDescriptor('trigger.ghost', DESCRIPTOR_CATALOG, [])).toBeNull();
+  });
+
+  it('a `time` descriptor base rides on a flat text type (descriptor-only; primitive intact)', () => {
+    const timeCatalog: WorkflowCatalog = {
+      variables: [
+        {
+          source: 'trigger',
+          path: 'trigger.fields.slot',
+          name: 'Slot',
+          type: 'text', // the flat wire type degrades time → text
+          descriptor: { base: 'time', nullable: false, array: false },
+        },
+      ],
+      fields: [],
+    };
+    expect(resolveVariableDescriptor('trigger.fields.slot', timeCatalog, [])?.base).toBe('time');
+    // resolveVariableType is UNCHANGED — still the flat text type.
+    expect(resolveVariableType('trigger.fields.slot', timeCatalog, [])).toBe('text');
+  });
+});
+
 describe('variableIcon — the §7.5 workflow-type → icon map', () => {
   it('maps every type incl. date/enum/multi (which the editor primitive map would lose)', () => {
     expect(variableIcon('text')).toBe('type');
@@ -332,5 +490,776 @@ describe('variableIcon — the §7.5 workflow-type → icon map', () => {
     expect(variableIcon('date')).toBe('calendar');
     expect(variableIcon('enum')).toBe('list');
     expect(variableIcon('multi')).toBe('list-checks');
+  });
+});
+
+describe('PARITY — the live catalog covers the deleted static mirrors', () => {
+  // FROZEN snapshots of the two mirrors DELETED from workflowVariables.ts (STEP_OUTPUTS +
+  // TRIGGER_SYSTEM_VARIABLES). This block is the "verify parity" gate: it proves the backend
+  // FORM-INDEPENDENT catalog (SCHEDULE_CATALOG / CATALOG fixtures) reproduces EXACTLY what
+  // those hardcoded arrays provided — both the OFFERED set and the resolve-side ids. If the
+  // backend ever changes a trigger-system var or a step output, the fixtures drift from these
+  // frozen values and this fails, flagging the change.
+  const FROZEN_STEP_OUTPUTS: Record<string, Array<{ name: string; type: WorkflowVariableType }>> = {
+    create_task: [
+      { name: 'task_id', type: 'text' },
+      { name: 'title', type: 'text' },
+    ],
+    create_form_report: [
+      { name: 'report_id', type: 'text' },
+      { name: 'report_name', type: 'text' },
+    ],
+  };
+  const FROZEN_TRIGGER_SYSTEM: Record<'schedule' | 'form_submitted', CatalogVariable[]> = {
+    schedule: [
+      { source: 'trigger', path: 'trigger.scheduled_at', name: 'Scheduled at', type: 'date' },
+    ],
+    form_submitted: [
+      { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
+      { source: 'trigger', path: 'trigger.form.id', name: 'Form ID', type: 'text' },
+      { source: 'trigger', path: 'trigger.form.name', name: 'Form name', type: 'text' },
+      { source: 'trigger', path: 'trigger.source', name: 'Source', type: 'enum', enumOptions: ['manual', 'task'] },
+      { source: 'trigger', path: 'trigger.submitted_at', name: 'Submitted at', type: 'date' },
+      { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text', nullable: true },
+    ],
+  };
+
+  /** Reproduce the OLD mirror's key-substituted step outputs for a steps list. */
+  function mirrorStepOutputs(steps: StepLike[]): CatalogVariable[] {
+    const out: CatalogVariable[] = [];
+    for (const step of steps) {
+      const key = step.key.trim();
+      if (!key) continue;
+      for (const o of FROZEN_STEP_OUTPUTS[step.type] ?? []) {
+        out.push({ source: 'steps', path: `steps.${key}.${o.name}`, name: `${key}.${o.name}`, type: o.type });
+      }
+    }
+    return out;
+  }
+
+  it('step outputs: catalog derivation === the deleted STEP_OUTPUTS mirror (key-substituted)', () => {
+    // Full position (all steps) — the raw derivation, before the OFFERED id-filter. Both the
+    // schedule and the form catalog carry every step type's templates, so both reproduce it.
+    expect(positionScopedStepOutputs(SCHEDULE_CATALOG, STEPS, STEPS.length)).toEqual(mirrorStepOutputs(STEPS));
+    expect(positionScopedStepOutputs(CATALOG, STEPS, STEPS.length)).toEqual(mirrorStepOutputs(STEPS));
+  });
+
+  it('trigger-system vars: the schedule catalog OFFERS exactly the (non-id) schedule mirror', () => {
+    const offered = FROZEN_TRIGGER_SYSTEM.schedule.filter((v) => !isIdVariable(v.path));
+    expect(triggerSystemVariables(SCHEDULE_CATALOG)).toEqual(offered);
+  });
+
+  it('trigger-system vars: the form_submitted catalog OFFERS exactly the (non-id) form mirror', () => {
+    const offered = FROZEN_TRIGGER_SYSTEM.form_submitted.filter((v) => !isIdVariable(v.path));
+    expect(triggerSystemVariables(CATALOG)).toEqual(offered);
+  });
+
+  it('the ids the mirror carried are OFFERED nowhere but still RESOLVE (SF3.2 resolve-side)', () => {
+    for (const v of FROZEN_TRIGGER_SYSTEM.form_submitted) {
+      expect(resolveVariableType(v.path, CATALOG, STEPS)).toBe(v.type);
+    }
+    expect(resolveVariableType('trigger.scheduled_at', SCHEDULE_CATALOG, STEPS)).toBe('date');
+    // Step-output ids (task_id / report_id) resolve too.
+    expect(resolveVariableType('steps.make.task_id', CATALOG, STEPS)).toBe('text');
+    expect(resolveVariableType('steps.report.report_id', CATALOG, STEPS)).toBe('text');
+  });
+});
+
+describe('structural descriptors — file subfields / section / repeater (phase-2c)', () => {
+  // Force `en` so the qualified-name assertions read the English labels (the module localizes
+  // the subfield labels + the qualifier/list suffix via the shared i18n singleton).
+  beforeEach(() => setLocale('en'));
+
+  // A catalog mirroring the phase-2a/2b backend shapes (WorkflowVariableCatalogTest):
+  //   • a FILE composite (whole-file entry type 'file' + the fixed {id,name,type,size,url} fields),
+  //   • a SECTION container (base object, array:false) WITH its flat leaves also emitted,
+  //   • a REPEATER container (base object, array:true) with NO flat leaves.
+  const STRUCTURAL_CATALOG: WorkflowCatalog = {
+    variables: [
+      {
+        source: 'trigger',
+        path: 'trigger.fields.attachment',
+        name: 'Attachment',
+        type: 'file',
+        descriptor: {
+          base: 'file',
+          nullable: false,
+          array: false,
+          fields: [
+            { key: 'id', label: 'id', descriptor: { base: 'text', nullable: false, array: false } },
+            { key: 'name', label: 'name', descriptor: { base: 'text', nullable: false, array: false } },
+            { key: 'type', label: 'type', descriptor: { base: 'text', nullable: false, array: false } },
+            { key: 'size', label: 'size', descriptor: { base: 'number', nullable: false, array: false } },
+            { key: 'url', label: 'url', descriptor: { base: 'text', nullable: false, array: false } },
+          ],
+        },
+      },
+      // The SECTION container (flat wire type degrades object → text) …
+      {
+        source: 'trigger',
+        path: 'trigger.fields.details',
+        name: 'Details',
+        type: 'text',
+        descriptor: {
+          base: 'object',
+          nullable: false,
+          array: false,
+          fields: [
+            { key: 'note', label: 'Note', descriptor: { base: 'text', nullable: false, array: false } },
+          ],
+        },
+      },
+      // … and its flat leaves, ALSO emitted top-level by the backend leaf pass.
+      { source: 'trigger', path: 'trigger.fields.details.note', name: 'Note', type: 'text' },
+      { source: 'trigger', path: 'trigger.fields.details.section_tags', name: 'Section tags', type: 'multi', enumOptions: ['x', 'y'] },
+      // The REPEATER container (flat wire type degrades object → text), NO flat leaves.
+      {
+        source: 'trigger',
+        path: 'trigger.fields.items',
+        name: 'Items',
+        type: 'text',
+        descriptor: {
+          base: 'object',
+          nullable: false,
+          array: true,
+          fields: [
+            { key: 'item_name', label: 'Item name', descriptor: { base: 'text', nullable: false, array: false } },
+          ],
+        },
+      },
+    ],
+    fields: [],
+  };
+
+  const sub = (vars: Array<{ id: string; type: string; name: string }>, key: string) =>
+    vars.find((v) => v.id === `trigger.fields.attachment.${key}`);
+
+  it('expands a FILE composite into the whole-file entry + 5 subfield pickables with scalar types', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+
+    // The whole-file entry is preserved unchanged (type stays 'file').
+    expect(vars.find((v) => v.id === 'trigger.fields.attachment')?.type).toBe('file');
+
+    // One pickable per subfield, path `<file>.<key>`, scalar type (size = number, the rest text).
+    expect(sub(vars, 'id')?.type).toBe('text');
+    expect(sub(vars, 'name')?.type).toBe('text');
+    expect(sub(vars, 'type')?.type).toBe('text');
+    expect(sub(vars, 'size')?.type).toBe('number');
+    expect(sub(vars, 'url')?.type).toBe('text');
+
+    // Exactly whole-file + 5 subfields for the attachment path family.
+    expect(vars.filter((v) => v.id.startsWith('trigger.fields.attachment')).length).toBe(6);
+  });
+
+  it('gives each file subfield a QUALIFIED `<parent> › <sub>` display name (localized sub label)', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+    expect(sub(vars, 'name')?.name).toBe('Attachment › Name');
+    expect(sub(vars, 'size')?.name).toBe('Attachment › Size');
+    expect(sub(vars, 'url')?.name).toBe('Attachment › URL');
+  });
+
+  it('offers file subfields at their scalar type through variablesOfType (incl. the `.id` subfield)', () => {
+    const text = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'text').map((v) => v.path);
+    const number = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'number').map((v) => v.path);
+    const file = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'file').map((v) => v.path);
+
+    // `.name`/`.type`/`.url`/`.id` are text; `.size` is number — flowing to the right typed fields.
+    expect(text).toContain('trigger.fields.attachment.name');
+    expect(text).toContain('trigger.fields.attachment.url');
+    // A file's `.id` IS pickable (it BYPASSES the SF3.2 id-strip that hides system ids).
+    expect(text).toContain('trigger.fields.attachment.id');
+    expect(number).toContain('trigger.fields.attachment.size');
+    // The file-typed picker still sees ONLY the whole-file entry, never a subfield.
+    expect(file).toEqual(['trigger.fields.attachment']);
+  });
+
+  it('surfaces a REPEATER as ONE list entry (relabelled) with NO per-element subfields', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+    const items = vars.filter((v) => v.id === 'trigger.fields.items');
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe('Items (list)'); // clearly labelled as a collection
+    expect(items[0].type).toBe('text'); // the flat wire type (object degrades to text)
+    // No per-element subfield is pickable (per-element access is deferred to R2).
+    expect(vars.some((v) => v.id.startsWith('trigger.fields.items.'))).toBe(false);
+  });
+
+  // B4 — FLIPPED. This used to assert the markdown `{` feed DROPPED the section container,
+  // because that list was rendered by the flat insert-everything renderer where every row was
+  // insertable. It now renders through `buildVariableTree` + `VariableBrowser`, where a non-array
+  // object is EXPAND-ONLY, so the container rides along and merely GROUPS its leaves.
+  it('the MARKDOWN `{` feed carries the SECTION container and does NOT duplicate its leaves', () => {
+    const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
+    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(true);
+    // Its flat leaves appear EXACTLY once (they are already top-level variables).
+    expect(vars.filter((v) => v.id === 'trigger.fields.details.note')).toHaveLength(1);
+    expect(vars.filter((v) => v.id === 'trigger.fields.details.section_tags')).toHaveLength(1);
+    // The primitive feed (read/summary side) agrees — ONE feed shape for every surface.
+    expect(toEditorVariables(STRUCTURAL_CATALOG, [], 0).some((v) => v.id === 'trigger.fields.details')).toBe(true);
+  });
+
+  it('a SECTION reached through the markdown feed is EXPAND-ONLY — never insertable from `{`', () => {
+    // Through the REAL `{`-popup path, and specifically its DEFINITION-ONLY fallback (a host that
+    // passes no live `source()`): the flat definition carries `base:'object'`, so promoting it back
+    // still yields a container. A container row can only be OPENED — inserting one would drop a
+    // directive that resolves to a MAP, which is what the old flat renderer allowed.
+    const tree = variableFeedTree(null, toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0));
+
+    const section = tree.find((n) => n.path === 'trigger.fields.details')!;
+    expect(section.selectable).toBe(false);
+    expect(section.base).toBe('object');
+    expect(section.children?.map((c) => c.path)).toEqual([
+      'trigger.fields.details.note',
+      'trigger.fields.details.section_tags',
+    ]);
+    // …and the leaves it groups stay insertable, exactly as before.
+    expect(section.children?.every((c) => c.selectable)).toBe(true);
+  });
+
+  // --- EVERY feed carries the containers (B2.1 → B4) --------------------------
+  // They are all rendered by `buildVariableTree` + VariableBrowser now, where an object is an
+  // EXPAND-ONLY row. Nothing new becomes pickable — the leaves are merely grouped.
+
+  it('the VALUE-FIELD feed carries the SECTION as a fields-LESS container, its leaves still flat + once', () => {
+    const vars = allValueVariables(STRUCTURAL_CATALOG, [], 0);
+
+    const section = vars.filter((v) => v.path === 'trigger.fields.details');
+    expect(section).toHaveLength(1);
+    // The descriptor FIELDS are dropped: only real, offered flat leaves may nest under it.
+    expect(section[0].descriptor).toEqual({ base: 'object', nullable: false, array: false });
+    expect(section[0].name).toBe('Details'); // the section's own label, unqualified
+
+    // The flat leaves are untouched — still emitted exactly once each.
+    expect(vars.filter((v) => v.path === 'trigger.fields.details.note')).toHaveLength(1);
+    expect(vars.filter((v) => v.path === 'trigger.fields.details.section_tags')).toHaveLength(1);
+  });
+
+  it('the SECTION renders as an EXPANDABLE, NON-SELECTABLE column whose leaves appear exactly once', () => {
+    // The REAL feed shape a step field's picker runs on.
+    const tree = buildVariableTree(allValueVariables(STRUCTURAL_CATALOG, [], 0), {});
+
+    // The leaves are no longer roots — they moved INSIDE the section column.
+    expect(tree.map((n) => n.path)).toEqual([
+      'trigger.fields.attachment',
+      'trigger.fields.details',
+      'trigger.fields.items',
+    ]);
+
+    const section = tree[1];
+    expect(section.selectable).toBe(false); // a whole object resolves to a map — never a ref
+    expect(section.base).toBe('object');
+    expect(section.children?.map((c) => c.path)).toEqual([
+      'trigger.fields.details.note',
+      'trigger.fields.details.section_tags',
+    ]);
+    expect(section.children?.every((c) => c.selectable)).toBe(true);
+
+    // EXACTLY once each, anywhere in the tree — never both nested and flat.
+    const all = flattenNodes(tree).map((n) => n.path);
+    expect(all.filter((p) => p === 'trigger.fields.details.note')).toHaveLength(1);
+    expect(all.filter((p) => p === 'trigger.fields.details.section_tags')).toHaveLength(1);
+    // The real catalog leaf wins over the descriptor field of the same key (name + type).
+    expect(section.children?.[1].type).toBe('multi');
+  });
+
+  it('a NESTED section gives a leaf no SECOND route — only real flat leaves ever nest', () => {
+    // The backend emits a container entry for TOP-LEVEL sections only, while the leaf pass
+    // emits every leaf flat at full depth. Dropping the container's `descriptor.fields` is what
+    // keeps that unambiguous: the inner section is not re-synthesized as a second parent, so the
+    // leaf can never appear both under `outer` and under `outer.inner`.
+    const catalog: WorkflowCatalog = {
+      variables: [
+        {
+          source: 'trigger', path: 'trigger.fields.outer', name: 'Outer', type: 'text',
+          descriptor: {
+            base: 'object', nullable: false, array: false,
+            fields: [{
+              key: 'inner', label: 'Inner',
+              descriptor: {
+                base: 'object', nullable: false, array: false,
+                fields: [{ key: 'leaf', label: 'Leaf', descriptor: { base: 'text', nullable: false, array: false } }],
+              },
+            }],
+          },
+        },
+        { source: 'trigger', path: 'trigger.fields.outer.inner.leaf', name: 'Leaf', type: 'text' },
+      ],
+      fields: [],
+    };
+
+    const tree = buildVariableTree(allValueVariables(catalog, [], 0), {});
+    expect(flattenNodes(tree).map((n) => n.path)).toEqual([
+      'trigger.fields.outer',
+      'trigger.fields.outer.inner.leaf',
+    ]);
+  });
+
+  // B4 — FLIPPED: there is no per-feed container switch any more. A type-filtered feed keeps the
+  // containers its filter admits (an object degrades to the `text` type), and the tree prunes any
+  // that end up holding no offered leaf — so a filter can never leave a dead branch behind.
+  it('a type-FILTERED feed carries the container too, and a filter can leave no dead branch', () => {
+    const text = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'text').map((v) => v.path);
+    expect(text).toContain('trigger.fields.details');
+    expect(text).toContain('trigger.fields.details.note'); // its leaves are unaffected
+
+    // A NUMBER-only field admits no leaf of that section, so the container is pruned by the tree.
+    const numberTree = buildVariableTree(variablesOfType(STRUCTURAL_CATALOG, [], 0, 'number'), {});
+    expect(numberTree.map((n) => n.path)).not.toContain('trigger.fields.details');
+  });
+
+  it('a section whose leaves are all missing/filtered can never render as a dead row', () => {
+    // A container with NO offered leaf is neither selectable nor expandable ⇒ the tree prunes it.
+    const leafless: WorkflowCatalog = { variables: [STRUCTURAL_CATALOG.variables[1]], fields: [] };
+    expect(allValueVariables(leafless, [], 0).map((v) => v.path)).toEqual(['trigger.fields.details']);
+    expect(buildVariableTree(allValueVariables(leafless, [], 0), {})).toEqual([]);
+  });
+
+  // --- GLOBALS are a real group node in EVERY feed (B3 CHANGE 3 → B4) ---------
+  // The globals branch used to short-circuit BEFORE the container rules, so an object global
+  // could only ever be ONE flat `Globals › <name>` row that never expanded. It now rides as
+  // itself under a synthesized `globals` GROUP container — in every feed, the markdown `{` list
+  // included, so the "Globals ›" text prefix (and its i18n key) is gone.
+
+  const GLOBALS_CATALOG: WorkflowCatalog = {
+    variables: [
+      { source: 'trigger', path: 'trigger.title', name: 'Title', type: 'text' },
+      {
+        source: 'globals',
+        path: 'globals.brand',
+        name: 'Brand',
+        type: 'text',
+        descriptor: { base: 'text', nullable: false, array: false },
+      },
+      {
+        source: 'globals',
+        path: 'globals.address',
+        name: 'Address',
+        type: 'text',
+        descriptor: {
+          base: 'object',
+          nullable: false,
+          array: false,
+          fields: [{ key: 'city', label: 'City', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ],
+    fields: [],
+  };
+
+  it('the VALUE-FIELD feed emits ONE "Globals" group node and the globals unqualified beneath it', () => {
+    const vars = allValueVariables(GLOBALS_CATALOG, [], 0);
+
+    // The group is emitted once, in front of the first global (feed order is preserved).
+    expect(vars.map((v) => v.path)).toEqual([
+      'trigger.title',
+      'globals',
+      'globals.brand',
+      'globals.address',
+    ]);
+    const group = vars[1];
+    expect(group.name).toBe('Globals');
+    expect(group.source).toBe('globals');
+    // No `descriptor.fields`: only REAL offered globals may ever nest under it.
+    expect(group.descriptor).toEqual({ base: 'object', nullable: false, array: false });
+    // The globals themselves keep their own names (the "Globals ›" text prefix is the group
+    // node now) and an OBJECT global keeps its fields, which is what makes it expandable.
+    expect(vars[2].name).toBe('Brand');
+    expect(vars[3].descriptor?.fields?.[0].key).toBe('city');
+  });
+
+  it('the tree hangs every global under that ONE node; an object global is an expand-only branch', () => {
+    const tree = buildVariableTree(allValueVariables(GLOBALS_CATALOG, [], 0), {});
+
+    expect(tree.map((n) => n.path)).toEqual(['trigger.title', 'globals']);
+    const globals = tree[1];
+    expect(globals.selectable).toBe(false); // a group is never a reference
+    expect(globals.children?.map((c) => c.path)).toEqual(['globals.brand', 'globals.address']);
+
+    const [brand, address] = globals.children ?? [];
+    expect(brand.selectable).toBe(true); // a scalar global is a pickable leaf
+    expect(brand.children).toBeUndefined();
+    expect(address.selectable).toBe(false); // an OBJECT global is expand-only (owner rule)
+    expect(address.children?.map((c) => c.path)).toEqual(['globals.address.city']);
+
+    // The composed leaf keeps the globals SOURCE + the byte-identical ref path.
+    const city = address.children?.[0];
+    expect(city).toMatchObject({ source: 'globals', path: 'globals.address.city', type: 'text' });
+    expect(city?.selectable).toBe(true);
+  });
+
+  // B4 — FLIPPED. The markdown `{` feed gets the SAME group node as every other feed (it browses
+  // the same tree now), so a global no longer needs the "Globals ›" text prefix.
+  it('the markdown `{` feed carries the group node and UNQUALIFIED global names', () => {
+    const vars = toEditorVariablesTyped(GLOBALS_CATALOG, [], 0);
+    expect(vars.map((v) => v.id)).toEqual([
+      'trigger.title',
+      'globals',
+      'globals.brand',
+      'globals.address',
+    ]);
+    expect(vars.map((v) => v.name)).toContain('Globals'); // the group node itself
+    expect(vars.find((v) => v.id === 'globals.brand')?.name).toBe('Brand'); // no text prefix
+    // The group node is marked as a CONTAINER so the flat definition promotes back to one.
+    expect(vars.find((v) => v.id === 'globals')?.base).toBe('object');
+    // The primitive feed behaves identically.
+    expect(toEditorVariables(GLOBALS_CATALOG, [], 0).map((v) => v.id)).toContain('globals');
+  });
+
+  it('the `{` tree hangs the globals under that node, and the group is NOT insertable', () => {
+    // The definition-only fallback (no live `source()`), i.e. the worst case for the `{` popup.
+    const tree = variableFeedTree(null, toEditorVariablesTyped(GLOBALS_CATALOG, [], 0));
+
+    expect(tree.map((n) => n.path)).toEqual(['trigger.title', 'globals']);
+    const group = tree[1];
+    expect(group.selectable).toBe(false); // a group is never a reference
+    // Only `globals.brand`: an OBJECT global's `descriptor.fields` cannot ride on a FLAT
+    // definition, so in this fallback it has no children and the tree prunes it rather than
+    // offering a dead row. A host that feeds the live `source()` list (the real step card) keeps
+    // the fields — see the value-field spec above, where `globals.address.city` is pickable.
+    expect(group.children?.map((c) => c.path)).toEqual(['globals.brand']);
+    expect(group.children?.[0].selectable).toBe(true); // a scalar global is insertable
+  });
+
+  it('a type-FILTERED feed carries the group node too (unqualified globals)', () => {
+    const text = variablesOfType(GLOBALS_CATALOG, [], 0, 'text');
+    expect(text.map((v) => v.path)).toContain('globals');
+    expect(text.find((v) => v.path === 'globals.brand')?.name).toBe('Brand');
+  });
+
+  it('the primitive feed expands the same way (file subfields degrade to text/number)', () => {
+    const vars = toEditorVariables(STRUCTURAL_CATALOG, [], 0);
+    expect(sub(vars, 'name')?.type).toBe('text');
+    expect(sub(vars, 'size')?.type).toBe('number');
+    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(true); // section container
+    expect(vars.filter((v) => v.id === 'trigger.fields.items')).toHaveLength(1); // repeater once
+  });
+
+  it('descriptorBaseToType degrades the DESCRIPTOR-ONLY bases to text, mirroring `time`', () => {
+    // `object` (section/repeater) + `time` both degrade to the flat text type — the closed FE
+    // union never receives them; file/number/enum-array map to their real FE type.
+    expect(descriptorBaseToType({ base: 'object', nullable: false, array: false })).toBe('text');
+    expect(descriptorBaseToType({ base: 'time', nullable: false, array: false })).toBe('text');
+    expect(descriptorBaseToType({ base: 'file', nullable: false, array: false })).toBe('file');
+    expect(descriptorBaseToType({ base: 'number', nullable: false, array: false })).toBe('number');
+    expect(descriptorBaseToType({ base: 'enum', nullable: false, array: true })).toBe('multi');
+    expect(descriptorBaseToType({ base: 'enum', nullable: false, array: false })).toBe('enum');
+  });
+
+  it('tolerates an `object` entry in types[] and an `object` descriptor.base (no crash)', () => {
+    const catalog: WorkflowCatalog = {
+      variables: [
+        // An empty-section object container: dropped without touching the closed type match.
+        {
+          source: 'trigger',
+          path: 'trigger.fields.empty_section',
+          name: 'Empty',
+          type: 'text',
+          descriptor: { base: 'object', nullable: false, array: false, fields: [] },
+        },
+      ],
+      fields: [],
+      // The form-independent catalog now lists `time` + `object` in types[] (mirrors
+      // WorkflowVariableType::cases()); nothing consumes it, so it must simply not break lookups.
+      types: [
+        { id: 'text', primitive: 'text', operators: ['equals', 'not_equals', 'contains'] },
+        { id: 'time', primitive: 'text', operators: [] },
+        { id: 'object', primitive: 'text', operators: [] },
+      ],
+    };
+
+    expect(() => toEditorVariablesTyped(catalog, [], 0)).not.toThrow();
+    expect(() => variablesOfType(catalog, [], 0, 'text')).not.toThrow();
+    // The empty section rides in the feed as a container (B4 — every feed carries containers) …
+    expect(toEditorVariablesTyped(catalog, [], 0).map((v) => v.id)).toEqual([
+      'trigger.fields.empty_section',
+    ]);
+    // … but it holds no offered leaf, so it is neither selectable nor expandable and the TREE
+    // prunes it: nothing is ever OFFERED, exactly as before.
+    expect(variableFeedTree(null, toEditorVariablesTyped(catalog, [], 0))).toEqual([]);
+  });
+});
+
+describe('variablePickerTree — the expandable picker tree (§refinement 5)', () => {
+  it('nests a file composite: the whole-file entry is expandable, its flat subfields become children', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.attachment', name: 'Attachment', type: 'file',
+        descriptor: { base: 'file', nullable: false, array: false, fields: [] },
+      },
+      { source: 'trigger', path: 'trigger.fields.attachment.name', name: 'Attachment › Name', type: 'text' },
+      { source: 'trigger', path: 'trigger.fields.attachment.size', name: 'Attachment › Size', type: 'number' },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(1); // ONE root (the file); the subfields nest under it
+    const file = tree[0];
+    expect(file.variable.path).toBe('trigger.fields.attachment');
+    expect(file.selectable).toBe(true); // the whole file is pickable
+    expect(file.children?.map((c) => c.variable.path)).toEqual([
+      'trigger.fields.attachment.name',
+      'trigger.fields.attachment.size',
+    ]);
+    // Picking a child still emits the composed path + its scalar type (byte-identical ref).
+    const nameChild = file.children!.find((c) => c.variable.path.endsWith('.name'))!;
+    expect(nameChild.variable).toMatchObject({ source: 'trigger', type: 'text' });
+    expect(nameChild.selectable).toBe(true);
+  });
+
+  it('expands an object global from its descriptor.fields (no flat children exist)', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'globals', path: 'globals.address', name: 'Globals › Address', type: 'text',
+        descriptor: {
+          base: 'object', nullable: false, array: false,
+          fields: [{ key: 'city', label: 'City', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(1);
+    expect(tree[0].selectable).toBe(true); // a global is self-contained → pickable whole
+    expect(tree[0].children).toHaveLength(1);
+    expect(tree[0].children![0].variable).toMatchObject({
+      source: 'globals', path: 'globals.address.city', type: 'text',
+    });
+  });
+
+  it('keeps a repeater as a single NON-expandable list entry (per-element access deferred)', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.items', name: 'Items (list)', type: 'text',
+        descriptor: {
+          base: 'object', nullable: false, array: true,
+          fields: [{ key: 'item_name', label: 'Item name', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(1);
+    expect(tree[0].children).toBeUndefined(); // NOT expandable
+    expect(tree[0].selectable).toBe(true);
+    expect(tree[0].variable.descriptor?.array).toBe(true); // drives the §3 list marker
+  });
+
+  it('a trigger SECTION container (were it offered) expands but is NOT itself selectable', () => {
+    const flat: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.details', name: 'Details', type: 'text',
+        descriptor: {
+          base: 'object', nullable: false, array: false,
+          fields: [{ key: 'note', label: 'Note', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree[0].selectable).toBe(false); // a whole section resolves to a map → not pickable
+    expect(tree[0].children).toHaveLength(1);
+  });
+
+  it('passes plain leaves through unchanged (a no-op for a non-structural catalog)', () => {
+    const flat: CatalogVariable[] = [
+      { source: 'trigger', path: 'fields.name', name: 'Name', type: 'text' },
+      { source: 'trigger', path: 'fields.count', name: 'Count', type: 'number' },
+    ];
+    const tree = variablePickerTree(flat);
+    expect(tree).toHaveLength(2);
+    expect(tree.every((n) => n.selectable && !n.children)).toBe(true);
+    expect(flattenPickerNodes(tree)).toHaveLength(2);
+  });
+
+  it('variableNodeIcon prefers the object base (braces) over the degraded flat text type', () => {
+    expect(variableNodeIcon({ type: 'text', descriptor: { base: 'object', nullable: false, array: false } })).toBe('braces');
+    expect(variableNodeIcon({ type: 'file' })).toBe(variableIcon('file'));
+    expect(variableNodeIcon({ type: 'number' })).toBe('hash');
+  });
+});
+
+describe('conditionSourceVariables — the condition builder picker feed', () => {
+  /** The catalog VARIABLES a form's fields derive from (`fields.x` ↔ `trigger.fields.x`). */
+  const VARIABLES: CatalogVariable[] = [
+    {
+      source: 'trigger', path: 'trigger.fields.status', name: 'Status (catalog)', type: 'enum',
+      descriptor: {
+        base: 'enum', nullable: true, array: false,
+        options: [{ key: 'open', label: 'Open' }],
+      },
+      nullable: true,
+    },
+    {
+      source: 'trigger', path: 'trigger.fields.contact', name: 'Contact', type: 'text',
+      descriptor: {
+        base: 'object', nullable: false, array: false,
+        fields: [{ key: 'email', label: 'Email', descriptor: { base: 'text', nullable: false, array: false } }],
+      },
+    },
+    {
+      source: 'trigger', path: 'trigger.fields.contact.email', name: 'Email', type: 'text',
+      descriptor: { base: 'text', nullable: false, array: false },
+    },
+    {
+      source: 'trigger', path: 'trigger.fields.items', name: 'Items', type: 'text',
+      descriptor: { base: 'object', nullable: false, array: true, fields: [] },
+    },
+  ];
+
+  const FIELDS: CatalogField[] = [
+    { path: 'fields.status', field_id: 'status', label: 'Status', type: 'enum', enumOptions: ['open'], operators: ['is'] },
+    { path: 'fields.contact.email', field_id: 'contact.email', label: 'Email', type: 'text', operators: ['equals'] },
+  ];
+
+  it('keeps the FIELD contract (path/label/type/options) and borrows the descriptor by path', () => {
+    const leaves = conditionSourceVariables(FIELDS, VARIABLES).filter((v) => v.path.endsWith('status'));
+
+    expect(leaves).toHaveLength(1);
+    expect(leaves[0]).toMatchObject({
+      source: 'trigger',
+      path: 'fields.status', // the emitted condition source — NEVER the trigger.* variable path
+      name: 'Status', // the FIELD's label wins over the variable's name
+      type: 'enum',
+      enumOptions: ['open'],
+      nullable: true,
+      descriptor: { base: 'enum', nullable: true, array: false },
+    });
+  });
+
+  it('re-surfaces a SECTION as a non-selectable group node its leaves nest under', () => {
+    const sources = conditionSourceVariables(FIELDS, VARIABLES);
+    const tree = variablePickerTree(sources);
+
+    // Roots: the flat `status` leaf + the `contact` group (emitted just before its first leaf).
+    expect(tree.map((n) => n.variable.path)).toEqual(['fields.status', 'fields.contact']);
+
+    const section = tree[1];
+    expect(section.selectable).toBe(false); // a whole section is not a condition source
+    expect(section.variable.descriptor?.base).toBe('object'); // → the braces glyph
+    // The container NEVER carries descriptor.fields, so the tree can only ever offer real
+    // condition fields as its children.
+    expect(section.variable.descriptor?.fields).toBeUndefined();
+    expect(section.children?.map((c) => c.variable.path)).toEqual(['fields.contact.email']);
+    expect(section.children?.[0].selectable).toBe(true);
+  });
+
+  it('never surfaces a repeater or a container with no offered leaf', () => {
+    const sources = conditionSourceVariables(FIELDS, VARIABLES);
+    expect(sources.some((v) => v.path === 'fields.items')).toBe(false);
+  });
+
+  // --- The identifier strip is SYSTEM-ONLY, on EVERY surface (B3) -------------
+  it('a user-named `*_id` form field is offered on EVERY surface (condition source, step field, markdown feed)', () => {
+    // A form field a user named `numer_id` / `order_id`: a machine-sounding NAME, but an
+    // ordinary user field. SF3.2 was only ever aimed at the SYSTEM identity paths
+    // (trigger.submission.id / trigger.form.id / trigger.task.id / a step's task_id), so
+    // hiding this was a silent capability regression on the insertion surfaces.
+    const fields: CatalogField[] = [
+      { path: 'fields.numer_id', field_id: 'numer_id', label: 'Order number', type: 'text', operators: ['equals'] },
+    ];
+    const variables: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.numer_id', name: 'Order number', type: 'text',
+        descriptor: { base: 'text', nullable: false, array: false },
+      },
+    ];
+
+    // CONDITIONS surface — offered + selectable, with NO policy escape hatch.
+    const sources = conditionSourceVariables(fields, variables);
+    const conditionTree = buildVariableTree(sources, {});
+    expect(conditionTree.map((n) => n.path)).toEqual(['fields.numer_id']);
+    expect(conditionTree[0].selectable).toBe(true);
+
+    // STEP-FIELD picker — now the SAME: the feed carries it and the tree offers it.
+    const catalog: WorkflowCatalog = { variables, fields };
+    expect(allValueVariables(catalog, [], 0).map((v) => v.path)).toContain('trigger.fields.numer_id');
+    const valueTree = buildVariableTree(allValueVariables(catalog, [], 0), {});
+    expect(valueTree.map((n) => n.path)).toEqual(['trigger.fields.numer_id']);
+    expect(valueTree[0].selectable).toBe(true);
+
+    // MARKDOWN `{`-insert feed — same.
+    expect(toEditorVariablesTyped(catalog, [], 0).map((v) => v.id)).toContain('trigger.fields.numer_id');
+    expect(toEditorVariables(catalog, [], 0).map((v) => v.id)).toContain('trigger.fields.numer_id');
+  });
+
+  it('still hides the SYSTEM identity paths from every offered feed', () => {
+    const catalog: WorkflowCatalog = {
+      variables: [
+        { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
+        { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text' },
+        { source: 'trigger', path: 'trigger.form.name', name: 'Form name', type: 'text' },
+        { source: 'steps', path: 'steps.create_task.task_id', name: 'Create task · task_id', type: 'text' },
+        { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+      ],
+      fields: [],
+    };
+    const steps: StepLike[] = [{ type: 'create_task', key: 'make' }];
+
+    const offered = allValueVariables(catalog, steps, 1).map((v) => v.path);
+    expect(offered).toEqual(['trigger.form.name', 'steps.make.title']);
+    expect(buildVariableTree(allValueVariables(catalog, steps, 1), {}).map((n) => n.path)).toEqual([
+      'trigger.form.name',
+      'steps.make.title',
+    ]);
+    expect(toEditorVariablesTyped(catalog, steps, 1).map((v) => v.id)).toEqual([
+      'trigger.form.name',
+      'steps.make.title',
+    ]);
+  });
+
+  it('degrades to a plain flat list when the catalog carries no variables', () => {
+    const sources = conditionSourceVariables(FIELDS, []);
+    expect(sources.map((v) => v.path)).toEqual(['fields.status', 'fields.contact.email']);
+    expect(sources.every((v) => v.descriptor === undefined)).toBe(true);
+    // Both stay pickable leaves (no grouping without a described section).
+    expect(variablePickerTree(sources).every((n) => n.selectable && !n.children)).toBe(true);
+  });
+
+  // --- B6: workspace GLOBALS as condition sources, grouped under one "Globals" node ---
+  it('groups globals under ONE "Globals" node, carries their real source, and keeps the globals.<key> path', () => {
+    const fields: CatalogField[] = [
+      { path: 'fields.title', field_id: 'title', source: 'trigger', label: 'Title', type: 'text', operators: ['equals'] },
+      { path: 'globals.brand', source: 'globals', label: 'Brand', type: 'text', operators: ['equals'] },
+      { path: 'globals.region', source: 'globals', label: 'Region', type: 'enum', enumOptions: ['eu', 'us'], operators: ['is'] },
+    ];
+    const variables: CatalogVariable[] = [
+      { source: 'trigger', path: 'trigger.fields.title', name: 'Title', type: 'text', descriptor: { base: 'text', nullable: false, array: false } },
+      { source: 'globals', path: 'globals.brand', name: 'Brand', type: 'text', descriptor: { base: 'text', nullable: false, array: false } },
+      { source: 'globals', path: 'globals.region', name: 'Region', type: 'enum', descriptor: { base: 'enum', nullable: false, array: false, options: [{ key: 'eu', label: 'EU' }] } },
+    ];
+
+    const sources = conditionSourceVariables(fields, variables);
+    // The "Globals" GROUP node is emitted ONCE, before the first global.
+    expect(sources.map((v) => v.path)).toEqual(['fields.title', 'globals', 'globals.brand', 'globals.region']);
+    const group = sources.find((v) => v.path === 'globals');
+    expect(group?.source).toBe('globals');
+    expect(group?.descriptor?.base).toBe('object');
+    expect(group?.descriptor?.fields).toBeUndefined();
+    // Each global leaf keeps its real source + its globals.<key> path (the accepted write vocab).
+    expect(sources.find((v) => v.path === 'globals.brand')?.source).toBe('globals');
+
+    // In the tree: the form field is a root, and the globals nest UNDER the expand-only group.
+    const tree = buildVariableTree(sources, {});
+    expect(tree.map((n) => n.path)).toEqual(['fields.title', 'globals']);
+    const globalsNode = tree[1];
+    expect(globalsNode.selectable).toBe(false); // an object container is never a source
+    expect(globalsNode.children?.map((c) => c.path)).toEqual(['globals.brand', 'globals.region']);
+    expect(globalsNode.children?.every((c) => c.selectable)).toBe(true);
+  });
+
+  // --- B6: the condition ARG-VARIABLE pool excludes steps.* (nothing has run at gate time) ---
+  it('the condition arg-variable pool (allValueVariables at position 0) carries trigger + globals but NEVER steps.*', () => {
+    const catalog: WorkflowCatalog = {
+      variables: [
+        { source: 'trigger', path: 'trigger.fields.name', name: 'Name', type: 'text' },
+        { source: 'globals', path: 'globals.brand', name: 'Brand', type: 'text', descriptor: { base: 'text', nullable: false, array: false } },
+        { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+      ],
+      fields: [],
+    };
+    const steps: StepLike[] = [{ type: 'create_task', key: 'make' }];
+
+    // The editor builds the pool with NO prior steps + position 0 (the gate sees no step output).
+    const pool = allValueVariables(catalog, [], 0).map((v) => v.path);
+    expect(pool).toContain('trigger.fields.name');
+    expect(pool).toContain('globals.brand');
+    expect(pool.some((p) => p.startsWith('steps.'))).toBe(false);
+
+    // Even given the real steps, position 0 still excludes every step output.
+    expect(allValueVariables(catalog, steps, 0).some((v) => v.path.startsWith('steps.'))).toBe(false);
   });
 });

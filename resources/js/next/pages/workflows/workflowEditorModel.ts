@@ -82,6 +82,7 @@ export function emptyStepConfig(type: WorkflowStepType): Record<string, unknown>
         priority: null,
         deadline: null,
         labels: [],
+        attachments: null,
         assignee_type: null,
         assignee_id: null,
         form_id: null,
@@ -266,6 +267,7 @@ export function buildStepConfig(step: StepDraft): Record<string, unknown> {
       put(out, 'priority', unionOrOmit(c.priority));
       put(out, 'deadline', unionOrOmit(c.deadline));
       put(out, 'labels', arrayOrOmit(c.labels));
+      put(out, 'attachments', unionOrOmit(c.attachments));
 
       // Assignee: both-or-neither. Emit the pair only when BOTH a type and an id
       // are present; otherwise drop both keys (the FormRequest requires them

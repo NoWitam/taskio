@@ -58,13 +58,13 @@ export type WorkflowStepType = 'create_task' | 'create_form_report';
  * `WorkflowVariableType`). The editor primitive vocabulary is narrower
  * (text|number|boolean); date/enum/multi degrade to text inside a directive.
  */
-export type WorkflowVariableType = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'multi';
+export type WorkflowVariableType = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'multi' | 'file';
 
 /** The editor PRIMITIVE a workflow type serializes to inside a markdown directive. */
 export type WorkflowVariablePrimitive = 'text' | 'number' | 'boolean';
 
 /**
- * The 18 TYPED condition operators (mirrors `WorkflowConditionOperator`). Every
+ * The 20 TYPED condition operators (mirrors `WorkflowConditionOperator`). Every
  * operator belongs to exactly one field type's allow-list (§4.8).
  */
 export type WorkflowConditionOperator =
@@ -93,7 +93,11 @@ export type WorkflowConditionOperator =
   | 'excludes'
   // boolean (value-less)
   | 'is_true'
-  | 'is_false';
+  | 'is_false'
+  // file (value-less): a file field is either answered or not; richer questions
+  // (its name, how many) are pipeline ops in the condition tree.
+  | 'filled'
+  | 'empty';
 
 // REVISION 4 (Phase 4a) — the 16-family model is RETIRED. The `schedule` trigger is
 // now a COMPOSITIONAL descriptor v2 (§4.5.1): a TIME axis × a DAY axis × a MONTH
@@ -196,7 +200,7 @@ export type WorkflowTone = 'neutral' | 'info' | 'warning' | 'success' | 'danger'
  * workflow type (NOT the editor primitive). Mirrors the backend's ref shape.
  */
 export interface WorkflowVariableRef {
-  source: 'trigger' | 'steps';
+  source: 'trigger' | 'steps' | 'globals';
   path: string;
   type: WorkflowVariableType;
 }
@@ -219,11 +223,14 @@ export interface WorkflowFieldPipelineStep {
  * A structured field that is EITHER a literal OR a variable reference (§4.9). Bare
  * scalars are also accepted as literals by the backend; this is the canonical
  * emitted union. The variable arm may carry an OPTIONAL operations `pipeline` that
- * reshapes the referenced value at run time (omitted for a plain identity ref).
+ * reshapes the referenced value at run time (omitted for a plain identity ref) AND an
+ * OPTIONAL literal `default` (phase-1b): the value the backend substitutes when the
+ * referenced value resolves null/'' . Emit-or-OMIT — a ref with no default serializes
+ * byte-identically to today (the key is absent).
  */
 export type WorkflowFieldValue<T = unknown> =
   | { kind: 'literal'; value: T }
-  | { kind: 'variable'; ref: WorkflowVariableRef; pipeline?: WorkflowFieldPipelineStep[] };
+  | { kind: 'variable'; ref: WorkflowVariableRef; pipeline?: WorkflowFieldPipelineStep[]; default?: T };
 
 // --- trigger_config (per-type wire shapes, §4.4) ---------------------------
 
@@ -346,15 +353,20 @@ export interface WireConditionPipelineStep {
 }
 
 /**
- * A leaf condition: a form-field `source` (`fields.<id>`) of `source_type`, run
- * through a `pipeline` that MUST end on a boolean. Mirrors the backend
- * `{kind:'condition', source, source_type, pipeline}`.
+ * A leaf condition: a `source` (`fields.<id>` for a form field, `globals.<key>[.<sub>]`
+ * for a workspace global) of `source_type`, run through a `pipeline` that MUST end on a
+ * boolean. Mirrors the backend `{kind:'condition', source, source_type, pipeline, default?}`.
+ *
+ * `default` (B6) is the OPTIONAL scalar the engine substitutes when the source resolves
+ * missing/empty. Emit-or-OMIT — a condition without a default serialises byte-identically to
+ * one that never had one (the key is absent).
  */
 export interface WireCondition {
   kind: 'condition';
   source: string;
   source_type: WorkflowVariableType;
   pipeline: WireConditionPipelineStep[];
+  default?: unknown;
 }
 
 /**
@@ -451,29 +463,98 @@ export interface ScheduleAssistResponse {
   data: ScheduleAssistEnvelope;
 }
 
-// --- Variable catalog (GET /forms/{form}/workflow-catalog, §4.7) -----------
+// --- Variable catalog (§4.7) -----------------------------------------------
+//
+// TWO endpoints serve the SAME `WorkflowCatalog` shape:
+//   • GET /forms/{form}/workflow-catalog             — the form-bound catalog (back-compat).
+//   • GET /workflows/catalog?trigger_type=&form_id=  — the FORM-INDEPENDENT catalog: the
+//     trigger-system vars for `trigger_type` + the `steps.<TYPE>.*` step-output templates
+//     + operations + ai_personas + types (empty `fields` / no tenant rows without a
+//     form_id). An OPTIONAL `form_id` layers that form's field vars in, matching forForm.
+// The FE editor now sources its catalog from the form-independent endpoint so a schedule
+// (or any form-less) workflow gets a REAL catalog instead of falling back to a mirror.
+
+/**
+ * One structured-descriptor option: the human `label` for a stored option `key`. The
+ * `key` is the UNCHANGED wire value (⊆ the flat `enumOptions`); the `label` is the real
+ * human label the JSON schema drops (it lives in the form element config). Mirrors the
+ * backend descriptor's `{key,label}`.
+ */
+export interface CatalogDescriptorOption {
+  key: string;
+  label: string;
+}
+
+/**
+ * One structural subfield of a composite/container descriptor (phase-2b) — the recursive
+ * `{key, label, descriptor}` the backend now emits under a `file` / `object` descriptor's
+ * `fields`. `key` is the wire segment appended to the parent path (`<parent>.<key>`), `label`
+ * the human name (a file's system subfields fall back to the key), `descriptor` a full nested
+ * descriptor (so a section-in-repeater edge stays inspectable). Mirrors the backend's field entry.
+ */
+export interface CatalogDescriptorField {
+  key: string;
+  label: string;
+  descriptor: CatalogVariableDescriptor;
+}
+
+/**
+ * The ADDITIVE structured type descriptor a catalog variable now ALSO carries (phase-1a)
+ * alongside the unchanged flat `type`. Mirrors `WorkflowVariableType::descriptor`:
+ *   - `base`     the REAL scalar base — incl. `time` (whose flat `type` still degrades to
+ *                `text`), `enum` (a MULTI is `base:'enum'` + `array:true`), `file` (a COMPOSITE),
+ *                and `object` (a STRUCTURAL container — a SECTION is `array:false`, a REPEATER
+ *                `array:true`; both degrade their flat `type` to `text`, phase-2a/2b).
+ *   - `nullable` the path is only sometimes present.
+ *   - `array`    true for a multi (an array of the enum base) or a repeater (an array<object>).
+ *   - `options`  present ONLY for an enum base (enum/multi); carries the REAL `{key,label}`
+ *                human labels. The FE shows the `label`, stores/emits the `key`.
+ *   - `fields`   present for a `file` composite (its fixed {id,name,type,size,url} subfields) or
+ *                an `object` container (a section's / repeater-element's children) — the recursive
+ *                `{key,label,descriptor}` list the editor expands into pickable subfield variables.
+ * Optional on `CatalogVariable` so older / label-less responses (and existing fixtures)
+ * that omit it still parse — consumers fall back to `enumOptions` (values) for choices.
+ */
+export interface CatalogVariableDescriptor {
+  base: 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'time' | 'file' | 'object';
+  nullable: boolean;
+  array: boolean;
+  options?: CatalogDescriptorOption[];
+  fields?: CatalogDescriptorField[];
+}
 
 /**
  * One reference-able variable (mirrors WorkflowVariableCatalogService::variable):
- * `{source, path, name, type, enumOptions?, nullable?}`.
+ * `{source, path, name, type, descriptor?, enumOptions?, nullable?}`. `descriptor` is the
+ * ADDITIVE structured type (phase-1a) — the source of an enum's human option LABELS.
  */
 export interface CatalogVariable {
-  source: 'trigger' | 'steps';
+  /**
+   * The variable's ROOT source. `globals` (Phase 3) joins `trigger` / `steps`: the
+   * workspace's user-authored `globals.<key>` literal constants flow through the SAME
+   * catalog as a normal typed variable (form-independent — present for every trigger).
+   */
+  source: 'trigger' | 'steps' | 'globals';
   path: string;
   name: string;
   type: WorkflowVariableType;
+  descriptor?: CatalogVariableDescriptor;
   enumOptions?: string[];
   nullable?: boolean;
 }
 
 /**
- * One condition FIELD descriptor (mirrors conditionFields): `{path, field_id,
- * label, type, enumOptions?, operators}`. `path` is `fields.<id>`; `operators`
- * equals WorkflowVariableType.operators() for the field's type.
+ * One condition SOURCE descriptor (mirrors conditionField). TWO vocabularies, one shape (B6):
+ *   • a FORM field  — `source:'trigger'`, `path:'fields.<id>'`, carries a `field_id`;
+ *   • a workspace GLOBAL — `source:'globals'`, `path:'globals.<key>[.<sub>]'`, NO `field_id`.
+ * `field_id` is therefore OPTIONAL (a global has none) and `source` names which catalog root
+ * the `path` belongs to. `operators` equals WorkflowVariableType.operators() for the type.
+ * `source` is optional so older responses (which omitted it) still parse as `trigger`.
  */
 export interface CatalogField {
   path: string;
-  field_id: string;
+  field_id?: string;
+  source?: 'trigger' | 'globals';
   label: string;
   type: WorkflowVariableType;
   enumOptions?: string[];
@@ -508,7 +589,7 @@ export interface CatalogOperationArg {
 
 /**
  * One operation DESCRIPTOR from the catalog (B2 added `operations[]`): the id + its
- * single `input` type, `output` type and `args`. These 66 ids are the authoritative
+ * single `input` type, `output` type and `args`. These 79 ids are the authoritative
  * SET the backend condition engine implements; the FE attaches human labels by id
  * from `standardOperationsCatalog()` (a descriptor without a known label falls back
  * to its id). NO labels ship on the wire.
@@ -518,6 +599,15 @@ export interface CatalogOperation {
   input: WorkflowVariableType;
   output: WorkflowVariableType;
   args: CatalogOperationArg[];
+  /**
+   * CUSTOM-FUNCTION ops (`fn:<uuid>`) ONLY (Phase 3): the user's own `name` / `description`,
+   * carried VERBATIM on the wire (a built-in op is label-less — the FE localizes those from
+   * `standardOperationsCatalog()`; a function has no static FE label, so its own name rides
+   * along). ADDITIVE + optional: absent on every built-in descriptor. Read by
+   * `resolveOperationCatalog` to label an unknown `fn:` id instead of the id-as-label fallback.
+   */
+  label?: string;
+  description?: string | null;
 }
 
 /**
@@ -530,15 +620,43 @@ export interface CatalogAiPersona {
 }
 
 /**
- * The catalog payload `{variables, fields, operations?, ai_personas?}`. `operations`
- * (B3) + `ai_personas` (SB2) are additive — older responses may omit them, so the FE
- * falls back to the full standard catalog / the closed persona set respectively.
+ * One variable-TYPE descriptor (form-independent catalog `types[]`): the type `id`
+ * (a WorkflowVariableType), the editor `primitive` it degrades to inside a directive
+ * (mirrors `WorkflowVariableType::editorPrimitive`), and its condition `operators`.
+ * Label-less (the FE localizes), mirroring the operations / ai_personas pattern. Lets a
+ * form-less catalog describe the full type vocabulary + the degrade rule without a static
+ * FE mirror. Phase 0 captures it on the contract; wiring the editor's type resolution to
+ * it is a LATER (type-descriptor) phase — the type system itself is unchanged.
+ */
+/**
+ * The type-id vocabulary the form-independent catalog's `types[]` may list: the closed
+ * `WorkflowVariableType` union PLUS the two DESCRIPTOR-ONLY bases (`time`, `object`) the backend
+ * now emits (its `variableTypes()` maps over EVERY `WorkflowVariableType::case`, incl. TIME +
+ * OBJECT). These two never reach the FE as a variable `type` — they degrade to `text` on the flat
+ * wire — so the closed `WorkflowVariableType` union stays intact; they surface ONLY here and in
+ * `descriptor.base`. Widening the id keeps a `types[]` carrying `{id:'object'}` / `{id:'time'}`
+ * from being a type error (mirroring how the descriptor already tolerates `time`).
+ */
+export type CatalogTypeId = WorkflowVariableType | 'time' | 'object';
+
+export interface CatalogType {
+  id: CatalogTypeId;
+  primitive: WorkflowVariablePrimitive;
+  operators: string[];
+}
+
+/**
+ * The catalog payload `{variables, fields, operations?, ai_personas?, types?}`.
+ * `operations` (B3) + `ai_personas` (SB2) + `types` (form-independent catalog) are
+ * additive — older responses (the form-bound route) may omit them, so the FE falls back
+ * to the full standard catalog / the closed persona set respectively.
  */
 export interface WorkflowCatalog {
   variables: CatalogVariable[];
   fields: CatalogField[];
   operations?: CatalogOperation[];
   ai_personas?: CatalogAiPersona[];
+  types?: CatalogType[];
 }
 
 /** The catalog response wrapper `{ data: WorkflowCatalog }`. */
@@ -777,3 +895,161 @@ export interface WorkflowRunResponse {
 // The pre-5.1 LEGACY-COMPAT aliases (`LegacyWorkflowTriggerType` /
 // `LegacyWorkflowStepType`) were DELETED by B7e — the last consumers (TargetPickerModal,
 // WorkflowDetailView, workflowMeta) were rebuilt to the strict 2+2 unions above.
+
+// --- Consts (Phase 3 — user-authored typed literal constants) ----------------
+//
+// A const is a workspace-scoped, form-independent typed LITERAL exposed as a
+// `globals.<key>` reference in every workflow (the RUNTIME wire root stays
+// `globals` even though the feature/URL is now "consts"). These MIRROR the
+// VERIFIED backend contract 1:1 (ConstantResource + Store/UpdateConstantRequest
+// + ConstantTypeValidator) — no invented fields:
+//   GET/POST   /consts                 (cursorPaginate(20), orderBy name)
+//   GET/PUT/DELETE /consts/{id}
+//   body  { name, key?, descriptor:{base,nullable?,array?,options?,fields?}, value }
+
+/**
+ * The AUTHORABLE descriptor bases (ConstantTypeValidator::AUTHORABLE_BASES).
+ * `file` / `time` are NOT authorable; `multi` is `enum` + `array:true`, not a base.
+ */
+export type ConstantBase = 'text' | 'number' | 'boolean' | 'date' | 'enum' | 'object';
+
+/** The scalar bases an OBJECT field child may take (minimal authoring — no containers). */
+export type ConstantScalarBase = 'text' | 'number' | 'boolean' | 'date';
+
+/**
+ * One object-field descriptor (`{key, label, descriptor}`) — the recursive child a
+ * global's `object` base carries. Kept scalar in this slice (see ConstantScalarBase).
+ */
+export interface ConstantField {
+  key: string;
+  label: string;
+  descriptor: ConstantDescriptor;
+}
+
+/**
+ * A global's authoritative TYPE descriptor: the authorable `base` + the orthogonal
+ * `nullable` / `array` modifiers, plus `options` (enum) / `fields` (object). Shares
+ * the shape of `CatalogVariableDescriptor` (the catalog re-emits the SAME descriptor),
+ * narrowed to the authorable bases.
+ */
+export interface ConstantDescriptor {
+  base: ConstantBase;
+  nullable: boolean;
+  array: boolean;
+  options?: CatalogDescriptorOption[];
+  fields?: ConstantField[];
+}
+
+/** A workflow GLOBAL (ConstantResource). `value` is a scalar/list/object/null literal. */
+export interface Constant {
+  id: string;
+  name: string;
+  key: string;
+  /** The exact dotted reference path an editor uses — always `globals.<key>`. */
+  reference: string;
+  descriptor: ConstantDescriptor;
+  value: unknown;
+  /** `whenLoaded('creator')` — polymorphic (user | workflow_run | bot | null). */
+  creator?: Creator | null;
+  is_owner: boolean;
+  can_be_edited: boolean;
+  can_be_deleted: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * The globals write body (Store/Update). `key` is OPTIONAL — omit to let the backend
+ * slug it from `name`; send it to pin/override. `value` matches the descriptor.
+ */
+export interface ConstantWritePayload {
+  name: string;
+  key?: string;
+  descriptor: ConstantDescriptor;
+  value: unknown;
+}
+
+/** The globals list-screen filter state (mirrors the `/consts` query — search only). */
+export interface ConstantFilters {
+  search?: string;
+}
+
+/** Cursor-paginated globals list envelope. Meta carries cursor fields ONLY (no `total`). */
+export interface ConstantListResponse {
+  data: Constant[];
+  meta: { next_cursor: string | null };
+}
+
+/** Detail envelope from a single-global read / create / update. */
+export interface ConstantResponse {
+  data: Constant;
+}
+
+// --- Custom functions (Phase 3 — user-authored variable transforms) -----------
+//
+// A custom function is a workspace-scoped, form-independent variable TRANSFORM: one INPUT
+// type, a list of typed named ARGS ({name, description?, type}), one RETURN type, and a saved
+// BODY pipeline over {input + args} terminating in the return type. It surfaces as a
+// `fn:<uuid>` OPERATION in every workflow catalog (never a user-visible slug — the editable
+// `name` is the only user-facing identity). These MIRROR the VERIFIED backend contract 1:1
+// (CustomFunctionResource + Store/UpdateCustomFunctionRequest + FunctionDefinitionValidator) —
+// no invented fields:
+//   GET/POST       /functions              (cursorPaginate(20), orderBy name)
+//   GET/PUT/DELETE /functions/{function}
+//   body  { name, description?, input_type, args:[{name, description?, type}], return_type, body:[{op,args}] }
+
+/**
+ * One typed named ARG of a function ({name, description?, type}). `name` is a safe identifier
+ * (letters/digits/underscores, not starting with a digit) that may NOT shadow a reserved scope
+ * name (`input`/`element`/`index`); `type` is a VariableType. Args have NO default in v1.
+ */
+export interface CustomFunctionArg {
+  name: string;
+  description?: string | null;
+  type: WorkflowVariableType;
+}
+
+/** A CUSTOM FUNCTION (CustomFunctionResource). `body` is the raw `{op, args}` pipeline wire. */
+export interface CustomFunction {
+  id: string;
+  name: string;
+  description: string | null;
+  input_type: WorkflowVariableType;
+  args: CustomFunctionArg[];
+  return_type: WorkflowVariableType;
+  /** The saved body pipeline (wire `{op, args}` steps over {input + args}). */
+  body: WorkflowFieldPipelineStep[];
+  /** `whenLoaded('creator')` — polymorphic (user | workflow_run | bot | null). */
+  creator?: Creator | null;
+  is_owner: boolean;
+  can_be_edited: boolean;
+  can_be_deleted: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** The function write body (Store/Update). Mirrors the FormRequest 1:1. */
+export interface CustomFunctionWritePayload {
+  name: string;
+  description?: string | null;
+  input_type: WorkflowVariableType;
+  args: CustomFunctionArg[];
+  return_type: WorkflowVariableType;
+  body: WorkflowFieldPipelineStep[];
+}
+
+/** The functions list-screen filter state (mirrors the `/functions` query — search only). */
+export interface CustomFunctionFilters {
+  search?: string;
+}
+
+/** Cursor-paginated functions list envelope. Meta carries cursor fields ONLY (no `total`). */
+export interface CustomFunctionListResponse {
+  data: CustomFunction[];
+  meta: { next_cursor: string | null };
+}
+
+/** Detail envelope from a single-function read / create / update. */
+export interface CustomFunctionResponse {
+  data: CustomFunction;
+}

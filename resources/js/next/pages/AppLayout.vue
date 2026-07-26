@@ -77,9 +77,11 @@ interface NavLink {
 const primaryNav: NavLink[] = [
   { key: 'dashboard', labelKey: 'nav.dashboard', icon: 'layout-dashboard', to: '/dashboard' },
   { key: 'tasks', labelKey: 'nav.tasks', icon: 'list-checks', to: '/tasks' },
+  { key: 'disk', labelKey: 'nav.disk', icon: 'folder', to: '/disk' },
   { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', to: '/forms' },
   { key: 'approvals', labelKey: 'nav.approvals', icon: 'git-branch', to: '/approvals' },
   { key: 'workflows', labelKey: 'nav.workflows', icon: 'workflow', to: '/workflows' },
+  { key: 'variables', labelKey: 'nav.variables', icon: 'braces', to: '/variables' },
   { key: 'bots', labelKey: 'nav.bots', icon: 'sparkles', to: '/bots' },
 ];
 

@@ -33,6 +33,9 @@ class WorkflowConditionEvaluatorTest extends TestCase
                 'tags' => ['a', 'b'],
                 'title' => 'Weekly report',
                 'bad_date' => 'not-a-date',
+                // A file field carries a snapshot list (empty when unanswered).
+                'attachment' => [['id' => 'f1', 'name' => 'raport.pdf', 'mime_type' => 'application/pdf', 'size' => 10]],
+                'no_attachment' => [],
             ],
         ];
     }
@@ -122,6 +125,32 @@ class WorkflowConditionEvaluatorTest extends TestCase
         $this->assertFalse($this->passes('fields.tags', 'multi', 'includes', 'z'));
         $this->assertTrue($this->passes('fields.tags', 'multi', 'excludes', 'z'));
         $this->assertFalse($this->passes('fields.tags', 'multi', 'excludes', 'a'));
+    }
+
+    // ---- file -----------------------------------------------------------------
+
+    public function test_file_operators_are_value_less(): void
+    {
+        $this->assertTrue($this->passes('fields.attachment', 'file', 'filled'));
+        $this->assertFalse($this->passes('fields.attachment', 'file', 'empty'));
+
+        $this->assertTrue($this->passes('fields.no_attachment', 'file', 'empty'));
+        $this->assertFalse($this->passes('fields.no_attachment', 'file', 'filled'));
+    }
+
+    public function test_an_absent_file_field_is_empty_not_filled(): void
+    {
+        // `empty` asserts an absence, so like not_equals/is_not it PASSES on a missing path —
+        // a field the submitter never answered is genuinely un-answered.
+        $this->assertTrue($this->passes('fields.nope', 'file', 'empty'));
+        $this->assertFalse($this->passes('fields.nope', 'file', 'filled'));
+    }
+
+    public function test_a_file_operator_is_refused_on_a_non_file_field(): void
+    {
+        // Operators are gated by the field's type allow-list, so the vocabularies cannot mix.
+        $this->assertFalse($this->passes('fields.title', 'text', 'filled'));
+        $this->assertFalse($this->passes('fields.attachment', 'file', 'equals', 'raport.pdf'));
     }
 
     // ---- boolean --------------------------------------------------------------

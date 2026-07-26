@@ -81,7 +81,9 @@ class WorkflowDispatchService
             return;
         }
 
-        if (!$this->conditions->passes($workflow->conditions, $payload)) {
+        // The workflow id is passed for LOG ATTRIBUTION only (an unreadable globals tier warns once
+        // per evaluation); it never influences the gate's decision.
+        if (!$this->conditions->passes($workflow->conditions, $payload, $workflow->id)) {
             return;
         }
 

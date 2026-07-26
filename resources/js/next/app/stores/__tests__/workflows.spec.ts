@@ -344,33 +344,38 @@ describe('next workflows store', () => {
     expect(store.scheduleFamilies).toBeUndefined();
   });
 
-  it('fetchWorkflowCatalog caches PER form id (a different form refetches)', async () => {
+  it('fetchWorkflowCatalog hits the FORM-INDEPENDENT endpoint + caches per (trigger_type, form_id)', async () => {
     const store = useWorkflowsStore();
-    const catalogA = { variables: [{ source: 'trigger', path: 'trigger.form.id', name: 'Form ID', type: 'text' }], fields: [] };
-    const catalogB = { variables: [], fields: [] };
-    apiMock.get.mockResolvedValueOnce({ data: catalogA });
+    const formCatalog = { variables: [{ source: 'trigger', path: 'trigger.form.id', name: 'Form ID', type: 'text' }], fields: [] };
+    const scheduleCatalog = { variables: [{ source: 'trigger', path: 'trigger.scheduled_at', name: 'Scheduled at', type: 'date' }], fields: [] };
+    apiMock.get.mockResolvedValueOnce({ data: formCatalog });
 
-    const a1 = await store.fetchWorkflowCatalog('form-a');
+    // form_submitted + a form_id → GET /workflows/catalog?trigger_type=&form_id=.
+    const a1 = await store.fetchWorkflowCatalog('form_submitted', 'form-a');
     expect(a1.variables).toHaveLength(1);
-    expect(apiMock.get).toHaveBeenCalledWith('/forms/form-a/workflow-catalog');
+    expect(apiMock.get).toHaveBeenCalledWith('/workflows/catalog?trigger_type=form_submitted&form_id=form-a');
 
-    // Same form → cache hit, no second request. (Identity differs only because
-    // Pinia reactively proxies the cached object; the KEY proof is the request count.)
-    const a2 = await store.fetchWorkflowCatalog('form-a');
+    // Same (trigger_type, form_id) → cache hit, no second request. (Identity differs only
+    // because Pinia proxies the cached object; the KEY proof is the request count.)
+    const a2 = await store.fetchWorkflowCatalog('form_submitted', 'form-a');
     expect(a2).toStrictEqual(a1);
     expect(apiMock.get).toHaveBeenCalledTimes(1);
 
-    // Different form → a fresh request.
-    apiMock.get.mockResolvedValueOnce({ data: catalogB });
-    await store.fetchWorkflowCatalog('form-b');
+    // A form-LESS schedule catalog → a fresh request WITHOUT a form_id param.
+    apiMock.get.mockResolvedValueOnce({ data: scheduleCatalog });
+    await store.fetchWorkflowCatalog('schedule');
     expect(apiMock.get).toHaveBeenCalledTimes(2);
-    expect(store.catalogByForm['form-a']).toStrictEqual(a1);
+    expect(apiMock.get).toHaveBeenLastCalledWith('/workflows/catalog?trigger_type=schedule');
 
-    // invalidate drops the cached catalog so the next call refetches.
-    store.invalidateCatalog('form-a');
-    expect(store.catalogByForm['form-a']).toBeUndefined();
-    apiMock.get.mockResolvedValueOnce({ data: catalogA });
-    await store.fetchWorkflowCatalog('form-a');
+    // Cached per composite key.
+    expect(store.catalogByKey['form_submitted:form-a']).toStrictEqual(a1);
+    expect(store.catalogByKey['schedule:']).toStrictEqual(scheduleCatalog);
+
+    // invalidate drops just that key so the next call refetches.
+    store.invalidateCatalog('form_submitted', 'form-a');
+    expect(store.catalogByKey['form_submitted:form-a']).toBeUndefined();
+    apiMock.get.mockResolvedValueOnce({ data: formCatalog });
+    await store.fetchWorkflowCatalog('form_submitted', 'form-a');
     expect(apiMock.get).toHaveBeenCalledTimes(3);
   });
 

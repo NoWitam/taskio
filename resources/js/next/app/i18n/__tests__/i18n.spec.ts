@@ -107,4 +107,45 @@ describe('next i18n', () => {
       }
     });
   });
+
+  describe('boolean type is always named Condition / Warunek (§refinement 2)', () => {
+    const get = (cat: Record<string, unknown>, path: string): string =>
+      path
+        .split('.')
+        .reduce<unknown>((acc, k) => (acc as Record<string, unknown>)?.[k], cat) as string;
+
+    it('the boolean TYPE label is Condition (en) / Warunek (pl) everywhere it is named', () => {
+      expect(get(en, 'editor.types.boolean')).toBe('Condition');
+      expect(get(pl, 'editor.types.boolean')).toBe('Warunek');
+      expect(get(en, 'variables.consts.base.boolean')).toBe('Condition');
+      expect(get(pl, 'variables.consts.base.boolean')).toBe('Warunek');
+    });
+
+    it('no user-facing "yes/no" / "tak/nie" / "boolean"-as-type copy remains in the condition strings', () => {
+      const keys = [
+        'editor.ifBlock.conditionInvalid',
+        'editor.ifCondition.mustBeBoolean',
+        'editor.ifCondition.valid',
+        'editor.ifCondition.invalid',
+        'workflows.condition.validation.treeIncomplete',
+        'workflows.condition.modal.mustBeBoolean',
+        'workflows.condition.modal.notReady',
+      ];
+      for (const key of keys) {
+        expect(get(en, key), `en.${key}`).not.toMatch(/yes\/no|boolean/i);
+        expect(get(pl, key), `pl.${key}`).not.toMatch(/tak\/nie|boolean/i);
+      }
+    });
+
+    it('the corrected strings name the Condition / Warunek type', () => {
+      expect(get(en, 'workflows.condition.modal.notReady')).toBe(
+        'Keep going until the check returns a Condition result.',
+      );
+      expect(get(pl, 'workflows.condition.modal.notReady')).toBe(
+        'Kontynuuj, aż sprawdzenie zwróci wynik typu Warunek.',
+      );
+      expect(get(en, 'editor.ifCondition.valid')).toBe('The condition returns a Condition.');
+      expect(get(pl, 'editor.ifCondition.valid')).toBe('Warunek zwraca wynik typu Warunek.');
+    });
+  });
 });

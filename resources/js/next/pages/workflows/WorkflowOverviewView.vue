@@ -95,7 +95,7 @@ watch(
     try {
       // Best-effort: the panels degrade to path segments / stripped names when the
       // catalog can't be resolved (§3.2 "never a blank"), so a failure is non-fatal.
-      catalog.value = await store.fetchWorkflowCatalog(formId);
+      catalog.value = await store.fetchWorkflowCatalog(wf.trigger_type, formId);
     } catch {
       catalog.value = null;
     }

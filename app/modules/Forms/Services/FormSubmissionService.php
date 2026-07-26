@@ -2,7 +2,9 @@
 
 namespace App\Modules\Forms\Services;
 
+use App\Modules\Disk\Services\FileService;
 use App\Modules\Forms\DTOs\FormSubmissionDTO;
+use App\Modules\Forms\Enums\FormElementType;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Workflows\Models\WorkflowRun;
@@ -12,6 +14,8 @@ use Illuminate\Validation\ValidationException;
 
 class FormSubmissionService
 {
+    public function __construct(private readonly FileService $files) {}
+
     public function create(FormSubmissionDTO $dto): FormSubmission
     {
         // Validate that the form exists and is enabled
@@ -29,7 +33,7 @@ class FormSubmissionService
             $approvedAt = now();
         }
 
-        return FormSubmission::create([
+        $submission = FormSubmission::create([
             'form_id' => $dto->form_id,
             'submittable_type' => $dto->submittable_type,
             'submittable_id' => $dto->submittable_id,
@@ -37,6 +41,19 @@ class FormSubmissionService
             'form_content_version_id' => $form->latestContentVersion()?->id,
             'approved_at' => $approvedAt,
         ]);
+
+        // Promote any uploaded file answers from temp to owned-by-this-submission, so they
+        // survive the temp sweep and surface under the disk's read-only "Zasoby" tree. The
+        // uuids were already validated (scoped, owned, live) in StoreFormSubmissionRequest.
+        $fileIds = collect(FormElementType::collectFileAnswers($form->content ?? [], $dto->data))
+            ->pluck('value')
+            ->filter(fn ($value) => is_string($value) && $value !== '')
+            ->values()
+            ->all();
+
+        $this->files->bindTempTo($submission, $fileIds);
+
+        return $submission;
     }
 
     public function update(FormSubmission $submission, array $data): FormSubmission

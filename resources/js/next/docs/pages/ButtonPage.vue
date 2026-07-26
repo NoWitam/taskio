@@ -16,6 +16,12 @@ function fakeSubmit() {
   setTimeout(() => (submitting.value = false), 1600);
 }
 
+// Split-button demo: the last action picked from the toolbox menu.
+const lastMenuAction = ref<string | null>(null);
+const saveMenu = [
+  { value: 'save-as', label: 'Save as…', icon: 'copy' as const },
+];
+
 const propRows: ApiRow[] = [
   { name: 'variant', type: "'primary' | 'secondary' | 'outline' | 'ghost' | 'subtle' | 'danger' | 'link'", default: "'primary'", description: 'Visual intent.' },
   { name: 'size', type: "'xs' | 'sm' | 'md' | 'lg' | 'icon' | 'icon-sm' | 'icon-xs'", default: "'md'", description: 'Control height + padding + text scale. `icon` (40px) / `icon-sm` (32px) / `icon-xs` (28px) are square icon-only buttons.' },
@@ -28,10 +34,13 @@ const propRows: ApiRow[] = [
   { name: 'trailingIcon', type: 'IconName', default: '—', description: 'Icon after the label.' },
   { name: 'fullWidth', type: 'boolean', default: 'false', description: 'Stretches to the container width.' },
   { name: 'ariaLabel', type: 'string', default: '—', description: 'Required for icon-only buttons (no visible text).' },
+  { name: 'menuItems', type: 'ButtonMenuItem[]', default: '—', description: 'Split button („przybornik"): secondary actions behind a chevron segment. Each item is { value, label, icon?, disabled?, destructive? }. Not supported with href / the link variant.' },
+  { name: 'menuAriaLabel', type: 'string', default: '—', description: 'Accessible name for the chevron segment. Required with menuItems (dev warning otherwise).' },
 ];
 
 const eventRows: ApiRow[] = [
-  { name: 'click', type: '(event: MouseEvent)', description: 'Emitted on activation. Suppressed while disabled or loading.' },
+  { name: 'click', type: '(event: MouseEvent)', description: 'Emitted on activation of the main segment. Suppressed while disabled or loading.' },
+  { name: 'menu-select', type: '(value: string)', description: 'Split button only: emitted with the picked item’s value when a menu action is chosen.' },
 ];
 
 const slotRows: ApiRow[] = [
@@ -50,6 +59,7 @@ const slotRows: ApiRow[] = [
         <li>Loading sets <code>aria-busy="true"</code> and blocks activation; the spinner is decorative (the busy state carries meaning).</li>
         <li>Icon-only buttons (size <code>icon</code>) require <code>ariaLabel</code>; a dev warning fires if it is missing.</li>
         <li>Disabled <code>&lt;button&gt;</code> uses the native <code>disabled</code> attribute (non-focusable); disabled link-buttons drop their href and set <code>aria-disabled</code>.</li>
+        <li>Split button: the chevron segment carries <code>aria-haspopup="menu"</code> + <code>aria-expanded</code> and REQUIRES <code>menuAriaLabel</code>; menu keyboard behavior (arrows, Home/End, Esc, type-ahead) comes from DropdownMenu. Both segments are separate tab stops.</li>
       </ul>
     </template>
 
@@ -125,6 +135,37 @@ const slotRows: ApiRow[] = [
         <StoryCell label="anchor"><Button href="#button" variant="outline">Internal anchor</Button></StoryCell>
         <StoryCell label="new tab"><Button href="https://example.com" target="_blank" variant="ghost" trailing-icon="external-link">Open external</Button></StoryCell>
       </StoryGrid>
+    </StorySection>
+
+    <StorySection
+      title="Split button („przybornik”)"
+      description="menuItems attaches a chevron segment opening a menu of secondary actions — the canonical Save / Save as… pair. The main segment keeps emitting click; picking an item emits menu-select(value). Not supported with href or the link variant (the chevron segment would have no anchor semantics)."
+    >
+      <div class="flex flex-col gap-next-4">
+        <StoryGrid align="center">
+          <StoryCell label="primary">
+            <Button :menu-items="saveMenu" menu-aria-label="More save options" @menu-select="(v) => (lastMenuAction = v)">Save</Button>
+          </StoryCell>
+          <StoryCell label="outline">
+            <Button variant="outline" :menu-items="saveMenu" menu-aria-label="More save options">Save</Button>
+          </StoryCell>
+          <StoryCell label="sm">
+            <Button size="sm" :menu-items="saveMenu" menu-aria-label="More save options">Save</Button>
+          </StoryCell>
+          <StoryCell label="disabled">
+            <Button disabled :menu-items="saveMenu" menu-aria-label="More save options">Save</Button>
+          </StoryCell>
+          <StoryCell label="loading">
+            <Button loading :menu-items="saveMenu" menu-aria-label="More save options">Save</Button>
+          </StoryCell>
+        </StoryGrid>
+        <p class="text-next-sm text-next-muted-foreground">
+          Last menu action: <code>{{ lastMenuAction ?? '—' }}</code>
+        </p>
+        <div class="max-w-sm">
+          <Button full-width :menu-items="saveMenu" menu-aria-label="More save options">Full-width split</Button>
+        </div>
+      </div>
     </StorySection>
 
     <StorySection title="Realistic usage" description="A modal-style action bar: cancel + a submitting primary action.">

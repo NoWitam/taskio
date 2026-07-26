@@ -11,6 +11,7 @@ use App\Modules\Workflows\Services\WorkflowRunManager;
 use App\Modules\Workflows\Services\WorkflowScheduleService;
 use App\Modules\Workflows\Services\WorkflowTriggerPayloadFactory;
 use App\Modules\Workspaces\Enums\WorkspaceDbMode;
+use App\Modules\Workspaces\Enums\WorkspaceStatus;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Modules\Workspaces\Services\TenantManager;
 use App\Tenancy\TenantContext;
@@ -61,8 +62,13 @@ class RunScheduledWorkflowsCommand extends Command
         $this->sweep($schedule, $dispatcher, $runManager, $payloads, $counts);
 
         // Each own-database workspace has its own workflows table: activate its context so the
-        // tenant-aware models route to the dedicated connection, then sweep there.
-        $ownWorkspaces = Workspace::query()->where('db_mode', WorkspaceDbMode::Own)->get();
+        // tenant-aware models route to the dedicated connection, then sweep there. Only READY
+        // ones have a database to sweep — an unprovisioned/failed workspace has no tenant
+        // connection to configure (connectionConfig() refuses to describe it).
+        $ownWorkspaces = Workspace::query()
+            ->where('db_mode', WorkspaceDbMode::Own)
+            ->where('status', WorkspaceStatus::Ready)
+            ->get();
 
         foreach ($ownWorkspaces as $workspace) {
             // One broken tenant (unreachable DB, bad connection config) must not stop the

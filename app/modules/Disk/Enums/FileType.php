@@ -7,6 +7,7 @@ enum FileType: string
     case IMAGE = 'image';
     case VIDEO = 'video';
     case AUDIO = 'audio';
+    case TEXT = 'text';
     case DOCUMENT = 'document';
     case SPREADSHEET = 'spreadsheet';
     case ARCHIVE = 'archive';
@@ -14,18 +15,30 @@ enum FileType: string
 
     public static function fromMimeType(string $mimeType): self
     {
-        if (str_starts_with($mimeType, 'image/')) return self::IMAGE;
-        if (str_starts_with($mimeType, 'video/')) return self::VIDEO;
-        if (str_starts_with($mimeType, 'audio/')) return self::AUDIO;
+        if (str_starts_with($mimeType, 'image/')) {
+            return self::IMAGE;
+        }
+        if (str_starts_with($mimeType, 'video/')) {
+            return self::VIDEO;
+        }
+        if (str_starts_with($mimeType, 'audio/')) {
+            return self::AUDIO;
+        }
 
         $map = [
-            // Dokumenty
+            // Tekst — treść czytelna jako plain text (miniatura = fragment tekstu).
+            'text/plain' => self::TEXT,
+            'text/markdown' => self::TEXT,
+            'text/html' => self::TEXT,
+            'application/json' => self::TEXT,
+            'application/xml' => self::TEXT,
+            'text/xml' => self::TEXT,
+
+            // Dokumenty — binarne (PDF, Word); brak taniej miniatury.
             'application/pdf' => self::DOCUMENT,
-            'text/plain' => self::DOCUMENT,
-            'text/html' => self::DOCUMENT,
-            'application/json' => self::DOCUMENT,
-            'application/xml' => self::DOCUMENT,
-            'text/xml' => self::DOCUMENT,
+            'application/msword' => self::DOCUMENT,
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => self::DOCUMENT,
+            'application/vnd.oasis.opendocument.text' => self::DOCUMENT,
 
             // Arkusze
             'text/csv' => self::SPREADSHEET,

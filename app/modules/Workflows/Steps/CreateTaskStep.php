@@ -2,11 +2,14 @@
 
 namespace App\Modules\Workflows\Steps;
 
+use App\Modules\Disk\Models\File;
+use App\Modules\Disk\Services\FileService;
 use App\Modules\Tasks\DTOs\TaskDTO;
 use App\Modules\Tasks\Enums\TaskPriority;
+use App\Modules\Tasks\Models\Task;
 use App\Modules\Tasks\Services\TaskService;
+use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Workflows\Enums\WorkflowStepType;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\WorkflowRun;
 use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
@@ -18,7 +21,7 @@ use Throwable;
  * task's transaction, label attach, file guard, and bot-dispatch side effects all fire as
  * they would for a user-created task). A workflow-created task starts in TO_DO.
  *
- * The step reaches ENTITY-FORM PARITY with the create-task form (attachments deferred):
+ * The step reaches ENTITY-FORM PARITY with the create-task form:
  *
  *   - title        resolveString (directives + flat tokens + literals); REQUIRED non-blank
  *                  after resolution — a blank title HARD-FAILS the step (RuntimeException;
@@ -45,6 +48,10 @@ use Throwable;
  *                  goes through TaskService's normal maybeDispatch (only an execution-
  *                  capable bot on a TO_DO task starts a run).
  *   - form_id / approval_pipeline_id  literal uuids, optional.
+ *   - attachments  structured literal|variable union resolved as a FILE (a submission's file
+ *                  variable or a literal Disk pick). Each resolved source is COPIED into a new
+ *                  file owned by the task (copy-on-attach) so the original is never stolen;
+ *                  unresolvable ids are skipped (SOFT, like labels).
  *
  * Output: task_id, title.
  */
@@ -56,6 +63,7 @@ class CreateTaskStep implements WorkflowStep
     public function __construct(
         private TaskService $tasks,
         private WorkflowVariableResolver $resolver,
+        private FileService $files,
     ) {}
 
     public function type(): WorkflowStepType
@@ -66,8 +74,8 @@ class CreateTaskStep implements WorkflowStep
     public static function outputDescriptors(): array
     {
         return [
-            ['name' => 'task_id', 'type' => WorkflowVariableType::TEXT],
-            ['name' => 'title', 'type' => WorkflowVariableType::TEXT],
+            ['name' => 'task_id', 'type' => VariableType::TEXT],
+            ['name' => 'title', 'type' => VariableType::TEXT],
         ];
     }
 
@@ -85,15 +93,49 @@ class CreateTaskStep implements WorkflowStep
             assigneeType: $assigneeType,
             assigneeId: $assigneeId,
             labels: $this->resolveLabels($config),
+            // Attachments are handled AFTER create via copy-on-attach (see copyAttachments):
+            // the source files belong to a submission or the disk, so they must be copied, not
+            // rebound. TaskService's own attach path only ever rebinds temp uploads.
             attachments: [],
             form_id: $this->literalUuid($config, 'form_id'),
             approval_pipeline_id: $this->literalUuid($config, 'approval_pipeline_id'),
         ));
 
+        $this->copyAttachments($task, $config, $context);
+
         return [
             'task_id' => $task->id,
             'title' => $task->title,
         ];
+    }
+
+    /**
+     * Attach files the run does NOT own — a FILE variable (e.g. `{{trigger.fields.attachment}}`,
+     * a submission's file) or a literal Disk pick. Each resolved source is COPIED into a new
+     * file owned by the task (copy-on-attach), so the original is never stolen from its owner.
+     *
+     * Lenient like labels: an id that no longer resolves to a live, workspace-scoped file is
+     * skipped. The task is already created, so a missing attachment never aborts the run.
+     */
+    private function copyAttachments(Task $task, array $config, array $context): void
+    {
+        $ids = $this->resolver->resolveValueOrVariable(
+            $config['attachments'] ?? null,
+            $context,
+            VariableType::FILE,
+        );
+
+        if (!is_array($ids) || $ids === []) {
+            return;
+        }
+
+        $sources = File::query()
+            ->whereIn('id', array_values(array_filter($ids, 'is_string')))
+            ->get();
+
+        foreach ($sources as $source) {
+            $this->files->copyToModel($source, $task);
+        }
     }
 
     /**
@@ -135,7 +177,7 @@ class CreateTaskStep implements WorkflowStep
         $resolved = $this->resolver->resolveValueOrVariable(
             $config['priority'] ?? null,
             $context,
-            WorkflowVariableType::ENUM,
+            VariableType::ENUM,
         );
 
         return TaskPriority::tryFrom((string) ($resolved ?? '')) ?? TaskPriority::MEDIUM;
@@ -150,7 +192,7 @@ class CreateTaskStep implements WorkflowStep
         $resolved = $this->resolver->resolveValueOrVariable(
             $config['deadline'] ?? null,
             $context,
-            WorkflowVariableType::DATE,
+            VariableType::DATE,
         );
 
         if (!is_string($resolved) || $resolved === '') {

@@ -141,7 +141,7 @@ const stagePayloadRows: ApiRow[] = [
               <li>pages/approvals/PipelinesView.vue</li>
               <li>pages/approvals/PipelineBuilderDrawer.vue</li>
               <li>pages/approvals/ApprovalReviewDrawer.vue</li>
-              <li>pages/approvals/ApprovalComments.vue</li>
+              <li>ui/patterns/CommentsPanel.vue</li>
               <li>pages/approvals/PipelineCard.vue</li>
               <li>pages/approvals/QueueItemCard.vue</li>
               <li>pages/approvals/types.ts</li>
@@ -296,7 +296,7 @@ const stagePayloadRows: ApiRow[] = [
               <li>Body (scrollable): description, extra_fields chips, form preview.</li>
               <li>Stage tabs: one tab per pipeline stage; future stages disabled.</li>
               <li>Decision footer (shown only when <code class="font-next-mono">canDecide</code>).</li>
-              <li>Right rail: ApprovalComments (shown only when entity.comments_url is set, hidden below next-lg).</li>
+              <li>Right rail: the shared CommentsPanel (shown only when entity.comments_url is set, hidden below next-lg).</li>
             </ul>
           </div>
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
@@ -339,7 +339,7 @@ const stagePayloadRows: ApiRow[] = [
     <StorySection title="Comments">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <p class="text-next-muted-foreground">
-          <strong>File:</strong> <code class="font-next-mono">ApprovalComments.vue</code>.
+          <strong>File:</strong> <code class="font-next-mono">ui/patterns/CommentsPanel.vue</code>.
           Reuses the generic Comments API module. Self-contained — no Pinia store,
           no coupling to the queue or pipelines stores.
         </p>

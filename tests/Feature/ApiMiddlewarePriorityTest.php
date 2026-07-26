@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Middleware\RequireWorkspace;
 use App\Http\Middleware\ResolveWorkspace;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Routing\Middleware\SubstituteBindings;
@@ -54,6 +55,44 @@ class ApiMiddlewarePriorityTest extends TestCase
         $this->assertTrue(
             $resolve < $bindings,
             "ResolveWorkspace (#{$resolve}) must run BEFORE SubstituteBindings (#{$bindings}) — else binding happens with no active tenant and a foreign {model} id leaks.\nOrder: " . implode(', ', $middleware),
+        );
+    }
+
+    /**
+     * The Disk binaries add a second invariant on top of the first:
+     *
+     *     ResolveWorkspace  <  RequireWorkspace  <  SubstituteBindings
+     *
+     * - ResolveWorkspace before RequireWorkspace: the gate asserts the context the resolver fills.
+     * - RequireWorkspace before SubstituteBindings: a context-less request must be refused BEFORE
+     *   an unscoped foreign {file} id can bind (route-scoped, since the resolver's no-context
+     *   pass-through is load-bearing everywhere else).
+     */
+    public function test_require_workspace_gates_disk_routes_after_resolve_and_before_bindings(): void
+    {
+        $router = app(Router::class);
+
+        $route = $router->getRoutes()->getByName('disk.show');
+        $this->assertNotNull($route, 'Expected a bound-{file} route named disk.show to exist.');
+
+        $middleware = $router->gatherRouteMiddleware($route);
+
+        $resolve = $this->indexOf($middleware, ResolveWorkspace::class);
+        $require = $this->indexOf($middleware, RequireWorkspace::class);
+        $bindings = $this->indexOf($middleware, SubstituteBindings::class);
+
+        $this->assertNotNull($require, 'RequireWorkspace must gate the disk routes. Got: ' . implode(', ', $middleware));
+        $this->assertNotNull($resolve, 'ResolveWorkspace must be present. Got: ' . implode(', ', $middleware));
+        $this->assertNotNull($bindings, 'SubstituteBindings must be present. Got: ' . implode(', ', $middleware));
+
+        $this->assertTrue(
+            $resolve < $require,
+            "ResolveWorkspace (#{$resolve}) must run BEFORE RequireWorkspace (#{$require}) — the gate reads the context the resolver sets.\nOrder: " . implode(', ', $middleware),
+        );
+
+        $this->assertTrue(
+            $require < $bindings,
+            "RequireWorkspace (#{$require}) must run BEFORE SubstituteBindings (#{$bindings}) — else a context-less request binds a foreign file before the refusal.\nOrder: " . implode(', ', $middleware),
         );
     }
 

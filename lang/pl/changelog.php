@@ -26,6 +26,7 @@ return [
         'password' => 'Hasło',
         'color' => 'Kolor',
         'icon' => 'Ikona',
+        'content' => 'Zawartość',
     ],
 
     'events' => [
@@ -39,8 +40,9 @@ return [
         'enabled' => 'Włączono',
         'indexed' => 'Zindeksowano',
     ],
-    
+
     'formFilled' => 'Wypłuniono formularz',
+    'contentReplaced' => 'Zawartość zastąpiona',
     'approvalStarted' => 'Rozpoczęto zatwierdzanie',
     'approvalStageApproved' => 'Etap zatwierdzony',
     'approvalCompleted' => 'Zatwierdzanie zakończone',

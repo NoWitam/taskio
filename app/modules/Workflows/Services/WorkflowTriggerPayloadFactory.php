@@ -2,8 +2,11 @@
 
 namespace App\Modules\Workflows\Services;
 
+use App\Modules\Disk\Models\File;
+use App\Modules\Forms\Enums\FormElementType;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Tasks\Models\Task;
+use Illuminate\Support\Str;
 
 /**
  * Builds the WHITELISTED trigger payload snapshot for each trigger type — the single place
@@ -110,6 +113,10 @@ class WorkflowTriggerPayloadFactory
      * no object/resource can leak into the persisted payload. A malformed/empty data column
      * yields an empty map.
      *
+     * File answers are the exception: a raw file uuid is enriched into the snapshot list the
+     * FILE variable speaks ({id, name, mime_type, size, url}), so `{{trigger.fields.<id>}}` and the
+     * `file` condition operators see a real file rather than an opaque id.
+     *
      * @return array<string, mixed>
      */
     private function whitelistFields(FormSubmission $submission): array
@@ -120,10 +127,95 @@ class WorkflowTriggerPayloadFactory
             return [];
         }
 
-        return array_filter(
+        $whitelisted = array_filter(
             $data,
             fn ($value) => is_scalar($value) || is_array($value) || $value === null,
         );
+
+        return $this->enrichFileFields($whitelisted, $submission);
+    }
+
+    /**
+     * Replace every file answer (a uuid, or a list of them) with its resolved snapshot list.
+     * Field ids are unique across a normalized form, so a key-based recursive replace reaches a
+     * file nested in a section or repeated in a repeater without ambiguity. An unanswered or
+     * unresolvable file becomes [] — exactly what the file operators read as "empty".
+     *
+     * @param  array<string, mixed>  $whitelisted
+     * @return array<string, mixed>
+     */
+    private function enrichFileFields(array $whitelisted, FormSubmission $submission): array
+    {
+        $content = $submission->form?->content;
+
+        if (!is_array($content) || $content === []) {
+            return $whitelisted;
+        }
+
+        $snapshots = [];
+
+        foreach (FormElementType::collectFileAnswers($content, $submission->data ?? []) as $answer) {
+            $snapshots[$answer['field']] = $this->fileSnapshots($answer['value']);
+        }
+
+        return $snapshots === [] ? $whitelisted : $this->replaceByKey($whitelisted, $snapshots);
+    }
+
+    /**
+     * Resolve a file answer into the snapshot list the FILE variable speaks. A single-file input
+     * yields a one-element list; an empty/malformed answer yields []. Files are re-queried under
+     * the workspace scope, so a foreign or trashed id simply drops out.
+     *
+     * `url` is the file's ACCESS-CONTROLLED serve URL ({@see File::serveUrl} → the `disk.show`
+     * route), NOT the raw storage path — a snapshot must stay safe to persist and log. It points at
+     * the ORIGINAL submission file (the id/name/mime/size do too); a create_task step later COPIES
+     * the file onto the task, and that copy has its own id/url — the snapshot is not rewritten to it.
+     *
+     * @return array<int, array{id: string, name: string, mime_type: ?string, size: ?int, url: string}>
+     */
+    private function fileSnapshots(mixed $value): array
+    {
+        $ids = collect(is_array($value) ? $value : [$value])
+            ->filter(fn ($v) => is_string($v) && Str::isUuid($v))
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return [];
+        }
+
+        return File::query()
+            ->whereIn('id', $ids->all())
+            ->get()
+            ->map(fn (File $file) => [
+                'id' => $file->id,
+                'name' => $file->name,
+                'mime_type' => $file->mime_type,
+                'size' => $file->size,
+                'url' => $file->serveUrl(),
+            ])
+            ->all();
+    }
+
+    /**
+     * Recursively replace values whose key is a resolved file field. A replaced value is never
+     * recursed into (the snapshot list is terminal); other arrays (sections, repeater items)
+     * are walked so a nested file answer is enriched too.
+     *
+     * @param  array<string, mixed>  $data
+     * @param  array<string, array<int, mixed>>  $snapshots
+     * @return array<string, mixed>
+     */
+    private function replaceByKey(array $data, array $snapshots): array
+    {
+        foreach ($data as $key => $value) {
+            if (is_string($key) && array_key_exists($key, $snapshots)) {
+                $data[$key] = $snapshots[$key];
+            } elseif (is_array($value)) {
+                $data[$key] = $this->replaceByKey($value, $snapshots);
+            }
+        }
+
+        return $data;
     }
 
     /**

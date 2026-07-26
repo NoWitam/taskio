@@ -187,6 +187,65 @@ const assistEnvelopeRows: ApiRow[] = [
   { name: 'alternative',  type: '{ config, note } | null', description: 'An approximating config, honestly labeled with the difference — never merged into `config`.' },
   { name: 'explanation',  type: 'string', description: 'One short paragraph summarizing what was produced (or why not) — always shown to the user.' },
 ];
+
+// ── Variable typesystem Phase 1 (descriptor + TIME + defaults + 5 ops, ADR-0022) ────────────
+const descriptorFieldRows: ApiRow[] = [
+  { name: 'base',     type: 'text|number|boolean|date|enum|time|file', description: 'The scalar base. A multi variable\'s base is "enum" (an array of enum) — see `array` below.' },
+  { name: 'nullable', type: 'boolean', description: 'Mirrors the variable\'s own nullable flag.' },
+  { name: 'array',    type: 'boolean', description: 'true ONLY for a multi variable.' },
+  { name: 'options',  type: '{key,label}[] (enum base only)', description: 'key = the SAME value `enumOptions` already carries (the wire/runtime value, unchanged); label = the human label from the form element\'s config.options (falls back to the value when the config has none).' },
+];
+const presenceOpsRows: ApiRow[] = [
+  { name: 'coalesce',       type: 'text → text', description: 'Args: fallback (literal). The running value when present, else the fallback normalized to the running type.' },
+  { name: 'is_present',     type: 'text → boolean', description: 'true when the running value is non-empty.' },
+  { name: 'is_null',        type: 'text → boolean', description: 'The negation of is_present.' },
+  { name: 'assert_present', type: 'text → text', description: 'The value when present; over an EMPTY value it is the ONE opt-in HARD failure — the run stops at that step (see below). Not to be confused with the other three, which are always soft.' },
+  { name: 'date_format',    type: 'date → text', description: 'Args: pattern (a SAFE-TOKEN string, never a raw PHP date format). NOT a presence op.' },
+];
+const dateFormatTokenRows: ApiRow[] = [
+  { name: 'YYYY', type: 'renders', description: '4-digit year' },
+  { name: 'MMMM', type: 'renders', description: 'full month name' },
+  { name: 'MMM',  type: 'renders', description: 'short month name' },
+  { name: 'MM',   type: 'renders', description: '2-digit month' },
+  { name: 'DD',   type: 'renders', description: '2-digit day' },
+  { name: 'D',    type: 'renders', description: 'unpadded day' },
+  { name: 'HH',   type: 'renders', description: '2-digit hour' },
+  { name: 'mm',   type: 'renders', description: '2-digit minute' },
+];
+
+// ── Variable typesystem Phase 2 (object/array<object> containers + file composite, ADR-0023) ──
+const fileSubfieldRows: ApiRow[] = [
+  { name: '<file>.id',   type: 'text',   description: "The disk file's id (uuid). Deliberately pickable — bypasses the picker's usual \"never offer an id\" rule for this one case." },
+  { name: '<file>.name', type: 'text',   description: 'The uploaded/picked file\'s name.' },
+  { name: '<file>.type', type: 'text',   description: "A human-friendly alias for the snapshot's mime_type." },
+  { name: '<file>.size', type: 'number', description: 'Byte size.' },
+  { name: '<file>.url',  type: 'text',   description: 'The access-controlled disk.show serve URL (File::serveUrl()) — never the raw storage path.' },
+];
+
+// ── Variable typesystem Phase 3 (user-created LITERAL globals, ADR-0024) ────────────────────
+const globalAuthorableTypeRows: ApiRow[] = [
+  { name: 'text',           type: 'scalar',              description: 'A string literal.' },
+  { name: 'number',         type: 'scalar',              description: 'An int/float (a numeric STRING is also accepted on write, though the editor never sends one).' },
+  { name: 'boolean',        type: 'scalar',              description: 'true / false.' },
+  { name: 'date',           type: 'scalar',              description: 'Any Carbon-parseable string.' },
+  { name: 'enum',           type: 'scalar + options',    description: 'Requires a non-empty options list ({key,label?}); the value must equal one option key.' },
+  { name: 'object',         type: 'structural + fields', description: "Requires a non-empty fields list ({key,label?,descriptor}), each declared field validated recursively. The editor's OWN children are SCALAR only this slice (see below)." },
+  { name: 'array: true',    type: 'orthogonal flag',     description: 'Any base above may also be a list — the value becomes a JSON array of that element type.' },
+  { name: 'nullable: true', type: 'orthogonal flag',     description: 'The value may be null; otherwise a value is required.' },
+  { name: 'file / time',    type: '— NOT authorable —',  description: 'Rejected at descriptor.base. A global holds a plain typed constant, never an uploaded Disk file or a type with no runtime semantics yet.' },
+  { name: 'multi',          type: '— not a base —',      description: 'A multi-select is enum + array:true, exactly like every other catalog variable — there is no separate "multi" base to pick.' },
+];
+
+// ── Variable typesystem Phase 4 (operation arguments as variables, ADR-0025) ────────────────
+// WorkflowOperationArgType::argVariablePolicy() REPLACED variableValueType() (Phase 4b, ADR-0025
+// addendum): EVERY arg control now accepts a variable — the gate is a PER-CATEGORY ref-type filter,
+// not a value-vs-the-rest cut.
+const argVariableControlRows: ApiRow[] = [
+  { name: 'text / number / boolean / date',            type: 'strict single type', description: 'Value controls (text_append\'s value, num_add\'s value, date_add_days\' value, …) — the ref (and its optional coercion pipeline\'s terminal) must equal the arg\'s own type.' },
+  { name: 'select / sourceOption / choiceFallback',     type: 'enum | text',        description: 'A variable that stringifies to an option key, coerced to a string. Option-SET membership can\'t be checked at write time (it\'s the source/destination field\'s own list) — deferred to RUNTIME fail-soft (the op\'s existing not-found/fallback path).' },
+  { name: 'sourceOptions',                              type: 'multi',              description: 'Coerced to an array; per-element option membership is likewise a runtime fail-soft concern.' },
+  { name: 'sourceMap / choiceRules',                     type: '— structural —',    description: 'The ref supplies the WHOLE map / rule-list, not one value — no sub-pipeline (no op builds a structure). Gated LOOSELY at write time (whitelisted + indexed ref, no type-equality check); the exact shape is deferred to runtime fail-soft.' },
+];
 </script>
 
 <template>
@@ -510,6 +569,255 @@ WorkflowRun (one execution)
           resolve to a single comparable value, so emitting a variable for one would be a dead
           path (ADR-0009 §7 — honest catalog, not an oversight).
         </p>
+
+        <p class="text-next-xs text-next-muted-foreground">
+          <strong>Update (Phase 2a, ADR-0023):</strong> that exclusion is now narrower — a repeater
+          still has no FLAT LEAF variable of its own, but it now ALSO gets ONE catalog entry as an
+          <code class="font-next-mono">array&lt;object&gt;</code> container, so the editor can see
+          it exists. See "Structural containers" further below.
+        </p>
+
+        <Alert variant="info" size="sm">
+          <strong>Structured <code class="font-next-mono">descriptor</code> + a <code class="font-next-mono">time</code> type
+          (Phase 1a of the variable-typesystem rework, ADR-0022) — additive, alongside the
+          unchanged flat <code class="font-next-mono">type</code>.</strong> Every catalog variable
+          now ALSO carries <code class="font-next-mono">descriptor: { base, nullable, array,
+          options? }</code>. An enum/multi variable's <code class="font-next-mono">options</code>
+          finally carry a real human <code class="font-next-mono">label</code> next to the wire
+          <code class="font-next-mono">key</code> (sourced from the form element's
+          <code class="font-next-mono">config.options</code> — the JSON schema itself keeps only
+          the option VALUES) — the variable picker and pipeline
+          <code class="font-next-mono">sourceOption</code>/<code class="font-next-mono">sourceMap</code>
+          args show the label, and still emit the key. A new
+          <code class="font-next-mono">WorkflowVariableType::TIME</code> case (the form builder's
+          TIME element) is DESCRIPTOR-ONLY this phase: its flat wire
+          <code class="font-next-mono">type</code> still degrades to <code class="font-next-mono">text</code>
+          and it carries no condition operators — a deliberate loud tripwire (the resolver/
+          evaluator/executor still dispatch on an exhaustive 7-case match, and the FE mirrors a
+          closed 7-member union) rather than a silent break once real TIME semantics land.
+        </Alert>
+        <ApiTable title="descriptor shape (WorkflowVariableType::descriptor)" :rows="descriptorFieldRows" />
+
+        <Alert variant="info" size="sm">
+          <strong>Per-reference "Default when empty" (Phase 1b, ADR-0022).</strong> Both wire
+          serializations of a reference gained an OPTIONAL literal default — the directive's
+          <code class="font-next-mono">data.default</code>, the
+          <code class="font-next-mono">{kind:'variable'}</code> union's sibling
+          <code class="font-next-mono">default</code> key. When the looked-up value resolves
+          <code class="font-next-mono">null</code>/<code class="font-next-mono">''</code>, the
+          default substitutes it BEFORE any pipeline runs (so it can itself be piped/formatted),
+          for an identity-only reference exactly as for a piped one. <strong>Injection-guard
+          invariant:</strong> the default enters the resolved-value stream at exactly the point a
+          real value would, so it is masked behind the SAME NUL-delimited placeholder an embedded
+          directive's resolved value already uses before the transitional flat
+          <code class="font-next-mono">&#123;&#123;...&#125;&#125;</code> pass runs — a default
+          literal containing reference-like bytes is never re-interpreted as a second-order
+          reference. Omitted from the wire when empty, so an un-defaulted reference stays
+          byte-identical to before this phase.
+        </Alert>
+
+        <Alert variant="info" size="sm">
+          <strong>5 append-only pipeline ops — the catalog grows 72 → 77 (Phase 1b, ADR-0022).</strong>
+          Four PRESENCE ops (<code class="font-next-mono">coalesce</code>/
+          <code class="font-next-mono">is_present</code>/<code class="font-next-mono">is_null</code>/
+          <code class="font-next-mono">assert_present</code>) accept the running value regardless
+          of its declared type at RUN time (the executor bypasses the normal type gate for them) —
+          their table below shows the NOMINAL text input/output the catalog and write-validator
+          advertise. <code class="font-next-mono">date_format</code> is an ordinary
+          <code class="font-next-mono">date → text</code> op rendering through a closed SAFE-TOKEN
+          whitelist — never a raw PHP format string; any other byte fails the whole pattern closed.
+        </Alert>
+        <ApiTable title="Presence, null-handling, and date-format ops" type-header="Input → output" :rows="presenceOpsRows" />
+        <ApiTable title="date_format safe tokens" type-header="Token" :rows="dateFormatTokenRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong><code class="font-next-mono">assert_present</code> is the ONE opt-in HARD
+          failure in the pipeline engine.</strong> Over an empty value it does not soft-fail like
+          every other op — the resolver re-raises it as the run's step failure (the run stops
+          there), joining the field's existing hard-fail doctrine (e.g. a blank
+          <code class="font-next-mono">create_task.title</code>). A CONDITION caller (an if-block's
+          boolean check) is unaffected and stays fail-closed to <code class="font-next-mono">false</code>
+          — the executor itself still never throws; only ONE resolver call site escalates. See
+          <code class="font-next-mono">docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md</code>
+          for the full design record (incl. why <code class="font-next-mono">WorkflowConditionTreeValidator</code>'s
+          write-time type gate does not YET special-case the presence ops the way the runtime
+          executor does — a deferred Phase 2 relaxation, inert today).
+        </Alert>
+
+        <Alert variant="info" size="sm">
+          <strong>Structural containers — <code class="font-next-mono">object</code> /
+          <code class="font-next-mono">array&lt;object&gt;</code> (Phase 2a of the
+          variable-typesystem rework, ADR-0023) — additive, representation only.</strong> A form
+          SECTION now ALSO surfaces as an <code class="font-next-mono">object</code> catalog
+          variable grouping its children — its flat leaf variables
+          (<code class="font-next-mono">section.field</code>) are UNCHANGED and still the only
+          thing offered for insertion, so the whole-section entry never duplicates them in the
+          picker. The REPEATER exclusion noted above is LIFTED the same way: it now surfaces as
+          ONE <code class="font-next-mono">array&lt;object&gt;</code> entry so the editor can see
+          it exists, but its per-element fields live only inside
+          <code class="font-next-mono">descriptor.fields</code> — there is still NO per-element
+          PATH (<code class="font-next-mono">items.item_name</code> stays unresolvable) and no
+          loop. Both bases are DESCRIPTOR-ONLY, mirroring the <code class="font-next-mono">time</code>
+          tripwire: flat wire <code class="font-next-mono">type</code> degrades to
+          <code class="font-next-mono">text</code> and <code class="font-next-mono">operatorCases()</code>
+          is empty (never a condition source). Only a TOP-LEVEL section/repeater gets its own
+          catalog entry — a container nested inside another (a section inside a repeater) is
+          visible only inside its parent's <code class="font-next-mono">fields</code>, with no
+          path of its own.
+        </Alert>
+
+        <Alert variant="info" size="sm">
+          <strong>Follow-up: non-array OBJECT descriptor fields are now referenceable, recursively
+          (extends ADR-0023's file-subfield mechanism to a second descriptor shape — ADR-0023
+          addendum).</strong> <code class="font-next-mono">WorkflowVariableCatalogService::descriptorSubfieldTypeMap()</code>
+          is now <code class="font-next-mono">fileSubfieldTypeMap() + objectSubfieldTypeMap()</code>
+          — the new half walks a <strong>non-array</strong> <code class="font-next-mono">object</code>
+          descriptor's own declared <code class="font-next-mono">fields</code> RECURSIVELY into
+          <code class="font-next-mono">&lt;path&gt;.&lt;key&gt;</code> entries in the write-validation
+          reference index AND the runtime type map, mirroring the picker tree's own
+          <code class="font-next-mono">isObjectContainer()</code> rule so what the tree offers is
+          exactly what the index accepts. A form SECTION's container entry is now redundantly
+          covered too, but its pre-existing FLAT leaf entry always wins (an
+          <code class="font-next-mono">??=</code> dedupe guard, so it keeps its
+          <code class="font-next-mono">enumOptions</code>) — the practical unlock is a Phase-3
+          GLOBAL object, which has no separate flat-leaf pass at all. Recursion STOPS the instant it
+          reaches an <code class="font-next-mono">array:true</code> object descriptor, so a
+          REPEATER's element subfields remain UNREFERENCEABLE at every nesting depth, unchanged. A
+          descriptor-derived subfield entry — file OR object — carries NO
+          <code class="font-next-mono">enumOptions</code>, an accepted limitation shared with the
+          Phase-2b file subfields below.
+        </Alert>
+
+        <Alert variant="info" size="sm">
+          <strong>The <code class="font-next-mono">file</code> variable is a COMPOSITE (Phase 2b,
+          ADR-0023) — its flat wire <code class="font-next-mono">type</code> stays
+          <code class="font-next-mono">file</code>, unlike <code class="font-next-mono">object</code>.</strong>
+          Its descriptor now also carries the 5 fixed subfields below, but every existing file
+          behavior is untouched: text still renders the name, a structural slot still coerces to
+          the id(s) (what <code class="font-next-mono">create_task</code>'s copy-on-attach reads),
+          and the <code class="font-next-mono">filled</code>/<code class="font-next-mono">empty</code>
+          condition operators are unchanged. The snapshot also gains a
+          <code class="font-next-mono">url</code> key —
+          <code class="font-next-mono">File::serveUrl()</code>, the access-controlled
+          <code class="font-next-mono">disk.show</code> route, NEVER a raw storage path — for the
+          ORIGINAL submission file (a later copy-on-attach gets its own id/url). Each subfield is
+          individually PICKABLE and REFERENCEABLE, including with its OWN operation pipeline (the
+          write-validation reference index now enumerates all 5 paths) — a multi-file answer
+          collapses to its FIRST element when a subfield is read (fail-soft).
+        </Alert>
+        <ApiTable title="File composite subfields (&lt;file&gt;.&lt;key&gt;)" type-header="Type" :rows="fileSubfieldRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong>Representation only — loop / per-element execution is OUT OF SCOPE (deferred to
+          R2-Generator).</strong> This phase makes the WHOLE form structure visible to the editor
+          (every section and repeater has a catalog entry) and makes a file's OWN subfields
+          addressable — it does NOT add a way to iterate a repeater's elements or a multi-file
+          list. In the variable picker: a file offers its whole-file entry PLUS 5 subfield
+          pickables (qualified names like "Attachment › Name"); a section contributes nothing new
+          (its leaves were already flat); a repeater contributes exactly ONE relabelled "(list)"
+          entry with no children. See
+          <code class="font-next-mono">docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md</code>
+          for the full design record.
+        </Alert>
+
+        <!-- Workflow Globals (Phase 3, ADR-0024) -->
+        <Alert variant="info" size="sm">
+          <strong>Consts — user-created LITERAL constants (Phase 3 of the
+          variable-typesystem rework, ADR-0024; renamed from "Workflow globals" and moved to a new
+          top-level Variables area in ADR-0028).</strong> A workspace member can create a
+          <strong>const</strong> from the top-level "Variables" nav's "Consts" item
+          (<code class="font-next-mono">/next/variables/consts</code>): a named, typed LITERAL
+          value — a brand name, a budget number, a hashtag list — that becomes a
+          <code class="font-next-mono">globals.&lt;key&gt;</code> reference usable in EVERY
+          workflow, form-independent (present for a <code class="font-next-mono">schedule</code>
+          trigger exactly as for a <code class="font-next-mono">form_submitted</code> one). A
+          global is LITERAL-only this phase — no computed values, no references to another
+          variable, no cycle detection — resolved by the SAME whitelisted dotted lookup as every
+          other reference (<code class="font-next-mono">WorkflowVariableResolver::ROOTS</code> now
+          includes <code class="font-next-mono">globals</code> alongside
+          <code class="font-next-mono">trigger</code>/<code class="font-next-mono">steps</code>).
+          Reading the list is any workspace member; creating/editing/deleting is creator-only. A
+          global has NO soft-delete — a delete is permanent, and a workflow that still references
+          the deleted key simply resolves it to nothing (the same fail-soft behavior any missing
+          reference already has).
+        </Alert>
+        <ApiTable title="Authorable const types (ConstantTypeValidator::AUTHORABLE_BASES)" type-header="Shape" :rows="globalAuthorableTypeRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong>Injection safety — a global's value renders VERBATIM, never re-interpreted (a
+          security invariant, not an implementation detail).</strong> A global's
+          <code class="font-next-mono">value</code> is user-authored and later interpolated into
+          a step's text/structured fields, so it is protected the same way any other resolved
+          value already is: at WRITE time, a value containing a NUL byte anywhere is rejected
+          outright (the one persistence path in this module whose storage column would otherwise
+          allow one); at RESOLVE time, the looked-up value rides the SAME NUL-delimited placeholder
+          mask an embedded directive's result already uses. A global whose value literally reads
+          <code class="font-next-mono">&#123;&#123;trigger.fields.secret&#125;&#125;</code> or
+          contains an <code class="font-next-mono">@[variable]</code>-shaped string still renders
+          that text completely as-is — it is never resolved as a second reference.
+        </Alert>
+
+        <Alert variant="warning" size="sm">
+          <strong>Deferred in the editor today (a frontend limit, not a backend one):
+          array-of-object, and nested object/array/enum children inside an object's
+          fields.</strong> The backend validator already accepts both recursively — an object
+          field's child MAY itself be another object, an enum, or an array, and an object-based
+          global MAY itself be a list — when sent directly to the API. The editor's own type
+          builder ships a narrower authoring surface for this slice: an object field's own type
+          picker offers only <code class="font-next-mono">text | number | boolean | date</code>
+          (no nested object/enum/array child), and the "array" toggle is disabled whenever the
+          base is <code class="font-next-mono">object</code>, with an explanatory note ("A list
+          of objects isn't supported here yet — model each object separately."). Both are pure
+          frontend follow-ups whenever real authoring demand shows up. See
+          <code class="font-next-mono">docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md</code>.
+        </Alert>
+
+        <!-- Workflow variable typesystem Phase 4 (Phase 4, ADR-0025) -->
+        <Alert variant="info" size="sm">
+          <strong>Operation arguments as variables (Phase 4 of the variable-typesystem rework,
+          ADR-0025 — WIDENED in a later batch, "Phase 4b").</strong> An operation ARGUMENT —
+          not just a field's own top-level value — may now ALSO be the same
+          <code class="font-next-mono">{ kind: 'variable', ref, pipeline? }</code> union a
+          <code class="font-next-mono">create_task.priority</code>/<code class="font-next-mono">.deadline</code>
+          value already carries, RECURSIVELY (an argument's own pipeline may carry another such
+          argument). <strong>EVERY argument control now accepts a variable</strong> — not just a
+          TEXT/NUMBER/BOOLEAN/DATE control: an <code class="font-next-mono">enum_to_choice</code>
+          mapping, a <code class="font-next-mono">match_to_choice</code> rule list, or a
+          <code class="font-next-mono">select</code>/<code class="font-next-mono">sourceOption</code>
+          pick can ALSO come from <code class="font-next-mono">trigger</code>/<code class="font-next-mono">steps</code>/
+          <code class="font-next-mono">globals</code> context now, instead of being typed once at
+          authoring time. The single gate both sides read is
+          <code class="font-next-mono">WorkflowOperationArgType::argVariablePolicy()</code> (a new
+          <code class="font-next-mono">ArgVariablePolicy</code> DTO) — it REPLACED the earlier,
+          narrower <code class="font-next-mono">variableValueType()</code>, which returned a matching
+          type only for TEXT/NUMBER/BOOLEAN/DATE and <code class="font-next-mono">null</code>
+          (LITERAL-ONLY) for every option/map/rules/select control. See the per-category gate below.
+          The executor (<code class="font-next-mono">WorkflowOperationExecutor</code>) is still
+          completely untouched — <code class="font-next-mono">WorkflowVariableResolver</code>
+          pre-resolves every variable-shaped argument to a literal BEFORE each op runs (a STRUCTURAL
+          arg's "literal" is the raw map/rule-list array itself), so the executor still only ever sees
+          plain literals.
+        </Alert>
+        <ApiTable title="The per-category arg-variable gate (WorkflowOperationArgType::argVariablePolicy())" type-header="Accepted ref type" :rows="argVariableControlRows" />
+
+        <Alert variant="warning" size="sm">
+          <strong>Depth-capped, not cycle-checked — and the condition-tree trigger gate is
+          deliberately NOT wired.</strong> An argument-variable's reference can only point at CONTEXT
+          DATA, never at another argument's own definition, so a cycle is impossible by construction
+          — <code class="font-next-mono">ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH</code> (3) is the
+          ONE shared bound, enforced IDENTICALLY at write (a 4th nesting level is a
+          <code class="font-next-mono">422</code> under the deepest argument's own key) and at
+          runtime (the same boundary fails soft to the argument's coerced <code class="font-next-mono">null</code>,
+          never a crash). A <code class="font-next-mono">form_submitted</code> CONDITION-tree pipeline
+          stays LITERAL-only — an argument-variable there is rejected at write, and
+          <code class="font-next-mono">WorkflowConditionEngine</code> (the trigger gate's runtime)
+          calls the executor DIRECTLY with no pre-resolution pass, so this mirrors the (unwired)
+          runtime exactly. See <code class="font-next-mono">docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md</code>
+          for the full design record, including a known follow-up: a mismatched NESTED
+          argument-variable shows its own local error skin in the editor but does not yet block the
+          parent operations-modal's Save — the backend <code class="font-next-mono">422</code> stays
+          authoritative either way.
+        </Alert>
       </div>
     </StorySection>
 
@@ -1107,6 +1415,211 @@ WHERE id = ? AND state = 'pending'</pre>
         </div>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg">Variable typesystem Phase 1 — the "Default when empty" field + human option labels (ADR-0022; relocated + typed in a later batch)</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            <strong>Current UI (a later batch, §refinement 1):</strong> <code class="font-next-mono">ValueOrVariableField.vue</code>
+            (the structured value-or-variable field — and, by wrapping it,
+            <code class="font-next-mono">DateOrVariableField.vue</code>) moved its default OFF the
+            field surface and INTO the operations modal, where it shows ONLY once a variable is
+            picked AND its <code class="font-next-mono">descriptor.nullable</code> is
+            <code class="font-next-mono">true</code> — TYPED to the variable's own base by reusing
+            the Variables module's <code class="font-next-mono">ConstantValueField.vue</code>
+            (a boolean default is a TRI-STATE Select — no default / yes / no — so "no default" can
+            never silently serialize <code class="font-next-mono">false</code>). The markdown
+            editor's <code class="font-next-mono">VariablePanel.vue</code> (the
+            <code class="font-next-mono">@[variable]</code> chip's own edit modal) NO LONGER differs:
+            the asymmetry — an always-visible, untyped plain
+            <code class="font-next-mono">TextInput</code> regardless of nullability — is closed by
+            routing its whole body through the shared
+            <code class="font-next-mono">VariableReferenceEditor</code>, so it renders the SAME
+            nullable-gated, TYPED control. A typed default round-trips through the directive as a
+            JSON scalar (<code class="font-next-mono">"default":12</code> /
+            <code class="font-next-mono">false</code>) rather than being stringified by a text input.
+            Both wire serializations stay emit-or-omit — leaving the default blank keeps the payload
+            byte-identical to before Phase 1. Wherever a variable's options render (the variable picker, and a pipeline's
+            <code class="font-next-mono">sourceOption</code>/<code class="font-next-mono">sourceOptions</code>/<code class="font-next-mono">sourceMap</code>
+            args), <code class="font-next-mono">variableOptionList()</code>
+            (<code class="font-next-mono">workflowVariables.ts</code>) now prefers the catalog
+            variable's structured <code class="font-next-mono">descriptor.options</code> — showing
+            the human label, still emitting the stored key — falling back to the flat
+            <code class="font-next-mono">enumOptions</code> (label = value) only for an
+            older/label-less catalog response. <code class="font-next-mono">resolveVariableDescriptor()</code>
+            recovers a picked path's descriptor for read-side rendering elsewhere.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            The shared <code class="font-next-mono">VariablePipelineEditor.vue</code> (used by both
+            add-ons AND the IF-condition editor) also gained a generic per-arg
+            <code class="font-next-mono">hint</code> slot, first used by the new
+            <code class="font-next-mono">date_format</code> op to show its safe-token legend
+            ("Safe tokens: YYYY MMMM MMM MM DD HH mm D") under the pattern input. The 5 new ops
+            (<code class="font-next-mono">coalesce</code>/<code class="font-next-mono">is_present</code>/<code class="font-next-mono">is_null</code>/<code class="font-next-mono">assert_present</code>/<code class="font-next-mono">date_format</code>)
+            are declared in <code class="font-next-mono">standardOperationsCatalog()</code> with
+            the SAME nominal input/output the backend catalog advertises — see "The typed variable
+            system" above for the full wire contract and
+            <code class="font-next-mono">docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md</code>
+            for the design record.
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg">Variable typesystem Phase 4 — the RECURSIVE argVariable slot, widened to EVERY control (ADR-0025 + its Phase 4b addendum)</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            The SHARED <code class="font-next-mono">VariablePipelineEditor.vue</code> (used by both
+            add-ons AND the IF-condition editor) has a <code class="font-next-mono">depth</code>
+            prop (default 0) and, for ANY argument control — value (text/number/boolean/date) OR
+            option/structural (select/sourceOption/sourceOptions/sourceMap/choiceRules/choiceFallback)
+            alike — offers a scoped <code class="font-next-mono">#argVariable</code> slot ONLY while
+            <code class="font-next-mono">depth &lt; MAX_ARG_VARIABLE_DEPTH</code> (3,
+            <code class="font-next-mono">operationHelpers.ts</code>, mirrors the backend cap
+            byte-for-byte) AND the host actually provides it. The per-control gate is
+            <code class="font-next-mono">argVariablePolicy()</code> (renamed from the narrower
+            <code class="font-next-mono">argVariableValueType()</code>, which excluded every
+            option/map/rules/select control). The editor still only owns WHETHER to offer the slot,
+            never the UI itself — it stays free of any dependency on a host's own variable/field
+            types. <code class="font-next-mono">ValueOrVariableField.vue</code> is the one host that
+            fills it today, RECURSIVELY, with ITSELF (one <code class="font-next-mono">depth</code>
+            deeper each level) — a picked argument-variable renders the SAME chip + "Returns …" modal
+            any top-level field gets, adapting the raw argument storage to/from its own
+            <code class="font-next-mono">WorkflowFieldValue</code> union so a LITERAL argument still
+            serializes with NO <code class="font-next-mono">{kind}</code> wrapper. Its recursive arg
+            picker offers the FULL show-all variable pool for EVERY arg — matching the field-level
+            picker, not a type-prefiltered list — so type-appropriateness comes from the terminal gate
+            plus the mismatch skin, never from hiding variables; a STRUCTURAL arg's recursive field
+            gets NO operations catalog (no sub-pipeline — the ref supplies the whole map/rule-list).
+            <code class="font-next-mono">DateOrVariableField.vue</code> and every
+            operations-modal-enabled field in <code class="font-next-mono">WorkflowStepCard.vue</code>
+            (priority, deadline, the report window dates) forward the same
+            <code class="font-next-mono">arg-variables</code> pool prop. The markdown chip's
+            <code class="font-next-mono">VariablePanel.vue</code> fills it too, without ever importing
+            a page: the step card INJECTS its control
+            (<code class="font-next-mono">VariableFeatureConfig.argVariableField</code> →
+            <code class="font-next-mono">WorkflowArgVariableField.vue</code>, a thin adapter over the
+            same <code class="font-next-mono">ValueOrVariableField</code> +
+            <code class="font-next-mono">PipelineArgLiteralInput</code> pair), so a chip's pipeline
+            argument offers exactly the same value/variable toggle a step field's does. A host that
+            injects nothing (the docs page, any plain embed) keeps LITERAL-ONLY arguments. Only the
+            condition modal and the if-block panel never provide the slot — they render
+            <code class="font-next-mono">PipelineArgLiteralInput.vue</code>, which is now the SINGLE
+            literal control for every arg kind (value AND option/map/rules — the editor no longer
+            inlines any literal control itself). See
+            <code class="font-next-mono">docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md</code>
+            (incl. its Phase 4b addendum).
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg">Variable UX refinements (this batch) — "Condition" naming, nullable/array markers, and an expandable tree picker</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            <strong>Boolean is named "Condition" everywhere it names a TYPE.</strong> Every
+            user-facing type label (the chip's sr-only type text, the pipeline's "Result type:"
+            readout, the operation catalog's output badges, the Globals base-type picker) reads
+            "Condition"/"Warunek" for a boolean value, never "Boolean"/"yes-no". The ONE exception is
+            <code class="font-next-mono">notBoolean: 'Choose yes or no.'</code> — that string
+            describes the boolean VALUE inside a Yes/No control, not the type's name, so it is kept
+            as-is.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Nullable/array markers on the type icon.</strong> A new shared
+            <code class="font-next-mono">VariableTypeIcon.vue</code>
+            (<code class="font-next-mono">ui/editor/extensions/</code>) renders the type glyph plus
+            tiny superscript markers — <code class="font-next-mono">[]</code> when the variable is a
+            collection, <code class="font-next-mono">?</code> when it may resolve empty — each with a
+            title + sr-only label, plus an optional <code class="font-next-mono">typeLabel</code> prop
+            announcing the type itself sr-only. Used by the editor's <code class="font-next-mono">VariableChip</code>,
+            the value-or-variable field's picked-variable token, the picker tree's rows, and the
+            operations-modal header — one glyph vocabulary everywhere a variable's type is shown.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>The variable picker is the shared VariableBrowser (one inline tree).</strong>
+            <code class="font-next-mono">ui/variables/VariableBrowserPopover.vue</code> +
+            <code class="font-next-mono">VariableBrowser.vue</code> — built by
+            <code class="font-next-mono">buildVariableTree()</code> in
+            <code class="font-next-mono">ui/variables/variableTree.ts</code> — serve the
+            value-or-variable field, the condition source AND (since B4) the markdown editor's
+            <code class="font-next-mono">{</code>-insert popup
+            (<code class="font-next-mono">ui/editor/extensions/VariableSuggest.vue</code>, which keeps
+            ProseMirror's VIRTUAL focus: the plugin forwards ↑/↓/Enter/Esc, and ←/→ only while the
+            query is empty, so the caret never leaves the text). Expanding a container reveals its
+            children DIRECTLY BENEATH it, indented; depth is carried by per-level indentation, a
+            guide rail per ancestor level (the nearest rail strongest) and a container row skin
+            (rotating chevron, braces glyph, heavier label). A search box switches to a flat result
+            list of selectable hits. It IS an ARIA tree: the body is one focusable element carrying
+            <code class="font-next-mono">role="tree"</code> +
+            <code class="font-next-mono">aria-activedescendant</code> (virtual focus, so the search
+            input can drive the same cursor) and each row is a
+            <code class="font-next-mono">treeitem</code> with
+            <code class="font-next-mono">aria-level</code>/<code class="font-next-mono">aria-expanded</code>
+            plus <code class="font-next-mono">aria-posinset</code>/<code class="font-next-mono">aria-setsize</code>
+            (the DOM is flattened); only the search results are a
+            <code class="font-next-mono">listbox</code> of
+            <code class="font-next-mono">option</code>s. Keyboard: ↑/↓ over visible rows, → expand /
+            step in, ← collapse / step out, Home/End, Enter/Space pick-or-toggle, Esc closes,
+            type-ahead. A file composite is expandable AND selectable (its chevron is a separate,
+            non-selecting target); an object container — a form SECTION, an object GLOBAL, or the
+            "Globals" group node — is EXPAND-ONLY, since a whole object resolves to a map at run
+            time, so its leaves are picked instead; a REPEATER stays a single, non-expandable list
+            entry (per-element access is still deferred to R2). The emitted ref shape is
+            byte-identical — this is presentation only.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>ONE feed shape for every surface, and where the identifier strip applies.</strong>
+            Every offered-variable feed — the value fields
+            (<code class="font-next-mono">allValueVariables</code>), the type-filtered pickers
+            (<code class="font-next-mono">variablesOfType</code>) AND the markdown
+            <code class="font-next-mono">{</code>-insert list
+            (<code class="font-next-mono">toEditorVariables[Typed]</code>) — carries the section
+            CONTAINER so the picker can group its leaves beneath it, with its
+            <code class="font-next-mono">descriptor.fields</code> DROPPED so only the real, already
+            offered flat leaves nest under it and nothing new becomes pickable. The old
+            <code class="font-next-mono">includeContainers</code> switch is gone: it only existed
+            because the <code class="font-next-mono">{</code> list used to be a flat
+            insert-everything renderer; it now browses this same tree, where an object container is
+            EXPAND-ONLY and therefore never insertable.
+            Separately, the SF3.2 identifier strip is scoped to <strong>SYSTEM identity paths</strong>
+            (<code class="font-next-mono">isSystemIdentifierPath</code>): a
+            <code class="font-next-mono">*.id</code> / <code class="font-next-mono">*_id</code> path is
+            hidden only when it is NOT user-authored, i.e. never under
+            <code class="font-next-mono">trigger.fields.</code> (nor the conditions surface's
+            prefix-stripped <code class="font-next-mono">fields.</code>) and never under
+            <code class="font-next-mono">globals.</code>. So
+            <code class="font-next-mono">trigger.submission.id</code> and a step's
+            <code class="font-next-mono">task_id</code> stay out of every offered list, while a field —
+            or a workspace GLOBAL — a USER named <code class="font-next-mono">numer_id</code> is offered
+            everywhere: the picker, the markdown feed AND the condition source. That is correct BY
+            CONSTRUCTION, so the former per-slot
+            <code class="font-next-mono">stripIdentifiers</code> escape hatch was removed.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Globals are a real GROUP node in the tree feeds.</strong> The workspace's
+            user-authored constants used to ride as flat
+            <code class="font-next-mono">Globals › &lt;name&gt;</code> rows, and an OBJECT global
+            could never expand (the globals branch of
+            <code class="font-next-mono">expandVariables()</code> returned before the container
+            rules). The VALUE-FIELD feed now emits ONE expand-only container at the
+            <code class="font-next-mono">globals</code> root — labelled
+            <code class="font-next-mono">workflows.variable.globalsGroup</code> — that every
+            <code class="font-next-mono">globals.&lt;key&gt;</code> nests under by its own dotted
+            path, with a scalar global as a selectable leaf and an object global as a further
+            expand-only branch over its declared fields. The group carries no
+            <code class="font-next-mono">descriptor.fields</code>, so only REAL offered globals can
+            ever appear inside it. Every feed emits it — the markdown
+            <code class="font-next-mono">{</code> list included — so the
+            <code class="font-next-mono">Globals › &lt;name&gt;</code> text prefix (and its
+            <code class="font-next-mono">workflows.variable.global</code> key) is gone.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Follow-up: non-array OBJECT descriptor fields joined the write-side index.</strong>
+            The tree picker above can expand an object GLOBAL's own declared fields into pickable
+            child nodes; a companion backend change makes those composed refs
+            (<code class="font-next-mono">globals.address.city</code>, and any deeper nesting) ACTUALLY
+            write-validate, type-flow, and resolve — closing what would otherwise be a picker/validator
+            asymmetry. See "Structural containers" above and
+            <code class="font-next-mono">docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md</code>'s
+            addendum for the mechanism.
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-1 font-next-semibold text-next-fg">Step editor: ordered list, no canvas — collapsible cards + type-selection cards (SF2)</p>
           <p class="text-next-xs text-next-muted-foreground">
             The step model is strictly LINEAR (one ordered list, no branching, no parallel
@@ -1160,6 +1673,11 @@ WHERE id = ? AND state = 'pending'</pre>
           <li><strong>Per-tenant error isolation in the sweep commands</strong> — <code class="font-next-mono">workflows:run-scheduled</code> / <code class="font-next-mono">workflows:reap-stale-runs</code> have no per-tenant try/catch yet (consistent with the existing Bot reaper pattern; hardening queued separately).</li>
           <li><strong>Public holiday awareness</strong> — the "last working day" rule (and every other schedule rule) has no holiday-calendar concept; a fire date landing on a holiday still fires normally. Would need a real holiday-calendar data source.</li>
           <li><strong>Rolling intervals, every-N-weeks, one-off dates, and sub-minute cadences</strong> — the schedule vocabulary has no cadence phased from an arbitrary start rather than the wall clock (e.g. "exactly every 90 minutes"), no "every N weeks" rule, no single one-off-date cadence, and no sub-minute grid. Named explicitly in the AI-assist's honest-unsupported list rather than silently approximated.</li>
+          <li><strong>TIME real runtime semantics</strong> (variable-typesystem Phase 2) — <code class="font-next-mono">WorkflowVariableType::TIME</code> (Phase 1a, ADR-0022) is catalog/descriptor-only: no condition operators, and its flat wire <code class="font-next-mono">type</code> still degrades to <code class="font-next-mono">text</code>. Needs its own resolver/evaluator/executor arms plus a closed-union update on the FE before it can flow as a first-class type.</li>
+          <li><strong>Presence-op write validation is stricter than the runtime</strong> (variable-typesystem Phase 2) — <code class="font-next-mono">WorkflowConditionTreeValidator::walkPipeline</code>'s exact-type gate does not yet special-case <code class="font-next-mono">coalesce</code>/<code class="font-next-mono">is_present</code>/<code class="font-next-mono">is_null</code>/<code class="font-next-mono">assert_present</code> the way <code class="font-next-mono">WorkflowOperationExecutor</code> already does — inert today (no shipped pipeline needs it), tracked in ADR-0022.</li>
+          <li><strong>Two Phase-2 hardening items, neither reachable today</strong> — a defensive default arm in <code class="font-next-mono">WorkflowOperationExecutor::normalizeInput()</code> (currently an exhaustive match over the original 7 types, so a hypothetical <code class="font-next-mono">TIME</code>-typed pipeline call would throw rather than fail closed) and write-time validation of <code class="font-next-mono">date_format</code>'s <code class="font-next-mono">pattern</code> arg against its safe-token whitelist (today only checked as a generic string — a malformed pattern is caught at run time, not as a 422). See ADR-0022.</li>
+          <li><strong>Update: the three items above are STILL deferred.</strong> Phase 2 of the variable-typesystem rework (ADR-0023, this revision) shipped <code class="font-next-mono">object</code>/<code class="font-next-mono">array&lt;object&gt;</code> containers and the <code class="font-next-mono">file</code> composite instead (see "The typed variable system" above) — none of the three items immediately above were addressed by it. They remain deferred to a later, unnumbered phase.</li>
+          <li><strong>Repeater / multi-file per-element LOOP execution</strong> (variable-typesystem Phase 2a/2b, ADR-0023 — deferred to R2-Generator) — a repeater now has its own <code class="font-next-mono">array&lt;object&gt;</code> catalog entry and a file's composite subfields are individually referenceable, but nothing added a way to iterate a repeater's elements or a multi-file answer: no per-element path, no loop binding. Needs R2-Generator's own element-cardinality / output-binding design, not an incremental extension of this catalog-visibility work.</li>
         </ul>
       </div>
     </StorySection>

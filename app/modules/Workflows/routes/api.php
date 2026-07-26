@@ -30,6 +30,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('forms/{form}/workflow-catalog', [WorkflowVariableCatalogController::class, 'show'])
         ->name('workflows.forms.catalog');
 
+    // The FORM-INDEPENDENT variable catalog: STRUCTURAL metadata (trigger vars by `trigger_type` +
+    // step outputs + operations + personas + variable types) with an OPTIONAL `form_id` that layers
+    // in that form's field vars. A form-less call carries NO tenant rows, so it gates on
+    // workspace-member read (viewAny); a form_id call authorizes FormPolicy::view (see the request).
+    // A static `catalog` path declared BEFORE the {workflow} resource so it never binds as an id.
+    Route::get('workflows/catalog', [WorkflowVariableCatalogController::class, 'index'])
+        ->name('workflows.catalog');
+
     Route::post('workflows/{id}/restore', [WorkflowController::class, 'restore'])->name('workflows.restore');
 
     // Status toggle (active|inactive) — the only path that mutates a workflow's status.
@@ -58,4 +66,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::apiResource('workflows', WorkflowController::class)
         ->only(['index', 'show', 'store', 'update', 'destroy']);
+
+    // NOTE: the CONSTANTS resource (the former workflow globals endpoint) moved to the Variables
+    // module — see App\Modules\Variables\routes\api.php (`consts`). The runtime `globals.<key>` wire
+    // is unchanged; only the model/table/URL renamed.
 });

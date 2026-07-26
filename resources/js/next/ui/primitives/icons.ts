@@ -95,7 +95,14 @@ export type IconName =
   | 'tag'
   | 'flag'
   | 'circle'
-  | 'bookmark';
+  | 'bookmark'
+  // --- Disk / file types (the browser tiles + drawer) ---
+  | 'image'
+  | 'film'
+  | 'music'
+  | 'archive'
+  | 'copy'
+  | 'crop';
 
 /** name -> array of inner SVG elements (paths/circles) as raw markup. */
 export const ICONS: Record<IconName, string> = {
@@ -315,6 +322,22 @@ export const ICONS: Record<IconName, string> = {
     '<line x1="4" x2="4" y1="22" y2="15" />',
   circle: '<circle cx="12" cy="12" r="10" />',
   bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />',
+  image:
+    '<rect width="18" height="18" x="3" y="3" rx="2" ry="2" /><circle cx="9" cy="9" r="2" />' +
+    '<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />',
+  film:
+    '<rect width="18" height="18" x="3" y="3" rx="2" /><path d="M7 3v18" /><path d="M3 7.5h4" />' +
+    '<path d="M3 12h18" /><path d="M3 16.5h4" /><path d="M17 3v18" /><path d="M17 7.5h4" /><path d="M17 16.5h4" />',
+  music: '<path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />',
+  archive:
+    '<rect width="20" height="5" x="2" y="3" rx="1" /><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />' +
+    '<path d="M10 12h4" />',
+  copy:
+    '<rect width="14" height="14" x="8" y="8" rx="2" ry="2" />' +
+    '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />',
+  crop:
+    '<path d="M6 2v14a2 2 0 0 0 2 2h14" />' +
+    '<path d="M18 22V8a2 2 0 0 0-2-2H2" />',
 };
 
 /** All available icon names — handy for the gallery icon grid. */

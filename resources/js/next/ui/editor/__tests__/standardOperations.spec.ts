@@ -10,10 +10,11 @@ import { standardOperationsCatalog } from '../extensions/standardOperations';
 import { resolveType } from '../extensions/operationHelpers';
 import type { VariablePipelineStep, VariablePrimitive } from '../extensions/types';
 
-const TYPES: VariablePrimitive[] = ['text', 'number', 'boolean', 'date', 'enum', 'multi'];
+const TYPES: VariablePrimitive[] = ['text', 'number', 'boolean', 'date', 'enum', 'multi', 'file'];
 const ARG_TYPES = [
   'text', 'number', 'boolean', 'date', 'select',
   'sourceOption', 'sourceOptions', 'sourceMap', 'choiceRules', 'choiceFallback',
+  'elementPipeline', 'reduceSeed', 'elementDefault',
 ];
 
 function step(operationId: string, outputType: VariablePrimitive): VariablePipelineStep {
@@ -25,16 +26,16 @@ describe('standardOperationsCatalog', () => {
 
   const catalog = () => standardOperationsCatalog();
 
-  it('has 68 ops with UNIQUE, stable ids', () => {
+  it('has 83 ops with UNIQUE, stable ids', () => {
     const ids = catalog().map((op) => op.id);
-    expect(ids.length).toBe(68);
+    expect(ids.length).toBe(83);
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  // FE↔BE guard: the EXACT set of 68 ids. The backend condition engine pins the SAME
-  // set on its side (WorkflowConditionOperationCatalog) — a drift on either side fails
-  // here first. Compared sorted so ordering never matters, only the membership.
-  it('pins the EXACT 68-id set the backend mirrors', () => {
+  // FE↔BE guard: the EXACT set of 83 ids. The backend condition engine pins the SAME
+  // set on its side (WorkflowOperation) — a drift on either side fails here first.
+  // Compared sorted so ordering never matters, only the membership.
+  it('pins the EXACT 83-id set the backend mirrors', () => {
     const EXPECTED = [
       // text (17) — incl. the choice-producing match_to_choice
       'text_uppercase', 'text_lowercase', 'text_trim', 'text_substring', 'text_replace',
@@ -56,8 +57,14 @@ describe('standardOperationsCatalog', () => {
       // multi (7)
       'multi_includes', 'multi_excludes', 'multi_includes_any', 'multi_includes_all',
       'multi_count', 'multi_is_empty', 'multi_to_text',
+      // array transform (6) — offered on an ARRAY (the flat multi slot); wave 1 + wave 2
+      'array_count', 'array_at', 'array_map', 'array_filter', 'array_sort', 'array_reduce',
+      // file (4) — two boolean terminals + two converters into the text/number vocab
+      'file_is_empty', 'file_is_not_empty', 'file_count', 'file_name',
+      // generic / null-handling (5, phase-1b) — presence helpers + a safe date formatter
+      'coalesce', 'is_present', 'is_null', 'assert_present', 'date_format',
     ];
-    expect(EXPECTED.length).toBe(68);
+    expect(EXPECTED.length).toBe(83);
     const ids = catalog().map((op) => op.id);
     expect([...ids].sort()).toEqual([...EXPECTED].sort());
   });

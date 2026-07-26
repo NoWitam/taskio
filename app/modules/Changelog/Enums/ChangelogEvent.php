@@ -14,6 +14,7 @@ enum ChangelogEvent: string
     case ENABLED = 'enabled';
     case INDEXED = 'indexed';
     case FORM_FILLED = 'form_filled';
+    case CONTENT_REPLACED = 'content_replaced';
     case APPROVAL_STARTED = 'approval_started';
     case APPROVAL_STAGE_APPROVED = 'approval_stage_approved';
     case APPROVAL_COMPLETED = 'approval_completed';
@@ -21,7 +22,7 @@ enum ChangelogEvent: string
 
     public function getDescription(): string
     {
-        return match($this) {
+        return match ($this) {
             self::CREATED => 'changelog.created',
             self::UPDATED => 'changelog.updated',
             self::DELETED => 'changelog.deleted',
@@ -32,6 +33,7 @@ enum ChangelogEvent: string
             self::ENABLED => 'changelog.enabled',
             self::INDEXED => 'changelog.indexed',
             self::FORM_FILLED => 'changelog.formFilled',
+            self::CONTENT_REPLACED => 'changelog.contentReplaced',
             self::APPROVAL_STARTED => 'changelog.approvalStarted',
             self::APPROVAL_STAGE_APPROVED => 'changelog.approvalStageApproved',
             self::APPROVAL_COMPLETED => 'changelog.approvalCompleted',

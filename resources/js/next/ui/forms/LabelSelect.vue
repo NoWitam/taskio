@@ -77,6 +77,12 @@ const props = withDefaults(
      */
     seed?: Array<Pick<ApiLabel, 'id' | 'name'> & { color?: string | null; icon?: string | null }>;
     /**
+     * Label ids that are LOCKED (e.g. a disk file's folder-enforced labels): their chips render a
+     * lock instead of the remove ✕, are disabled in the dropdown so they cannot be toggled off, and
+     * therefore stay in the model. They remain part of v-model — the consumer keeps passing them.
+     */
+    locked?: string[];
+    /**
      * Override the labels loader (defaults to the `/labels` endpoint). Useful for
      * the styleguide gallery / tests, which inject a mock dataset. The returned
      * SelectOptions may carry `color` + a resolved `icon` for the slots.
@@ -88,8 +94,15 @@ const props = withDefaults(
     readonly: false,
     summary: false,
     addable: true,
+    locked: () => [],
   },
 );
+
+// Locked (e.g. folder-enforced) label ids — non-removable, non-toggleable.
+const lockedSet = computed(() => new Set((props.locked ?? []).map(String)));
+function isLocked(value: string | number): boolean {
+  return lockedSet.value.has(String(value));
+}
 
 // Default the leading icon to `tag`; `:leading-icon="null"` opts out explicitly.
 const resolvedLeadingIcon = computed<IconName | undefined>(() =>
@@ -109,6 +122,8 @@ function toOption(l: ApiLabel): LabelOption {
     label: l.name,
     color: l.color ?? null,
     icon: resolveLabelIcon(l.icon),
+    // A locked option cannot be toggled off from the dropdown (it stays selected in the model).
+    disabled: isLocked(l.id),
   };
 }
 
@@ -349,16 +364,28 @@ defineExpose({ fetchLabels });
       </span>
     </template>
 
-    <!-- Selected chip: same colored pill + a removable ✕. -->
+    <!-- Selected chip: same colored pill + a removable ✕ — or a LOCK when the label is enforced. -->
     <template #chip="{ option, remove }">
       <span
         class="inline-flex h-6 min-w-0 items-center gap-next-1 rounded-next-full border px-next-2 text-next-xs font-next-medium"
-        :class="(option as any).color ? '' : 'border-next-border bg-next-muted text-next-fg'"
+        :class="[
+          (option as any).color ? '' : 'border-next-border bg-next-muted text-next-fg',
+          isLocked(option.value) ? 'opacity-80' : '',
+        ]"
         :style="pillStyle((option as any).color)"
       >
         <Icon v-if="option.icon" :name="option.icon" class="shrink-0" />
         <span class="truncate">{{ option.label }}</span>
+        <span
+          v-if="isLocked(option.value)"
+          class="-mr-next-0_5 inline-flex shrink-0 items-center"
+          :title="t('labelSelect.lockedHint', 'Enforced by a folder — cannot be removed')"
+          :aria-label="t('labelSelect.lockedHint', 'Enforced by a folder — cannot be removed')"
+        >
+          <Icon name="lock" class="text-[0.85em] opacity-80" />
+        </span>
         <button
+          v-else
           type="button"
           class="-mr-next-0_5 inline-flex shrink-0 items-center justify-center rounded-next-full p-[1px] transition-colors duration-[var(--duration-next-fast)] hover:bg-next-fg/15"
           :aria-label="t('select.removeItem', 'Remove {label}', { label: option.label })"

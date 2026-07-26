@@ -2,8 +2,8 @@
 
 namespace App\Modules\Workflows\Services;
 
+use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Workflows\Enums\WorkflowConditionOperator;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
@@ -61,12 +61,14 @@ class WorkflowConditionEvaluator
      */
     private function clausePasses(array $condition, array $payload): bool
     {
-        $type = WorkflowVariableType::tryFrom((string) ($condition['field_type'] ?? ''));
+        $type = VariableType::tryFrom((string) ($condition['field_type'] ?? ''));
         $operator = WorkflowConditionOperator::tryFrom((string) ($condition['operator'] ?? ''));
 
         // An unknown type or operator, or an operator that does not belong to the type, is a
-        // definition-integrity bug the FormRequest rejects — fail closed.
-        if ($type === null || $operator === null || !in_array($operator, $type->operatorCases(), true)) {
+        // definition-integrity bug the FormRequest rejects — fail closed. VariableType::operators() now
+        // returns operator STRING ids (the type system carries no back-dependency on this enum), so
+        // membership is checked by the operator's own value.
+        if ($type === null || $operator === null || !in_array($operator->value, $type->operators(), true)) {
             return false;
         }
 
@@ -78,12 +80,37 @@ class WorkflowConditionEvaluator
         }
 
         return match ($type) {
-            WorkflowVariableType::TEXT => $this->text($operator, $actual, $value),
-            WorkflowVariableType::NUMBER => $this->number($operator, $actual, $value),
-            WorkflowVariableType::DATE => $this->date($operator, $actual, $value),
-            WorkflowVariableType::ENUM => $this->enum($operator, $actual, $value),
-            WorkflowVariableType::MULTI => $this->multi($operator, $actual, $value),
-            WorkflowVariableType::BOOLEAN => $this->boolean($operator, $actual),
+            VariableType::TEXT => $this->text($operator, $actual, $value),
+            VariableType::NUMBER => $this->number($operator, $actual, $value),
+            VariableType::DATE => $this->date($operator, $actual, $value),
+            VariableType::ENUM => $this->enum($operator, $actual, $value),
+            VariableType::MULTI => $this->multi($operator, $actual, $value),
+            VariableType::BOOLEAN => $this->boolean($operator, $actual),
+            VariableType::FILE => $this->file($operator, $actual),
+        };
+    }
+
+    /**
+     * A file field answers one question: is there a file or not. `filled`/`empty` take no
+     * value (an absent field already short-circuits to empty via passesOnMissingPath).
+     *
+     * The payload carries a snapshot LIST, but tolerate the shapes a legacy or hand-written
+     * payload can hold — a bare id string, a single snapshot — so a condition degrades to a
+     * sane answer instead of misreading a non-empty value as empty.
+     */
+    private function file(WorkflowConditionOperator $op, mixed $actual): bool
+    {
+        $hasFile = match (true) {
+            $actual === null => false,
+            is_string($actual) => $actual !== '',
+            is_array($actual) => $actual !== [],
+            default => false,
+        };
+
+        return match ($op) {
+            WorkflowConditionOperator::FILLED => $hasFile,
+            WorkflowConditionOperator::EMPTY => !$hasFile,
+            default => false,
         };
     }
 

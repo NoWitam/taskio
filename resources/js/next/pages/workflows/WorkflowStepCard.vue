@@ -21,7 +21,7 @@
 //
 // The parent owns the StepDraft; this card mutates `step.key` / `step.config` in
 // place and emits remove/move.
-import { computed, ref, watch } from 'vue';
+import { computed, markRaw, ref, watch } from 'vue';
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import Select, { type SelectOption } from '../../ui/forms/Select.vue';
@@ -38,9 +38,11 @@ import Icon from '../../ui/primitives/Icon.vue';
 import MarkdownEditor from '../../ui/editor/MarkdownEditor.vue';
 import ValueOrVariableField from './ValueOrVariableField.vue';
 import DateOrVariableField from './DateOrVariableField.vue';
+import WorkflowArgVariableField from './WorkflowArgVariableField.vue';
+import FormFileInput from '../forms/FormFileInput.vue';
 import { useI18n } from '../../app/i18n';
 import { stepIcon, stepLabel } from './workflowMeta';
-import { allValueVariables, stripVariableDirectives, toEditorVariablesTyped } from './workflowVariables';
+import { allValueVariables, stripVariableDirectives, toEditorVariablesTyped, variablesOfType } from './workflowVariables';
 import { resolveOperationCatalog } from './workflowConditions';
 import { pipelineSatisfies } from '../../ui/editor/extensions/operationHelpers';
 import { sanitizeStepKey, type StepDraft } from './workflowEditorModel';
@@ -190,13 +192,26 @@ function fieldError(field: string): string | undefined {
 const editorVariables = computed<VariableDefinition[]>(() =>
   toEditorVariablesTyped(props.catalog, props.steps, props.position, props.triggerType),
 );
-/** The merged 66-op catalog (backend descriptors × FE labels; full standard set as fallback). */
+/** The merged 79-op catalog (backend descriptors × FE labels; full standard set as fallback). */
 const operationsCatalog = computed<VariableOperationDefinition[]>(() =>
   resolveOperationCatalog(props.catalog),
 );
+/**
+ * The editor's variable feature. The arrays are the seed; the two GETTERS are what keeps
+ * the feed LIVE — this card's catalog is FETCHED (async) and its variable set changes
+ * whenever a step key is renamed, an earlier step is inserted or the trigger form is
+ * switched. The editor builds its extensions once at setup, so without these an
+ * already-open editor would keep showing the feed it happened to see at mount.
+ */
 const editorFeature = computed<VariableFeatureConfig>(() => ({
   variables: editorVariables.value,
   operationsCatalog: operationsCatalog.value,
+  source: () => allVariables.value,
+  catalog: () => operationsCatalog.value,
+  // B4 — a chip's pipeline ARGUMENT may itself be a variable, exactly like a step field's. The
+  // control is this page's value-or-variable field, INJECTED (the editor lives in `ui/**` and must
+  // not import a page); `markRaw` keeps the component definition out of Vue's reactivity.
+  argVariableField: markRaw(WorkflowArgVariableField),
 }));
 
 // AI-text personas: the catalog's label-less ids (fallback to the closed set), each
@@ -258,6 +273,19 @@ const toModel = computed<WorkflowFieldValue<string> | null>({
   set: (v) => setCfg('submissions_to', v),
 });
 
+// --- create_task: attachments (value-or-variable, FILE) ---------------------
+// A FILE terminal. Unlike priority/deadline, the picker is genuinely TYPE-FILTERED to
+// file variables: NO operation coerces another type INTO a file, so a non-file pick
+// could never satisfy the field — offering it (show-all) would only invite a dead end.
+const FILE_RESULT_TYPES: WorkflowVariableType[] = ['file'];
+const attachmentsModel = computed<WorkflowFieldValue | null>({
+  get: () => cfg<WorkflowFieldValue | null>('attachments') ?? null,
+  set: (v) => setCfg('attachments', v),
+});
+const fileVariables = computed<CatalogVariable[]>(() =>
+  variablesOfType(props.catalog, props.steps, props.position, 'file', props.triggerType),
+);
+
 // --- Value-or-variable field SPECS + the saved-model type-error gate ----------
 // ONE spec map: each value-or-variable config field the card owns → its terminal
 // contract ({resultTypes, targetOptions}). The template binds :result-types /
@@ -274,6 +302,7 @@ const vovFieldSpecs = computed(() => ({
   deadline: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
   submissions_from: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
   submissions_to: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
+  attachments: { resultTypes: FILE_RESULT_TYPES } as VovFieldSpec,
 }));
 
 /** Project a SAVED `{op,args}` wire step onto the editor step shape `pipelineSatisfies` reads. */
@@ -506,6 +535,7 @@ const labelsModel = computed<string[]>({
               v-model="priorityModel"
               :variables="allVariables"
               :operations-catalog="operationsCatalog"
+              :arg-variables="allVariables"
               :result-types="vovFieldSpecs.priority.resultTypes"
               :target-options="vovFieldSpecs.priority.targetOptions"
               :external-error-present="!!fieldError('priority')"
@@ -529,6 +559,7 @@ const labelsModel = computed<string[]>({
               v-model="deadlineModel"
               :variables="allVariables"
               :operations-catalog="operationsCatalog"
+              :arg-variables="allVariables"
               :external-error-present="!!fieldError('deadline')"
               :picker-label="t('workflows.step.config.deadline')"
               :date-label="t('workflows.step.config.deadline')"
@@ -544,6 +575,31 @@ const labelsModel = computed<string[]>({
             :aria-label="t('workflows.step.config.labels')"
             :placeholder="t('workflows.step.config.labelsPlaceholder')"
           />
+        </FormField>
+
+        <!-- Attachment: value-or-variable (upload a file | a FILE variable, e.g. a
+             submission's file). No operations modal — nothing coerces INTO a file, so
+             the variable picker is type-filtered to file variables. -->
+        <FormField
+          :label="t('workflows.step.config.attachments')"
+          :description="t('workflows.step.config.attachmentsHint')"
+          :error="fieldError('attachments')"
+        >
+          <ValueOrVariableField
+            v-model="attachmentsModel"
+            :variables="fileVariables"
+            :result-types="vovFieldSpecs.attachments.resultTypes"
+            :external-error-present="!!fieldError('attachments')"
+            :picker-label="t('workflows.step.config.attachments')"
+          >
+            <template #default="{ value, setValue, disabled }">
+              <FormFileInput
+                :model-value="(value as string | null) ?? null"
+                :disabled="disabled"
+                @update:model-value="(v) => setValue(v)"
+              />
+            </template>
+          </ValueOrVariableField>
         </FormField>
 
         <!-- Assignee: SegmentedControl user/bot + the matching picker. -->
@@ -679,6 +735,7 @@ const labelsModel = computed<string[]>({
               v-model="fromModel"
               :variables="allVariables"
               :operations-catalog="operationsCatalog"
+              :arg-variables="allVariables"
               :external-error-present="!!fieldError('submissions_from')"
               :picker-label="t('workflows.step.report.submissionsFrom')"
               :date-label="t('workflows.step.report.submissionsFrom')"
@@ -694,6 +751,7 @@ const labelsModel = computed<string[]>({
               v-model="toModel"
               :variables="allVariables"
               :operations-catalog="operationsCatalog"
+              :arg-variables="allVariables"
               :external-error-present="!!fieldError('submissions_to')"
               :picker-label="t('workflows.step.report.submissionsTo')"
               :date-label="t('workflows.step.report.submissionsTo')"

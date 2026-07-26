@@ -6,19 +6,22 @@ use App\Modules\Approvals\Models\ApprovalPipeline;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Labels\Models\Label;
 use App\Modules\Tasks\Enums\TaskPriority;
+use App\Modules\Variables\Enums\VariableType;
+use App\Modules\Variables\Services\PipelineValidator;
 use App\Modules\Workflows\Enums\WorkflowConditionOperator;
 use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workflows\Services\WorkflowConditionTreeValidator;
 use App\Modules\Workflows\Services\WorkflowScheduleRulesValidator;
 use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
+use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use App\Rules\ScopedExists;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 /**
@@ -116,7 +119,7 @@ class StoreWorkflowRequest extends FormRequest
 
         return [
             'conditions.*.field' => ['required', 'string', 'max:255'],
-            'conditions.*.field_type' => ['required', Rule::enum(WorkflowVariableType::class)],
+            'conditions.*.field_type' => ['required', Rule::enum(VariableType::class)],
             'conditions.*.operator' => ['required', Rule::enum(WorkflowConditionOperator::class)],
             'conditions.*.value' => ['nullable'],
         ];
@@ -263,14 +266,33 @@ class StoreWorkflowRequest extends FormRequest
      * condition catalog. A missing/foreign form (already reported on trigger_config.form_id) resolves
      * to null, and the validator then validates every catalog-independent rule and skips the rest.
      *
+     * ARGUMENT VARIABLES (B6): a condition pipeline's operation arguments may reference a variable, so
+     * the tree is validated against a REFERENCE INDEX built exactly like a step's — except with **no
+     * prior steps**. That is the point, not an omission: the gate runs BEFORE any step executes, so
+     * `steps.*` must never be referenceable in a condition (an attempt is a granular 422), while the
+     * trigger's own variables and the workspace globals are. `fields_available` mirrors the step path:
+     * a `trigger.fields.*` ref is only skippable when the form itself is unresolved.
+     *
      * @param  array<string, mixed>  $tree
      */
     private function validateConditionTree(Validator $validator, array $tree): void
     {
         $formId = $this->input('trigger_config.form_id');
         $form = is_string($formId) && $formId !== '' ? Form::find($formId) : null;
+        $catalog = app(WorkflowVariableCatalogService::class);
 
-        app(WorkflowConditionTreeValidator::class)->validate($validator, $tree, 'conditions', $form);
+        $refCtx = [
+            'index' => $catalog->referenceIndex(WorkflowTriggerType::FORM_SUBMITTED, $form, priorSteps: []),
+            'fields_available' => $form !== null,
+            // The reference-source roots a variable arg may name — supplied to the Variables pipeline
+            // validator so it needs no back-dependency on WorkflowVariableResolver (see ADR-0021).
+            'sources' => WorkflowVariableResolver::ROOTS,
+            // The workspace's custom functions, so a condition pipeline referencing a `fn:<uuid>` op
+            // type-checks (the pipeline validator resolves it) — a type-incompatible function is a 422.
+            'functions' => $catalog->customFunctionOperations(),
+        ];
+
+        app(WorkflowConditionTreeValidator::class)->validate($validator, $tree, 'conditions', $form, $refCtx);
     }
 
     /**
@@ -289,14 +311,14 @@ class StoreWorkflowRequest extends FormRequest
             $validator->errors()->add($prefix . '.field', 'The condition field must be a fields.<id> path.');
         }
 
-        $type = WorkflowVariableType::tryFrom((string) ($condition['field_type'] ?? ''));
+        $type = VariableType::tryFrom((string) ($condition['field_type'] ?? ''));
         $operator = WorkflowConditionOperator::tryFrom((string) ($condition['operator'] ?? ''));
 
         if ($type === null || $operator === null) {
             return; // base enum rules already reported the bad type/operator
         }
 
-        if (!in_array($operator, $type->operatorCases(), true)) {
+        if (!in_array($operator->value, $type->operators(), true)) {
             $validator->errors()->add(
                 $prefix . '.operator',
                 'The ' . $operator->value . ' operator is not valid for a ' . $type->value . ' field.',
@@ -439,6 +461,10 @@ class StoreWorkflowRequest extends FormRequest
         // path stays exactly as cheap as before.
         [$catalog, $triggerType, $form] = $this->referenceCatalogContext($steps);
 
+        // The workspace's custom functions (workspace-constant — fetched once), so a step's value
+        // pipeline referencing a `fn:<uuid>` op type-checks; a type-incompatible function is a 422.
+        $functions = $catalog?->customFunctionOperations() ?? [];
+
         $priorSteps = [];
 
         foreach ($steps as $index => $step) {
@@ -456,7 +482,7 @@ class StoreWorkflowRequest extends FormRequest
 
             // The references THIS step may target: trigger vars, form fields, and PRIOR steps' outputs.
             $refCtx = $catalog !== null
-                ? ['index' => $catalog->referenceIndex($triggerType, $form, $priorSteps), 'fields_available' => $form !== null]
+                ? ['index' => $catalog->referenceIndex($triggerType, $form, $priorSteps), 'fields_available' => $form !== null, 'sources' => WorkflowVariableResolver::ROOTS, 'functions' => $functions]
                 : null;
 
             match ($type) {
@@ -527,7 +553,7 @@ class StoreWorkflowRequest extends FormRequest
      * assignee_id uuid both-or-neither, form_id / approval_pipeline_id nullable scoped uuids.
      *
      * @param  array<string, mixed>  $config
-     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
     private function validateCreateTaskConfig(Validator $validator, string $prefix, array $config, ?array $refCtx = null): void
     {
@@ -550,7 +576,7 @@ class StoreWorkflowRequest extends FormRequest
             fn (mixed $value) => is_scalar($value) && TaskPriority::tryFrom((string) $value) !== null,
             'a valid priority (' . implode(', ', TaskPriority::ids()) . ')',
             $refCtx,
-            [WorkflowVariableType::ENUM],
+            [VariableType::ENUM],
             TaskPriority::ids(),
         );
 
@@ -561,13 +587,44 @@ class StoreWorkflowRequest extends FormRequest
             fn (mixed $value) => $this->isParsableDate($value),
             'a valid date',
             $refCtx,
-            [WorkflowVariableType::DATE],
+            [VariableType::DATE],
         );
 
         $this->validateLabelIds($validator, $prefix, $config['labels'] ?? null);
         $this->validateAssignee($validator, $prefix, $config);
         $this->validateScopedUuid($validator, $prefix . '.form_id', $config['form_id'] ?? null, Form::class);
         $this->validateScopedUuid($validator, $prefix . '.approval_pipeline_id', $config['approval_pipeline_id'] ?? null, ApprovalPipeline::class);
+
+        // attachments is a FILE union: a literal is a file uuid (or a list of them — a Disk pick),
+        // a variable must resolve to a FILE terminal (e.g. a submission's file field). The
+        // concrete files are re-resolved and copied at run time, so this only pins the SHAPE;
+        // an unresolvable id is skipped there rather than 422'd here.
+        $this->validateUnionOrLiteral(
+            $validator,
+            $prefix . '.attachments',
+            $config['attachments'] ?? null,
+            fn (mixed $value) => $this->isFileUuidLiteral($value),
+            'a file id (or a list of file ids)',
+            $refCtx,
+            [VariableType::FILE],
+        );
+    }
+
+    /**
+     * A create_task attachments literal: a single file uuid, or a list of them (single-file is
+     * the common case, but a list degrades cleanly). An empty list is allowed (no attachment).
+     */
+    private function isFileUuidLiteral(mixed $value): bool
+    {
+        $ids = is_array($value) ? $value : [$value];
+
+        foreach ($ids as $id) {
+            if (!is_string($id) || !Str::isUuid($id)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -576,7 +633,7 @@ class StoreWorkflowRequest extends FormRequest
      * / submissions_to (nullable date string OR union).
      *
      * @param  array<string, mixed>  $config
-     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      */
     private function validateCreateFormReportConfig(Validator $validator, string $prefix, array $config, ?array $refCtx = null): void
     {
@@ -606,7 +663,7 @@ class StoreWorkflowRequest extends FormRequest
                 fn (mixed $value) => $this->isParsableDate($value),
                 'a valid date',
                 $refCtx,
-                [WorkflowVariableType::DATE],
+                [VariableType::DATE],
             );
         }
     }
@@ -615,12 +672,12 @@ class StoreWorkflowRequest extends FormRequest
      * A structured field that is EITHER a bare literal OR the {kind: literal|variable, …}
      * union. A null/absent value is fine (optional). A literal value (bare or {kind:literal})
      * is checked by $literalValid. A {kind:variable} value must carry a well-formed ref
-     * (source∈trigger|steps, path string, type∈WorkflowVariableType) — its runtime value can't
+     * (source∈trigger|steps, path string, type∈VariableType) — its runtime value can't
      * be known at write time, so only the ref SHAPE is validated.
      *
      * @param  callable(mixed): bool  $literalValid  predicate the resolved literal must satisfy
-     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
-     * @param  array<int, WorkflowVariableType>  $allowedTerminals  the field's accepted pipeline output types
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @param  array<int, VariableType>  $allowedTerminals  the field's accepted pipeline output types
      * @param  array<int, string>|null  $targetOptions  a CHOICE field's allowed option VALUES (null for a plain value field)
      */
     private function validateUnionOrLiteral(
@@ -669,7 +726,7 @@ class StoreWorkflowRequest extends FormRequest
 
     /**
      * A {kind:variable} ref: source∈trigger|steps, a non-empty string path, and a type in the
-     * WorkflowVariableType set. This is the ONLY thing checkable for a variable at write time
+     * VariableType set. This is the ONLY thing checkable for a variable at write time
      * (its resolved value is a run-time property of the trigger/step context).
      */
     private function validateVariableRef(Validator $validator, string $key, mixed $ref): void
@@ -680,9 +737,11 @@ class StoreWorkflowRequest extends FormRequest
             return;
         }
 
+        // Single source of truth for the reference whitelist (see ADR-0021): a new root added to
+        // WorkflowVariableResolver::ROOTS is automatically accepted by this write-side validator too.
         $source = $ref['source'] ?? null;
-        if (!in_array($source, ['trigger', 'steps'], true)) {
-            $validator->errors()->add($key . '.ref.source', 'The reference source must be trigger or steps.');
+        if (!in_array($source, WorkflowVariableResolver::ROOTS, true)) {
+            $validator->errors()->add($key . '.ref.source', 'The reference source must be one of: ' . implode(', ', WorkflowVariableResolver::ROOTS) . '.');
         }
 
         $path = $ref['path'] ?? null;
@@ -691,7 +750,7 @@ class StoreWorkflowRequest extends FormRequest
         }
 
         $type = $ref['type'] ?? null;
-        if (!in_array($type, WorkflowVariableType::ids(), true)) {
+        if (!in_array($type, VariableType::ids(), true)) {
             $validator->errors()->add($key . '.ref.type', 'The reference type is invalid.');
         }
     }
@@ -709,8 +768,8 @@ class StoreWorkflowRequest extends FormRequest
      * choice args' option values are checked against the destination field's own option set.
      *
      * @param  array<string, mixed>  $field
-     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
-     * @param  array<int, WorkflowVariableType>  $allowedTerminals
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @param  array<int, VariableType>  $allowedTerminals
      * @param  array<int, string>|null  $targetOptions
      */
     private function validateVariablePipeline(Validator $validator, string $key, array $field, ?array $refCtx, array $allowedTerminals, ?array $targetOptions = null): void
@@ -738,7 +797,7 @@ class StoreWorkflowRequest extends FormRequest
         }
 
         $ref = is_array($field['ref'] ?? null) ? $field['ref'] : [];
-        $sourceType = WorkflowVariableType::tryFrom((string) ($ref['type'] ?? ''));
+        $sourceType = VariableType::tryFrom((string) ($ref['type'] ?? ''));
 
         if ($sourceType === null) {
             return; // validateVariableRef already reported the bad ref.type
@@ -746,7 +805,17 @@ class StoreWorkflowRequest extends FormRequest
 
         $sourceEnumOptions = $this->resolveRefEnumOptions($validator, $key, $ref, $refCtx);
 
-        app(WorkflowConditionTreeValidator::class)->validateValuePipeline(
+        // The source's REAL descriptor (array-ops wave 3): an array<object> (repeater) / array<file> ref
+        // degrades its wire type to text, so ONLY the reference-index descriptor still carries its
+        // array-ness + element `fields`. Seed the descriptor-tracking walker with it so an array op over a
+        // repeater roots at the true array descriptor rather than the degraded scalar. Null (flat seed) for
+        // every scalar/enum/multi source (a provable no-op).
+        $fullPath = $refCtx !== null ? $this->refFullPath($ref) : null;
+        $sourceDescriptor = $fullPath !== null ? ($refCtx['index'][$fullPath]['descriptor'] ?? null) : null;
+
+        // Pass $refCtx (reference index + form availability) so an op's value-typed ARGUMENT may itself
+        // be a variable, validated against the same reference index; argDepth 0 = this top-level pipeline.
+        app(PipelineValidator::class)->validateValuePipeline(
             $validator,
             $pipeline,
             $key . '.pipeline',
@@ -754,6 +823,10 @@ class StoreWorkflowRequest extends FormRequest
             $allowedTerminals,
             $sourceEnumOptions,
             $targetOptions,
+            $refCtx,
+            0,
+            null,
+            $sourceDescriptor,
         );
     }
 
@@ -765,7 +838,7 @@ class StoreWorkflowRequest extends FormRequest
      * real, earlier reference).
      *
      * @param  array<string, mixed>  $ref
-     * @param  array{index: array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
      * @return array<int, string>|null
      */
     private function resolveRefEnumOptions(Validator $validator, string $key, array $ref, ?array $refCtx): ?array
@@ -931,7 +1004,7 @@ class StoreWorkflowRequest extends FormRequest
         return match ($type) {
             WorkflowStepType::CREATE_TASK => [
                 'title', 'description', 'priority', 'deadline', 'labels',
-                'assignee_type', 'assignee_id', 'form_id', 'approval_pipeline_id',
+                'assignee_type', 'assignee_id', 'form_id', 'approval_pipeline_id', 'attachments',
             ],
             WorkflowStepType::CREATE_FORM_REPORT => [
                 'form_id', 'name', 'guidelines', 'sources', 'submissions_from', 'submissions_to',

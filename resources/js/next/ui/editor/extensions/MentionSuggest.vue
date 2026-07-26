@@ -1,10 +1,13 @@
 <script setup lang="ts">
-// MentionSuggest — the teleported, caret-anchored suggestion popup for BOTH the
-// `@` mention trigger AND the `{` variable trigger. Driven entirely by the
-// reactive `suggestionStore` (a ProseMirror plugin publishes caret rect / query /
-// items / loading there; this component renders + positions, and reports the
-// highlighted index back). The `variant` on the store selects the row rendering:
-// mentions show an avatar; variables show a type icon.
+// MentionSuggest — the teleported, caret-anchored suggestion popup for the `@` mention
+// trigger. Driven entirely by the reactive `suggestionStore` (a ProseMirror plugin publishes
+// caret rect / query / items / loading there; this component renders + positions, and reports
+// the highlighted index back).
+//
+// It used to serve the `{` VARIABLE trigger too, as a second row `variant`. That trigger now
+// renders the shared `ui/variables/VariableBrowser` through `VariableSuggest.vue` (B4) — a flat
+// list of names could not show type markers, expand a container, or stop a user inserting an
+// object. The two popups still share this file's caret-anchoring approach and the same store.
 //
 // POSITIONING (no tippy): we anchor against a SYNTHETIC element whose
 // `getBoundingClientRect()` returns the store's caret rect, then reuse
@@ -21,7 +24,6 @@ import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue';
 import { useAnchoredPosition } from '../../../app/composables/useAnchoredPosition';
 import { useTheme } from '../../../app/lib/theme';
 import Avatar from '../../primitives/Avatar.vue';
-import Icon from '../../primitives/Icon.vue';
 import Skeleton from '../../data/Skeleton.vue';
 import type { SuggestionStore } from './suggestionStore';
 
@@ -29,11 +31,11 @@ const props = defineProps<{ store: SuggestionStore }>();
 
 const { isDark } = useTheme();
 
+// The store still carries the trigger `variant` (both plugins set it); this popup only ever
+// renders the MENTION one, so the ids/label are named for it.
 const listboxId = computed(() => `next-${props.store.variant}-listbox`);
 const optionId = (i: number) => `${listboxId.value}-opt-${i}`;
-const ariaLabel = computed(() =>
-  props.store.variant === 'variable' ? 'Variables' : 'Mentions',
-);
+const ariaLabel = 'Mentions';
 
 const anchorRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
@@ -154,13 +156,7 @@ function pick(index: number): void {
               @mousedown.prevent="pick(index)"
               @mouseenter="store.activeIndex = index"
             >
-              <span
-                v-if="store.variant === 'variable'"
-                class="flex h-6 w-6 shrink-0 items-center justify-center rounded-next-full bg-next-muted text-next-fg"
-              >
-                <Icon :name="item.icon ?? 'type'" />
-              </span>
-              <Avatar v-else :src="item.avatar ?? undefined" :name="item.label" size="xs" class="shrink-0" />
+              <Avatar :src="item.avatar ?? undefined" :name="item.label" size="xs" class="shrink-0" />
               <span class="min-w-0 truncate">{{ item.label }}</span>
             </li>
           </template>

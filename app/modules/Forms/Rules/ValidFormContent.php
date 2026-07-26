@@ -16,11 +16,12 @@ class ValidFormContent implements ValidationRule
     {
         if (!is_array($value)) {
             $fail('The :attribute must be an array.');
+
             return;
         }
 
         $errors = $this->validateElements($value, false);
-        
+
         foreach ($errors as $error) {
             $fail($error);
         }
@@ -80,11 +81,13 @@ class ValidFormContent implements ValidationRule
             // Check basic structure
             if (!isset($element['id']) || !is_string($element['id'])) {
                 $errors[] = "Element at index {$index} must have a valid 'id' string.";
+
                 continue;
             }
 
             if (!isset($element['type']) || !is_string($element['type'])) {
                 $errors[] = "Element {$element['id']} must have a valid 'type' string.";
+
                 continue;
             }
 
@@ -92,22 +95,24 @@ class ValidFormContent implements ValidationRule
             $type = FormElementType::tryFrom($element['type']);
             if (!$type) {
                 $errors[] = "Element {$element['id']} has invalid type '{$element['type']}'.";
+
                 continue;
             }
 
             if (!isset($element['config']) || !is_array($element['config'])) {
                 $errors[] = "Element {$element['id']} must have a 'config' object.";
+
                 continue;
             }
 
             // Validate based on type
-            $elementErrors = match($type) {
+            $elementErrors = match ($type) {
                 FormElementType::SECTION => $this->validateSection($element, $isNested),
                 FormElementType::GRID => $this->validateGrid($element),
                 FormElementType::REPEATER => $this->validateRepeater($element),
                 FormElementType::HEADING => $this->validateHeading($element),
                 FormElementType::TEXT_BLOCK => $this->validateTextBlock($element),
-                FormElementType::SHORT_TEXT, 
+                FormElementType::SHORT_TEXT,
                 FormElementType::LONG_TEXT,
                 FormElementType::SELECT,
                 FormElementType::CHECKLIST,
@@ -161,6 +166,7 @@ class ValidFormContent implements ValidationRule
         // Columns must be an array
         if (!isset($config['columns']) || !is_array($config['columns'])) {
             $errors[] = "Element {$element['id']}: Grid must have 'columns' array.";
+
             return $errors;
         }
 
@@ -188,6 +194,7 @@ class ValidFormContent implements ValidationRule
             if (isset($column['element']) && $column['element'] !== null) {
                 if (!is_array($column['element'])) {
                     $errors[] = "Element {$element['id']}: Grid column {$colIndex} 'element' must be an object or null.";
+
                     continue;
                 }
 
@@ -236,7 +243,7 @@ class ValidFormContent implements ValidationRule
         if (isset($config['min']) && isset($config['max'])) {
             $min = (int) $config['min'];
             $max = (int) $config['max'];
-            
+
             if ($min < 0) {
                 $errors[] = "Element {$element['id']}: Repeater 'min' must be at least 0.";
             }
@@ -321,6 +328,28 @@ class ValidFormContent implements ValidationRule
             }
             if (isset($config['max']) && !is_numeric($config['max'])) {
                 $errors[] = "Element {$element['id']}: Number 'max' must be numeric.";
+            }
+        }
+
+        // The file input (historically 'image') is single-file, so there is deliberately no
+        // maxFiles. acceptedTypes and maxSize are both optional; when present they must be the
+        // right shape so the builder cannot persist junk the fill UI would choke on.
+        if ($type === FormElementType::IMAGE) {
+            if (isset($config['acceptedTypes'])) {
+                if (!is_array($config['acceptedTypes'])) {
+                    $errors[] = "Element {$element['id']}: File 'acceptedTypes' must be an array.";
+                } else {
+                    foreach ($config['acceptedTypes'] as $accepted) {
+                        if (!is_string($accepted)) {
+                            $errors[] = "Element {$element['id']}: File 'acceptedTypes' must be a list of strings.";
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (isset($config['maxSize']) && (!is_numeric($config['maxSize']) || $config['maxSize'] <= 0)) {
+                $errors[] = "Element {$element['id']}: File 'maxSize' must be a positive number.";
             }
         }
 

@@ -103,7 +103,7 @@ trait HasCreator
      */
     public function isOwnedBy(?User $user): bool
     {
-        return $user !== null && $this->creatorUser()?->id === $user->id;
+        return $user !== null && $this->ownerUserId() === $user->id;
     }
 
     /**

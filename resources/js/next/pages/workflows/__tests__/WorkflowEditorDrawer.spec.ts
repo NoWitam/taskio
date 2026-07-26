@@ -19,6 +19,7 @@ import { nextTick, h, ref } from 'vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 import type { WorkflowCatalog, WorkflowDetail } from '../types';
 import type { FormTriggerDraft, StepDraft } from '../workflowEditorModel';
+import { makeStepDraft } from '../workflowEditorModel';
 import type { ScheduleDraft } from '../workflowSchedule';
 
 // --- Store + toast mocks -----------------------------------------------------
@@ -141,7 +142,12 @@ const StepsStub = {
           {
             class: 'fill-step',
             onClick: () => {
-              const next = (props.steps as StepDraft[]).map((s) => ({ ...s, config: { ...s.config, title: 'Do it' } }));
+              // The drawer now starts with NO step (the author adds the first one). Seed a real
+              // create_task draft when the list is empty, then set its title — mirrors a user
+              // adding + filling the first step; the payload shape matches the old default seed.
+              const existing = props.steps as StepDraft[];
+              const base = existing.length > 0 ? existing : [makeStepDraft('create_task', [])];
+              const next = base.map((s) => ({ ...s, config: { ...s.config, title: 'Do it' } }));
               emit('update:steps', next);
             },
           },
@@ -262,6 +268,13 @@ describe('WorkflowEditorDrawer', () => {
   });
   afterEach(() => restoreBrowserMocks());
 
+  it('a NEW workflow starts with NO step — the author adds the first one (no default seed)', () => {
+    const { wrapper } = mountDrawer();
+    // The steps list is seeded empty; the >=1-step Save gate (backend min:1) still requires
+    // the author to add at least one before the workflow can be created.
+    expect((wrapper.findComponent(StepsStub).props('steps') as StepDraft[]).length).toBe(0);
+  });
+
   it('form select → fetches the catalog, conditions become enabled, steps get the catalog', async () => {
     const { wrapper } = mountDrawer();
 
@@ -274,7 +287,7 @@ describe('WorkflowEditorDrawer', () => {
     await Promise.resolve();
     await nextTick();
 
-    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form-a');
+    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form_submitted', 'form-a');
     expect(wrapper.get('.conditions-stub').attributes('data-gated')).toBe('false');
     expect(wrapper.get('.steps-stub').attributes('data-has-catalog')).toBe('true');
   });
@@ -297,7 +310,7 @@ describe('WorkflowEditorDrawer', () => {
     await Promise.resolve();
     await nextTick();
 
-    expect(fetchWorkflowCatalog).toHaveBeenLastCalledWith('form-b');
+    expect(fetchWorkflowCatalog).toHaveBeenLastCalledWith('form_submitted', 'form-b');
     expect(wrapper.get('.conditions-stub').attributes('data-count')).toBe('0');
     expect(toastInfo).toHaveBeenCalledTimes(1);
   });
@@ -312,9 +325,14 @@ describe('WorkflowEditorDrawer', () => {
 
     await wrapper.get('.clear-form').trigger('click');
     await nextTick();
+    await Promise.resolve();
+    await nextTick();
 
+    // Conditions are gated (no form). The steps section KEEPS a catalog — clearing the form
+    // now refetches the FORM-INDEPENDENT catalog (trigger vars + step outputs) instead of
+    // nulling it, so a form-less form_submitted still offers step/trigger variables.
     expect(wrapper.get('.conditions-stub').attributes('data-gated')).toBe('true');
-    expect(wrapper.get('.steps-stub').attributes('data-has-catalog')).toBe('false');
+    expect(wrapper.get('.steps-stub').attributes('data-has-catalog')).toBe('true');
     expect(toastInfo).not.toHaveBeenCalled();
   });
 
@@ -469,7 +487,7 @@ describe('WorkflowEditorDrawer', () => {
     await nextTick();
 
     // The seeded form triggers a catalog fetch on mount; the flat list became a 1-child tree.
-    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form-a');
+    expect(fetchWorkflowCatalog).toHaveBeenCalledWith('form_submitted', 'form-a');
     expect(wrapper.get('.conditions-stub').attributes('data-count')).toBe('1');
 
     await save(wrapper);

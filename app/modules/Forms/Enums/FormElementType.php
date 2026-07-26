@@ -18,6 +18,10 @@ enum FormElementType: string
     case SHORT_TEXT = 'short_text';
     case LONG_TEXT = 'long_text';
     case SELECT = 'select';
+    // A single-file upload. The wire value stays 'image' for backward compatibility with
+    // existing form content and the builder palette — historically this was an AI-image
+    // placeholder, now it is a real file input (P6). Its JSON schema carries format:'file',
+    // which is what the workflow variable catalog keys on to expose it as a FILE variable.
     case IMAGE = 'image';
     case CHECKBOX = 'checkbox';
     case NUMBER = 'number';
@@ -28,7 +32,7 @@ enum FormElementType: string
 
     public function category(): FormElementCategory
     {
-        return match($this) {
+        return match ($this) {
             self::SECTION, self::GRID, self::REPEATER => FormElementCategory::LAYOUT,
             self::HEADING, self::TEXT_BLOCK, self::DIVIDER => FormElementCategory::CONTENT,
             default => FormElementCategory::INPUT,
@@ -37,7 +41,7 @@ enum FormElementType: string
 
     public function label(): string
     {
-        return match($this) {
+        return match ($this) {
             self::SECTION => 'Sekcja',
             self::GRID => 'Siatka',
             self::REPEATER => 'Powtórzenia',
@@ -47,7 +51,7 @@ enum FormElementType: string
             self::SHORT_TEXT => 'Krótki tekst',
             self::LONG_TEXT => 'Długi tekst',
             self::SELECT => 'Lista wyboru',
-            self::IMAGE => 'Obraz',
+            self::IMAGE => 'Plik',
             self::CHECKBOX => 'Checkbox',
             self::NUMBER => 'Liczba',
             self::DATE => 'Data',
@@ -59,7 +63,7 @@ enum FormElementType: string
 
     public function icon(): string
     {
-        return match($this) {
+        return match ($this) {
             self::SECTION => 'layout-grid',
             self::GRID => 'columns',
             self::REPEATER => 'repeat',
@@ -69,7 +73,7 @@ enum FormElementType: string
             self::SHORT_TEXT => 'type',
             self::LONG_TEXT => 'file-text',
             self::SELECT => 'list',
-            self::IMAGE => 'image',
+            self::IMAGE => 'upload',
             self::CHECKBOX => 'check-square',
             self::NUMBER => 'hash',
             self::DATE => 'calendar',
@@ -104,8 +108,8 @@ enum FormElementType: string
      */
     public function shouldBeNormalized(): bool
     {
-        return $this->isInputElement() 
-            || $this === self::SECTION 
+        return $this->isInputElement()
+            || $this === self::SECTION
             || $this === self::REPEATER;
     }
 
@@ -137,7 +141,7 @@ enum FormElementType: string
             self::CHECKLIST => self::createChecklistSchema($config),
             self::DATE => self::createDateSchema($config),
             self::TIME => self::createTimeSchema($config),
-            self::IMAGE => self::createImageSchema($config),
+            self::IMAGE => self::createFileSchema($config),
             default => \Illuminate\JsonSchema\JsonSchema::string()
         };
 
@@ -155,6 +159,7 @@ enum FormElementType: string
     public static function normalizeElements(array $elements): array
     {
         $usedKeys = [];
+
         return self::normalizeElementsRecursive($elements, $usedKeys);
     }
 
@@ -167,12 +172,12 @@ enum FormElementType: string
 
         foreach ($elements as $element) {
             $type = self::tryFrom($element['type'] ?? '');
-            
+
             if (!$type) {
                 continue;
             }
 
-            // Handle INPUT elements  
+            // Handle INPUT elements
             if ($type->isInputElement()) {
                 $fieldId = $element['id'] ?? null;
                 if ($fieldId) {
@@ -202,7 +207,7 @@ enum FormElementType: string
                     if (!empty($childProperties)) {
                         $itemSchema = \Illuminate\JsonSchema\JsonSchema::object($childProperties);
                         $arraySchema = \Illuminate\JsonSchema\JsonSchema::array()->items($itemSchema);
-                        
+
                         // Add min/max from config
                         $config = $element['config'];
                         if (isset($config['min'])) {
@@ -211,7 +216,7 @@ enum FormElementType: string
                         if (isset($config['max'])) {
                             $arraySchema->max($config['max']);
                         }
-                        
+
                         $properties[$repeaterId] = $arraySchema;
                     }
                 }
@@ -229,6 +234,65 @@ enum FormElementType: string
         }
 
         return $properties;
+    }
+
+    /**
+     * Collect every FILE-field answer out of a submission's data, walking the content tree the
+     * same way {@see buildJsonSchema} shapes the payload: top-level fields sit at the root,
+     * sections nest under their id, grids flatten to the parent level, and repeaters repeat per
+     * item. Returns a flat list of {field, value} so a validator or the submission service can
+     * act on each file answer without re-deriving the structure.
+     *
+     * @param  array<int, array<string, mixed>>  $elements
+     * @param  array<string, mixed>  $data
+     * @return array<int, array{field: string, value: mixed}>
+     */
+    public static function collectFileAnswers(array $elements, array $data): array
+    {
+        $answers = [];
+
+        foreach ($elements as $element) {
+            $type = self::tryFrom($element['type'] ?? '');
+            $id = $element['id'] ?? null;
+
+            if (!$type) {
+                continue;
+            }
+
+            if ($type === self::IMAGE && $id !== null && array_key_exists($id, $data)) {
+                $answers[] = ['field' => $id, 'value' => $data[$id]];
+
+                continue;
+            }
+
+            // Section: data nests under the section id.
+            if ($type === self::SECTION && isset($element['config']['children']) && is_array($element['config']['children'])) {
+                $nested = ($id !== null && is_array($data[$id] ?? null)) ? $data[$id] : [];
+                $answers = array_merge($answers, self::collectFileAnswers($element['config']['children'], $nested));
+            }
+
+            // Repeater: data is an array of item objects.
+            if ($type === self::REPEATER && isset($element['config']['children']) && is_array($element['config']['children'])) {
+                $items = ($id !== null && is_array($data[$id] ?? null)) ? $data[$id] : [];
+                foreach ($items as $item) {
+                    $answers = array_merge(
+                        $answers,
+                        self::collectFileAnswers($element['config']['children'], is_array($item) ? $item : [])
+                    );
+                }
+            }
+
+            // Grid: columns flatten to the SAME data level as the grid itself.
+            if ($type === self::GRID && isset($element['config']['columns']) && is_array($element['config']['columns'])) {
+                foreach ($element['config']['columns'] as $column) {
+                    if (isset($column['element']) && is_array($column['element'])) {
+                        $answers = array_merge($answers, self::collectFileAnswers([$column['element']], $data));
+                    }
+                }
+            }
+        }
+
+        return $answers;
     }
 
     /**
@@ -251,7 +315,7 @@ enum FormElementType: string
     private static function normalizeElement(array $element, array &$usedKeys): array
     {
         $type = self::tryFrom($element['type'] ?? '');
-        
+
         // Normalize elements used as JSON keys
         if ($type && $type->shouldBeNormalized()) {
             $label = $type->getNormalizationKey($element['config'] ?? []);
@@ -294,36 +358,36 @@ enum FormElementType: string
             'Ą' => 'A', 'Ć' => 'C', 'Ę' => 'E', 'Ł' => 'L', 'Ń' => 'N',
             'Ó' => 'O', 'Ś' => 'S', 'Ź' => 'Z', 'Ż' => 'Z',
         ];
-        
+
         $label = str_replace(array_keys($transliteration), array_values($transliteration), $label);
-        
+
         // Convert to snake_case
         $key = \Illuminate\Support\Str::snake($label);
-        
+
         // Remove any non-alphanumeric characters except underscores
         $key = preg_replace('/[^a-z0-9_]/', '', $key);
-        
+
         // Ensure it doesn't start with a number
         if (preg_match('/^[0-9]/', $key)) {
             $key = 'field_' . $key;
         }
-        
+
         // Handle empty key
         if (empty($key)) {
             $key = 'field';
         }
-        
+
         // Handle duplicates
         $originalKey = $key;
         $counter = 2;
-        
+
         while (in_array($key, $usedKeys)) {
             $key = $originalKey . '_' . $counter;
             $counter++;
         }
-        
+
         $usedKeys[] = $key;
-        
+
         return $key;
     }
 
@@ -373,31 +437,31 @@ enum FormElementType: string
 
         if ($isMultiple) {
             $itemSchema = \Illuminate\JsonSchema\JsonSchema::string();
-            
+
             if (!empty($options)) {
-                $values = array_map(fn($opt) => $opt['value'] ?? $opt, $options);
+                $values = array_map(fn ($opt) => $opt['value'] ?? $opt, $options);
                 $itemSchema->enum($values);
             }
-            
+
             $schema = \Illuminate\JsonSchema\JsonSchema::array()->items($itemSchema);
-            
+
             if (isset($config['hint']) && !empty($config['hint'])) {
                 $schema->description($config['hint']);
             }
-            
+
             return $schema;
         } else {
             $schema = \Illuminate\JsonSchema\JsonSchema::string();
-            
+
             if (!empty($options)) {
-                $values = array_map(fn($opt) => $opt['value'] ?? $opt, $options);
+                $values = array_map(fn ($opt) => $opt['value'] ?? $opt, $options);
                 $schema->enum($values);
             }
-            
+
             if (isset($config['hint']) && !empty($config['hint'])) {
                 $schema->description($config['hint']);
             }
-            
+
             return $schema;
         }
     }
@@ -406,18 +470,18 @@ enum FormElementType: string
     {
         $options = $config['options'] ?? [];
         $itemSchema = \Illuminate\JsonSchema\JsonSchema::string();
-        
+
         if (!empty($options)) {
-            $values = array_map(fn($opt) => $opt['value'] ?? $opt, $options);
+            $values = array_map(fn ($opt) => $opt['value'] ?? $opt, $options);
             $itemSchema->enum($values);
         }
-        
+
         $schema = \Illuminate\JsonSchema\JsonSchema::array()->items($itemSchema);
-        
+
         if (isset($config['hint']) && !empty($config['hint'])) {
             $schema->description($config['hint']);
         }
-        
+
         return $schema;
     }
 
@@ -454,14 +518,17 @@ enum FormElementType: string
         return $schema;
     }
 
-    private static function createImageSchema(array $config): \Illuminate\JsonSchema\Types\StringType
+    /**
+     * A single uploaded file. The answer is a Disk File uuid; format:'file' is the wire
+     * signal the workflow variable catalog maps to a FILE variable (and the FE renders as an
+     * upload widget). Kept a string schema so an unanswered field is simply absent.
+     */
+    private static function createFileSchema(array $config): \Illuminate\JsonSchema\Types\StringType
     {
-        $schema = \Illuminate\JsonSchema\JsonSchema::string();
+        $schema = \Illuminate\JsonSchema\JsonSchema::string()->format('file');
 
         if (isset($config['hint']) && !empty($config['hint'])) {
             $schema->description($config['hint']);
-        } else {
-            $schema->description('Prompt tekstowy do wygenerowania obrazu przez AI');
         }
 
         return $schema;

@@ -32,7 +32,68 @@
 //   • multi_to_text joins the SELECTED options' VALUES with ", " (the runtime
 //     payload carries values only — labels are a UI concept).
 import { translate } from '../../../app/i18n';
-import type { VariableOperationDefinition } from './types';
+import {
+  arrayAtDefaultSatisfies,
+  elementDescriptorOf,
+  elementPipelineTerminalDescriptor,
+  reduceSeedType,
+} from './operationHelpers';
+import type {
+  OperationOutputContext,
+  OperationTypeDescriptor,
+  VariableOperationDefinition,
+} from './types';
+
+// Descriptor-aware output resolvers for the ARRAY ops (array-transform wave 1). Defined ONCE at
+// module scope so every `standardOperationsCatalog()` call reuses the SAME function reference —
+// the catalog stays deep-equal across calls (consumers compare it with `toEqual`), and the flat
+// wire `outputType` still degrades correctly for the picker/chip.
+const arrayCountOutput = (): OperationTypeDescriptor => ({ base: 'number', array: false });
+const arrayAtOutput = (
+  input: OperationTypeDescriptor,
+  args?: Record<string, unknown>,
+): OperationTypeDescriptor => {
+  // `at` yields the input's ELEMENT type (a MULTI's element is a single choice → enum). It is nullable
+  // (an out-of-range / empty pick is null) UNLESS a valid typed `default` is present — the default then
+  // guarantees a value, so the output is non-null (F4; mirrors the backend `outputDescriptor`).
+  const element = input.elementDescriptor ?? { base: input.base, array: false, options: input.options };
+  const hasDefault = arrayAtDefaultSatisfies(args?.default, element);
+  return { ...element, array: false, nullable: !hasDefault };
+};
+
+// Array-transform wave 2 output resolvers (mirror the backend `outputDescriptor`):
+//   • map    → array of the element-pipeline TERMINAL (base U; never array<array>),
+//   • filter → the INPUT array unchanged,
+//   • sort   → the INPUT array unchanged,
+//   • reduce → the SEED base type (a single non-array, non-null value).
+const arrayMapOutput = (
+  input: OperationTypeDescriptor,
+  args: Record<string, unknown>,
+  ctx?: OperationOutputContext,
+): OperationTypeDescriptor => {
+  const element = elementDescriptorOf(input);
+  // The map terminal is the element pipeline's terminal — handles BOTH the bare-list pipeline
+  // (scalar/enum element, wave 2) AND the scope-rooted UNION over an object/file element (wave 3).
+  const terminal = ctx?.catalog
+    ? elementPipelineTerminalDescriptor(ctx.catalog, 'array_map', args, input)
+    : element;
+  // Guard against array<array> (terminal-gated already, defensive here): collapse to a scalar base.
+  return {
+    base: terminal.base,
+    array: true,
+    nullable: false,
+    options: terminal.options,
+    elementDescriptor: { base: terminal.base, array: false, options: terminal.options },
+  };
+};
+const arrayIdentityOutput = (input: OperationTypeDescriptor): OperationTypeDescriptor => ({
+  ...input,
+  nullable: false,
+});
+const arrayReduceOutput = (
+  _input: OperationTypeDescriptor,
+  args: Record<string, unknown>,
+): OperationTypeDescriptor => ({ base: reduceSeedType(args?.seed), array: false, nullable: false });
 
 /** Label helper: `editor.ops.<id>` with an EN fallback. */
 function L(id: string, fallback: string): string {
@@ -50,7 +111,7 @@ function D(id: string, fallback: string): string {
 }
 
 /**
- * Build the full standard catalog (66 ops). Call inside a computed — labels follow
+ * Build the full standard catalog (83 ops). Call inside a computed — labels follow
  * the active locale.
  */
 export function standardOperationsCatalog(): VariableOperationDefinition[] {
@@ -436,5 +497,144 @@ export function standardOperationsCatalog(): VariableOperationDefinition[] {
     { id: 'multi_count', label: L('multi_count', 'Count'), inputTypes: ['multi'], outputType: 'number' },
     { id: 'multi_is_empty', label: L('multi_is_empty', 'Is empty'), inputTypes: ['multi'], outputType: 'boolean' },
     { id: 'multi_to_text', label: L('multi_to_text', 'To text (joined)'), inputTypes: ['multi'], outputType: 'text' },
+
+    // ── ARRAY (transform) ─────────────────────────────────────────────────────
+    // The FE MIRROR of the backend array ops (array-transform wave 1). They gate on an ARRAY
+    // running value — the flat `multi` wire slot — regardless of element base. `resolveOutput`
+    // carries the descriptor-aware output the flat `outputType` cannot: `array_count` → a plain
+    // number; `array_at` → the input's ELEMENT descriptor (nullable), so a following op sees the
+    // element type (a MULTI's element is a single choice → enum ops become available next). The
+    // declared `outputType` is the DEGRADED flat form the picker/chip reads (`array_at` = text).
+    {
+      id: 'array_count',
+      label: L('array_count', 'Count'),
+      description: D('array_count', 'Counts the items in the list.'),
+      inputTypes: ['multi'],
+      outputType: 'number',
+      resolveOutput: arrayCountOutput,
+    },
+    {
+      id: 'array_at',
+      label: L('array_at', 'Get element'),
+      description: D('array_at', 'Returns the item at the given position (1-based; negatives count from the end).'),
+      inputTypes: ['multi'],
+      outputType: 'text',
+      args: [
+        { id: 'index', label: A('index', 'Index'), type: 'number', defaultValue: 1, hint: A('indexHint', '1-based; negatives count from the end; out-of-range snaps to the nearest end.') },
+        // F4: the typed default substituted for an empty element BEFORE the next op. Its type is LOCKED
+        // to the array's ELEMENT base (the control resolves it); REQUIRED when `array_at` is not the
+        // pipeline's terminal (else the next op would consume null).
+        { id: 'default', label: A('elementDefault', 'Value when missing'), type: 'elementDefault' },
+      ],
+      resolveOutput: arrayAtOutput,
+    },
+
+    // ── ARRAY (transform — wave 2) ────────────────────────────────────────────
+    // The FE MIRROR of the backend map/filter/sort/reduce. Each gates on an ARRAY running value
+    // (the flat `multi` slot) and hosts an ELEMENT PIPELINE arg (`{op,args}[]`) rooted at the
+    // array's element type, terminal-gated per op (BY CONSTRUCTION — a wrong terminal is
+    // unsavable). Output typing via `resolveOutput`: map→array<terminal>, filter/sort→the input
+    // array unchanged, reduce→the seed base. `outputType` is the DEGRADED flat form the chip reads.
+    {
+      id: 'array_map',
+      label: L('array_map', 'Map each item'),
+      description: D('array_map', 'Transforms every item with a per-item pipeline; yields a new list.'),
+      inputTypes: ['multi'],
+      outputType: 'multi',
+      args: [{ id: 'pipeline', label: A('elementPipeline', 'For each item…'), type: 'elementPipeline' }],
+      resolveOutput: arrayMapOutput,
+    },
+    {
+      id: 'array_filter',
+      label: L('array_filter', 'Keep items'),
+      description: D('array_filter', 'Keeps only the items whose per-item condition is true.'),
+      inputTypes: ['multi'],
+      outputType: 'multi',
+      args: [{ id: 'pipeline', label: A('elementCondition', 'Keep item when…'), type: 'elementPipeline' }],
+      resolveOutput: arrayIdentityOutput,
+    },
+    {
+      id: 'array_sort',
+      label: L('array_sort', 'Sort items'),
+      description: D('array_sort', 'Orders the items by a per-item number key (ascending).'),
+      inputTypes: ['multi'],
+      outputType: 'multi',
+      args: [{ id: 'pipeline', label: A('elementSortKey', 'Sort key per item…'), type: 'elementPipeline' }],
+      resolveOutput: arrayIdentityOutput,
+    },
+    {
+      id: 'array_reduce',
+      label: L('array_reduce', 'Combine into one'),
+      description: D('array_reduce', 'Folds the items into a single value, starting from a seed.'),
+      inputTypes: ['multi'],
+      // Flat hint only — the true output (the seed base) flows through `resolveOutput`.
+      outputType: 'number',
+      args: [
+        { id: 'seed', label: A('reduceSeed', 'Start value'), type: 'reduceSeed' },
+        { id: 'reducer', label: A('reduceReducer', 'For each item, combine…'), type: 'elementPipeline' },
+      ],
+      resolveOutput: arrayReduceOutput,
+    },
+
+    // ── file ────────────────────────────────────────────────────────────────
+    // A file variable carries a snapshot list. Two boolean terminals make a file field usable
+    // in a condition at all; the two converters hand it to the text/number vocabulary, so
+    // "is it a PDF" is file_name -> text_ends_with '.pdf' and "more than one" is
+    // file_count -> num_gt 1 — no file-specific comparison ops to keep in sync.
+    { id: 'file_is_empty', label: L('file_is_empty', 'Is empty'), inputTypes: ['file'], outputType: 'boolean' },
+    { id: 'file_is_not_empty', label: L('file_is_not_empty', 'Is not empty'), inputTypes: ['file'], outputType: 'boolean' },
+    { id: 'file_count', label: L('file_count', 'Count'), inputTypes: ['file'], outputType: 'number' },
+    { id: 'file_name', label: L('file_name', 'File name'), inputTypes: ['file'], outputType: 'text' },
+
+    // ── GENERIC / NULL-HANDLING (append-only, phase-1b) ───────────────────────
+    // Presence helpers + a safe date formatter. inputTypes/outputType MIRROR the backend's
+    // NOMINAL declaration (the executor special-cases the presence family before the type
+    // gate at runtime); the FE only owns the labels here.
+    {
+      id: 'coalesce',
+      label: L('coalesce', 'Fallback when empty'),
+      description: D('coalesce', 'Uses the fallback text when the value is empty; otherwise keeps the value.'),
+      inputTypes: ['text'],
+      outputType: 'text',
+      args: [{ id: 'fallback', label: A('coalesceFallback', 'Fallback value'), type: 'text' }],
+    },
+    {
+      id: 'is_present',
+      label: L('is_present', 'Has a value'),
+      description: D('is_present', 'True when the value is filled (not empty).'),
+      inputTypes: ['text'],
+      outputType: 'boolean',
+    },
+    {
+      id: 'is_null',
+      label: L('is_null', 'Has no value'),
+      description: D('is_null', 'True when the value is missing or empty.'),
+      inputTypes: ['text'],
+      outputType: 'boolean',
+    },
+    {
+      id: 'assert_present',
+      label: L('assert_present', 'Require a value'),
+      description: D('assert_present', 'Keeps the value, but fails the run when it is empty.'),
+      inputTypes: ['text'],
+      outputType: 'text',
+    },
+    {
+      id: 'date_format',
+      label: L('date_format', 'Format date'),
+      description: D('date_format', 'Renders the date as text using a format pattern.'),
+      inputTypes: ['date'],
+      outputType: 'text',
+      args: [
+        {
+          id: 'pattern',
+          label: A('pattern', 'Format pattern'),
+          type: 'text',
+          placeholder: 'YYYY-MM-DD',
+          // Document the safe tokens the backend accepts (a token-picker is a later nicety).
+          hint: A('patternHint', 'Safe tokens: YYYY MMMM MMM MM DD HH mm D'),
+        },
+      ],
+    },
   ];
 }

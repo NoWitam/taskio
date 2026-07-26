@@ -121,4 +121,42 @@ class WorkflowReferenceContractTest extends TestCase
 
         $this->assertPayloadExposes($payload, ['scheduled_at']);
     }
+
+    // ---- Editor ↔ engine: the FORM-LESS catalog side of the same contract --------
+    //
+    // The pins above lock the ENGINE (trigger payload) side: every FE chip's path is a real
+    // payload key. These lock the EDITOR side for a FORM-LESS workflow: the form-independent
+    // catalog (GET /workflows/catalog) — the editor's catalog source when no form is selected
+    // (e.g. a schedule trigger) — carries a `trigger.<path>` variable for each trigger-SYSTEM
+    // payload path. (Field paths `fields.*` are form-dependent, and `form.is_anonymous` is a
+    // trigger-FILTER key, not a referenceable variable — neither is a system catalog var.)
+
+    /** The `variables[].path` set of the form-less catalog for a trigger type (authenticated). */
+    private function formlessCatalogPaths(string $triggerType): \Illuminate\Support\Collection
+    {
+        $response = $this->actingAs(User::factory()->create())
+            ->getJson("/api/workflows/catalog?trigger_type={$triggerType}")
+            ->assertOk();
+
+        return collect($response->json('data.variables'))->pluck('path');
+    }
+
+    public function test_formless_schedule_catalog_exposes_the_schedule_reference_chip(): void
+    {
+        // Engine pins `scheduled_at`; the form-less schedule catalog must carry `trigger.scheduled_at`.
+        $this->assertTrue($this->formlessCatalogPaths('schedule')->contains('trigger.scheduled_at'));
+    }
+
+    public function test_formless_form_submitted_catalog_exposes_the_trigger_system_reference_chips(): void
+    {
+        $paths = $this->formlessCatalogPaths('form_submitted');
+
+        // Every trigger-SYSTEM payload path the engine pins, as its `trigger.<path>` catalog var.
+        foreach (['submission.id', 'form.id', 'form.name', 'source', 'submitted_at', 'task.id'] as $systemPath) {
+            $this->assertTrue(
+                $paths->contains("trigger.{$systemPath}"),
+                "form-less catalog must expose `trigger.{$systemPath}` (editor↔engine chip contract)",
+            );
+        }
+    }
 }

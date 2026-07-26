@@ -26,6 +26,7 @@ return [
         'password' => 'Password',
         'color' => 'Color',
         'icon' => 'Icon',
+        'content' => 'Content',
     ],
 
     'events' => [
@@ -40,6 +41,7 @@ return [
         'indexed' => 'Indexed',
     ],
     'formFilled' => 'Form Filled',
+    'contentReplaced' => 'Content replaced',
     'approvalStarted' => 'Approval Started',
     'approvalStageApproved' => 'Approval Stage Approved',
     'approvalCompleted' => 'Approval Completed',

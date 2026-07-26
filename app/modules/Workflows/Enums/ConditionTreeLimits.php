@@ -12,6 +12,10 @@ namespace App\Modules\Workflows\Enums;
  * The tree is a logic group of children; a child is either a nested group or a leaf condition
  * carrying a pipeline of operations. Depth counts GROUP nesting only (the root group is depth 1;
  * leaf conditions do not add depth).
+ *
+ * The per-PIPELINE bounds (max steps, arg-variable / element-pipeline depth, array iterations) moved
+ * to App\Modules\Variables\Enums\PipelineLimits when the type system + operation engine were extracted
+ * into the Variables module — this class now owns ONLY the tree-shape caps.
  */
 final class ConditionTreeLimits
 {
@@ -20,7 +24,4 @@ final class ConditionTreeLimits
 
     /** Maximum children a single group may carry. */
     public const MAX_CHILDREN = 10;
-
-    /** Maximum operation steps a single condition's pipeline may carry. */
-    public const MAX_PIPELINE_STEPS = 10;
 }

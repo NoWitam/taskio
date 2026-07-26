@@ -51,6 +51,15 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, titleKey: 'nav.tasks' },
       },
       {
+        // The disk file manager. The current folder is a PATH param (`/next/disk/<id>`,
+        // deep-linkable); the optional `:folder` also carries the synthetic `sys:res…` /
+        // `sys:trash` ids (single segment, no slash), so one route serves the whole tree.
+        path: 'disk/:folder?',
+        name: 'next.disk',
+        component: () => import('../../pages/disk/DiskView.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.disk' },
+      },
+      {
         // Workspace member + invitation management (owner-gated in the UI; the
         // backend enforces it too). Reached from the user-menu "Manage members".
         path: 'settings/members',
@@ -227,6 +236,38 @@ const routes: RouteRecordRaw[] = [
                 meta: { requiresAuth: true, titleKey: 'nav.workflows' },
               },
             ],
+          },
+        ],
+      },
+      {
+        // Top-level "Variables" (PL "Zmienne") module shell: inner sub-nav + its pages.
+        // Consts (PL "Stałe") is the workspace typed literal constants — formerly the
+        // workflows "globals" sub-page — moved out to its own top-level area. The RUNTIME
+        // wire root stays `globals` (a const is still `globals.<key>`); only the URL/nav
+        // moved. Functions (PL "Funkcje") join this nav in Phase 3c.
+        path: 'variables',
+        component: () => import('../../pages/variables/VariablesModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.variables' },
+        children: [
+          {
+            path: '',
+            name: 'next.variables',
+            redirect: { name: 'next.variables.consts' },
+          },
+          {
+            path: 'consts',
+            name: 'next.variables.consts',
+            component: () => import('../../pages/variables/ConstantsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.variables' },
+          },
+          {
+            // Custom FUNCTIONS (Phase 3c): user-authored variable transforms (input + typed
+            // args → return, over a body pipeline). Surface as `fn:<uuid>` ops in every
+            // workflow pipeline; managed here alongside Consts.
+            path: 'functions',
+            name: 'next.variables.functions',
+            component: () => import('../../pages/variables/FunctionsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.variables' },
           },
         ],
       },

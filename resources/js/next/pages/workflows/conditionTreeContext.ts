@@ -5,12 +5,18 @@
 // uid) so the recursion never threads props/emits through every level.
 import type { InjectionKey } from 'vue';
 import type { VariableOperationDefinition } from '../../ui/editor/extensions/types';
-import type { CatalogField, ConditionLogic } from './types';
+import type { CatalogField, CatalogVariable, ConditionLogic } from './types';
 import type { ConditionSummary, DraftCondition } from './workflowConditions';
 
 export interface ConditionTreeContext {
   /** The catalog condition fields (chip labels + the Modal source picker). */
   fields: () => CatalogField[];
+  /**
+   * The condition fields as PICKER variables (`conditionSourceVariables`) — the same feed the
+   * Modal's tree picker runs on, so a chip can render its source with the SAME type glyph and
+   * nullable / array markers the picker shows.
+   */
+  sources: () => CatalogVariable[];
   /** The merged operations catalog (chip op labels). */
   operations: () => VariableOperationDefinition[];
   /** The server 422 map (conditions.*), for the section error read-out. */
