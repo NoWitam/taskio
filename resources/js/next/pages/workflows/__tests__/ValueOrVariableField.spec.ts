@@ -16,7 +16,8 @@ import VariablePipelineEditor from '../../../ui/editor/extensions/VariablePipeli
 import PipelineArgLiteralInput from '../../../ui/editor/extensions/PipelineArgLiteralInput.vue';
 import { standardOperationsCatalog } from '../../../ui/editor/extensions/standardOperations';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
-import type { CatalogVariable, WorkflowFieldValue } from '../types';
+import { allValueVariables } from '../workflowVariables';
+import type { CatalogVariable, WorkflowCatalog, WorkflowFieldValue } from '../types';
 
 const VARIABLES: CatalogVariable[] = [
   { source: 'trigger', path: 'fields.status', name: 'Status', type: 'enum', enumOptions: ['open', 'done'] },
@@ -51,7 +52,7 @@ async function openOpsModal(wrapper: ReturnType<typeof mountField>, name = 'Stat
   await nextTick();
 }
 
-/** Open the variable TREE picker (variable mode must already be active). */
+/** Open the variable BROWSER (variable mode must already be active). */
 async function openTreePicker(wrapper: ReturnType<typeof mountField>) {
   await wrapper.get('[role="combobox"]').trigger('click');
   await nextTick();
@@ -59,9 +60,13 @@ async function openTreePicker(wrapper: ReturnType<typeof mountField>) {
   await nextTick();
 }
 
-/** The visible tree rows in the teleported picker panel. */
+/**
+ * The visible rows in the teleported browser panel. The picker is ONE INLINE TREE (B3):
+ * `role="treeitem"` rows in a single `role="tree"` body, an expanded container's children
+ * inserted directly beneath it. Search RESULTS are still `option`s, so both are accepted.
+ */
 function treeItems(): HTMLElement[] {
-  return Array.from(document.body.querySelectorAll<HTMLElement>('[role="treeitem"]'));
+  return Array.from(document.body.querySelectorAll<HTMLElement>('[role="treeitem"], [role="option"]'));
 }
 
 /** A visible tree row whose label text matches (for picking a specific variable). */
@@ -197,6 +202,20 @@ describe('ValueOrVariableField', () => {
       { label: 'done', value: 'done' },
     ]);
 
+    wrapper.unmount();
+  });
+
+  it('markdown cleanup: the ops modal is a REFERENCE surface — its pipeline hides the presence family', async () => {
+    const wrapper = mountField({
+      operationsCatalog: standardOperationsCatalog(),
+      resultTypes: ['enum', 'text'],
+      modelValue: { kind: 'variable', ref: { source: 'trigger', path: 'fields.status', type: 'enum' } },
+    });
+    await nextTick();
+    await openOpsModal(wrapper);
+
+    // The step field's ops modal runs through VariableReferenceEditor, which threads hidePresenceOps.
+    expect(wrapper.findComponent(VariablePipelineEditor).props('hidePresenceOps')).toBe(true);
     wrapper.unmount();
   });
 
@@ -828,6 +847,47 @@ describe('ValueOrVariableField', () => {
     wrapper.unmount();
   });
 
+  it('variable-typesystem: a match_to_choice rule LHS is a boolean-terminal `when` PIPELINE; a new rule seeds `text_equals` and the saved wire `when` is a {op,args}[] pipeline', async () => {
+    const wrapper = mountField({
+      operationsCatalog: standardOperationsCatalog(),
+      argVariables: MIXED_ARG_POOL,
+      resultTypes: ['enum'],
+      targetOptions: PRIORITY_TARGETS,
+      modelValue: {
+        kind: 'variable',
+        ref: { source: 'trigger', path: 'fields.name', type: 'text' },
+        pipeline: [{ op: 'match_to_choice', args: { rules: [], fallback: 'low' } }],
+      },
+    });
+    await nextTick();
+    await openModalStep(wrapper, 'Name');
+
+    // "Add rule" seeds a rule whose LHS is a condition sub-editor rooted at TEXT (a role="group"),
+    // NOT a free-text equality input.
+    const addRuleBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Add rule',
+    ) as HTMLButtonElement | undefined;
+    expect(addRuleBtn).toBeTruthy();
+    addRuleBtn!.click();
+    await nextTick();
+
+    expect(document.body.querySelector('[role="group"][aria-label^="Rule 1: when"]')).toBeTruthy();
+    // No free-text `when` input remains (the equality string is gone).
+    expect(document.body.querySelector('input[aria-label^="Rule 1: when"]')).toBeNull();
+
+    // Saving serializes the rule's `when` as the WIRE `{op,args}[]` pipeline (byte-identical to every
+    // pipeline), seeded with a single empty `text_equals` step; `then` stays the unchanged entry.
+    modalButton('Save')!.click();
+    await nextTick();
+    const emitted = wrapper.emitted('update:modelValue')!;
+    const saved = emitted[emitted.length - 1][0] as WorkflowFieldValue & {
+      pipeline?: Array<{ op: string; args: Record<string, unknown> }>;
+    };
+    const rules = saved.pipeline![0].args.rules as Array<{ when: unknown; then: unknown }>;
+    expect(rules).toEqual([{ when: [{ op: 'text_equals', args: { value: '' } }], then: '' }]);
+    wrapper.unmount();
+  });
+
   it('phase-4b: a sourceOptions (multi-choice) arg offers the full pool (show-all)', async () => {
     const wrapper = mountField({
       operationsCatalog: standardOperationsCatalog(),
@@ -850,7 +910,7 @@ describe('ValueOrVariableField', () => {
     wrapper.unmount();
   });
 
-  it('phase-4b: a STRUCTURAL sourceMap arg offers an UNFILTERED picker (no catalog/gate) + a clarifying toggle label, literal byte-identical', async () => {
+  it('Defect-3: a STRUCTURAL sourceMap has PER-ENTRY value-or-variable fields (typed to the target, own ops), literal byte-identical', async () => {
     const wrapper = mountField({
       operationsCatalog: standardOperationsCatalog(),
       argVariables: MIXED_ARG_POOL,
@@ -864,16 +924,22 @@ describe('ValueOrVariableField', () => {
     await nextTick();
     await openModalStep(wrapper, 'Status');
 
-    // The structural mapping arg: EVERY variable offered (unfiltered), NO ops catalog, NO type gate.
-    const mappingField = argFieldByResultTypes(wrapper, []);
-    expect(mappingField).toBeTruthy();
-    expect(mappingField!.props('variables')).toEqual(MIXED_ARG_POOL);
-    expect(mappingField!.props('operationsCatalog')).toEqual([]);
-    expect(mappingField!.props('variableModeLabel')).toBe('Use a variable for the whole mapping');
-    // Its VALUE mode renders the bespoke map editor (the byte-identical literal control).
-    expect(mappingField!.findComponent(PipelineArgLiteralInput).exists()).toBe(true);
+    // The map is NO LONGER one whole-arg variable: each option's target (enum_to_text → mapType text)
+    // is its OWN value-or-variable field, TYPED to the entry target (['text']) with its OWN operations
+    // (the full catalog) and the show-all pool. There is one per source option (open, done).
+    const entryFields = wrapper
+      .findAllComponents(ValueOrVariableField)
+      .filter((f) => f.props('depth') === 1 && JSON.stringify(f.props('resultTypes')) === JSON.stringify(['text']));
+    expect(entryFields.length).toBe(2);
+    const entryField = entryFields[0];
+    expect(entryField.props('variables')).toEqual(MIXED_ARG_POOL);
+    expect(entryField.props('operationsCatalog')).toEqual(standardOperationsCatalog());
+    // A text entry maps to no destination choice → no targetOptions threaded.
+    expect(entryField.props('targetOptions')).toEqual([]);
+    // Its VALUE mode renders the shared literal leaf (the map's text control).
+    expect(entryField.findComponent(PipelineArgLiteralInput).exists()).toBe(true);
 
-    // Saving WITHOUT choosing a variable keeps the literal mapping byte-identical (no {kind} wrapper).
+    // Saving WITHOUT touching an entry keeps the literal mapping byte-identical (no {kind} wrapper).
     modalButton('Save')!.click();
     await nextTick();
     const emitted = wrapper.emitted('update:modelValue')!;
@@ -881,6 +947,62 @@ describe('ValueOrVariableField', () => {
       kind: 'variable',
       ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
       pipeline: [{ op: 'enum_to_text', args: { mapping: { open: 'O', done: 'D' } } }],
+    });
+    wrapper.unmount();
+  });
+
+  it('Defect-3: a CHOICE structural entry (enum_to_choice map target) is typed to the target choice + threads targetOptions; picking ONE option keeps others literal', async () => {
+    const wrapper = mountField({
+      operationsCatalog: standardOperationsCatalog(),
+      argVariables: MIXED_ARG_POOL,
+      resultTypes: ['enum'],
+      targetOptions: PRIORITY_TARGETS,
+      modelValue: {
+        kind: 'variable',
+        ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
+        pipeline: [{ op: 'enum_to_choice', args: { mapping: { open: 'urgent', done: 'low' } } }],
+      },
+    });
+    await nextTick();
+    await openModalStep(wrapper, 'Status');
+
+    // Each option's target is a CHOICE entry field: typed ['enum'] with the destination options threaded
+    // (so its pipeline must map into them). One per source option (open, done).
+    const choiceEntries = wrapper
+      .findAllComponents(ValueOrVariableField)
+      .filter((f) => f.props('depth') === 1 && JSON.stringify(f.props('resultTypes')) === JSON.stringify(['enum']));
+    expect(choiceEntries.length).toBe(2);
+    expect(choiceEntries[0].props('targetOptions')).toEqual(PRIORITY_TARGETS);
+
+    // Point a SINGLE option (the first entry) at a variable; the other stays its literal choice.
+    choiceEntries[0].vm.$emit('update:modelValue', {
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
+      pipeline: [{ op: 'enum_to_choice', args: { mapping: { open: 'urgent', done: 'low' } } }],
+    });
+    await nextTick();
+    modalButton('Save')!.click();
+    await nextTick();
+
+    const emitted = wrapper.emitted('update:modelValue')!;
+    expect(emitted[emitted.length - 1][0]).toEqual({
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
+      pipeline: [
+        {
+          op: 'enum_to_choice',
+          args: {
+            mapping: {
+              open: {
+                kind: 'variable',
+                ref: { source: 'trigger', path: 'fields.status', type: 'enum' },
+                pipeline: [{ op: 'enum_to_choice', args: { mapping: { open: 'urgent', done: 'low' } } }],
+              },
+              done: 'low',
+            },
+          },
+        },
+      ],
     });
     wrapper.unmount();
   });
@@ -912,12 +1034,15 @@ describe('ValueOrVariableField', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].getAttribute('aria-expanded')).toBe('false');
 
-    // Expand it (the chevron) → the child subfields appear.
+    // Expand it (the chevron) → the child subfields appear INLINE, directly beneath the
+    // container row, one level deeper.
     rows[0].querySelector('button')!.click();
     await nextTick();
     rows = treeItems();
     expect(rows.length).toBe(3);
     expect(rows[0].getAttribute('aria-expanded')).toBe('true');
+    expect(rows[0].getAttribute('aria-level')).toBe('1');
+    expect(rows[1].getAttribute('aria-level')).toBe('2');
 
     // Pick the text `.name` child → a ref at the composed path with the child's scalar type.
     treeItemByText('› Name')!.click();
@@ -926,6 +1051,57 @@ describe('ValueOrVariableField', () => {
     expect(emitted[emitted.length - 1][0]).toEqual({
       kind: 'variable',
       ref: { source: 'trigger', path: 'trigger.fields.attachment.name', type: 'text' },
+    });
+
+    wrapper.unmount();
+  });
+
+  // B2.1 — a form SECTION now rides in the VALUE-FIELD feed and groups its own leaves.
+  it('picker tree: a form SECTION from the real value-field feed is an EXPAND-ONLY branch', async () => {
+    // The catalog shape the backend actually emits: the section CONTAINER plus its leaves,
+    // ALSO emitted flat. Fed through the real adapter, not hand-rolled.
+    const catalog: WorkflowCatalog = {
+      variables: [
+        {
+          source: 'trigger', path: 'trigger.fields.details', name: 'Details', type: 'text',
+          descriptor: {
+            base: 'object', nullable: false, array: false,
+            fields: [{ key: 'note', label: 'Note', descriptor: { base: 'text', nullable: false, array: false } }],
+          },
+        },
+        { source: 'trigger', path: 'trigger.fields.details.note', name: 'Note', type: 'text' },
+        { source: 'trigger', path: 'trigger.fields.details.section_tags', name: 'Section tags', type: 'multi', enumOptions: ['x'] },
+      ],
+      fields: [],
+    };
+
+    const wrapper = mountField({ variables: allValueVariables(catalog, [], 0) });
+    await setMode(wrapper, 'Variable');
+    await openTreePicker(wrapper);
+
+    // ONE root row — the section. Its leaves are NOT also listed flat beside it.
+    let rows = treeItems();
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain('Details');
+    expect(rows[0].getAttribute('aria-expanded')).toBe('false');
+
+    // Clicking the row ANYWHERE expands it and emits NOTHING (a whole object resolves to a
+    // map at run time, so a container is never selectable on any surface).
+    rows[0].click();
+    await nextTick();
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+
+    rows = treeItems();
+    expect(rows.length).toBe(3); // the section row + its two leaves, inline beneath it
+    expect(rows.filter((r) => r.textContent?.includes('Note'))).toHaveLength(1); // exactly once
+
+    // Picking the leaf emits the SAME flat ref it emitted when it was a root row.
+    treeItemByText('Note')!.click();
+    await nextTick();
+    const emitted = wrapper.emitted('update:modelValue')!;
+    expect(emitted[emitted.length - 1][0]).toEqual({
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'trigger.fields.details.note', type: 'text' },
     });
 
     wrapper.unmount();
@@ -956,12 +1132,50 @@ describe('ValueOrVariableField', () => {
     wrapper.unmount();
   });
 
+  // B3 — the SF3.2 strip is scoped to SYSTEM identity paths, so a form field a USER named
+  // `numer_id` is offered here again (it used to vanish from this picker and the markdown
+  // feed, because the rule was a blanket `*_id` suffix test). The system ids stay hidden.
+  it('picker tree: offers a user-named `*_id` FORM FIELD, still hides the system identity paths', async () => {
+    const catalog: WorkflowCatalog = {
+      variables: [
+        { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
+        { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text' },
+        {
+          source: 'trigger', path: 'trigger.fields.numer_id', name: 'Numer ID', type: 'text',
+          descriptor: { base: 'text', nullable: false, array: false },
+        },
+        { source: 'steps', path: 'steps.create_task.task_id', name: 'Create task · task_id', type: 'text' },
+        { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+      ],
+      fields: [],
+    };
+    const wrapper = mountField({
+      variables: allValueVariables(catalog, [{ type: 'create_task', key: 'make' }], 1),
+    });
+    await setMode(wrapper, 'Variable');
+    await openTreePicker(wrapper);
+
+    const labels = treeItems().map((el) => el.textContent?.trim());
+    expect(labels).toEqual(['Numer ID', 'make.title']);
+
+    // …and picking it emits an ordinary ref at its own path.
+    treeItemByText('Numer ID')!.click();
+    await nextTick();
+    const emitted = wrapper.emitted('update:modelValue')!;
+    expect(emitted[emitted.length - 1][0]).toEqual({
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'trigger.fields.numer_id', type: 'text' },
+    });
+
+    wrapper.unmount();
+  });
+
   it('picker tree: shows the empty state when there are no variables', async () => {
     const wrapper = mountField({ variables: [] });
     await setMode(wrapper, 'Variable');
     await openTreePicker(wrapper);
     expect(treeItems().length).toBe(0);
-    expect(document.body.textContent).toContain('No variables available');
+    expect(document.body.textContent).toContain('No variables are available here');
     wrapper.unmount();
   });
 
@@ -971,10 +1185,12 @@ describe('ValueOrVariableField', () => {
     await setMode(wrapper, 'Variable');
     await openTreePicker(wrapper);
 
-    const tree = document.body.querySelector('[role="tree"]') as HTMLElement;
-    tree.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    // The browser BODY is the single focusable element (virtual focus via
+    // aria-activedescendant over the tree's rows) — it owns the keyboard model.
+    const browser = document.body.querySelector('[data-variable-browser]') as HTMLElement;
+    browser.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
     await nextTick();
-    tree.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    browser.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     await nextTick();
 
     const emitted = wrapper.emitted('update:modelValue')!;

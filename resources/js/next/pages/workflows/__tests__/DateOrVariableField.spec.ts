@@ -64,7 +64,7 @@ describe('DateOrVariableField', () => {
     await Promise.resolve();
     await nextTick();
 
-    // The Variable picker is now an expandable TREE (§refinement 5); a flat date var is a leaf row.
+    // The Variable picker is the shared inline TREE (B3); a flat date var is a leaf treeitem.
     document.body.querySelectorAll<HTMLElement>('[role="treeitem"]')[0].click();
     await nextTick();
 

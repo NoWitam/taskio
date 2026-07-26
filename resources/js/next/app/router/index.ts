@@ -207,15 +207,6 @@ const routes: RouteRecordRaw[] = [
             meta: { requiresAuth: true, titleKey: 'nav.workflows' },
           },
           {
-            // Workspace-level GLOBALS management (Phase 3): user-authored `globals.<key>`
-            // typed literal constants. A static segment declared before the `:id` record
-            // (like `runs`) so it never binds as a workflow id.
-            path: 'globals',
-            name: 'next.workflows.globals',
-            component: () => import('../../pages/workflows/WorkflowGlobalsView.vue'),
-            meta: { requiresAuth: true, titleKey: 'nav.workflows' },
-          },
-          {
             // Detail sections are CHILD ROUTES of the detail SHELL (the shell
             // owns the fetch + action bar and renders the section through its
             // own <RouterView> — Runs needs its own lifecycle). The bare path
@@ -245,6 +236,38 @@ const routes: RouteRecordRaw[] = [
                 meta: { requiresAuth: true, titleKey: 'nav.workflows' },
               },
             ],
+          },
+        ],
+      },
+      {
+        // Top-level "Variables" (PL "Zmienne") module shell: inner sub-nav + its pages.
+        // Consts (PL "Stałe") is the workspace typed literal constants — formerly the
+        // workflows "globals" sub-page — moved out to its own top-level area. The RUNTIME
+        // wire root stays `globals` (a const is still `globals.<key>`); only the URL/nav
+        // moved. Functions (PL "Funkcje") join this nav in Phase 3c.
+        path: 'variables',
+        component: () => import('../../pages/variables/VariablesModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.variables' },
+        children: [
+          {
+            path: '',
+            name: 'next.variables',
+            redirect: { name: 'next.variables.consts' },
+          },
+          {
+            path: 'consts',
+            name: 'next.variables.consts',
+            component: () => import('../../pages/variables/ConstantsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.variables' },
+          },
+          {
+            // Custom FUNCTIONS (Phase 3c): user-authored variable transforms (input + typed
+            // args → return, over a body pipeline). Surface as `fn:<uuid>` ops in every
+            // workflow pipeline; managed here alongside Consts.
+            path: 'functions',
+            name: 'next.variables.functions',
+            component: () => import('../../pages/variables/FunctionsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.variables' },
           },
         ],
       },

@@ -1,7 +1,6 @@
 <?php
 
 use App\Modules\Workflows\Http\Controllers\WorkflowController;
-use App\Modules\Workflows\Http\Controllers\WorkflowGlobalController;
 use App\Modules\Workflows\Http\Controllers\WorkflowRunController;
 use App\Modules\Workflows\Http\Controllers\WorkflowScheduleAssistController;
 use App\Modules\Workflows\Http\Controllers\WorkflowSchedulePreviewController;
@@ -68,9 +67,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('workflows', WorkflowController::class)
         ->only(['index', 'show', 'store', 'update', 'destroy']);
 
-    // Workflow GLOBALS: user-created, workspace-scoped typed LITERAL constants exposed as
-    // `globals.<key>` references in every workflow. A distinct path prefix from `workflows`, so no
-    // binding collision; workspace-member read + creator-only mutation (WorkflowGlobalPolicy).
-    Route::apiResource('workflow-globals', WorkflowGlobalController::class)
-        ->only(['index', 'show', 'store', 'update', 'destroy']);
+    // NOTE: the CONSTANTS resource (the former workflow globals endpoint) moved to the Variables
+    // module — see App\Modules\Variables\routes\api.php (`consts`). The runtime `globals.<key>` wire
+    // is unchanged; only the model/table/URL renamed.
 });

@@ -11,9 +11,10 @@
 //     "N ops" marker + a trailing ✕) rendered AS the field's value.
 //
 // Operations no longer sit inline under the field: clicking the chip opens an
-// OPERATIONS MODAL (mirrors WorkflowConditionModal — a read-only source header, the
-// shared VariablePipelineEditor, a live "Returns: <type>" status, and a Save that is
-// blocked until the pipeline's terminal type satisfies the field's required types).
+// OPERATIONS MODAL whose BODY is the shared `VariableReferenceEditor` (a read-only source
+// header, the nullable-gated typed default, the shared VariablePipelineEditor and a live
+// "Returns: <type>" status), plus a Save that is blocked until the pipeline's terminal type
+// satisfies the field's required types.
 //
 // v-model stays the canonical `WorkflowFieldValue<T>` union
 // (`{kind:'literal',value} | {kind:'variable',ref,pipeline?}`); a non-empty pipeline
@@ -24,50 +25,48 @@
 //
 // ARG-VARIABLES (phase-4b): when the host also feeds `:arg-variables` (the show-all pool), a
 // VALUE-TYPED op argument in the modal pipeline gains the SAME value/variable toggle — this field is
-// RECURSIVE: it fills the pipeline editor's `argVariable` slot with ITSELF (bound to the arg via the
+// RECURSIVE: it fills the reference editor's `argVariable` slot with ITSELF (bound to the arg via the
 // arg↔union adapters below), one `:depth` deeper each level. The pipeline editor enforces the depth
 // cap (`MAX_ARG_VARIABLE_DEPTH`), so beyond it an arg is literal-only — the FE can never build past
 // what the backend accepts. A literal arg still serializes byte-identically (no `{kind}` wrapper).
+//
+// ── B3: THIS FILE IS AN ADAPTER ────────────────────────────────────────────────
+// The modal BODY (source header → default-when-empty → pipeline → terminal status, plus the
+// recursive arg-variable wiring) is no longer implemented here: it is the SHARED
+// `ui/variables/VariableReferenceEditor`, which speaks the wire-free `VariableRefDraft`
+// (`{source, path, type, pipeline, default}`). What stays here is exactly the workflows-specific
+// part: the field surface (mode toggle, chip, picker), the `WorkflowFieldValue` union ⇄ draft
+// mapping, and the field-level type-error channel. The editor's own change-source affordance is
+// turned OFF here because this surface's picker lives on the field (behind the chip's ✕).
 import { computed, ref, watch } from 'vue';
-import Select from '../../ui/forms/Select.vue';
 import Modal from '../../ui/overlay/Modal.vue';
 import Button from '../../ui/primitives/Button.vue';
-import Badge from '../../ui/primitives/Badge.vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import Tooltip from '../../ui/overlay/Tooltip.vue';
-import VariablePipelineEditor from '../../ui/editor/extensions/VariablePipelineEditor.vue';
 import PipelineArgLiteralInput from '../../ui/editor/extensions/PipelineArgLiteralInput.vue';
 import VariableTypeIcon from '../../ui/editor/extensions/VariableTypeIcon.vue';
-import VariableTreePicker from './VariableTreePicker.vue';
-import WorkflowGlobalValueField from './WorkflowGlobalValueField.vue';
+import VariableBrowserPopover from '../../ui/variables/VariableBrowserPopover.vue';
+import VariableReferenceEditor from '../../ui/variables/VariableReferenceEditor.vue';
 import {
-  argVariablePolicy,
+  descriptorToOperation,
   getVariableIconLabel,
   pipelineSatisfies,
-  resolveType,
 } from '../../ui/editor/extensions/operationHelpers';
 import { useI18n } from '../../app/i18n';
-import {
-  flattenPickerNodes,
-  variableIcon,
-  variableNodeIcon,
-  variableOptionList,
-  variablePickerTree,
-} from './workflowVariables';
+import { buildVariableTree, findNodeByPath, nodeIcon } from '../../ui/variables/variableTree';
+import type { VariableLiteral, VariableNode, VariableRefDraft } from '../../ui/variables/types';
+import { argToUnion, unionToArg } from './argVariableAdapters';
 import { CONDITION_LIMITS } from './workflowConditions';
 import type {
   CatalogVariable,
   WorkflowFieldPipelineStep,
   WorkflowFieldValue,
-  WorkflowGlobalScalarBase,
   WorkflowVariableRef,
   WorkflowVariableType,
 } from './types';
 import type {
-  ArgVariableValue,
-  ChoiceRule,
+  OperationTypeDescriptor,
   VariableArgValue,
-  VariableOperationArgumentDefinition,
   VariableOperationDefinition,
   VariableOption,
   VariablePipelineStep,
@@ -136,6 +135,12 @@ const props = withDefaults(
      * a value-typed arg offers the toggle only while `depth < MAX_ARG_VARIABLE_DEPTH`.
      */
     depth?: number;
+    /**
+     * VARIABLE-ONLY mode (array-transform wave 3): the field can ONLY hold a variable reference — the
+     * value toggle + literal control are hidden. Used by the scope-rooted element-pipeline UNION control
+     * (an object/file map/filter/sort picks an `element.<field>` subfield; there is no literal element).
+     */
+    variableOnly?: boolean;
     /** Disable the whole field (toggle + controls). */
     disabled?: boolean;
   }>(),
@@ -146,6 +151,7 @@ const props = withDefaults(
     externalErrorPresent: false,
     argVariables: () => [],
     depth: 0,
+    variableOnly: false,
     disabled: false,
   },
 );
@@ -171,36 +177,30 @@ const pickedRef = computed<WorkflowVariableRef | null>(() =>
 );
 
 /**
- * Every pickable variable the tree offers — the host's flat list PLUS the composed children an object
- * container expands to (a file subfield / object-global field). Used to resolve a saved ref (which may
- * be a composed `<parent>.<key>` path) back to its full CatalogVariable for the chip + default control.
+ * The BROWSED tree — the shared model (`ui/variables`) over the host's flat list. No slot
+ * policy: this surface accepts every selectable variable it is given (the terminal-type
+ * gate lives on the pipeline, not on the picker), so a plain `{}` says exactly that.
+ *
+ * It is ALSO the single lookup for a SAVED ref: the tree already carries the flat list PLUS
+ * the composed children an object container expands to (a file subfield / object-global
+ * field), so one `findNodeByPath` resolves the chip's name/glyph/markers and the modal's
+ * base type — with no second, drifting resolution path.
  */
-const pickerVariables = computed<CatalogVariable[]>(() =>
-  flattenPickerNodes(variablePickerTree(props.variables)).map((n) => n.variable),
+const variableTree = computed<VariableNode[]>(() => buildVariableTree(props.variables, {}));
+
+/** The tree node the picked ref points at (null for an off-catalog / stale path). */
+const pickedNode = computed<VariableNode | null>(() =>
+  findNodeByPath(variableTree.value, pickedRef.value?.path),
 );
 
-/** The full catalog variable for the picked ref (for the chip name/icon/markers + default + options). */
-const pickedVariable = computed<CatalogVariable | null>(() => {
-  const ref = pickedRef.value;
-  if (!ref) return null;
-  return (
-    pickerVariables.value.find((v) => v.path === ref.path) ??
-    props.variables.find((v) => v.path === ref.path) ??
-    null
-  );
-});
-
-/** The picked variable's structured descriptor (drives the default control + type-icon markers). */
-const pickedDescriptor = computed(() => pickedVariable.value?.descriptor ?? null);
-
 /** The chip label: the catalog name, or the raw path when the var is off-list. */
-const pickedLabel = computed(() => pickedVariable.value?.name ?? pickedRef.value?.path ?? '');
+const pickedLabel = computed(() => pickedNode.value?.label ?? pickedRef.value?.path ?? '');
 
 /** The chip icon: the TRUE workflow type's glyph (object base → braces, §7.5 / §refinement 5). */
 const pickedIcon = computed(() =>
-  pickedVariable.value
-    ? variableNodeIcon(pickedVariable.value)
-    : variableIcon(pickedRef.value?.type ?? 'text'),
+  pickedNode.value
+    ? nodeIcon(pickedNode.value)
+    : nodeIcon({ type: pickedRef.value?.type ?? 'text', base: 'text' }),
 );
 
 /** The literal value exposed to the default slot (null in variable mode). */
@@ -208,11 +208,16 @@ const literalValue = computed(() =>
   model.value?.kind === 'literal' ? model.value.value : null,
 );
 
-/** Pick a variable from the tree picker: a fresh ref RESETS any pipeline (its base type changes). */
-function pickVariable(variable: CatalogVariable): void {
+/**
+ * Pick a variable from the browser: a fresh ref RESETS any pipeline (its base type changes).
+ * The emitted ref is BYTE-IDENTICAL to what the flat/tree pickers emitted before — the node
+ * carries the variable's own `{source, path, type}` (a descriptor child inherits its
+ * container's source and composes `<parent>.<key>`), nothing is re-derived.
+ */
+function pickVariable(node: VariableNode): void {
   model.value = {
     kind: 'variable',
-    ref: { source: variable.source, path: variable.path, type: variable.type },
+    ref: { source: node.source, path: node.path, type: node.type },
   };
 }
 
@@ -224,7 +229,7 @@ function setLiteral(value: unknown): void {
 // The mode reflects EITHER an active variable ref OR the explicit "I want variable
 // mode but haven't picked yet" intent (so the picker shows before a selection exists).
 // Any concrete literal value resets the intent to value mode.
-const intendVariable = ref(model.value?.kind === 'variable');
+const intendVariable = ref(props.variableOnly || model.value?.kind === 'variable');
 watch(
   () => model.value?.kind,
   (kind) => {
@@ -232,12 +237,17 @@ watch(
   },
 );
 
-/** The active mode ('value' | 'variable') driving the toggle + which body renders. */
-const mode = computed<FieldMode>(() => (isVariable.value || intendVariable.value ? 'variable' : 'value'));
+/**
+ * The active mode ('value' | 'variable') driving the toggle + which body renders. In `variableOnly`
+ * mode (the scope-rooted element-pipeline union) it is ALWAYS 'variable' — there is no literal element.
+ */
+const mode = computed<FieldMode>(() =>
+  props.variableOnly || isVariable.value || intendVariable.value ? 'variable' : 'value',
+);
 
 /** Flip modes. Value mode restores a literal; variable opens the picker. */
 function setMode(next: FieldMode): void {
-  if (props.disabled || next === mode.value) return;
+  if (props.disabled || props.variableOnly || next === mode.value) return;
   if (next === 'variable') {
     intendVariable.value = true;
   } else {
@@ -253,63 +263,33 @@ function removeVariable(): void {
   model.value = { kind: 'literal', value: null };
 }
 
-// --- Per-reference DEFAULT (phase-1b → §refinement 1) ------------------------
-// An OPTIONAL literal the backend substitutes when the referenced value resolves empty (null/''). It
-// now lives ONLY inside the operations modal (not on the field surface), shows ONLY for a NULLABLE
-// variable, and is TYPED to the variable's base (reusing WorkflowGlobalValueField). Empty ⇒ the
-// `default` key is OMITTED, so a ref without a default stays byte-identical. Boolean is a TRI-STATE (no
-// default / yes / no) so "no default" never silently serializes `false`.
-const DEFAULT_BASES: WorkflowGlobalScalarBase[] = ['text', 'number', 'boolean', 'date'];
-
-/** The typed-control base for the default, or null when the picked variable has none / is unsupported. */
-const defaultBase = computed<WorkflowGlobalScalarBase | 'enum' | null>(() => {
-  const base = pickedDescriptor.value?.base;
-  if (base === 'enum') return 'enum';
-  if (base && (DEFAULT_BASES as string[]).includes(base)) return base as WorkflowGlobalScalarBase;
-  return null;
-});
-
-/** Whether to offer the default control at all: the variable must be NULLABLE + a typed-able base. */
-const showDefault = computed(
-  () => pickedDescriptor.value?.nullable === true && defaultBase.value !== null,
-);
-
-/** The modal's WORKING default value (seeded on open); null / '' ⇒ no default (the key is omitted). */
-const modalDefault = ref<unknown>(null);
-
-/** Whether a working default value counts as "unset" (omit the key). `false` / `0` are meaningful. */
-function defaultIsEmpty(value: unknown): boolean {
-  return value == null || value === '';
-}
-
-/** Tri-state boolean default binding (''=no default, 'true'/'false') over `modalDefault`. */
-const booleanDefaultValue = computed<string>({
-  get: () => (modalDefault.value === true ? 'true' : modalDefault.value === false ? 'false' : ''),
-  set: (v) => (modalDefault.value = v === 'true' ? true : v === 'false' ? false : null),
-});
-const booleanDefaultOptions = computed(() => [
-  { value: '', label: t('workflows.field.defaultNone') },
-  { value: 'true', label: t('common.yes') },
-  { value: 'false', label: t('common.no') },
-]);
-
-// --- Pipeline base (the picked variable's TRUE type + enum options) ----------
+// --- Pipeline base (the picked variable's TRUE type) -------------------------
 /** Whether an operations modal may be offered at all (needs a catalog). */
 const pipelineEnabled = computed(() => props.operationsCatalog.length > 0);
 
 /** The picked variable's TRUE type — the pipeline's base (source) type. */
 const baseType = computed<VariablePrimitive>(
-  () => (pickedVariable.value?.type ?? pickedRef.value?.type ?? 'text') as VariablePrimitive,
+  () => (pickedNode.value?.type ?? pickedRef.value?.type ?? 'text') as VariablePrimitive,
+);
+
+/** The picked variable's RAW catalog entry (carries the full descriptor, `fields` included). */
+const pickedCatalogVariable = computed<CatalogVariable | null>(
+  () => props.variables.find((variable) => variable.path === pickedRef.value?.path) ?? null,
 );
 
 /**
- * The picked variable's enum options mapped to the source-option arg choices — PREFERS
- * the structured `descriptor.options` (human `label`, `key` stays the wire value) and
- * falls back to the flat `enumOptions` when no descriptor is present.
+ * The picked variable's FULL source descriptor when it is an object/file ARRAY (array-transform wave
+ * 3) — a repeater / file array degrades its flat type to `text`, so only the descriptor tells the
+ * pipeline it is an array of a structured element (offering its array ops + element subfields). For
+ * every scalar/enum/multi source it stays undefined and the flat `baseType` behaviour is byte-identical.
  */
-const sourceOptions = computed<VariableOption[]>(() =>
-  (pickedVariable.value ? variableOptionList(pickedVariable.value) : undefined) ?? [],
-);
+const baseDescriptor = computed<OperationTypeDescriptor | undefined>(() => {
+  const descriptor = pickedCatalogVariable.value?.descriptor;
+  if (descriptor?.array && (descriptor.base === 'object' || descriptor.base === 'file')) {
+    return descriptorToOperation(descriptor);
+  }
+  return undefined;
+});
 
 const maxOperations = computed(() => props.maxOperations ?? CONDITION_LIMITS.maxPipelineSteps);
 
@@ -367,6 +347,7 @@ const fieldSatisfied = computed(
       savedPipeline.value,
       resultTypesPrimitive.value,
       props.targetOptions,
+      baseDescriptor.value,
     ),
 );
 
@@ -383,156 +364,87 @@ watch(
   { immediate: true },
 );
 
-// --- Operations MODAL (SF3.5) ------------------------------------------------
-// A LOCAL editing clone the modal mutates, so Cancel discards edits (legacy parity).
+// --- Operations MODAL (SF3.5) — a LOCAL draft over the shared reference editor ----
+// The modal edits a normalized `VariableRefDraft` CLONE, so Cancel discards edits (legacy
+// parity) and the shared editor never sees a wire shape. Save projects it back onto the union.
 const modalOpen = ref(false);
-const modalPipeline = ref<VariablePipelineStep[]>([]);
+const modalDraft = ref<VariableRefDraft | null>(null);
 
-/** Open the operations modal, seeding a clone from the current wire pipeline. */
+/** Open the operations modal, seeding a draft from the saved union. */
 function openModal(): void {
-  if (props.disabled || !pickedRef.value || !pipelineEnabled.value) return;
-  const wire = model.value?.kind === 'variable' ? model.value.pipeline ?? [] : [];
-  modalPipeline.value = wire.map(fromWireStep);
-  // Seed the working default from the saved model (null ⇒ no default set).
-  modalDefault.value = (model.value?.kind === 'variable' ? model.value.default : undefined) ?? null;
+  const ref = pickedRef.value;
+  if (props.disabled || !ref || !pipelineEnabled.value) return;
+  const saved = model.value?.kind === 'variable' ? model.value : null;
+  modalDraft.value = {
+    source: ref.source,
+    path: ref.path,
+    type: ref.type,
+    pipeline: (saved?.pipeline ?? []).map(fromWireStep),
+    // Seed the working default from the saved model (null ⇒ no default set).
+    default: (saved?.default as VariableLiteral) ?? null,
+  };
   modalOpen.value = true;
 }
 
-/** The modal pipeline's final output type (the base type when there are no ops). */
-const modalResultType = computed<VariablePrimitive>(() =>
-  resolveType(props.operationsCatalog, baseType.value, modalPipeline.value),
-);
 /**
- * Whether the modal's pipeline satisfies the field's terminal contract — the SAME
- * predicate the field-level gate uses, so the modal Save now ALSO blocks an identity
- * enum / a plain terminal for a choice target (it must end on a choice-producing op).
+ * Whether the DRAFT's pipeline satisfies the field's terminal contract — the SAME predicate
+ * the field-level gate (and the editor's own status strip) uses, so the modal Save also blocks
+ * an identity enum / a plain terminal for a choice target.
  */
 const modalTypeSatisfied = computed(() =>
   pipelineSatisfies(
     props.operationsCatalog,
     baseType.value,
-    modalPipeline.value,
+    modalDraft.value?.pipeline ?? [],
     resultTypesPrimitive.value,
     props.targetOptions,
+    baseDescriptor.value,
   ),
-);
-
-/**
- * Whether the modal mismatch is specifically the CHOICE-target rule (the result type
- * already matches, but the pipeline does not END on a choice-producing op). Drives a
- * clearer strip hint than the generic "expected {type}" (which would read "expected
- * Choice" for a value that already returns Choice).
- */
-const modalNeedsChoiceOp = computed(
-  () =>
-    !modalTypeSatisfied.value &&
-    (props.targetOptions?.length ?? 0) > 0 &&
-    resultTypesPrimitive.value.includes(modalResultType.value),
 );
 
 const modalTitle = computed(() =>
   t('workflows.field.operations', '', { name: pickedLabel.value }),
 );
 
+/** Whether a drafted default counts as "unset" (omit the key). `false` / `0` are meaningful. */
+function defaultIsEmpty(value: VariableLiteral): boolean {
+  return value == null || value === '';
+}
+
 /**
- * Commit the modal's pipeline onto the union (omit when empty) + close. PRESERVES the
- * per-reference `default` (the ops modal never edits it) — omit-or-emit keeps a ref with
- * no default byte-identical.
+ * Commit the draft onto the union (an empty pipeline / default are OMITTED, so a plain identity
+ * ref stays byte-identical) + close.
  */
 function saveModal(): void {
-  const ref = pickedRef.value;
-  if (!ref || !modalTypeSatisfied.value) return;
-  const wire = modalPipeline.value.map(toWireStep);
-  const next: WorkflowFieldValue = { kind: 'variable', ref };
-  if (wire.length) next.pipeline = wire;
-  // Commit the modal's typed default (omit when empty ⇒ byte-identical to a ref without one).
-  if (!defaultIsEmpty(modalDefault.value)) next.default = modalDefault.value;
+  const draft = modalDraft.value;
+  if (!draft || !modalTypeSatisfied.value) return;
+  const next: WorkflowFieldValue = {
+    kind: 'variable',
+    ref: { source: draft.source, path: draft.path, type: draft.type },
+  };
+  if (draft.pipeline.length) next.pipeline = draft.pipeline.map(toWireStep);
+  if (!defaultIsEmpty(draft.default)) next.default = draft.default;
   model.value = next;
   modalOpen.value = false;
 }
 
 // --- Op ARGUMENT value-or-variable adapter (phase-4b) ------------------------
 // A pipeline op's value-typed argument is stored as EITHER a bare literal (as today) OR the SAME
-// {kind:'variable', ref, pipeline?, default?} union this field emits. The modal's pipeline editor
-// hosts each such arg through its `argVariable` slot (template below), which renders a RECURSIVE
-// ValueOrVariableField whose v-model is the WorkflowFieldValue union. These adapters translate
-// between that union and the raw arg storage so a LITERAL arg serializes BYTE-IDENTICALLY (no wrapper)
-// while a variable arg rides the union straight through.
-
-/** Whether a raw arg value is a variable union rather than a literal. */
-function isArgVariable(value: unknown): value is ArgVariableValue {
-  return !!value && typeof value === 'object' && !Array.isArray(value) && (value as { kind?: string }).kind === 'variable';
-}
-
-/** The empty literal for an arg toggled back to VALUE mode (matches buildDefaultArgs so it stays valid). */
-function emptyArgLiteral(arg: VariableOperationArgumentDefinition): VariableArgValue {
-  switch (arg.type) {
-    case 'number':
-      return 0;
-    case 'boolean':
-      return false;
-    case 'sourceOptions':
-      return [] as string[];
-    case 'choiceRules':
-      return [] as ChoiceRule[];
-    case 'sourceMap':
-      return {} as Record<string, string | number>;
-    default: // text | date | select | sourceOption | choiceFallback
-      return '';
-  }
-}
-
-/**
- * The accepted terminal type(s) for an arg-variable's pipeline = the arg's policy `refTypes`
- * (value→its type; option→enum|text; sourceOptions→multi). STRUCTURAL args (sourceMap/choiceRules)
- * have no flat terminal ⇒ `[]` (no type gate; shape is deferred to runtime fail-soft).
- */
-function argResultTypes(arg: VariableOperationArgumentDefinition): WorkflowVariableType[] {
-  return (argVariablePolicy(arg.type).refTypes ?? []) as WorkflowVariableType[];
-}
-
-/**
- * The variables offered in an arg-variable's picker: the FULL `argVariables` pool for EVERY arg —
- * identical to the field-level `pickerVariables` (show-all). Type-appropriateness is NOT enforced by
- * hiding variables but by `argResultTypes` (the terminal gate) + the mismatch skin, so the author can
- * pick ANY variable and coerce it to the arg's accepted type via the arg's own pipeline (structural
- * args get no pipeline — any variable is a raw whole-structure ref whose shape is runtime-checked).
- */
-function argPickerVariables(_arg: VariableOperationArgumentDefinition): CatalogVariable[] {
-  return props.argVariables;
-}
-
-/**
- * The operations catalog offered for an arg-variable's coercion pipeline. STRUCTURAL args get NONE:
- * the backend never type-flows / runs a structural arg-variable's sub-pipeline (the whole structure IS
- * the reference), so the recursive field becomes a plain pick-a-variable chip with no ops modal.
- */
-function argOperationsCatalog(arg: VariableOperationArgumentDefinition): VariableOperationDefinition[] {
-  return argVariablePolicy(arg.type).refTypes === null ? [] : props.operationsCatalog;
-}
-
-/** The "Variable" toggle label for a STRUCTURAL arg — clarifies "the WHOLE map/rules from a variable". */
-function argVariableModeLabel(arg: VariableOperationArgumentDefinition): string | undefined {
-  if (arg.type === 'sourceMap') return t('workflows.field.argVariableMapping');
-  if (arg.type === 'choiceRules') return t('workflows.field.argVariableRules');
-  return undefined;
-}
-
-/** Project a raw arg value onto the field union the recursive value-or-variable field edits. */
-function argToUnion(raw: VariableArgValue | undefined): WorkflowFieldValue | null {
-  if (isArgVariable(raw)) return raw as unknown as WorkflowFieldValue;
-  return { kind: 'literal', value: raw ?? null };
-}
-
-/**
- * Project the recursive field's union back onto raw arg storage. A variable arm passes straight
- * through (`{kind:'variable', …}`); a literal is UNWRAPPED to its bare value (empty ⇒ the arg's typed
- * empty), so a literal arg is byte-identical to today (no `{kind}` wrapper ever reaches the wire).
- */
-function unionToArg(union: WorkflowFieldValue | null, arg: VariableOperationArgumentDefinition): VariableArgValue {
-  if (union?.kind === 'variable') return union as unknown as ArgVariableValue;
-  const value = union?.kind === 'literal' ? union.value : null;
-  return (value ?? emptyArgLiteral(arg)) as VariableArgValue;
+// {kind:'variable', ref, pipeline?, default?} union this field emits. The shared reference editor
+// hosts each such arg through its `argVariable` slot (template below) — already parameterized with
+// the arg's variable POLICY (pool / coercion catalog / terminal gate / toggle label) — and we fill
+// it with a RECURSIVE ValueOrVariableField whose v-model is the WorkflowFieldValue union.
+//
+// The union ⇄ raw-arg translation itself lives in `./argVariableAdapters` (B4): the markdown chip
+// panel's pipeline needs the identical mapping, so there is exactly ONE copy of it.
+//
+// STRUCTURAL ENTRIES (Defect-3): a sourceMap target / choiceRules `then` arrives here as a per-ENTRY
+// arg-variable (the arg it hosts is the SYNTHETIC leaf arg the literal control built). A CHOICE entry
+// (its `resultTypes` is exactly `['enum']`) must map INTO the destination options, so — unlike a whole-arg
+// option variable — it threads `targetOptions` to the nested field, enforcing the same choice-op rule the
+// backend does per entry. Text/number/date entries thread none.
+function isChoiceEntryTypes(types: unknown): boolean {
+  return Array.isArray(types) && types.length === 1 && types[0] === 'enum';
 }
 </script>
 
@@ -543,8 +455,9 @@ function unionToArg(union: WorkflowFieldValue | null, arg: VariableOperationArgu
          danger skin (mirrors the focus-within ring) — the field itself reads "action
          required", not just the modal. -->
     <div class="next-vov" :class="{ 'is-disabled': disabled, 'is-error': pickedRef && !fieldSatisfied }">
-      <!-- Compact mode toggle: two icon buttons (aria-pressed), NOT full cards. -->
-      <div class="next-vov__toggle" role="group" :aria-label="t('workflows.field.modeLabel')">
+      <!-- Compact mode toggle: two icon buttons (aria-pressed), NOT full cards. Hidden in
+           variable-only mode (the scope-rooted union has no literal alternative). -->
+      <div v-if="!variableOnly" class="next-vov__toggle" role="group" :aria-label="t('workflows.field.modeLabel')">
         <Tooltip :label="t('workflows.field.modeValue')">
           <Button
             size="icon-xs"
@@ -590,8 +503,8 @@ function unionToArg(union: WorkflowFieldValue | null, arg: VariableOperationArgu
             >
               <VariableTypeIcon
                 :icon="pickedIcon"
-                :nullable="pickedDescriptor?.nullable"
-                :array="pickedDescriptor?.array"
+                :nullable="pickedNode?.nullable"
+                :array="pickedNode?.array"
                 class="next-vov__token-icon"
               />
               <span class="next-vov__token-label">{{ pickedLabel }}</span>
@@ -618,12 +531,12 @@ function unionToArg(union: WorkflowFieldValue | null, arg: VariableOperationArgu
             </button>
           </span>
           <div v-else class="next-vov__control [&>*]:w-full [&>*]:min-w-0">
-            <VariableTreePicker
-              :variables="variables"
+            <VariableBrowserPopover
+              :nodes="variableTree"
               :disabled="disabled"
               :placeholder="pickerPlaceholder ?? t('workflows.field.pickVariable')"
               :label="pickerLabel ?? t('workflows.field.pickVariable')"
-              @pick="pickVariable"
+              @select="pickVariable"
             />
           </div>
         </template>
@@ -638,135 +551,76 @@ function unionToArg(union: WorkflowFieldValue | null, arg: VariableOperationArgu
       {{ t('workflows.field.typeError', '', { expected: expectedTypesLabel }) }}
     </p>
 
-    <!-- Operations modal: the pipeline builder + the type gate (SF3.5). Only mounted
-         for a picked variable; teleports itself to <body>. -->
+    <!-- Operations modal: the SHARED reference editor (source header → default → pipeline →
+         terminal status) + this field's own Save gate (SF3.5). Only mounted for a picked
+         variable; teleports itself to <body>. -->
     <Modal v-if="pickedRef" v-model:open="modalOpen" size="lg" :aria-label="modalTitle">
       <template #title>{{ modalTitle }}</template>
 
-      <div class="flex flex-col gap-next-5">
-        <!-- Read-only source: the variable name + its TRUE type (with nullable/array markers). -->
-        <div class="flex items-center gap-next-2 rounded-next-md border border-next-border bg-next-muted px-next-3 py-next-2">
-          <VariableTypeIcon
-            :icon="pickedIcon"
-            :nullable="pickedDescriptor?.nullable"
-            :array="pickedDescriptor?.array"
-            class="shrink-0 text-next-muted-foreground"
-          />
-          <span class="min-w-0 flex-1 truncate font-next-medium text-next-fg">{{ pickedLabel }}</span>
-          <Badge variant="neutral" tone="subtle" size="sm">{{ getVariableIconLabel(baseType) }}</Badge>
-        </div>
-
-        <!-- Default when empty (§refinement 1): a TYPED literal the backend substitutes when the
-             referenced value resolves empty. Shown ONLY for a NULLABLE variable, typed to its base;
-             empty ⇒ the `default` key is omitted (byte-identical to a ref without one). Boolean is a
-             tri-state (no default / yes / no) so "no default" never silently serializes `false`. -->
-        <div v-if="showDefault" class="flex flex-col gap-next-1_5" data-vov-default>
-          <span class="text-next-sm font-next-medium text-next-fg">{{ t('workflows.field.defaultLabel') }}</span>
-          <div class="[&>*]:w-full">
-            <Select
-              v-if="defaultBase === 'boolean'"
-              v-model="booleanDefaultValue"
-              :options="booleanDefaultOptions"
-              :disabled="disabled"
-              :aria-label="t('workflows.field.defaultLabel')"
-            />
-            <WorkflowGlobalValueField
-              v-else
-              v-model="modalDefault"
-              :base="(defaultBase as WorkflowGlobalScalarBase | 'enum')"
-              :options="pickedDescriptor?.options"
-              :disabled="disabled"
-              :aria-label="t('workflows.field.defaultLabel')"
-            />
-          </div>
-          <p class="text-next-xs text-next-muted-foreground">{{ t('workflows.field.defaultHint') }}</p>
-        </div>
-
-        <VariablePipelineEditor
-          v-model="modalPipeline"
-          :base-type="baseType"
-          :catalog="operationsCatalog"
-          :source-options="sourceOptions"
-          :target-options="targetOptions"
-          :max-steps="maxOperations"
-          :depth="depth"
+      <VariableReferenceEditor
+        v-model="modalDraft"
+        :nodes="variableTree"
+        :change-source="false"
+        :base-descriptor="baseDescriptor"
+        :operations-catalog="operationsCatalog"
+        :result-types="resultTypesPrimitive"
+        :target-options="targetOptions"
+        :max-steps="maxOperations"
+        :depth="depth"
+        :arg-variables="argVariables"
+        :disabled="disabled"
+      >
+        <!-- ARG-VARIABLE (phase-4b): ANY op argument may itself be a variable. The pipeline editor
+             decides WHETHER to offer this (within the depth cap) and the reference editor decides
+             WHAT it may be (the arg's policy: the show-all pool, the coercion catalog — NONE for a
+             structural arg — the terminal gate, and the clarifying toggle label). We supply the SAME
+             value-or-variable field RECURSIVELY, with the arg's literal control
+             (PipelineArgLiteralInput) filling its VALUE slot, fed the running source/target options
+             so an option/map/rules editor has its choices.
+             `target-options` is threaded ONLY for a CHOICE structural ENTRY (Defect-3): its pipeline must
+             map into the destination options; a whole-arg option variable / value entry threads none. -->
+        <template
+          #argVariable="{
+            arg,
+            value,
+            depth: hostedDepth,
+            setValue,
+            disabled: argDisabled,
+            sourceOptions: argSourceOptions,
+            targetOptions: argTargetOptions,
+            variables: argPool,
+            operationsCatalog: argCatalog,
+            resultTypes: argTypes,
+          }"
         >
-          <!-- ARG-VARIABLE (phase-4b): ANY op argument may itself be a variable. The editor decides
-               WHETHER to offer this (within the depth cap); we supply the SAME value-or-variable field
-               RECURSIVELY, parameterized by the arg's policy:
-                 • picker = argVariables FILTERED to the policy refTypes (value→its type; option→
-                   enum|text; sourceOptions→multi) or UNFILTERED for a structural arg;
-                 • ops catalog = the coercion catalog (NONE for a structural arg — no sub-pipeline);
-                 • result-types = the policy terminal gate ([] for a structural arg);
-                 • the arg's literal control (PipelineArgLiteralInput) fills its VALUE slot, fed the
-                   running source/target options so an option/map/rules editor has its choices.
-               NO `target-options` is threaded to the recursive field: an arg-variable's own pipeline
-               terminates on its policy types, never a choice target (mirrors the backend). -->
-          <template
-            #argVariable="{
-              arg,
-              value,
-              depth: hostedDepth,
-              setValue,
-              disabled: argDisabled,
-              sourceOptions: argSourceOptions,
-              targetOptions: argTargetOptions,
-            }"
+          <ValueOrVariableField
+            :model-value="argToUnion(value as VariableArgValue)"
+            :variables="(argPool as CatalogVariable[])"
+            :arg-variables="argVariables"
+            :operations-catalog="argCatalog"
+            :result-types="(argTypes as WorkflowVariableType[])"
+            :target-options="isChoiceEntryTypes(argTypes) ? (argTargetOptions as VariableOption[]) : []"
+            :depth="hostedDepth"
+            :disabled="argDisabled"
+            :picker-label="arg.label"
+            @update:model-value="(u) => setValue(unionToArg(u, arg))"
           >
-            <ValueOrVariableField
-              :model-value="argToUnion(value)"
-              :variables="argPickerVariables(arg)"
-              :arg-variables="argVariables"
-              :operations-catalog="argOperationsCatalog(arg)"
-              :result-types="argResultTypes(arg)"
-              :depth="hostedDepth"
-              :disabled="argDisabled"
-              :picker-label="arg.label"
-              :variable-mode-label="argVariableModeLabel(arg)"
-              @update:model-value="(u) => setValue(unionToArg(u, arg))"
-            >
-              <template #default="{ value: litValue, setValue: setLit, disabled: litDisabled }">
-                <PipelineArgLiteralInput
-                  :arg="arg"
-                  :value="litValue"
-                  :source-options="argSourceOptions"
-                  :target-options="argTargetOptions"
-                  :disabled="litDisabled"
-                  @update:value="setLit"
-                />
-              </template>
-            </ValueOrVariableField>
-          </template>
-        </VariablePipelineEditor>
-
-        <!-- Type gate: green when the pipeline returns an accepted type, a warning
-             (with the expected type) when it does not. -->
-        <div
-          class="flex flex-wrap items-center gap-x-next-2 gap-y-next-1 rounded-next-md border px-next-3 py-next-2 text-next-sm"
-          :class="modalTypeSatisfied
-            ? 'border-next-success/40 bg-next-success-subtle'
-            : 'border-next-warning/40 bg-next-warning-subtle'"
-          :data-type-satisfied="modalTypeSatisfied ? 'true' : 'false'"
-          aria-live="polite"
-        >
-          <Icon
-            :name="modalTypeSatisfied ? 'check-circle' : 'alert-triangle'"
-            :class="modalTypeSatisfied ? 'text-next-success' : 'text-next-warning'"
-            aria-hidden="true"
-          />
-          <span class="text-next-fg">
-            {{ t('workflows.field.returns') }}
-            <span class="font-next-medium">{{ getVariableIconLabel(modalResultType) }}</span>
-          </span>
-          <!-- Choice-target mismatch: the type matches but it must END on a choice op. -->
-          <span v-if="modalNeedsChoiceOp" class="text-next-muted-foreground">
-            · {{ t('workflows.field.needsChoice') }}
-          </span>
-          <span v-else-if="!modalTypeSatisfied && expectedTypesLabel" class="text-next-muted-foreground">
-            · {{ t('workflows.field.expected', '', { types: expectedTypesLabel }) }}
-          </span>
-        </div>
-      </div>
+            <template #default="{ value: litValue, setValue: setLit, disabled: litDisabled }">
+              <PipelineArgLiteralInput
+                :arg="arg"
+                :value="litValue"
+                :source-options="argSourceOptions"
+                :target-options="argTargetOptions"
+                :disabled="litDisabled"
+                @update:value="setLit"
+              />
+            </template>
+          </ValueOrVariableField>
+        </template>
+        <!-- The object/file element pipeline (map/filter/sort over a repeater / file array) is now a
+             SELF-CONTAINED inline builder inside VariablePipelineEditor (F5) — a subfield Select + the
+             same nested pipeline editor — so this surface no longer fills an `#elementScopeUnion` slot. -->
+      </VariableReferenceEditor>
 
       <template #footer>
         <Button variant="outline" type="button" @click="modalOpen = false">

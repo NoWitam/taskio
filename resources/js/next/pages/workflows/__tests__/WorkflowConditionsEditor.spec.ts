@@ -31,6 +31,25 @@ const OPERATIONS = standardOperationsCatalog().map((op) => ({
 }));
 const CATALOG: WorkflowCatalog = { variables: [], fields: FIELDS, operations: OPERATIONS };
 
+/**
+ * The same catalog WITH the field variables that carry the structured descriptors — the source of a
+ * chip's nullable (`?`) / array (`[]`) markers (`fields.x` ↔ `trigger.fields.x`).
+ */
+const DESCRIBED_CATALOG: WorkflowCatalog = {
+  ...CATALOG,
+  variables: [
+    {
+      source: 'trigger', path: 'trigger.fields.status', name: 'Status', type: 'enum',
+      descriptor: { base: 'enum', nullable: true, array: false },
+      nullable: true,
+    },
+    {
+      source: 'trigger', path: 'trigger.fields.count', name: 'Count', type: 'number',
+      descriptor: { base: 'number', nullable: false, array: false },
+    },
+  ],
+};
+
 function condition(uid: string, source: string, sourceType: CatalogField['type'], op: string, args: Record<string, unknown>): DraftCondition {
   const step: VariablePipelineStep = { stepId: `s-${uid}`, operationId: op, args: args as VariablePipelineStep['args'], outputType: 'boolean' };
   return { uid, kind: 'condition', source, sourceType, pipeline: [step] };
@@ -55,10 +74,10 @@ function sampleTree(): DraftConditionGroup {
   };
 }
 
-function mountEditor(modelValue: DraftConditionGroup, formSelected = true) {
+function mountEditor(modelValue: DraftConditionGroup, formSelected = true, catalog: WorkflowCatalog = CATALOG) {
   return mount(WorkflowConditionsEditor, {
     attachTo: document.body,
-    props: { modelValue, catalog: CATALOG, formSelected },
+    props: { modelValue, catalog, formSelected },
   });
 }
 
@@ -83,6 +102,24 @@ describe('WorkflowConditionsEditor (tree)', () => {
     // Three condition chips → three "Edit condition" buttons.
     const chips = wrapper.findAll('button').filter((b) => (b.attributes('aria-label') ?? '').startsWith('Edit condition:'));
     expect(chips.length).toBe(3);
+    wrapper.unmount();
+  });
+
+  it('a chip marks a NULLABLE source with the optional "?" marker (a required one has none)', () => {
+    const wrapper = mountEditor(sampleTree(), true, DESCRIBED_CATALOG);
+    const chips = wrapper.findAll('button').filter((b) => (b.attributes('aria-label') ?? '').startsWith('Edit condition:'));
+
+    // c1 / c3 are on the NULLABLE `fields.status`; c2 is on the required `fields.count`.
+    expect(chips[0].find('[data-marker="optional"]').exists()).toBe(true);
+    expect(chips[1].find('[data-marker="optional"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('a chip without catalog descriptors still renders its plain type glyph', () => {
+    const wrapper = mountEditor(sampleTree());
+    const chips = wrapper.findAll('button').filter((b) => (b.attributes('aria-label') ?? '').startsWith('Edit condition:'));
+    expect(chips[0].find('[data-marker="optional"]').exists()).toBe(false);
+    expect(chips[0].find('svg').exists()).toBe(true);
     wrapper.unmount();
   });
 

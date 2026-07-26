@@ -12,6 +12,7 @@ return [
     App\Modules\Forms\FormsModuleServiceProvider::class,
     App\Modules\Approvals\ApprovalsModuleServiceProvider::class,
     App\Modules\Bot\BotModuleServiceProvider::class,
+    App\Modules\Variables\VariablesModuleServiceProvider::class,
     App\Modules\Workflows\WorkflowsModuleServiceProvider::class,
     App\Modules\Workspaces\WorkspacesModuleServiceProvider::class,
     App\Modules\Auth\AuthModuleServiceProvider::class,

@@ -8,8 +8,8 @@ use App\Modules\Tasks\DTOs\TaskDTO;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Models\Task;
 use App\Modules\Tasks\Services\TaskService;
+use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Workflows\Enums\WorkflowStepType;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\WorkflowRun;
 use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
@@ -74,8 +74,8 @@ class CreateTaskStep implements WorkflowStep
     public static function outputDescriptors(): array
     {
         return [
-            ['name' => 'task_id', 'type' => WorkflowVariableType::TEXT],
-            ['name' => 'title', 'type' => WorkflowVariableType::TEXT],
+            ['name' => 'task_id', 'type' => VariableType::TEXT],
+            ['name' => 'title', 'type' => VariableType::TEXT],
         ];
     }
 
@@ -122,7 +122,7 @@ class CreateTaskStep implements WorkflowStep
         $ids = $this->resolver->resolveValueOrVariable(
             $config['attachments'] ?? null,
             $context,
-            WorkflowVariableType::FILE,
+            VariableType::FILE,
         );
 
         if (!is_array($ids) || $ids === []) {
@@ -177,7 +177,7 @@ class CreateTaskStep implements WorkflowStep
         $resolved = $this->resolver->resolveValueOrVariable(
             $config['priority'] ?? null,
             $context,
-            WorkflowVariableType::ENUM,
+            VariableType::ENUM,
         );
 
         return TaskPriority::tryFrom((string) ($resolved ?? '')) ?? TaskPriority::MEDIUM;
@@ -192,7 +192,7 @@ class CreateTaskStep implements WorkflowStep
         $resolved = $this->resolver->resolveValueOrVariable(
             $config['deadline'] ?? null,
             $context,
-            WorkflowVariableType::DATE,
+            VariableType::DATE,
         );
 
         if (!is_string($resolved) || $resolved === '') {

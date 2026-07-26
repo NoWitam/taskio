@@ -2,10 +2,13 @@
 
 namespace Tests\Unit\Workflows;
 
-use App\Modules\Workflows\Enums\WorkflowOperation;
+use App\Modules\Variables\Enums\Operation as WorkflowOperation;
+use App\Modules\Variables\Services\OperationExecutor as WorkflowOperationExecutor;
 use App\Modules\Workflows\Services\WorkflowConditionEngine;
 use App\Modules\Workflows\Services\WorkflowConditionEvaluator;
-use App\Modules\Workflows\Services\WorkflowOperationExecutor;
+use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
+use App\Modules\Workflows\Services\WorkflowVariableResolver;
+use ArrayAccess;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
@@ -26,7 +29,15 @@ class WorkflowConditionEngineTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->engine = new WorkflowConditionEngine(new WorkflowOperationExecutor, new WorkflowConditionEvaluator);
+        // The resolver + catalog are the B6 collaborators (argument pre-resolution and the workspace
+        // globals). Every test in THIS file uses form-field sources with literal arguments, so the
+        // engine's cost guard never reaches either of them — the file stays DB-free.
+        $this->engine = new WorkflowConditionEngine(
+            new WorkflowOperationExecutor,
+            new WorkflowConditionEvaluator,
+            app(WorkflowVariableResolver::class),
+            app(WorkflowVariableCatalogService::class),
+        );
         Carbon::setTestNow('2026-07-14 12:00:00');
     }
 
@@ -84,10 +95,14 @@ class WorkflowConditionEngineTest extends TestCase
             'file_is_empty', 'file_is_not_empty', 'file_count', 'file_name',
             // phase-1b append-only: presence helpers + a safe date formatter.
             'coalesce', 'is_present', 'is_null', 'assert_present', 'date_format',
+            // array-ops wave 1 append-only: array transforms (count/at) gated on an array input.
+            'array_count', 'array_at',
+            // array-ops wave 2 append-only: the higher-order transforms (per-element pipelines).
+            'array_map', 'array_filter', 'array_sort', 'array_reduce',
         ];
 
         $this->assertSame($expected, array_map(fn (WorkflowOperation $op) => $op->value, WorkflowOperation::cases()));
-        $this->assertCount(77, WorkflowOperation::cases());
+        $this->assertCount(83, WorkflowOperation::cases());
     }
 
     // ── FILE (4 ops) ──────────────────────────────────────────────────────────
@@ -518,5 +533,537 @@ class WorkflowConditionEngineTest extends TestCase
             [['field' => 'fields.nope', 'field_type' => 'text', 'operator' => 'not_equals', 'value' => 'x']],
             $payload,
         ));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  CHARACTERIZATION PINS
+    //
+    //  Everything below records behaviour the gate has TODAY, captured before the
+    //  variable-typesystem refactor touches evaluateCondition() (an opt-in per-condition
+    //  `default`, and resolver-backed pre-resolution of variable-shaped operation arguments —
+    //  the latter pinned separately in WorkflowConditionEngineArgVariableTest).
+    //
+    //  These are a regression net, not a wish list. If a later batch makes one of them fail,
+    //  that is a BEHAVIOUR CHANGE to surface and accept deliberately in that batch's diff —
+    //  never a test to quietly edit into agreement.
+    //
+    //  B6 STATUS: every pin below is UNCHANGED by that batch — it shipped the `default` as strictly
+    //  OPT-IN (gated on the node carrying the key), so the missing-path doctrine these pins record is
+    //  exactly what a condition WITHOUT the key still gets. The batch only ADDED the
+    //  "…the OPT-IN per-condition `default`…" section, whose first test is the deliberate
+    //  counterpart to test_a_missing_source_path_is_false_in_every_shape. The argument-variable
+    //  expectations DID flip, in WorkflowConditionEngineArgVariableTest, as that file predicted.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // ── dispatch seam: shape alone picks the model ────────────────────────────
+
+    public function test_shape_alone_picks_the_evaluator_so_a_list_of_tree_nodes_takes_the_legacy_path(): void
+    {
+        // array_is_list() is the ONLY discriminator. A LIST whose entries happen to be tree nodes is
+        // still handed to the flat evaluator, which knows no kind/source/pipeline vocabulary and fails
+        // the clause closed — the tree walk is never reached.
+        $this->assertFalse($this->engine->passes([$this->cond('v', 'boolean', [])], ['v' => true]));
+
+        // ...and conversely an OBJECT never reaches the legacy evaluator, even carrying a clause's keys.
+        $this->assertFalse($this->engine->passes(
+            ['field' => 'v', 'field_type' => 'text', 'operator' => 'equals', 'value' => 'x'],
+            ['v' => 'x'],
+        ));
+
+        // An object that is neither a group nor a clause is simply not a tree.
+        $this->assertFalse($this->engine->passes(['foo' => 'bar'], ['v' => true]));
+    }
+
+    public function test_the_root_node_is_always_read_as_a_group_whatever_kind_it_claims(): void
+    {
+        // passes() enters evaluateGroup() directly, so the root's own `kind` is ignored: a root that
+        // spells itself a CONDITION is still required to carry group children — it has none → false.
+        $this->assertFalse($this->engine->passes(
+            array_merge($this->cond('v', 'boolean', []), ['logic' => 'and']),
+            ['v' => true],
+        ));
+    }
+
+    public function test_the_two_models_disagree_on_a_missing_path_and_that_is_current_behaviour(): void
+    {
+        // The LEGACY list keeps its ABSENCE operators — an absent field trivially "is not X" and PASSES.
+        // The TREE has no such operator: an absent path is simply false. Both are current behaviour, and
+        // because the engine routes by shape alone the SAME payload passes one model and fails the other.
+        $payload = ['fields' => ['priority' => 'high']];
+
+        $this->assertTrue($this->engine->passes(
+            [['field' => 'fields.nope', 'field_type' => 'text', 'operator' => 'not_equals', 'value' => 'x']],
+            $payload,
+        ));
+        $this->assertFalse($this->engine->passes(
+            ['logic' => 'and', 'children' => [$this->cond('fields.nope', 'text', [$this->op('text_not_equals', ['value' => 'x'])])]],
+            $payload,
+        ));
+    }
+
+    // ── the MISSING-path doctrine (exactly what the future `default` will opt out of) ──
+
+    public function test_a_missing_source_path_is_false_in_every_shape(): void
+    {
+        // Every pipeline here is TRUE over an empty value, so ONLY the missing-path rule can explain
+        // the false. A missing leaf under a present parent...
+        $this->assertFalse($this->missingProbe(['fields' => ['other' => 'x']], 'fields.nope'));
+        // ...a missing INTERMEDIATE segment...
+        $this->assertFalse($this->missingProbe(['fields' => ['other' => 'x']], 'nope.deep'));
+        // ...an entirely empty payload...
+        $this->assertFalse($this->missingProbe([], 'fields.a'));
+        // ...and an empty source string, which can address nothing.
+        $this->assertFalse($this->missingProbe(['v' => 'x'], ''));
+    }
+
+    /** A condition that would be TRUE over an empty value, so only a missing path can falsify it. */
+    private function missingProbe(array $payload, string $source): bool
+    {
+        return $this->engine->passes(
+            ['logic' => 'and', 'children' => [$this->cond($source, 'text', [$this->op('text_is_empty')])]],
+            $payload,
+        );
+    }
+
+    public function test_a_missing_path_is_false_even_for_the_presence_ops_while_a_present_null_is_not(): void
+    {
+        // THE pin the future opt-in `default` will change. The MISSING sentinel short-circuits BEFORE the
+        // pipeline runs, so today not even the presence family — whose whole job is to read absence — can
+        // observe an absent path. A path that EXISTS holding null behaves completely differently.
+        $isNull = [$this->op('is_null')];
+
+        $this->assertTrue($this->pipe('text', null, $isNull));            // present, holding null
+        $this->assertFalse($this->engine->passes(                          // absent — never reaches is_null
+            ['logic' => 'and', 'children' => [$this->cond('v', 'text', $isNull)]],
+            [],
+        ));
+
+        // Same asymmetry for coalesce: a present null takes the fallback, an ABSENT path cannot.
+        $coalesce = [$this->op('coalesce', ['fallback' => 'x']), $this->op('text_equals', ['value' => 'x'])];
+
+        $this->assertTrue($this->pipe('text', null, $coalesce));
+        $this->assertFalse($this->engine->passes(
+            ['logic' => 'and', 'children' => [$this->cond('v', 'text', $coalesce)]],
+            [],
+        ));
+
+        // And a present null is still "not present" to is_present — it is the VALUE that is empty, not
+        // the path. So absence and emptiness are distinguishable today only in the missing direction.
+        $this->assertFalse($this->pipe('text', null, [$this->op('is_present')]));
+    }
+
+    public function test_a_present_but_falsy_value_is_never_treated_as_missing(): void
+    {
+        $this->assertTrue($this->pipe('boolean', false, [$this->op('bool_not')]));
+        $this->assertTrue($this->pipe('text', '', [$this->op('text_is_empty')]));
+        $this->assertTrue($this->pipe('number', 0, [$this->op('num_eq', ['value' => 0])]));
+        $this->assertTrue($this->pipe('multi', [], [$this->op('multi_is_empty')]));
+    }
+
+    public function test_a_missing_path_is_a_plain_false_in_the_combinators(): void
+    {
+        // The rule is per CONDITION, not per tree: a missing-path child does not veto a true sibling.
+        $this->assertTrue($this->engine->passes([
+            'logic' => 'or',
+            'children' => [
+                $this->cond('fields.nope', 'text', [$this->op('text_is_empty')]),
+                $this->cond('v', 'boolean', []),
+            ],
+        ], ['v' => true]));
+    }
+
+    // ── the OPT-IN per-condition `default` (B6) — the ONLY way out of the doctrine above ──
+
+    /** A one-condition tree over $payload; $node is merged onto the condition (e.g. a `default`). */
+    private function gate(string $source, string $type, array $pipeline, array $payload, array $node = []): bool
+    {
+        return $this->engine->passes(
+            ['logic' => 'and', 'children' => [array_merge($this->cond($source, $type, $pipeline), $node)]],
+            $payload,
+        );
+    }
+
+    public function test_an_opt_in_default_substitutes_for_a_missing_path(): void
+    {
+        // The counterpart to test_a_missing_source_path_is_false_in_every_shape: the SAME shapes, with
+        // a `default` key added, now evaluate the default instead of collapsing to false. The pins
+        // above still hold — a condition WITHOUT the key is untouched, which is the whole contract.
+        $equalsFallback = [$this->op('text_equals', ['value' => 'fallback'])];
+
+        $this->assertFalse($this->gate('fields.nope', 'text', $equalsFallback, ['fields' => ['other' => 'x']]));
+        $this->assertTrue($this->gate('fields.nope', 'text', $equalsFallback, ['fields' => ['other' => 'x']], ['default' => 'fallback']));
+
+        // A missing INTERMEDIATE segment, and an entirely empty payload, substitute just the same.
+        $this->assertTrue($this->gate('nope.deep', 'text', $equalsFallback, ['fields' => []], ['default' => 'fallback']));
+        $this->assertTrue($this->gate('fields.a', 'text', $equalsFallback, [], ['default' => 'fallback']));
+    }
+
+    public function test_a_default_also_substitutes_for_a_present_null_or_empty_value(): void
+    {
+        // "Missing or empty" is ONE rule here, mirroring WorkflowVariableResolver::applyDefault — an
+        // unanswered optional field reaches the gate as null or '' just as often as it is absent.
+        $isFallback = [$this->op('text_equals', ['value' => 'fallback'])];
+
+        $this->assertTrue($this->gate('v', 'text', $isFallback, ['v' => null], ['default' => 'fallback']));
+        $this->assertTrue($this->gate('v', 'text', $isFallback, ['v' => ''], ['default' => 'fallback']));
+    }
+
+    public function test_a_default_never_displaces_a_present_value_however_falsy(): void
+    {
+        // The substitution triggers on ABSENCE/emptiness only: false, 0 and [] are real answers.
+        $this->assertTrue($this->gate('v', 'boolean', [$this->op('bool_not')], ['v' => false], ['default' => true]));
+        $this->assertTrue($this->gate('v', 'number', [$this->op('num_eq', ['value' => 0])], ['v' => 0], ['default' => 99]));
+        $this->assertTrue($this->gate('v', 'multi', [$this->op('multi_is_empty')], ['v' => []], ['default' => 'x']));
+        $this->assertTrue($this->gate('v', 'text', [$this->op('text_equals', ['value' => 'real'])], ['v' => 'real'], ['default' => 'fallback']));
+    }
+
+    public function test_a_default_flows_through_the_pipeline_exactly_like_a_looked_up_value(): void
+    {
+        // It is substituted BEFORE the pipeline runs, so it is typed/transformed identically — a date
+        // default is parsed and compared, a number default is arithmetic, an enum default is mapped.
+        $this->assertTrue($this->gate('fields.due', 'date', [
+            $this->op('date_add_days', ['value' => 5]),
+            $this->op('date_on', ['value' => '2026-01-15']),
+        ], ['fields' => []], ['default' => '2026-01-10']));
+
+        $this->assertTrue($this->gate('fields.n', 'number', [
+            $this->op('num_add', ['value' => 3]),
+            $this->op('num_eq', ['value' => 10]),
+        ], ['fields' => []], ['default' => 7]));
+
+        $this->assertTrue($this->gate('fields.priority', 'enum', [
+            $this->op('enum_is', ['value' => 'low']),
+        ], ['fields' => []], ['default' => 'low']));
+
+        // …and a default that cannot be represented as the declared type is an ordinary fail-closed
+        // false, exactly as the same value looked up off the payload would be.
+        $this->assertFalse($this->gate('fields.n', 'number', [
+            $this->op('num_eq', ['value' => 0]),
+        ], ['fields' => []], ['default' => 'not-a-number']));
+    }
+
+    public function test_a_null_or_non_scalar_default_is_ignored_and_the_missing_path_stays_false(): void
+    {
+        // The KEY is what opts in, but only a SCALAR is a usable literal (the write-validator rejects
+        // anything else, so these are legacy/hand-written rows): the condition falls back to false
+        // rather than substituting an array/object nobody can type.
+        foreach ([null, ['a'], ['k' => 'v']] as $default) {
+            $this->assertFalse($this->gate('fields.nope', 'text', [$this->op('text_is_empty')], ['fields' => []], ['default' => $default]));
+        }
+    }
+
+    public function test_a_default_is_read_per_condition_and_does_not_leak_to_siblings(): void
+    {
+        // Both children address a missing path; only the FIRST opts in to a default.
+        $withDefault = array_merge($this->cond('fields.a', 'text', [$this->op('text_equals', ['value' => 'x'])]), ['default' => 'x']);
+        $without = $this->cond('fields.b', 'text', [$this->op('text_is_empty')]);
+
+        // The sibling without the key keeps the doctrine's false, so the AND cannot pass…
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => [$withDefault, $without]], ['fields' => []]));
+        // …while the OR does, which is only possible if the first child really took its default.
+        $this->assertTrue($this->engine->passes(['logic' => 'or', 'children' => [$withDefault, $without]], ['fields' => []]));
+    }
+
+    public function test_a_source_path_traverses_nested_arrays_and_numeric_indexes(): void
+    {
+        $this->assertTrue($this->engine->passes(
+            ['logic' => 'and', 'children' => [$this->cond('fields.tags.0', 'text', [$this->op('text_equals', ['value' => 'a'])])]],
+            ['fields' => ['tags' => ['a', 'b']]],
+        ));
+    }
+
+    // ── condition leaf: source / source_type / pipeline shape ─────────────────
+
+    public function test_a_non_string_source_or_an_unknown_source_type_is_false(): void
+    {
+        // The source must be a string — a numeric key that Arr::get could otherwise resolve does not
+        // qualify, and an absent source key is false.
+        $this->assertFalse($this->engine->passes(
+            ['logic' => 'and', 'children' => [['kind' => 'condition', 'source' => 5, 'source_type' => 'text', 'pipeline' => [$this->op('text_is_empty')]]]],
+            [5 => ''],
+        ));
+        $this->assertFalse($this->engine->passes(
+            ['logic' => 'and', 'children' => [['kind' => 'condition', 'source_type' => 'boolean', 'pipeline' => []]]],
+            ['v' => true],
+        ));
+
+        // ...and the source_type must name a real variable type (absent or unknown → false).
+        $this->assertFalse($this->engine->passes(
+            ['logic' => 'and', 'children' => [['kind' => 'condition', 'source' => 'v', 'pipeline' => []]]],
+            ['v' => true],
+        ));
+        $this->assertFalse($this->engine->passes(
+            ['logic' => 'and', 'children' => [$this->cond('v', 'blob', [])]],
+            ['v' => true],
+        ));
+    }
+
+    public function test_an_absent_or_non_array_pipeline_is_false_but_an_empty_one_evaluates_the_bare_source(): void
+    {
+        // An ABSENT `pipeline` key is false: the condition never runs at all.
+        $this->assertFalse($this->engine->passes(
+            ['logic' => 'and', 'children' => [['kind' => 'condition', 'source' => 'v', 'source_type' => 'boolean']]],
+            ['v' => true],
+        ));
+
+        foreach (['nope', 0, false, 1.5] as $pipeline) {
+            $this->assertFalse($this->engine->passes(
+                ['logic' => 'and', 'children' => [['kind' => 'condition', 'source' => 'v', 'source_type' => 'boolean', 'pipeline' => $pipeline]]],
+                ['v' => true],
+            ));
+        }
+
+        // An EMPTY pipeline is a different thing entirely — it RUNS, and the bare source is the terminal.
+        // So `null` and `[]` are not interchangeable here, which is the seam a future `default` sits next to.
+        $this->assertTrue($this->pipe('boolean', true, []));
+        $this->assertFalse($this->pipe('boolean', false, []));
+    }
+
+    public function test_a_malformed_pipeline_step_is_false(): void
+    {
+        $this->assertFalse($this->pipe('boolean', false, ['bool_not']));     // a step that is not an array
+        $this->assertFalse($this->pipe('boolean', true, [['args' => []]]));  // a step carrying no op id
+    }
+
+    public function test_the_editor_operation_id_key_is_honoured_through_the_gate(): void
+    {
+        // The executor reads `op` OR the next editor's `operationId`, so a tree serialized straight out
+        // of the editor evaluates identically through the gate.
+        $this->assertTrue($this->pipe('boolean', false, [['operationId' => 'bool_not']]));
+    }
+
+    // ── terminal: only a boolean TRUE opens the gate ──────────────────────────
+
+    public function test_only_a_boolean_true_terminal_opens_the_gate(): void
+    {
+        // Every NON-boolean terminal is false, however successful the pipeline was.
+        $this->assertFalse($this->pipe('text', 'abc', []));
+        $this->assertFalse($this->pipe('number', 5, []));
+        $this->assertFalse($this->pipe('enum', 'a', []));
+        $this->assertFalse($this->pipe('multi', ['a'], []));
+        $this->assertFalse($this->pipe('date', '2026-01-01', []));
+        $this->assertFalse($this->pipe('file', [], [$this->op('file_count')]));            // number terminal
+        $this->assertFalse($this->pipe('text', 'a', [$this->op('text_length')]));          // number terminal
+
+        // A boolean terminal that is FALSE is false; only boolean TRUE passes.
+        $this->assertFalse($this->pipe('boolean', true, [$this->op('bool_not')]));
+        $this->assertTrue($this->pipe('boolean', false, [$this->op('bool_not')]));
+    }
+
+    public function test_every_executor_failure_collapses_the_condition_to_the_same_false(): void
+    {
+        // The gate reads only `failed` — every dead end the executor reports is indistinguishable here.
+        $this->assertFalse($this->pipe('text', 'x', [$this->op('does_not_exist')]));                   // unknown op
+        $this->assertFalse($this->pipe('text', 'x', [$this->op('num_add', ['value' => 1])]));          // input-type mismatch
+        $this->assertFalse($this->pipe('text', 'x', [$this->op('text_equals')]));                      // missing required arg
+        $this->assertFalse($this->pipe('number', 'abc', [$this->op('num_eq', ['value' => 0])]));       // unnormalizable base
+        $this->assertFalse($this->pipe('enum', 'zzz', [                                               // unmapped enum option
+            $this->op('enum_to_text', ['mapping' => ['a' => 'A']]),
+            $this->op('text_is_not_empty'),
+        ]));
+
+        // A HARD failure (assert_present over an empty value) is still just a failure HERE: the gate
+        // never reads `hard` and never re-raises it, so a condition can not fail a form submission the
+        // way a step's value pipeline can.
+        $this->assertFalse($this->pipe('text', '', [$this->op('assert_present'), $this->op('text_is_not_empty')]));
+    }
+
+    // ── tree structure: kinds, logic, children, caps ──────────────────────────
+
+    public function test_a_child_without_a_kind_is_read_as_a_group(): void
+    {
+        // evaluateNode() defaults a kind-less child to 'group', so an editor that omits `kind` on nested
+        // groups still evaluates.
+        $this->assertTrue($this->engine->passes([
+            'logic' => 'and',
+            'children' => [['logic' => 'and', 'children' => [$this->cond('v', 'boolean', [])]]],
+        ], ['v' => true]));
+    }
+
+    public function test_an_unknown_kind_or_a_non_array_child_is_false(): void
+    {
+        $valid = $this->cond('v', 'boolean', []);
+
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => [array_merge($valid, ['kind' => 'rule'])]], ['v' => true]));
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => ['nope']], ['v' => true]));
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => [null]], ['v' => true]));
+
+        // A garbage child is just a false child: an OR carrying a real true still passes.
+        $this->assertTrue($this->engine->passes(['logic' => 'or', 'children' => ['nope', $valid]], ['v' => true]));
+    }
+
+    public function test_logic_must_be_exactly_and_or_or(): void
+    {
+        // The match is strict, so case, whitespace and type all matter.
+        $children = [$this->cond('v', 'boolean', [])];
+
+        foreach ([null, '', 'AND', 'Or', 'and ', 'xor', 1, true, ['and']] as $logic) {
+            $this->assertFalse($this->engine->passes(['logic' => $logic, 'children' => $children], ['v' => true]));
+        }
+
+        // An absent logic key is the same false.
+        $this->assertFalse($this->engine->passes(['children' => $children], ['v' => true]));
+    }
+
+    public function test_children_must_be_a_non_empty_array_but_need_not_be_a_list(): void
+    {
+        $this->assertFalse($this->engine->passes(['logic' => 'and'], ['v' => true]));
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => 'x'], ['v' => true]));
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => []], ['v' => true]));
+
+        // An ASSOCIATIVE children map evaluates exactly like a list — the engine only foreaches.
+        $this->assertTrue($this->engine->passes(
+            ['logic' => 'and', 'children' => ['first' => $this->cond('v', 'boolean', [])]],
+            ['v' => true],
+        ));
+    }
+
+    public function test_the_child_and_step_caps_are_inclusive_upper_bounds(): void
+    {
+        $child = $this->cond('v', 'boolean', []);
+
+        // Exactly MAX_CHILDREN (10) evaluates; the 11th collapses the whole group.
+        $this->assertTrue($this->engine->passes(['logic' => 'and', 'children' => array_fill(0, 10, $child)], ['v' => true]));
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => array_fill(0, 11, $child)], ['v' => true]));
+
+        // Exactly MAX_PIPELINE_STEPS (10) evaluates; the 11th collapses the whole pipeline, even though
+        // every individual step is valid.
+        $ten = array_merge(array_fill(0, 9, $this->op('text_trim')), [$this->op('text_is_not_empty')]);
+        $eleven = array_merge(array_fill(0, 10, $this->op('text_trim')), [$this->op('text_is_not_empty')]);
+
+        $this->assertTrue($this->pipe('text', 'x', $ten));
+        $this->assertFalse($this->pipe('text', 'x', $eleven));
+    }
+
+    public function test_the_depth_cap_is_local_to_its_branch(): void
+    {
+        // nest(N) wraps a true condition in N groups. Used as a CHILD of the root those groups occupy
+        // depths 2..N+1, so nest(4) fits (max depth 5) and nest(5) does not.
+        $payload = ['fields' => ['a' => 'x'], 'v' => true];
+        $fits = $this->nest(4);
+        $tooDeep = $this->nest(5);
+
+        $this->assertTrue($this->engine->passes(['logic' => 'and', 'children' => [$fits]], $payload));
+        $this->assertFalse($this->engine->passes(['logic' => 'and', 'children' => [$tooDeep]], $payload));
+
+        // An over-deep branch is false WHERE IT SITS — it does not poison the tree, so an OR with a
+        // valid sibling still passes.
+        $this->assertTrue($this->engine->passes(
+            ['logic' => 'or', 'children' => [$tooDeep, $this->cond('v', 'boolean', [])]],
+            $payload,
+        ));
+    }
+
+    // ── laziness, observed through the payload rather than a mock ─────────────
+
+    public function test_an_and_group_stops_evaluating_after_the_first_false(): void
+    {
+        $fields = $this->readSpy(['a' => 'x', 'b' => 'x']);
+
+        $this->assertFalse($this->engine->passes([
+            'logic' => 'and',
+            'children' => [
+                $this->cond('fields.a', 'text', [$this->op('text_equals', ['value' => 'NOPE'])]),
+                $this->cond('fields.b', 'text', [$this->op('text_is_not_empty')]),
+            ],
+        ], ['fields' => $fields]));
+
+        // The claim is only that the second child is never evaluated — not how many times the first
+        // one is read (that would pin an implementation detail).
+        $this->assertContains('a', $fields->reads);
+        $this->assertNotContains('b', $fields->reads, 'The AND must short-circuit before the second child.');
+    }
+
+    public function test_an_or_group_stops_evaluating_after_the_first_true(): void
+    {
+        $fields = $this->readSpy(['a' => 'x', 'b' => 'x']);
+
+        $this->assertTrue($this->engine->passes([
+            'logic' => 'or',
+            'children' => [
+                $this->cond('fields.a', 'text', [$this->op('text_equals', ['value' => 'x'])]),
+                $this->cond('fields.b', 'text', [$this->op('text_is_not_empty')]),
+            ],
+        ], ['fields' => $fields]));
+
+        $this->assertContains('a', $fields->reads);
+        $this->assertNotContains('b', $fields->reads, 'The OR must short-circuit before the second child.');
+    }
+
+    /**
+     * A payload BRANCH that records which keys were read. This mocks nothing the engine owns: Arr::get
+     * walks an ArrayAccess exactly as it walks a nested array, so the spy observes only the public fact
+     * "did the engine look this source up?" — the one way group LAZINESS is visible from outside.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function readSpy(array $values): object
+    {
+        return new class($values) implements ArrayAccess
+        {
+            /** @var array<int, string> */
+            public array $reads = [];
+
+            /** @param array<string, mixed> $values */
+            public function __construct(private array $values) {}
+
+            public function offsetExists(mixed $offset): bool
+            {
+                $this->reads[] = (string) $offset;
+
+                return array_key_exists($offset, $this->values);
+            }
+
+            public function offsetGet(mixed $offset): mixed
+            {
+                return $this->values[$offset] ?? null;
+            }
+
+            public function offsetSet(mixed $offset, mixed $value): void {}
+
+            public function offsetUnset(mixed $offset): void {}
+        };
+    }
+
+    // ── the never-throws contract, over the WHOLE type enum ───────────────────
+
+    public function test_a_descriptor_only_source_type_fails_closed_instead_of_escaping_the_never_throws_contract(): void
+    {
+        // FIXED (safety batch B0.5 — this pin used to assert the UnhandledMatchError below).
+        // WorkflowVariableType carries two DESCRIPTOR-ONLY cases (`time`, `object`) past its closed
+        // 7-type core, and the executor's normalizeInput() matched that core with NO default arm.
+        // tryFrom() accepts them, so a stored tree naming one raised an UnhandledMatchError straight out
+        // of a gate whose documented contract is that it NEVER throws — a 500 during form submission.
+        // WorkflowConditionTreeValidator rejects such a source_type at write time, so it was only
+        // reachable through a hand-written / legacy / imported row — a real row, not a hypothetical.
+        //
+        // The engine is now TOTAL over its own type enum: a base type it has no runtime semantics for is
+        // an ordinary fail-closed failure, so the condition is simply false.
+        foreach (['time', 'object'] as $descriptorOnlyType) {
+            $this->assertFalse($this->engine->passes(
+                ['logic' => 'and', 'children' => [$this->cond('v', $descriptorOnlyType, [$this->op('text_is_not_empty')])]],
+                ['v' => 'x'],
+            ));
+        }
+    }
+
+    public function test_a_descriptor_only_source_type_is_false_for_every_pipeline_shape(): void
+    {
+        // The type is rejected BEFORE the pipeline runs, so no shape of pipeline can rescue it — most
+        // importantly the presence family, which reads EMPTINESS and would otherwise answer boolean TRUE
+        // for a value the engine cannot even represent (an unreadable TYPE is not an empty VALUE). That
+        // distinction is the difference between failing closed and OPENING the gate on a legacy row.
+        foreach (['time', 'object'] as $type) {
+            $this->assertFalse($this->pipe($type, 'x', []));                                  // bare source
+            $this->assertFalse($this->pipe($type, 'x', [$this->op('is_null')]));              // leading presence op
+            $this->assertFalse($this->pipe($type, '', [$this->op('is_null')]));
+            $this->assertFalse($this->pipe($type, 'x', [$this->op('is_present')]));
+            $this->assertFalse($this->pipe($type, null, [$this->op('coalesce', ['fallback' => 'x']), $this->op('text_is_not_empty')]));
+        }
+
+        // The SUPPORTED types are untouched: an unrepresentable VALUE of a real type still reads as
+        // empty to the presence family, exactly as before (this is the behaviour that must NOT move).
+        $this->assertTrue($this->pipe('number', 'not-a-number', [$this->op('is_null')]));
+        $this->assertTrue($this->pipe('text', null, [$this->op('is_null')]));
     }
 }

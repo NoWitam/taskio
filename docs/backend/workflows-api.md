@@ -1,6 +1,10 @@
 # Backend API: Workflows module
 
-Module: `app/modules/Workflows/`
+Module: `app/modules/Workflows/` — the variable TYPE SYSTEM and pipeline OPERATION ENGINE it runs on
+(`VariableType`, `Operation`, `OperationExecutor`, `PipelineValidator`, …) live in a separate, LOWER
+layer, `app/modules/Variables/`, which Workflows depends on (never the other way around) — see
+**ADR-0027-variables-module-extraction.md**. The Consts and Functions endpoints documented below
+also live in `app/modules/Variables/`, not Workflows — see the note at each section.
 Auth: all endpoints require `auth:sanctum` + `X-Workspace-Id` header (resolved by `ResolveWorkspace` middleware).
 Tenant scope: `TenantAware` trait — all queries are automatically scoped to the active workspace.
 
@@ -31,7 +35,7 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > operations, `enum_to_choice` and `match_to_choice`, let a value-or-variable pipeline map an
 > arbitrary source variable into a DESTINATION field's own fixed option set — e.g. mapping a
 > form's free-text `category` answer onto `create_task.priority`'s
-> `urgent|high|medium|low`. `WorkflowOperation::producesChoice()` marks these two ops as CHOICE
+> `urgent|high|medium|low`. `Operation::producesChoice()` marks these two ops as CHOICE
 > terminals; a pipeline targeting a choice field (currently only `priority`) must now be
 > non-empty and END in one — a bare identity ref or a pipeline ending in a non-choice op (e.g.
 > `enum_to_text`) is **REJECTED** at write time (previously accepted under the "enum or text"
@@ -99,7 +103,7 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > real catalog for a form-less workflow (e.g. a `schedule` trigger) instead of the frontend
 > maintaining a static mirror of the trigger-system variables / step-output templates. Both catalog
 > responses also gained a `types` key — `[{ id, primitive, operators }]`, one entry per
-> `WorkflowVariableType` — describing the full type vocabulary label-lessly (the FE localizes),
+> `VariableType` — describing the full type vocabulary label-lessly (the FE localizes),
 > the same pattern `operations`/`ai_personas` already use. See
 > **ADR-0021-workflows-variable-catalog-composable-roots.md** for the "adding a root is a 3-point
 > change" recipe this groundwork sets up for the rest of the rework (global variables, a loop item,
@@ -111,7 +115,7 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > catalog variable now ALSO carries a structured `descriptor` (`{ base, nullable, array, options?
 > }`) alongside the unchanged flat `type` — enum/multi options carry real `{key,label}` pairs (the
 > label lives in the form element's config, not the JSON schema) instead of a bare value list. A
-> new `WorkflowVariableType::TIME` case joins the vocabulary (the form builder's TIME element,
+> new `VariableType::TIME` case joins the vocabulary (the form builder's TIME element,
 > previously silently folded into `text`) — it is descriptor-only THIS phase: the flat wire `type`
 > still degrades it to `text` and it carries no condition operators (`operatorCases()` is `[]`), a
 > deliberate loud tripwire rather than a silent `UnhandledMatchError` once real TIME semantics
@@ -167,6 +171,52 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > **ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full design record and the
 > new "Workflow GLOBALS" endpoints (below, under Endpoints) / "The `globals` root" (under "The
 > typed variable system") for the wire contracts.
+>
+> **Array transform operations (this revision) — the operation catalog grows 77 → 83, additive; the
+> write-time validator now tracks a full `descriptor` through a pipeline instead of a flat type.**
+> Six new operations — `array_count`, `array_at` (whole-array, O(1), no pipeline) and
+> `array_map`/`array_filter`/`array_sort`/`array_reduce` (higher-order, each carrying a PER-ELEMENT
+> PIPELINE) — let a pipeline iterate ANY array (a `globals`-stored list, a `map`-produced array, an
+> `array<object>` repeater, an `array<file>` answer), regardless of its element base. Two new
+> synthetic scope variables, `element`/`index`, resolve ONLY inside an element pipeline — never in a
+> global root or the trigger condition tree — via a new source-aware
+> `App\Modules\Variables\Support\ScopeRef` helper shared by the write-validator, the resolver, and the
+> executor. Terminal type is enforced BY CONSTRUCTION: `filter`→`boolean`, `sort`→`number`,
+> `reduce`→the seed's own base, `map`→any single base (never another array) — a wrong-terminal
+> pipeline can never be saved. See **ADR-0026-workflows-array-transform-operations.md** for the full
+> design record and "Array transform operations" (under "The typed variable system") / "g. Array
+> transform operations — fail-closed matrix and caps" (under "Runtime operations, if-blocks, and AI
+> text") below for the wire contract.
+>
+> **The Variables module extraction, the Consts rename, and custom Functions (this revision) — a
+> PURE refactor plus two additive features; NO wire change to anything documented above this
+> point.** The variable TYPE SYSTEM (`VariableType`, `Operation`, `OperationArgType`/`OperationArg`,
+> `ArgVariablePolicy`, `OperationResult`, `ScopeRef`, `ValueOrVariable`, the array-op caps) and the
+> pipeline OPERATION ENGINE (`OperationExecutor`, and a NEW `PipelineValidator` extracted from
+> `WorkflowConditionTreeValidator`'s own pipeline-walking half) moved into a new, lower-layer
+> `App\Modules\Variables` module — Workflows depends on it, Variables imports NOTHING from
+> Workflows, a one-way boundary asserted by `VariablesModuleBoundaryTest`. `WorkflowConditionTreeValidator`
+> itself STAYS in Workflows, now narrower: only the condition-TREE shape (`{logic, children[]}`,
+> depth/children caps) and resolving a leaf's `source` against the catalog — it CALLS the new
+> `PipelineValidator` per leaf pipeline. See **ADR-0027-variables-module-extraction.md** for the
+> full symbol-rename map and the `ElementScopeResolver`/`FunctionReferenceLookup` dependency
+> inversions that keep the boundary one-way.
+>
+> On top of that new module, two things were built. **(1) Consts** — the `workflow_globals`
+> table/`WorkflowGlobal` model/`/workflow-globals` URL are RENAMED to `consts`/`Constant`/`/consts`
+> (`Const` being a PHP reserved word) and moved into Variables, with a NEW top-level "Variables"
+> (PL "Zmienne") frontend nav area replacing the old Workflows sub-page. **The runtime WIRE is
+> DELIBERATELY untouched** — a reference is still `globals.<key>`, the resolver whitelist still
+> reads `'globals'`, `WorkflowConditionEngine::GLOBALS_ROOT` is still `'globals'` — pinned by
+> `ConstantWireCompatTest`. See **ADR-0028-consts-rename.md**. **(2) Custom functions** — a
+> workspace member may now define a reusable pipeline OPERATION (one input type, typed named args,
+> one return type, a saved body pipeline), reachable at `POST/GET/PUT/DELETE /api/functions` and
+> surfaced on every pipeline's `operations` catalog as `fn:<uuid>`. Functions may NEST; a cycle is
+> rejected at WRITE time (a 3-colour DFS over the reference graph) and, as a second, independent
+> backstop, fails CLOSED at RUNTIME (an expansion-depth cap + an active-function visited-set) if a
+> corrupted row ever bypasses the write check. See **ADR-0029-custom-functions.md**, and "Custom
+> functions" (under "The typed variable system") / the "Functions" endpoints below for the full
+> contract.
 
 ---
 
@@ -277,7 +327,7 @@ carry `status` at all, and `WorkflowService::create()` hardcodes `WorkflowStatus
 | `trigger_config`             | per-type                | see the per-trigger sections below                                |
 | `conditions`                  | no                       | array, max 50; **only valid for `form_submitted`**; see the Conditions section |
 | `conditions.*.field`          | required-if-present      | string, max 255, MUST start with `fields.` (e.g. `fields.abc123`) |
-| `conditions.*.field_type`     | required-if-present      | one of `WorkflowVariableType` (`text\|number\|boolean\|date\|enum\|multi`) |
+| `conditions.*.field_type`     | required-if-present      | one of `VariableType` (`text\|number\|boolean\|date\|enum\|multi`) |
 | `conditions.*.operator`       | required-if-present      | one of `WorkflowConditionOperator`, MUST belong to `field_type`'s allow-list |
 | `conditions.*.value`          | required-if-present (unless value-less) | shape depends on the operator — see the Conditions section |
 | `steps`                        | yes                      | array, min 1, max 50                                               |
@@ -840,9 +890,9 @@ dispatch service already reads `Form`).
 A `variable` is `{ source, path, name, type, enumOptions?, nullable? }` — `source` is
 `'trigger' | 'steps'`, `path` is the FULL dotted path a reference resolves against (identical in
 both serializations — the editor directive and the structured union), `type` is a
-`WorkflowVariableType`. A `field` descriptor (the CONDITION builder's subset) is `{ path,
+`VariableType`. A `field` descriptor (the CONDITION builder's subset) is `{ path,
 field_id, label, type, enumOptions?, operators }` — `operators` is exactly the type's allowed
-operator set (`WorkflowVariableType::operatorCases()`), so the FE can never offer an operator the
+operator set (`VariableType::operatorCases()`), so the FE can never offer an operator the
 backend would reject.
 
 **Repeaters are EXCLUDED from the catalog** — honest, not an oversight: a repeater's answers are
@@ -1060,17 +1110,22 @@ is metered by its OWN per-user throttle (`assist_rate_per_minute`), never agains
 
 ---
 
-**Workflow GLOBALS (Phase 3, additive).** The next 5 endpoints are CRUD for **globals** —
-workspace-scoped, user-created, typed LITERAL constants that become `globals.<key>` references in
-every workflow. Module: `WorkflowGlobalController` / `Store`/`UpdateWorkflowGlobalRequest` /
-`WorkflowGlobalService` / `WorkflowGlobalResource` / `WorkflowGlobalPolicy`. See "The `globals`
-root" under "The typed variable system" below for how a global is CONSUMED
-(referenced/resolved) — this block covers only how it is AUTHORED.
+**Consts (renamed from "Workflow globals" — ADR-0028; module: `App\Modules\Variables`).** The next 5
+endpoints are CRUD for **consts** — workspace-scoped, user-created, typed LITERAL constants that
+become `globals.<key>` references in every workflow. Module: `ConstantController` /
+`Store`/`UpdateConstantRequest` / `ConstantService` / `ConstantResource` / `ConstantPolicy` /
+`ConstantTypeValidator`, all under `app/modules/Variables`. **The table/model/URL/nav are renamed
+(`workflow_globals`→`consts`, `WorkflowGlobal`→`Constant`); the RUNTIME WIRE is NOT** — a const is
+still referenced as `globals.<key>`, resolved through the unchanged `globals` root (see "The
+`globals` root" under "The typed variable system" below for how a const is CONSUMED
+(referenced/resolved) — this block covers only how it is AUTHORED). See
+**ADR-0028-consts-rename.md** for the full rename record, including why `Const`/`const` could not be
+used directly and why the wire was deliberately left untouched.
 
-### GET /api/workflow-globals
+### GET /api/consts
 
-List the workspace's globals. Cursor-paginated, 20 per page, ordered by `name` (ascending — unlike
-the workflow list's "newest first"). Authorization: `WorkflowGlobalPolicy::viewAny` — any
+List the workspace's consts. Cursor-paginated, 20 per page, ordered by `name` (ascending — unlike
+the workflow list's "newest first"). Authorization: `ConstantPolicy::viewAny` — any
 authenticated user; workspace membership itself is enforced upstream by `ResolveWorkspace` /
 `WorkspaceScope`, the same split the form-less `GET /workflows/catalog` path already uses.
 
@@ -1084,14 +1139,14 @@ authenticated user; workspace membership itself is enforced upstream by `Resolve
 **Response** `200 OK`
 
 ```json
-{ "data": [ WorkflowGlobalResource ], "meta": { "next_cursor": "string | null" } }
+{ "data": [ ConstantResource ], "meta": { "next_cursor": "string | null" } }
 ```
 
 ---
 
-### POST /api/workflow-globals
+### POST /api/consts
 
-Create a global. Authorization: `WorkflowGlobalPolicy::create` (any authenticated user).
+Create a const. Authorization: `ConstantPolicy::create` (any authenticated user).
 
 **Body**
 
@@ -1102,7 +1157,7 @@ Create a global. Authorization: `WorkflowGlobalPolicy::create` (any authenticate
 | `descriptor`       | yes      | `{ base, nullable?, array?, options?, fields? }` — `base` must be one of `text\|number\|boolean\|date\|enum\|object` (**`file`, `time`, and `multi`-as-a-base are NOT authorable** — see "The `globals` root" below). `nullable`/`array`, when present, must be booleans. `options` (a non-empty `{key,label?}` list, distinct keys) is required when `base:'enum'`; `fields` (a non-empty `{key,label?,descriptor}` list, safe+distinct keys, each child descriptor itself recursively well-formed) is required when `base:'object'`. |
 | `value`             | required-unless-nullable | may be omitted/`null` only when `descriptor.nullable:true`; otherwise a LITERAL matching `descriptor` (a scalar for a single base, a list of the element type for `array:true`, an object matching every declared `fields` key for `base:'object'`) — see the value-validation summary below. |
 
-**Validation summary** (`WorkflowGlobalTypeValidator`, the SINGLE authority shared by
+**Validation summary** (`ConstantTypeValidator`, the SINGLE authority shared by
 Store/Update):
 
 | Code | Field                                     | Meaning                                                                 |
@@ -1118,7 +1173,7 @@ Store/Update):
 | 422  | `value.<field>`                                              | An object field fails its own descriptor check, or is an undeclared key. |
 | 401  | —                                                              | Unauthenticated.                                                |
 
-**Response** `201 Created` — `WorkflowGlobalResource` with `creator` loaded (Laravel's own
+**Response** `201 Created` — `ConstantResource` with `creator` loaded (Laravel's own
 `wasRecentlyCreated` resource-response rule applies here, since `store()` returns the freshly
 saved model directly). Example — the payload
 `{ "name": "Nazwa marki", "descriptor": { "base": "text", "nullable": false, "array": false },
@@ -1143,43 +1198,190 @@ saved model directly). Example — the payload
 }
 ```
 
+Note `reference` — **byte-identical to before the rename**, still `globals.<key>`, never
+`consts.<key>`; this is the wire-preservation decision ADR-0028 records.
+
 ---
 
-### GET /api/workflow-globals/{id}
+### GET /api/consts/{constant}
 
-Fetch one global. Authorization: `WorkflowGlobalPolicy::view` (any workspace member) — a
-foreign-workspace `{id}` is filtered out by `WorkspaceScope` before route-model binding ever sees
-it, so it 404s, never 403.
+Fetch one const. Authorization: `ConstantPolicy::view` (any workspace member) — a
+foreign-workspace `{constant}` is filtered out by `WorkspaceScope` before route-model binding ever
+sees it, so it 404s, never 403. (The route parameter is `{constant}`, not `{const}` — `Route::
+apiResource('consts', ...)` would otherwise singularize to the reserved PHP word `const`; see
+ADR-0028.)
 
-**Response** `200 OK` — `WorkflowGlobalResource` with `creator` loaded. **Errors**: `404` not
+**Response** `200 OK` — `ConstantResource` with `creator` loaded. **Errors**: `404` not
 found (including a foreign-workspace id).
 
 ---
 
-### PUT /api/workflow-globals/{id}
+### PUT /api/consts/{constant}
 
-Update a global. Same body/validation rules as `POST` (the key-uniqueness check excludes the
-global's own row). Authorization: creator only (`WorkflowGlobalPolicy::update` →
+Update a const. Same body/validation rules as `POST` (the key-uniqueness check excludes the
+const's own row). Authorization: creator only (`ConstantPolicy::update` →
 `ChecksRecordOwnership::ownsOrManagesSystemRecord` — in practice always the creator, since a
-global's creator is always a human user; the trait's workspace-owner fallback for a creator-less
-SYSTEM record never applies to a global).
+const's creator is always a human user; the trait's workspace-owner fallback for a creator-less
+SYSTEM record never applies to a const).
 
-**Response** `200 OK` — `WorkflowGlobalResource`. **Errors**: `403` not creator, `404` not found,
+**Response** `200 OK` — `ConstantResource`. **Errors**: `403` not creator, `404` not found,
 `422` validation (same table as POST).
 
 ---
 
-### DELETE /api/workflow-globals/{id}
+### DELETE /api/consts/{constant}
 
-Permanently delete a global. **No soft-delete, no restore** — unlike `Workflow`, `WorkflowGlobal`
+Permanently delete a const. **No soft-delete, no restore** — unlike `Workflow`, `Constant`
 does not use `SoftDeletes` (no `deleted_at` column); the row is gone immediately
-(`WorkflowGlobalService::delete()` is a hard `Model::delete()`). A workflow that already
-references the deleted global's `globals.<key>` keeps running unaffected — the reference simply
+(`ConstantService::delete()` is a hard `Model::delete()`). A workflow that already
+references the deleted const's `globals.<key>` keeps running unaffected — the reference simply
 fails SOFT to `null`/`''` at run time, the same as any other missing path (no orphan-cleanup, the
-module's existing "stale targeting id is a safe no-op" doctrine). Authorization: creator only.
+module's existing "stale targeting id is a safe no-op" doctrine — **unlike** a custom function,
+below, a const carries no delete-while-referenced guard). Authorization: creator only.
 
-**Response** `200 OK` — `{ "message": "Workflow global deleted successfully" }`. **Errors**: `403`
+**Response** `200 OK` — `{ "message": "Constant deleted successfully" }`. **Errors**: `403`
 not creator, `404` not found.
+
+---
+
+**Functions (ADR-0029; module: `App\Modules\Variables`).** The next 5 endpoints are CRUD for
+**custom functions** — workspace-scoped, user-defined pipeline OPERATIONS: one input type, typed
+named args, one return type, and a saved BODY pipeline over `{input + args}` that terminates in the
+return type. A saved function appears as a `fn:<uuid>` entry on the SAME `operations` catalog every
+workflow pipeline reads (see "Custom functions" under "The typed variable system" below) — this
+block covers only how a function is AUTHORED. Module: `CustomFunctionController` /
+`Store`/`UpdateCustomFunctionRequest` / `CustomFunctionService` / `CustomFunctionResource` /
+`CustomFunctionPolicy` / `FunctionDefinitionValidator`.
+
+### GET /api/functions
+
+List the workspace's functions. Cursor-paginated, 20 per page, ordered by `name`. Authorization:
+`CustomFunctionPolicy::viewAny` — any authenticated user; workspace membership is enforced upstream
+by `ResolveWorkspace`/`WorkspaceScope`.
+
+**Query**
+
+| Param    | Required | Notes                                              |
+|----------|----------|------------------------------------------------------|
+| `search` | no       | case-insensitive match on `name`                   |
+| `cursor` | no       | cursor from `meta.next_cursor` for the next page   |
+
+**Response** `200 OK`
+
+```json
+{ "data": [ CustomFunctionResource ], "meta": { "next_cursor": "string | null" } }
+```
+
+---
+
+### POST /api/functions
+
+Create a function. Authorization: `CustomFunctionPolicy::create` (any authenticated user).
+
+**Body**
+
+| Field          | Required | Constraints                                                                 |
+|-----------------|----------|------------------------------------------------------------------------------|
+| `name`           | yes      | string, max 255 — a label only, NOT unique (identity is the row's uuid).    |
+| `description`      | no       | string, max 2000                                                          |
+| `input_type`         | yes      | one `VariableType` id                                                  |
+| `args`                 | yes      | array (may be empty) of `{ name, description?, type }` — `name` a safe identifier (`/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/`), UNIQUE within the function, and NOT `input`/`element`/`index` (reserved scope names); `type` one `VariableType` id. |
+| `return_type`          | yes      | one `VariableType` id                                                |
+| `body`                   | yes      | array — the pipeline steps `Array<{op, args}>`, over the scope `{input, <argName>…}`, that must terminate in `return_type`. May reference OTHER workspace functions (`fn:<uuid>` steps, nesting allowed) — see "Custom functions" below for the cycle/depth rules. |
+
+**Validation summary** (`FunctionDefinitionValidator`, the SINGLE authority shared by
+Store/Update):
+
+| Code | Field                          | Meaning                                                                 |
+|------|----------------------------------|----------------------------------------------------------------------------|
+| 422  | `name`                            | Required, max 255.                                                      |
+| 422  | `input_type` / `return_type`        | Not a valid `VariableType` id.                                        |
+| 422  | `args`                                | Not a list.                                                          |
+| 422  | `args.<i>`                              | Not an object.                                                    |
+| 422  | `args.<i>.type`                           | Not a valid `VariableType` id.                                  |
+| 422  | `args.<i>.name`                             | Not a safe identifier, a reserved scope name (`input`/`element`/`index`), or a duplicate within the function. |
+| 422  | `args.<i>.description`                        | Present but not a string.                                     |
+| 422  | `body`                                           | Missing/not an array, OR the reference graph is CYCLIC (a self-reference or a cycle through another function) — see "Custom functions" below. |
+| 422  | `body.<m>.op` / `body.<m>.args.<key>` / …          | The SAME per-op type-flow / argument-variable errors a value-or-variable pipeline gets (`PipelineValidator`), walked from `input_type` and required to terminate in `return_type`. |
+| 401  | —                                                     | Unauthenticated.                                                |
+
+**Response** `201 Created` — `CustomFunctionResource` with `creator` loaded. Example — the payload
+`{ "name": "Uppercase", "input_type": "text", "args": [], "return_type": "text",
+"body": [{ "op": "text_uppercase" }] }`:
+
+```json
+{
+  "data": {
+    "id": "b1b2c3d4-...",
+    "name": "Uppercase",
+    "description": null,
+    "input_type": "text",
+    "args": [],
+    "return_type": "text",
+    "body": [{ "op": "text_uppercase" }],
+    "creator": { "type": "user", "id": "…", "name": "…" },
+    "is_owner": true,
+    "can_be_edited": true,
+    "can_be_deleted": true,
+    "created_at": "…",
+    "updated_at": "…"
+  }
+}
+```
+
+A function WITH typed args and a body referencing them —
+`{ "name": "Discounted price", "input_type": "number", "args": [{ "name": "rate", "type": "number" }],
+"return_type": "number", "body": [{ "op": "num_multiply", "args": { "value": {
+"kind": "variable", "ref": { "source": "scope", "path": "rate", "type": "number" } } } }] }` —
+resolves `rate` off the function's own scope FRAME, not a top-level `trigger`/`steps`/`globals`
+reference; see "Custom functions" below.
+
+Note the id has NO `fn:` prefix here — `id` is the bare uuid identity (the resource's own primary
+key, matching every other CRUD resource in this codebase); `fn:` is prepended only on the OPERATION
+CATALOG'S wire op id (`'fn:' . $id`, see "Custom functions" below), never on this resource.
+
+---
+
+### GET /api/functions/{function}
+
+Fetch one function. Authorization: `CustomFunctionPolicy::view` (any workspace member) — a
+foreign-workspace `{function}` 404s (filtered by `WorkspaceScope` before binding), never 403.
+
+**Response** `200 OK` — `CustomFunctionResource` with `creator` loaded. **Errors**: `404` not found
+(including a foreign-workspace id).
+
+---
+
+### PUT /api/functions/{function}
+
+Update a function. Same body/validation rules as `POST` — including acyclicity: the cycle graph
+substitutes THIS function's own node with its NEW body before checking, so renaming an existing
+function's body to reference a function that (transitively) already references this one is still
+rejected. Authorization: creator only (`CustomFunctionPolicy::update` →
+`ChecksRecordOwnership::ownsOrManagesSystemRecord`).
+
+**Response** `200 OK` — `CustomFunctionResource`. **Errors**: `403` not creator, `404` not found,
+`422` validation (same table as POST).
+
+---
+
+### DELETE /api/functions/{function}
+
+Delete a function — **BLOCKED with a 422 while it is still referenced**, by ANOTHER function's body
+OR by any WORKFLOW's step configs/conditions (a `fn:<uuid>` op anywhere in either), fail-closed
+rather than leaving a dangling reference that would fail every future run of whatever used it. No
+soft-delete/restore (like `Constant`, unlike `Workflow`). Authorization: creator only.
+
+**Response** `200 OK` — `{ "message": "Function deleted successfully" }`.
+
+**Errors**
+
+| Code | Key          | When                                                                          |
+|------|---------------|-------------------------------------------------------------------------------|
+| 403  | —              | Not creator.                                                                 |
+| 404  | —                | Not found.                                                                 |
+| 422  | `function`         | Referenced by ANOTHER function's body — `"This function is used by another function and cannot be deleted."` |
+| 422  | `function`           | Referenced by a WORKFLOW's step configs/conditions — `"This function is used by a workflow and cannot be deleted."` |
 
 ---
 
@@ -1292,7 +1494,7 @@ to verify `<id>` exists (that would couple write-validation to form content and 
 edits) — a stale/wrong id is handled honestly at EVALUATION time by the missing-path semantics
 below.
 
-### The operator × type matrix (`WorkflowVariableType::operatorCases()`)
+### The operator × type matrix (`VariableType::operatorCases()`)
 
 | `field_type` | Allowed operators                          | Payload comparison                                          |
 |---------------|-----------------------------------------------|------------------------------------------------------------------|
@@ -1372,7 +1574,7 @@ exact byte shape the editor's `encodeVariableDirective` produces:
 The directive's identity lookup (`data.id`) is always honored. **SB1 adds RUNTIME pipeline
 execution**: when `data.pipeline` is a non-empty list of `{operationId|op, args}` steps (the next
 editor's pipeline-editor format), `WorkflowVariableResolver` runs it through the shared
-`WorkflowOperationExecutor` and STRINGIFIES the typed result into the surrounding text; an EMPTY
+`OperationExecutor` and STRINGIFIES the typed result into the surrounding text; an EMPTY
 (or absent) pipeline keeps the original identity-only behavior unchanged, WITH one reviewer fix:
 a STANDALONE identity chip that IS the whole field (no pipeline) now always STRINGIFIES its
 looked-up value before it reaches the field — a bare non-text variable (a multi-select, a number,
@@ -1409,8 +1611,8 @@ an OPTIONAL `pipeline` to the `variable` arm:
 `resolveValueOrVariable()` handles this: a `literal` resolves (and type-coerces) its `value`
 directly; a `variable` WITHOUT a `pipeline` (or an empty one) looks up `ref.path` in the run
 context then coerces the result to the field's EXPECTED type, unchanged from before SB1 (e.g.
-`priority` coerces to `WorkflowVariableType::ENUM`, `deadline` to `DATE`). A `variable` WITH a
-non-empty `pipeline` instead runs it through `WorkflowOperationExecutor` **from `ref.type`**
+`priority` coerces to `VariableType::ENUM`, `deadline` to `DATE`). A `variable` WITH a
+non-empty `pipeline` instead runs it through `OperationExecutor` **from `ref.type`**
 (never the field's expected type — the pipeline's own declared base) and coerces the TYPED RESULT
 to the field's expected type. A pipeline FAILURE coerces to `null` — the exact same soft default
 an unresolved ref already produced, so a bad pipeline degrades exactly like a bad reference (the
@@ -1466,7 +1668,7 @@ looked-up value, not just AI-generated text.
 
 Every `variable` entry in BOTH catalog responses (`GET /forms/{form}/workflow-catalog`,
 `GET /workflows/catalog`) now ALSO carries `descriptor: { base, nullable, array, options? }`
-(`WorkflowVariableCatalogService::variable()`, built by `WorkflowVariableType::descriptor()`) —
+(`WorkflowVariableCatalogService::variable()`, built by `VariableType::descriptor()`) —
 alongside the UNCHANGED flat `type`/`enumOptions?`/`nullable?` keys. Nothing about the flat shape
 changed; `descriptor` is a second, richer view of the same variable:
 
@@ -1601,7 +1803,7 @@ own.
 
 **3. A `file` variable's descriptor now ALSO carries its fixed composite subfields — but, unlike
 `object`, the flat wire `type` STAYS `file`.** `id`/`name`/`type`/`url` are `text`, `size` is
-`number` — the single source is `WorkflowVariableType::fileSubfieldTypes()`, which both the
+`number` — the single source is `VariableType::fileSubfieldTypes()`, which both the
 descriptor and the reference index below read from, so the three can never disagree:
 
 ```json
@@ -1641,7 +1843,7 @@ own id/url, and the trigger snapshot is never rewritten to point at the copy:
 
 **File subfield paths are individually referenceable — including as PIPELINE-bearing references
 (phase-2b.1) — because `referenceIndex()` and `runtimeTypeMap()` now enumerate all 5 of them for
-every FILE-typed entry**, single-sourced from `WorkflowVariableType::fileSubfieldTypes()`. A
+every FILE-typed entry**, single-sourced from `VariableType::fileSubfieldTypes()`. A
 value-or-variable pipeline may therefore target e.g. `trigger.fields.attachment.name` (type-flows
 as `text`) or `trigger.fields.attachment.size` (type-flows as `number`) — a wrong-typed op on one
 now fails with the ordinary `422` type-mismatch error under `.pipeline.<m>.op`, not "unknown
@@ -1704,7 +1906,7 @@ duplicate/confuse). A REPEATER contributes exactly ONE entry, relabelled with a 
 children. `CatalogVariableDescriptor.base` (TypeScript) widened to accept `'object'`; a new
 recursive `CatalogDescriptorField` interface backs `descriptor.fields`; `CatalogType.id` widened to
 tolerate the two descriptor-only ids (`'time'`, `'object'`) the catalog's `types[]` list now also
-carries — none of this touches the closed, 8-member `WorkflowVariableType` union a variable's own
+carries — none of this touches the closed, 8-member `VariableType` union a variable's own
 flat `type` still uses.
 
 **This is REPRESENTATION ONLY.** Making the whole form structure — and a file's own facets —
@@ -1718,12 +1920,15 @@ below.
 
 ---
 
-### The `globals` root — user-created LITERAL constants (Phase 3, additive)
+### The `globals` root — consts, user-created LITERAL constants (Phase 3, additive; persistence renamed to `Constant`/`consts` in ADR-0028)
 
 `globals` is a THIRD reference root, alongside `trigger`/`steps` — `WorkflowVariableResolver::ROOTS`
 is now `['trigger', 'steps', 'globals']`. Unlike `trigger`/`steps`, it is not derived from the
-CURRENT run at all: it is the active workspace's own set of user-created **globals** (see
-"Workflow GLOBALS" under Endpoints above for how one is authored), injected into every run's
+CURRENT run at all: it is the active workspace's own set of user-created **consts** (see
+"Consts" under Endpoints above for how one is authored — the model/table/URL were RENAMED from
+`WorkflowGlobal`/`workflow_globals`/`workflow-globals` by ADR-0028, but this reference ROOT's own
+name, `globals`, was deliberately left untouched; "a const" and "a `globals.<key>` reference" name
+the exact same thing), injected into every run's
 context as a flat `{<key>: <stored value>}` map (`WorkflowStepRunner::run()` →
 `WorkflowVariableCatalogService::globalValues()`) and composed into the catalog for EVERY trigger
 type — `form_submitted`, `schedule`, or even a form-less/trigger-less catalog call — since a global
@@ -1734,12 +1939,13 @@ serialization exactly like `trigger.*`/`steps.*` already do: the markdown direct
 type:'text'}}` structured union all resolve it identically — no new resolver code path was needed,
 only the whitelist addition and the context binding (see
 **ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full "3-point recipe"
-record). Resolution is FAIL-SOFT like every other root: a deleted or unknown key resolves to
-`null` (standalone) / stays out of the surrounding text (embedded), never an error.
+record, and **ADR-0028-consts-rename.md** for the later persistence rename this root's own name was
+deliberately exempted from). Resolution is FAIL-SOFT like every other root: a deleted or unknown key
+resolves to `null` (standalone) / stays out of the surrounding text (embedded), never an error.
 
 **Catalog shape.** A global's catalog entry is `{ source: 'globals', path: 'globals.<key>', name,
 type, descriptor, enumOptions? }` — `descriptor` is the EXACT stored descriptor (not re-derived),
-and the flat `type` is recovered from it via the new `WorkflowVariableType::fromDescriptor()` (the
+and the flat `type` is recovered from it via the new `VariableType::fromDescriptor()` (the
 inverse of `descriptor()`):
 
 ```json
@@ -1762,26 +1968,27 @@ enumerate every `globals.<key>` path too, so a value-or-variable pipeline (e.g.
 `create_task.deadline`) may target a global with full write-time type-checking, exactly like a
 trigger/step reference.
 
-**Authorable types (write path only — see "Workflow GLOBALS" → `POST` above for the full
-validation table).** A global's `descriptor.base` is one of `text | number | boolean | date | enum
-| object` — **`file` and `time` are NOT authorable** (a global holds a plain typed constant, never
+**Authorable types (write path only — see "Consts" → `POST` above for the full
+validation table).** A const's `descriptor.base` is one of `text | number | boolean | date | enum
+| object` — **`file` and `time` are NOT authorable** (a const holds a plain typed constant, never
 a Disk file or a type with no runtime semantics yet), and `multi` is not a base at all (it is
 `enum` + `array:true`, the same convention every other catalog variable uses).
-`WorkflowGlobalTypeValidator` is the SINGLE place this is enforced, shared by both
-`Store`/`UpdateWorkflowGlobalRequest`.
+`ConstantTypeValidator` (renamed from `WorkflowGlobalTypeValidator`, ADR-0028) is the SINGLE place
+this is enforced, shared by both `Store`/`UpdateConstantRequest`.
 
-**Injection safety (a security invariant, stated explicitly).** A global's `value` is
+**Injection safety (a security invariant, stated explicitly).** A const's `value` is
 user-authored, persisted, and later interpolated into a step's text/structured fields — the exact
 shape untrusted content takes elsewhere in this module. It is protected TWO ways: (1) AT WRITE
-TIME, `WorkflowGlobalTypeValidator` rejects a value containing a NUL byte anywhere (any string key
-or value, any depth) — `workflow_globals.value` is a plain `json` column, which (unlike `jsonb`)
-does not itself refuse one, so this closes the one persistence path in this module that could
-otherwise carry a NUL end to end; (2) AT RESOLVE TIME, a global's value rides the SAME
-NUL-delimited placeholder masking an embedded directive's looked-up value already uses (see
-"Transitional flat `{{...}}` tokens" above) — so a value that merely LOOKS like a reference (e.g.
-literally containing the text `{{trigger.fields.secret}}` or `@[variable]...`) renders completely
-VERBATIM, in every resolution shape, and is never re-interpreted as a second-order reference. Pinned
-by `WorkflowGlobalCrudTest::test_a_value_carrying_a_nul_byte_is_rejected` (write-time) and
+TIME, `ConstantTypeValidator` rejects a value containing a NUL byte anywhere (any string key
+or value, any depth) — `consts.value` (renamed from `workflow_globals.value`) is a plain `json`
+column, which (unlike `jsonb`) does not itself refuse one, so this closes the one persistence path
+in this module that could otherwise carry a NUL end to end; (2) AT RESOLVE TIME, a const's value
+rides the SAME NUL-delimited placeholder masking an embedded directive's looked-up value already
+uses (see "Transitional flat `{{...}}` tokens" above) — so a value that merely LOOKS like a
+reference (e.g. literally containing the text `{{trigger.fields.secret}}` or `@[variable]...`)
+renders completely VERBATIM, in every resolution shape, and is never re-interpreted as a
+second-order reference. Pinned by
+`ConstantCrudTest::test_a_value_carrying_a_nul_byte_is_rejected` (write-time) and
 `WorkflowVariableResolverTest::test_a_global_value_with_reference_like_bytes_is_not_re_interpreted`
 (resolve-time, using a fixture literally named `globals.evil`).
 
@@ -1799,8 +2006,11 @@ agree on every node the picker can emit a ref for. See
 
 See **ADR-0024-workflows-variable-typesystem-phase3-globals.md** for the full design record
 (including the LITERAL-only scoping decision, why `file`/`time` are excluded, and the deferred
-frontend authoring depth) and `resources/js/next/docs/pages/WorkflowsPage.vue` ("Workflow Globals",
-under "The typed variable system") for the in-app docs mirror.
+frontend authoring depth), **ADR-0028-consts-rename.md** for the persistence rename (table/model/URL/
+nav — the `globals` wire itself is unaffected), and `resources/js/next/docs/pages/WorkflowsPage.vue`
+("Workflow Globals", under "The typed variable system") for the in-app docs mirror — **not yet
+updated for the ADR-0028 rename; a Frontend-coordinated follow-up should refresh its `Constant`/
+`consts` naming and its `/next/variables/consts` route/component references.**
 
 ### Operation arguments as variables (Phase 4, additive — completes the rework; widened in a later "Phase 4b" batch)
 
@@ -1827,11 +2037,11 @@ itself carry another such argument). `num_add`'s `value`, `date_add_days`'s `val
 } } }
 ```
 
-**`WorkflowOperationArgType::argVariablePolicy(): ArgVariablePolicy` is the single gate both sides
-read** (`app/modules/Workflows/DTOs/ArgVariablePolicy.php`) — it REPLACED the earlier, narrower
+**`OperationArgType::argVariablePolicy(): ArgVariablePolicy` is the single gate both sides
+read** (`app/modules/Variables/DTOs/ArgVariablePolicy.php`) — it REPLACED the earlier, narrower
 `variableValueType()`, which returned a type only for the four value controls and `null`
 (LITERAL-ONLY) for every option/map/rules/select control. `ArgVariablePolicy` carries two facets:
-`$refTypes` (the `WorkflowVariableType`s a ref/terminal may declare at WRITE time; `null` =
+`$refTypes` (the `VariableType`s a ref/terminal may declare at WRITE time; `null` =
 STRUCTURAL) and `$coerceTo` (the RUNTIME coercion target; `null` = STRUCTURAL pass-through) — the
 two nulls always coincide, enforced by three named constructors (`value()`, `option()`/`options()`,
 `structural()`).
@@ -1849,7 +2059,7 @@ simply handing the resolved ref's raw array value to the executor's existing map
 (`WorkflowVariableResolver::resolveStructuralArgVariable()`), which already fail-softs on a
 malformed value exactly as it does for a malformed literal.
 
-**Runtime.** `WorkflowOperationExecutor` is completely UNCHANGED — it still only ever receives
+**Runtime.** `OperationExecutor` is completely UNCHANGED — it still only ever receives
 literal args (a STRUCTURAL arg's "literal" is the raw map/rule-list array itself).
 `WorkflowVariableResolver::resolvePipelineArgs()` pre-resolves every op's variable-shaped argument to
 a literal BEFORE the executor runs, at all three pipeline call sites (a `{kind:'variable'}` field's
@@ -1863,12 +2073,12 @@ STRUCTURAL) — the op then fails closed on the empty argument exactly as it alr
 malformed literal, never a crash. An unresolved variable union that somehow reached the executor
 directly (bypassing the resolver) also fails closed, never crashes, and never treats the union as a
 value — pinned by
-`WorkflowOperationExecutorTest::test_a_variable_union_arg_reaching_the_executor_fails_closed`.
+`OperationExecutorTest::test_a_variable_union_arg_reaching_the_executor_fails_closed`.
 
 **Depth cap — the only bound needed, because there are no cycles.** An argument's `ref` can only
 point at CONTEXT DATA (`trigger`/`steps`/`globals`, the resolver's existing `ROOTS`), never at
 another argument's own definition, so a cycle is impossible by construction.
-`ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH = 3` gates both sides identically, for every category:
+`PipelineLimits::MAX_ARG_VARIABLE_DEPTH = 3` (`App\Modules\Variables\Enums\PipelineLimits`) gates both sides identically, for every category:
 the write validator `422`s a 4th nesting level under the deepest argument's own key
 (each extra level appends another `.pipeline.<m>.args.<key>`), and the runtime resolver fail-softs at
 the identical boundary — an author can never save a config the runtime would reject.
@@ -1912,6 +2122,327 @@ for the full design record — this COMPLETES the four-phase variable-typesystem
 ADR-0022 → ADR-0023 → ADR-0024 → ADR-0025) — and `resources/js/next/docs/pages/WorkflowsPage.vue`
 ("The typed variable system" and "Frontend module" sections) for the in-app docs mirror.
 
+### Array transform operations (additive; the operation catalog grows 77 → 83)
+
+Six new operations let a pipeline transform a WHOLE array instead of one scalar value — the
+primitive needed to iterate a `globals`-stored list, a repeater answer, a multi-file answer, or an
+array `map` already produced. `Operation::isArrayOp()` marks all six; a NEW
+`isCollectionOp()` marks only the four that carry a per-element pipeline.
+
+| op | input | output | pipeline arg | terminal constraint |
+|----|-------|--------|--------------|---------------------|
+| `array_count` | `array<T>` | `number` | — | — |
+| `array_at` | `array<T>` | `T` (nullable) | signed `index` (1-based, clamped — see below) | — |
+| `array_map` | `array<T>` | `array<U>` | element pipeline, rooted at `T` | any base `U` — never itself an array |
+| `array_filter` | `array<T>` | `array<T>` | element pipeline, rooted at `T` | `boolean` |
+| `array_sort` | `array<T>` | `array<T>` | element pipeline, rooted at `T` | `number` |
+| `array_reduce` | `array<T>` | `U` (a base, non-array, non-null) | a typed `seed(U)` + an accumulator pipeline, rooted at `U` | = the seed's own base `U` |
+
+`array_count`/`array_at` are the wave-1 ops (whole-array, O(1), no pipeline arg); `array_map`/
+`array_filter`/`array_sort`/`array_reduce` are the wave-2/3 higher-order ops. All six accept ANY
+array regardless of its element's base type (`array<number>`, `array<enum>`, `array<object>` all
+qualify as "an array") — a flat-type gate cannot express that, which is why the write-time walker now
+tracks a full `descriptor`, not a flat type (below).
+
+**The descriptor-tracking walker — the load-bearing change.**
+`PipelineValidator::walkPipeline()`'s write-time type-flow gate for a pipeline now
+tracks a running `$currentDescriptor` (the `VariableType::descriptor()` shape — `{base,
+nullable, array, options?, fields?, elementDescriptor?}`) instead of a flat `VariableType`.
+Per step: an ARRAY op (`isArrayOp()`) is accepted iff `$currentDescriptor['array'] === true`
+(`opAcceptsDescriptor()`), regardless of element base; every OTHER op keeps the EXACT pre-existing
+rule, re-expressed against the descriptor:
+`VariableType::fromDescriptor($currentDescriptor) === $op->inputType()`. The terminal type
+after each op is `Operation::outputDescriptor(array $inputDescriptor, array $args, ?array
+$terminalDescriptor = null): array` — its `default` arm, covering EVERY op that existed before this
+op set, is `return $this->outputType()->descriptor();`, which `fromDescriptor()`'s inverse relation
+to `descriptor()` makes a PROVABLE no-op for every non-array op (byte-identical to the old flat-type
+walk). The array ops override it: `array_count` → `NUMBER`'s descriptor; `array_at` → the input's
+ELEMENT descriptor with `nullable:true, array:false`; `array_filter`/`array_sort` → the input
+descriptor unchanged; `array_map` → the element pipeline's own TERMINAL descriptor (computed
+recursively by walking that pipeline) with `array:true, nullable:false`; `array_reduce` → the seed's
+descriptor (`array:false, nullable:false`). The FE mirror
+(`resources/js/next/ui/editor/extensions/operationHelpers.ts`'s `resolveType`/`computeInputType`/
+`pipelineSatisfies`) tracks the identical descriptor; `VariableOperationDefinition` gained an optional
+`resolveOutput(inputDescriptor, args, terminalDescriptor)`, used only by the six array ops (every
+other op keeps its static `outputType`).
+
+An array's ELEMENT descriptor is derived by preferring an explicit `elementDescriptor` (an
+`array<object>`/`array<file>`/typed `array<scalar>`) when the array descriptor carries one; otherwise
+the element IS the array descriptor collapsed to a single item — a `MULTI` wire value `{base:'enum',
+array:true, options}` yields element descriptor `{base:'enum', array:false, options}` (the option
+list rides along, so `array_at`'s result is still a real, choosable enum downstream). Nested arrays
+are rejected: a `map` terminal that is itself an array 422s at write and cannot be completed in the
+editor.
+
+```json
+{ "op": "array_map", "args": { "pipeline": [
+  { "op": "num_add", "args": { "value": 1 } }
+] } }
+```
+
+```json
+{ "op": "array_reduce", "args": {
+  "seed": { "type": "number", "value": 0 },
+  "reducer": [{ "op": "num_add", "args": { "value": {
+    "kind": "variable", "ref": { "source": "scope", "path": "element", "type": "number" }
+  } } }]
+} }
+```
+
+**Scoped synthetic `element`/`index` — valid ONLY inside an element pipeline.** Two synthetic
+variables, `element` (the array's ELEMENT descriptor) and `index` (`number`, 1-based), resolve inside
+a `map`/`filter`/`sort`/`reduce` element pipeline and NOWHERE else — never in a top-level field's own
+pipeline, a directive, an if-block condition, or the `form_submitted` trigger's condition tree.
+`App\Modules\Variables\Support\ScopeRef::leaf(array $ref): ?string` is the ONE predicate all three
+engine layers now share for "is this ref the synthetic scope" — SOURCE-AWARE: a ref whose `source` is
+a real root (`globals`/`trigger`/`step`) is never scope even if its path happens to be
+`element`/`index`; only `source: 'scope'` (or an absent source, tolerated for legacy rows) roots
+against `element`/`index`. `leaf()` also returns a subfield tail — `element.<field>` — for the
+`array<object>`/`array<file>` case below.
+
+- **Write time**: `walkPipeline`/`validateElementPipeline` inject a `$scopeVars` map (`{'element':
+  {type, enumOptions}, 'index': {type: NUMBER}, ...}`) ONLY while walking an element pipeline; a
+  stored `element`/`index` reference OUTSIDE one is rejected with a `422`.
+- **Runtime**: `element`/`index` are deliberately NOT added to `WorkflowVariableResolver::ROOTS`
+  (that would be a fail-OPEN global root reachable from anywhere). Instead
+  `OperationExecutor::scopeOverlay()` merges a SEPARATE `{'scope': {'element': ..., 'index':
+  ...}}` key into the run context for one element's sub-run only; a scope reference that somehow
+  reaches runtime outside that overlay resolves to `null` (never a crash), collapsing the enclosing
+  condition to `false`.
+
+```json
+{ "kind": "variable", "ref": { "source": "scope", "path": "element", "type": "number" } }
+{ "kind": "variable", "ref": { "source": "scope", "path": "index", "type": "number" } }
+```
+
+**`element.<subfield>` — an `array<object>` (repeater) or `array<file>` element's own fields.**
+`WorkflowVariableCatalogService::elementScopeSubfields(array $arrayDescriptor): array` is the ONE
+place a repeater/file array is descended for element access — it reuses the SAME
+`objectSubfieldTypeMap()`/`fileSubfieldTypeMap()` the file/object-container work (ADR-0023) already
+built, scoped to the synthetic `element` root, for THIS pipeline's write-validation/resolution only.
+This is deliberately isolated from the global reference index and the condition-field list: a
+repeater's element subfield is STILL not a global reference (unchanged from ADR-0023) — it exists only
+inside an element pipeline's own scope.
+
+Because no operation can consume a whole object/file snapshot, an `array<object>`/`array<file>`
+element pipeline for `map`/`filter`/`sort` is NOT the bare `Array<{op,args}>` list — it is a
+scope-rooted value-or-variable UNION, picking one subfield and transforming it:
+
+```json
+{ "op": "array_filter", "args": { "pipeline": {
+  "kind": "variable",
+  "ref": { "source": "scope", "path": "element.price", "type": "number" },
+  "pipeline": [{ "op": "num_gt", "args": { "value": 100 } }]
+} } }
+```
+
+`array_reduce`'s reducer NEVER takes this scope-rooted shape (it always roots at the accumulator, not
+the element) — a union there is rejected the same way a malformed bare list would be. Inside a
+scope-rooted union specifically, an op argument may reference ONLY `element.<subfield>`/`index` scope
+variables — an ordinary `globals`/`trigger`/`steps` arg-variable is REJECTED at write inside it (unlike
+an ordinary bare-list element pipeline, where such an arg-variable is still allowed, unchanged from
+Phase 4/ADR-0025) — because the runtime can only resolve scope refs inside this specific shape
+(`OperationExecutor::resolveScopePipeline()` fails the WHOLE element sub-run closed on any
+non-scope union it meets); the write gate mirrors that boundary exactly rather than accepting a config
+the runtime would always fail.
+
+**The element-pipeline argument controls — `elementPipeline`/`reduceSeed` — are NOT the generic
+whole-arg value-or-variable machinery Phase 4 built.**
+`OperationArgType::ELEMENT_PIPELINE` (a bare `Array<{op,args}>` OR, for an object/file element,
+the scope-rooted union above) and `::REDUCE_SEED` (a self-describing typed literal `{type, value}`,
+`type ∈ text|number|boolean|date`) are two new arg-control kinds whose `argVariablePolicy()` returns a
+third named `ArgVariablePolicy` constructor, `elementPipeline()` (`$refTypes`/`$coerceTo` both null,
+like `structural()`) — but routed through a DEDICATED validator/resolver branch keyed on the arg
+CASE, never the generic per-entry structural handling `sourceMap`/`choiceRules` get. `array_map`/
+`array_filter`/`array_sort` each declare one `elementPipeline('pipeline')` arg; `array_reduce`
+declares `reduceSeed('seed')` + `elementPipeline('reducer')` — the two-arg model: the seed literal
+fixes the accumulator's initial value AND its required type `U` up front, and the reducer pipeline
+must terminate in that same `U`.
+
+**Terminal-by-construction — a wrong-terminal pipeline can never be saved.**
+`PipelineValidator::validateElementPipeline()` enforces, at write time: `filter` must
+terminate `boolean`, `sort` must terminate `number`, `reduce`'s reducer must terminate the seed's own
+base `U`, and `map` may terminate any single base but never another array (`array<array<...>>` is
+rejected). A mismatch 422s under the pipeline's own key. The frontend editor mirrors this by
+disabling the element-pipeline editor's own save/done control until the running descriptor satisfies
+the op's terminal — an author cannot even ATTEMPT to persist a wrong-terminal pipeline. The only
+residual at runtime is a correctly-typed pipeline failing on specific element DATA (a division by
+zero, an unparseable date on one element, …) — a data-level failure, not a terminal-type one — handled
+by the fail-closed matrix in "g. Array transform operations" below.
+
+See **ADR-0026-workflows-array-transform-operations.md** for the full design record (incl. the
+`ScopeRef` unification of a name-collision bug the three engine layers previously disagreed on, and
+the accepted `map |> array_at |> <op>` runtime-typing limitation). **In-app docs mirror: PLANNED, not
+yet written.** Every earlier phase of this rework (Phases 0-4) added a matching section to
+`resources/js/next/docs/pages/WorkflowsPage.vue` ("The typed variable system") in the same batch; this
+feature has not yet had that pass — a follow-up in-app-docs batch should add it there, coordinated
+with the Frontend module owner (`resources/js/next/pages/workflows/`).
+
+---
+
+### Custom functions — nesting, the frame stack, and the fail-closed safety design (additive; ADR-0029)
+
+A workspace member may define a **custom function**: a reusable, user-authored pipeline OPERATION —
+ONE input type, typed named ARGS, ONE return type, and a saved BODY pipeline over `{input + args}`
+terminating in the return type. Once saved, it appears as an ordinary entry on the SAME `operations`
+catalog every pipeline surface already reads, selectable in any pipeline whose running type matches
+the function's declared input type — see "Functions" under "## Endpoints" above for the full
+authoring contract (`POST/GET/PUT/DELETE /api/functions`). This section covers how a function is
+CONSUMED: its wire identity, how it reaches the catalog, how it executes, and — the bulk of the
+design work — how nesting (a function calling another function) is kept safe.
+
+**Identity is the DB uuid; the wire op id is `fn:<uuid>`.** `OperationResolver::resolve()` checks
+BUILT-IN ops first (`Operation::tryFrom($id)`); only when that misses AND the id carries the reserved
+`fn:` prefix does it search the workspace's custom functions for a matching uuid. No built-in op id
+starts with `fn:`, and the prefix is a completely different namespace from the `globals` reference
+root, so a function's uuid can never collide with either. A `fn:<uuid>` that resolves to nothing (a
+deleted function, a foreign-workspace uuid, a typo in a hand-written row) resolves to `null` — the
+write-time walk then rejects it as an unknown op, and the runtime executor returns an ordinary
+failure; neither ever mis-resolves it as something else. Renaming a function never changes its uuid,
+so a pipeline step already saved as `{"op": "fn:b1b2c3d4-..."}` never breaks when the function's
+`name` changes — `name` is a user-facing label only, not part of the identity, and is NOT unique.
+
+**The catalog merge — every workspace function is an `operations` entry, filtered by input type
+exactly like a built-in.** `WorkflowVariableCatalogService::forContext()` merges
+`Operation::catalog()` (the 83 built-ins) with one additional entry per workspace function:
+
+```json
+{
+  "id": "fn:b1b2c3d4-e5f6-...",
+  "input": "text",
+  "output": "text",
+  "args": [{ "id": "prefix", "type": "text" }],
+  "label": "Normalize phone number",
+  "description": "Strips spaces/dashes and prepends the country code."
+}
+```
+
+`label`/`description` are ADDITIVE, function-only wire keys — a built-in op carries neither (the FE
+localizes a built-in's label via i18n; a function's own `name`/`description` are read VERBATIM, since
+there is nothing to localize about a user's own words). `args` is `[{id: argName, type: argType}]` —
+the function's OWN declared arg types, so a caller's pipeline editor can render each arg's input by
+its real type. Because the FE's add-operation menu already filters the catalog by the pipeline's
+CURRENT running type, a function is automatically offered everywhere its own `input` type makes it
+eligible, with no separate wiring — the identical mechanism every built-in op already uses.
+
+**Functions CAN NEST** — a function's `body` may itself contain a `fn:<uuid>` step referencing
+ANOTHER workspace function. This is the one place a user-authored GRAPH exists in this engine, and it
+is the reason the rest of this section is safety design, not feature description.
+
+**WRITE-TIME: a cycle is REJECTED before it can be saved — a 3-colour DFS over the reference
+graph.** `FunctionDefinitionValidator::validateAcyclic()` builds a directed graph — one node per
+workspace function, an edge `A → B` whenever `A`'s body references `fn:B` — with the row currently
+being saved substituted into the graph as its own node (its uuid on UPDATE; a synthetic,
+unreferenceable node on CREATE, so a brand-new function can never itself be part of a cycle — nothing
+can reference a uuid that does not exist yet). References are collected RECURSIVELY, at any nesting
+depth (element pipelines, argument-variable sub-pipelines, choice-rule `when`s, reducers) — a
+function reference hidden three levels deep inside a `map` element pipeline is found exactly like a
+top-level one. A back-edge to a node still marked VISITING — including a node's edge to itself, a
+direct self-reference — is a cycle; ANY cycle anywhere in the graph is rejected with a `422` under
+`body`, regardless of any other error in the same request: `"A function may not reference itself,
+directly or through another function (a cycle was detected)."`
+
+**RUNTIME: two INDEPENDENT fail-closed backstops, because a corrupted/hand-written/raced row can
+bypass the write check.** `App\Modules\Variables\Support\FunctionScope` carries the execution state
+through the pure, re-entrant `OperationExecutor`:
+
+| Backstop | Trigger | Effect |
+|---|---|---|
+| `overDepth()` | Entering one more function would exceed `PipelineLimits::MAX_FUNCTION_EXPANSION_DEPTH` (**5**) | The op fails CLOSED (an ordinary failure result — never a crash, never a loop). |
+| `hasVisited($functionId)` | `$functionId` is already on the ACTIVE call chain | The op fails CLOSED — catches a cycle on its FIRST re-entry, at whatever depth it occurs, rather than only once the depth cap is exhausted. |
+
+```php
+if ($scope->overDepth() || $scope->hasVisited($op->id())) {
+    return self::FAIL; // fail CLOSED — never loops, never throws
+}
+```
+
+Both checks run BEFORE anything else in `OperationExecutor::expandFunction()`. A condition built on a
+function that hits either gate simply evaluates `false`; a value-producing field resolves to its own
+soft default — the SAME fail-closed doctrine every other malformed pipeline configuration in this
+engine already follows (never an exception escaping the executor). Pinned by
+`tests/Unit/Variables/OperationExecutorFunctionTest.php::test_a_five_deep_function_chain_executes_but_a_deeper_one_fails_closed`
+(exactly 5 nested calls succeed, a 6th fails closed),
+`test_a_corrupted_cycle_is_caught_by_the_visited_set`, and `test_a_direct_self_cycle_is_caught_by_the_visited_set`.
+
+**Execution is BY EXPANSION — no second interpreter.** `OperationExecutor::expandFunction()`: (1)
+binds `{'input': {value: <the running value>, type: <the function's input type>}, '<argName>':
+{value: <that arg's pre-resolved literal>, type: <the arg's declared type>}, ...}` into a scope
+FRAME; (2) `$scope->enter($op->id(), $frame)` returns a scope one level deeper, with the function's id
+appended to the visited chain and the frame INSTALLED; (3) builds a FRESH context carrying ONLY the
+entered scope — a function body is PURE over `{input, args}`, so it is never handed the caller's
+`trigger`/`steps`/`globals`, nor any enclosing array-element `scope` overlay; (4) pre-resolves the
+body's own top-level `input`/`<argName>` scope references to literals, then RE-ENTERS the SAME
+`execute()` on the body, one level deeper; (5) VERIFIES the body's terminal type exactly equals the
+function's declared return type — a mismatch (only reachable from a corrupted row; the write
+validator already forces this equality) fails CLOSED rather than coercing a wrong value. A HARD
+failure (`assert_present` over an empty value, ADR-0022) does **NOT** escalate past a function
+boundary — the function absorbs it into an ordinary fail-closed result, so a boolean-returning
+function used inside a condition simply reads `false` rather than aborting the run.
+
+**THE FRAME STACK: `ScopeRef` generalizes from a fixed `element`/`index` root pair to a
+CALLER-SUPPLIED root list, so an array-transform element pipeline (ADR-0026) NESTED INSIDE a
+function's body sees BOTH scopes at once.** `ScopeRef::leaf()` now takes an explicit `$roots`
+parameter (defaulting to `['element', 'index']`, so every pre-existing call site outside a function
+body is byte-identical), and `OperationExecutor::scopeRoots()` computes the LIVE root set as the
+UNION of the default element/index pair with `FunctionScope::frameRoots()` (`input` plus each arg
+name currently bound):
+
+```php
+private function scopeRoots(array $context): array
+{
+    $frameRoots = FunctionScope::fromContext($context)->frameRoots(); // e.g. ['input', 'rate']
+
+    return $frameRoots === []
+        ? ScopeRef::DEFAULT_ROOTS                                     // ['element', 'index'] — unchanged
+        : array_values(array_unique([...ScopeRef::DEFAULT_ROOTS, ...$frameRoots]));
+}
+```
+
+So a `map`/`filter`/`sort`/`reduce` element pipeline sitting inside a function body can reference
+`element`/`index` (the array being iterated) AND the enclosing function's `input`/`<argName>` in the
+SAME pipeline — e.g. a function `"apply rate to each item"` (`input: multi`, `args: [{name: rate,
+type: number}]`) whose body is `array_map` with an element pipeline that does
+`element |> num_multiply(rate)`. The WRITE side validates against the IDENTICAL union, not a parallel rule that could drift:
+`PipelineValidator::validateElementPipeline()` merges the enclosing function's scope vars
+(`input`/arg names, with any INNER `element`/`index`/`element.*` stripped so a stale, already-closed
+nesting level's scope can never leak) with the fresh `element`/`index` for the pipeline being walked —
+the exact mirror of `OperationExecutor::scopeRoots()`'s union, so the write validator can never accept
+a scope reference the runtime would then fail to resolve, or vice versa. Pinned by
+`tests/Unit/Variables/OperationExecutorFunctionTest.php::test_a_body_maps_over_the_input_with_a_function_arg_in_scope`
+(and its `_filters_`/`_reduces_` siblings).
+
+**A function CALL does NOT stack frames across function boundaries.** When function `A`'s body calls
+function `B`, `FunctionScope::enter()` REPLACES `A`'s frame with `B`'s own — `B`'s body can reference
+its OWN `input`/args only, never `A`'s. A function's contract is exactly its declared signature;
+letting a callee reach into its caller's bindings would make that contract a lie (the same function
+could then behave differently depending on who happened to call it). The frame stack above is
+therefore always exactly two levels deep in practice — the CURRENTLY-EXECUTING function's own frame,
+plus one array-element overlay nested inside it — never deeper, regardless of how many functions are
+nested inside one another; it is the depth cap and the visited-set (above) that bound the CALL chain
+itself. Pinned by `test_a_nested_function_executes` and `test_a_function_runs_inside_a_match_to_choice_rule_condition`.
+
+**The delete guard is fail-closed too** — see `DELETE /api/functions/{function}` above: blocked with
+a `422` while ANOTHER function's body, or any WORKFLOW's step configs/conditions, still references it
+(`FunctionReferenceLookup`, the dependency inversion ADR-0027 records), so a delete can never leave a
+dangling `fn:<uuid>` reference that would fail every future run of whatever used it.
+
+**Current limitation, stated explicitly (accepted, not an oversight): scalar-first argument
+call-controls.** `CustomFunctionOperation::argControl()` maps a `number`/`boolean`/`date` arg to its
+own literal control; EVERY OTHER type (`enum`, `multi`, `file`, `object`, `time`) takes a plain
+stringifiable TEXT control at the call site. A function whose arg is declared `enum`, for instance, is
+fully valid and executes correctly, but the CALLER's pipeline editor offers a free-text box for it
+today rather than a picker constrained to that enum's real option set — richer per-type call
+controls are real future work, not blocked on anything structural.
+
+See **ADR-0029-custom-functions.md** for the full design record (the complete rejected-alternatives
+list, including why a callee cannot see its caller's frame and why the write/runtime cycle checks are
+both needed) and **ADR-0027-variables-module-extraction.md** for the `ElementScopeResolver`/
+`FunctionReferenceLookup` dependency-inversion pattern this feature's delete guard and array-element
+scoping both reuse. **In-app docs mirror: PLANNED, not yet written** — see the array-transform
+section's own note above; this feature has not yet had its `resources/js/next/docs/pages/
+WorkflowsPage.vue` pass either.
+
 ---
 
 ## Runtime operations, if-blocks, and AI text (SB1 / SB2)
@@ -1937,7 +2468,7 @@ Steps section for the field-by-field config table.
 ### a. Directive pipelines (`@[variable]` in text fields)
 
 Covered above under "Two serializations" — a non-empty `data.pipeline` on the markdown directive
-transforms the resolved value through `WorkflowOperationExecutor` and stringifies the typed
+transforms the resolved value through `OperationExecutor` and stringifies the typed
 result into the surrounding text.
 
 ### b. Conditional `if-block`s in text fields
@@ -1964,7 +2495,7 @@ the winning branch's body, resolved RECURSIVELY (a branch body may itself carry 
 directives, nested if-blocks, or an `@[ai-text]`). A condition reads `variableId` off the run
 context, recovers its REAL base type the same way a directive pipeline does (type map by path,
 else the pipeline's first-op input type, else falling to `boolean`), runs it through
-`WorkflowOperationExecutor`, and requires a `true` **boolean** terminal. Nesting is capped at
+`OperationExecutor`, and requires a `true` **boolean** terminal. Nesting is capped at
 depth **6** (`IF_BLOCK_MAX_DEPTH` — a margin over the editor's own default `maxDepth: 3`) — beyond
 the cap a block resolves to `''`. A missing/non-reference `variableId`, an unparseable condition,
 or ANY executor failure is fail-closed to `false` (never surfaced as an error) — a misconfigured
@@ -2045,21 +2576,21 @@ the FE localizes via `workflows.aiPersona.<id>`) and `types` (see below):
 }
 ```
 
-(`operations` — the 68-op catalog `WorkflowOperation::catalog()` the directive/value pipelines
+(`operations` — the 68-op catalog `Operation::catalog()` the directive/value pipelines
 above run on (66 at the time SB1/SB2 shipped `ai_personas` as its sibling key; now 68 after the
 `enum_to_choice`/`match_to_choice` addition — see "Choice fields" below).)
 
 **`types`** (`WorkflowVariableCatalogService::variableTypes()`) — one entry per
-`WorkflowVariableType` case, `{ id, primitive, operators }`, in enum declaration order (text,
+`VariableType` case, `{ id, primitive, operators }`, in enum declaration order (text,
 number, boolean, date, enum, multi, file):
 
-- `id` — the `WorkflowVariableType` value.
-- `primitive` — the EDITOR primitive (`WorkflowVariableType::editorPrimitive()`) this type
+- `id` — the `VariableType` value.
+- `primitive` — the EDITOR primitive (`VariableType::editorPrimitive()`) this type
   degrades to inside a markdown directive's `data.type`. Only `number` and `boolean` keep their
   own primitive; `date`/`enum`/`multi`/`file` all degrade to `text` (see "Two serializations"
   above) — the directive carries no other type hint, so this is how the FE knows which types
   round-trip losslessly through a directive and which don't.
-- `operators` — exactly `WorkflowVariableType::operators()` for that type, the SAME set already
+- `operators` — exactly `VariableType::operators()` for that type, the SAME set already
   shown per-field in `fields[].operators` and enforced by the condition write-validator (see "The
   operator × type matrix" below) — one wire source for the type vocabulary instead of a
   hand-maintained frontend mirror of it.
@@ -2069,17 +2600,37 @@ so a form-less catalog can still describe the full type system without a static 
 the same motivation `GET /workflows/catalog` itself was built for.
 
 **Phase 1 additions (append-only, no breaking change to either list).** `types` gains an 8th
-entry, `{ id: "time", primitive: "text", operators: [] }` — `WorkflowVariableType::TIME` is
+entry, `{ id: "time", primitive: "text", operators: [] }` — `VariableType::TIME` is
 descriptor-only this phase (see "Structured `descriptor`" above), so it carries no operators yet.
 `operations` grows from 68 to **77** (72 immediately before this phase, +5 append-only —
 `coalesce`/`is_present`/`is_null`/`assert_present`/`date_format`, see "Presence, null-handling,
 and date-format ops" below).
 
 **Phase 2 addition (append-only).** `types` gains a 9th entry, `{ id: "object", primitive: "text",
-operators: [] }` — `WorkflowVariableType::OBJECT` is descriptor-only, the same tripwire as `time`
+operators: [] }` — `VariableType::OBJECT` is descriptor-only, the same tripwire as `time`
 (see "Structural descriptor: object containers & the file composite" above). `operations` is
 UNCHANGED at 77 — this phase added no new pipeline operations, only catalog/reference-index/
 resolver-lookup surface.
+
+**Array-ops addition (append-only).** `operations` grows 77 → **83** — six array-transform ops
+(`array_count`/`array_at`/`array_map`/`array_filter`/`array_sort`/`array_reduce`); see "Array
+transform operations" above.
+
+**Module extraction (ADR-0027) — a NAMESPACE change only, zero wire change.** `Operation::catalog()`
+now lives in `App\Modules\Variables\Enums\Operation` (moved from Workflows), and `types`'s entries
+now derive from `App\Modules\Variables\Enums\VariableType` — the 83 built-in op ids, their
+`input`/`output`/`args` shapes, and the `types` list's 9 entries are all BYTE-IDENTICAL to before the
+move; only which module owns the class changed.
+
+**Custom functions (ADR-0029, additive) — `operations` also carries one entry per WORKSPACE
+FUNCTION, on top of the fixed built-in count above.** Unlike the built-ins, this part of the catalog
+is workspace-specific and has no fixed size: `WorkflowVariableCatalogService::forContext()` merges
+`Operation::catalog()` with one `{id: 'fn:<uuid>', input, output, args, label, description}` entry
+per function the active workspace has defined (empty when the workspace has none, or when the
+catalog is read with no active workspace at all — e.g. a queue/console context — mirroring the
+`globals` catalog source's own workspace guard). See "Custom functions" above for the full merge
+mechanics, the `label`/`description` additive wire keys, and the fail-closed/cycle/frame-stack rules
+governing how a `fn:<uuid>` entry actually executes.
 
 ### d. Write-time validation — runtime-only vs. validated
 
@@ -2092,7 +2643,7 @@ the workflow saves, and the field simply resolves emptier than intended at run t
 
 **The value-or-variable pipeline is the one exception.** Because it lives in a structured
 (non-markdown) field, `StoreWorkflowRequest` (via
-`WorkflowConditionTreeValidator::validateValuePipeline()`) DOES type-flow-validate it on save —
+`PipelineValidator::validateValuePipeline()`) DOES type-flow-validate it on save —
 walking the pipeline from the ref's declared type through each op to a required TERMINAL type per
 field:
 
@@ -2105,7 +2656,7 @@ field:
 A wrong terminal, an unknown op, a type mismatch mid-pipeline, or a bad arg (an out-of-catalog
 `sourceOption`/`sourceMap` key, a non-Y-m-d literal date, a foreign arg key, …) is a `422` under
 `steps.<i>.config.<field>.pipeline.<m>.op` / `.args.<key>` / `.args.<key>.<index>` — the SAME
-indexed-key convention a condition pipeline already uses (`WorkflowConditionTreeValidator` is the
+indexed-key convention a condition pipeline already uses (`PipelineValidator` is the
 ONE place both pipelines' arg/type rules live), so the frontend maps every message to the
 offending pipeline step. The reference catalog this validates against (`ref.type` +
 `sourceOption`/`sourceMap` option membership) is `WorkflowVariableCatalogService::referenceIndex()`
@@ -2124,7 +2675,7 @@ source value into such a set:
 | `enum_to_choice` | `enum` → `enum` (choice) | `mapping` — a `sourceMap` arg (`mapType: enum`): each SOURCE option value → one DESTINATION option value. | Looks the source option up in `mapping`; an UNMAPPED source option fails closed (same as every other `enum_to_*` op). |
 | `match_to_choice` | `text` → `enum` (choice) | `rules` — a `choiceRules` list of `{when, then}` (first match wins); `fallback` — a REQUIRED `choiceFallback` (used when no rule matches, keeping the op total). | Compares the text value against each rule's `when` in order; the first equal match's `then` wins, else `fallback`. A missing/blank `fallback` fails closed. |
 
-`WorkflowOperation::producesChoice()` is `true` for exactly these two ops (and only these two) —
+`Operation::producesChoice()` is `true` for exactly these two ops (and only these two) —
 callers check this method at the TERMINAL-op position rather than hardcoding op ids, so a future
 choice-producing op is picked up automatically. Any NON-text source (number/boolean/date/multi)
 reaches `match_to_choice` the same way it reaches any other text-only op: through the existing
@@ -2132,10 +2683,10 @@ reaches `match_to_choice` the same way it reaches any other text-only op: throug
 
 **The destination option set is injected PER-FIELD, not part of the static op descriptor.**
 `enum_to_choice`'s `mapping` arg and `match_to_choice`'s `rules`/`fallback` args are declared with
-NO fixed option list (`WorkflowOperationArgType::CHOICE_RULES` / `CHOICE_FALLBACK`, and a
+NO fixed option list (`OperationArgType::CHOICE_RULES` / `CHOICE_FALLBACK`, and a
 `sourceMap` arg whose `mapType` is `enum`) — the actual allowed VALUES
 (`$targetOptions`, e.g. `TaskPriority::ids()`) are threaded into
-`WorkflowConditionTreeValidator::validateValuePipeline()` by the caller
+`PipelineValidator::validateValuePipeline()` by the caller
 (`StoreWorkflowRequest::validateCreateTaskConfig()`) for the ONE field that needs them today. This
 keeps the 68-op catalog itself generic (an op descriptor never hardcodes "priority") while still
 letting the write validator enforce that every mapped/ruled value is a real option of the
@@ -2165,18 +2716,18 @@ distinction is untouched by this section.
 
 **This is a validator-only tightening, not a runtime behavior change.** `WorkflowVariableResolver`
 never calls `producesChoice()` — at RUN time a `priority` pipeline still just executes and coerces
-its result to `WorkflowVariableType::ENUM` exactly as before (a result outside `TaskPriority`
+its result to `VariableType::ENUM` exactly as before (a result outside `TaskPriority`
 soft-defaults to `medium`, same as an unresolved/unknown value always has). A workflow SAVED
 before this change keeps firing and keeps producing the same task priority it always did; only
 attempting to RE-SAVE a step whose `priority` pipeline does not end in a choice op now fails with
 a `422` where it previously passed. See `docs/decisions/ADR-0014-workflows-choice-coercion.md` for
 the full rationale (why a generic `enum` type + injected `targetOptions` + a `producesChoice()`
 terminal rule, instead of a new branded "choice" type in the closed
-`WorkflowVariableType`/`WorkflowOperationArgType` sets).
+`VariableType`/`OperationArgType` sets).
 
 ### f. Presence, null-handling, and date-format ops (phase-1b, append-only)
 
-5 operations are appended to `WorkflowOperation` — ids are only ever appended, never reordered or
+5 operations are appended to `Operation` — ids are only ever appended, never reordered or
 removed (pinned by `WorkflowConditionEngineTest::test_operation_ids_are_the_pinned_wire_contract`),
 growing the catalog **72 → 77**:
 
@@ -2188,16 +2739,16 @@ growing the catalog **72 → 77**:
 | `assert_present` | `text` → `text` | — | The running value when present; over an EMPTY value, the ONE opt-in HARD failure (see below). |
 | `date_format` | `date` → `text` | `pattern` (literal, safe-token) | Renders the date via the safe-token pattern below. NOT a presence op. |
 
-**The first four are the PRESENCE family** (`WorkflowOperation::isPresenceOp()`). Their declared
+**The first four are the PRESENCE family** (`Operation::isPresenceOp()`). Their declared
 `input`/`output` above are the NOMINAL shape the catalog and the write-validator advertise; at
-RUN time `WorkflowOperationExecutor::execute()` dispatches them BEFORE the normal per-step
+RUN time `OperationExecutor::execute()` dispatches them BEFORE the normal per-step
 `inputType() !== currentType` gate, so — unlike every other op — they accept the running value AS
 IS regardless of its declared type, including a base value that failed normalization outright (a
 genuinely absent/unrepresentable value a normal op would already have failed closed on).
 "Empty" for this family (`isEmptyValue()`) is `null`, `''`, `[]`, or an unnormalizable base —
 mirroring the existing FILLED/EMPTY condition semantics.
 
-**`date_format`'s safe-token whitelist** (`WorkflowOperationExecutor::DATE_FORMAT_TOKENS`,
+**`date_format`'s safe-token whitelist** (`OperationExecutor::DATE_FORMAT_TOKENS`,
 matched longest-first so `MMMM` never loses to `MM`) — a raw PHP `date()` format string is NEVER
 honored; any byte outside this table or the literal separators ` - / : . ,` fails the WHOLE
 pattern CLOSED (soft failure — `''`/coerced null downstream — never a throw):
@@ -2214,7 +2765,7 @@ pattern CLOSED (soft failure — `''`/coerced null downstream — never a throw)
 | `mm` | 2-digit minute |
 
 Example: pattern `DD/MM/YYYY` over `2026-01-09` renders `09/01/2026`; `D MMMM YYYY` renders
-`9 January 2026` (`WorkflowOperationExecutorTest`).
+`9 January 2026` (`OperationExecutorTest`).
 
 **`assert_present` is the ONE opt-in HARD failure in the pipeline engine.** `OperationResult`
 gained a `bool $hard` flag + a `hardFailure()` factory. Over an empty value, `assert_present`
@@ -2231,12 +2782,71 @@ input/output the backend catalog advertises (labels only — the FE does not spe
 semantics, it renders the op like any other); `date_format`'s `pattern` arg carries a persistent
 `hint` (`VariablePipelineEditor.vue`) showing the safe-token legend under the field.
 
-**A known asymmetry, inert this phase (Phase 2 item)**: `WorkflowConditionTreeValidator::walkPipeline`
+**A known asymmetry, inert this phase (Phase 2 item)**: `PipelineValidator::walkPipeline`
 — the write-time type-flow gate for a value-or-variable pipeline (`priority`/`deadline`/
 `submissions_from`/`submissions_to`) — was not changed this phase and still requires an EXACT
 `op->inputType() === currentType` match at every step, including for the 4 presence ops (nominally
 `text`), where the runtime executor above already bypasses that exact check. See "Accepted
 residual risks" below and ADR-0022 for the full reasoning.
+
+### g. Array transform operations — fail-closed matrix and caps
+
+Every higher-order array op's DATA-level failure mode (as opposed to the wrong-terminal case, which
+is rejected at WRITE time — see "Array transform operations" above) is named explicitly:
+
+| op | on a per-element sub-run failure | on a non-matching terminal |
+|---|---|---|
+| `array_map` | fails the WHOLE op closed | (cannot occur — terminal is gated at write) |
+| `array_filter` | drops the element | drops the element (a non-`boolean` terminal is treated as a failure) |
+| `array_sort` | sends the element LAST | sends the element LAST (a non-`number` terminal is treated as a failure); ties (incl. multiple failed keys) keep their ORIGINAL relative order — a stable sort |
+| `array_reduce` | keeps the PRIOR accumulator, unchanged | keeps the PRIOR accumulator (a terminal that is not the seed's own base `U` is treated as a failure) |
+| `array_count` / `array_at` | — pure and total, cannot fail on data | — |
+
+`array_map` is the one op that fails the WHOLE transform closed rather than degrading per-element,
+because its output array's LENGTH must equal its input's — silently dropping a failed element would
+itself corrupt the result. `array_filter`/`array_sort`/`array_reduce` all degrade PER ELEMENT (or, for
+reduce, per fold step) instead, since a filtered-out/last-sorted/unfolded element cannot silently open
+a downstream gate on garbage the way returning a wrong VALUE could.
+
+**Caps — checked BEFORE a single element runs, shared identically by the write-validator and the
+runtime executor** (`App\Modules\Variables\Enums\PipelineLimits` — split out of Workflows'
+`ConditionTreeLimits` when the pipeline engine moved to the Variables module, see ADR-0027; the tree
+caps `MAX_DEPTH`/`MAX_CHILDREN` stayed behind on `App\Modules\Workflows\Enums\ConditionTreeLimits`):
+
+| Constant | Value | Effect when exceeded |
+|---|---|---|
+| `MAX_ARRAY_ITERATIONS` | 1000 | The op fails CLOSED outright — an array longer than this is never iterated. |
+| `MAX_ELEMENT_PIPELINE_DEPTH` | 3 | A `map`/`filter`/`sort`/`reduce` whose OWN element pipeline contains another array op nested beyond this depth is REJECTED at write and fails CLOSED at runtime. |
+
+Both mirror the existing pattern set by `MAX_PIPELINE_STEPS` (a single pipeline's own length) and
+`MAX_ARG_VARIABLE_DEPTH` (ADR-0025's argument-variable nesting cap) — one shared constant read
+identically by both sides, so the accepted bound can never drift between validation and evaluation.
+
+**`array_at`'s clamp — 1-based, signed, clamped to the nearest end, total, never throws:**
+
+| `index` | Result |
+|---|---|
+| `> 0`, within bounds | the element at that 1-based position |
+| `> 0`, past the array's length | the LAST element (clamped) |
+| `0` | the FIRST element (treated as `1`) |
+| `< 0`, within bounds | counts from the end (`-1` = last, `-2` = second-last, …) |
+| `< 0`, past the start | the FIRST element (clamped) |
+| any index, on an EMPTY array | `null` — `array_at`'s output descriptor is always `nullable: true` |
+| missing / non-numeric `index` | the op fails closed (the index is a required argument) |
+
+**Known runtime-typing limitation (accepted, not a defect — see ADR-0026 Consequences).** The pure,
+contextless `OperationExecutor` collapses EVERY array to a normalized `MULTI`/`string[]` at
+run time and has no descriptor to recover a NON-ENUM scalar element base a `map` synthesized
+MID-PIPELINE. A DIRECT `<multi source> |> array_at |> <op>` is correctly typed at runtime (the
+element base comes straight from the source's own catalog descriptor), but `map |> array_at |>
+text_op` — where `map` produced a plain `array<text>` — VALIDATES at write time (the descriptor
+walker is correct) yet FAILS CLOSED at runtime (the executor's flat-type gate still sees `ENUM`, the
+MULTI-collapse's only scalar-array convention). Recovering this needs the executor to carry
+descriptor state end-to-end — a materially larger change, deliberately not attempted in this
+revision; the global enum/text type gate is NOT relaxed to paper over it. Separately, `array_at` over
+an `array<object>`/`array<file>` returns the raw element snapshot (usable via PATH/subfield access)
+but a FURTHER operation chained onto it fails closed — object/file per-element TRANSFORMATION is the
+job of the scope-rooted element pipelines above, not `array_at`.
 
 ---
 
@@ -2827,22 +3437,35 @@ automatically scoped to the active workspace via `WorkspaceScope`.
 | `workflows`               | `database/migrations/2026_07_07_000200_create_workflows_table.php` | `database/migrations/tenant/0001_01_01_000025_create_workflows_table.php` |
 | `workflow_runs`             | `database/migrations/2026_07_07_000201_create_workflow_runs_table.php` | `database/migrations/tenant/0001_01_01_000026_create_workflow_runs_table.php` |
 | `workflow_run_steps`         | `database/migrations/2026_07_07_000202_create_workflow_run_steps_table.php` | `database/migrations/tenant/0001_01_01_000027_create_workflow_run_steps_table.php` |
-| `workflow_globals`            | `database/migrations/2026_07_22_000000_create_workflow_globals_table.php` | `database/migrations/tenant/0001_01_01_000046_create_workflow_globals_table.php` |
+| `consts` (Variables module; renamed from `workflow_globals`, ADR-0028) | created `database/migrations/2026_07_22_000000_create_workflow_globals_table.php`, renamed `database/migrations/2026_07_26_000000_rename_workflow_globals_to_consts.php` | created `database/migrations/tenant/0001_01_01_000046_create_workflow_globals_table.php`, renamed `database/migrations/tenant/0001_01_01_000047_rename_workflow_globals_to_consts.php` |
+| `custom_functions` (Variables module; ADR-0029) | `database/migrations/2026_07_27_000000_create_custom_functions_table.php` | `database/migrations/tenant/0001_01_01_000048_create_custom_functions_table.php` |
 
 The tenant (own-db) mirrors omit `workspace_id` (one tenant database = one workspace) and carry
 no cross-database foreign keys (`workflow_id`, `creator_id`, `workflow_run_id` are plain UUID
 columns, matching the project-wide no-cross-DB-FK convention used by `bot_actions`). Both the
 schedule sweep and the stale-run reaper explicitly iterate every own-database workspace in
 addition to the shared connection (see above) — a workflow living only in one tenant's own
-database would otherwise never be swept.
+database would otherwise never be swept. `consts` and `custom_functions` are `Constant`/
+`CustomFunction` models — `App\Modules\Variables\Models`, not Workflows — included here because
+they share the identical `TenantAware`/`WorkspaceScope` isolation and central/tenant dual-schema
+convention every table above uses; see ADR-0027/ADR-0028/ADR-0029 for the module they actually
+live in.
 
-**`workflow_globals` (Phase 3, additive).** Its central `workspace_id` is a plain nullable,
-indexed UUID column, not a declared foreign key — unlike `workflows.workspace_id`'s
-`foreignIdFor(Workspace::class)` — though both are scoped identically at the QUERY layer by the
-same `WorkspaceScope`/`TenantAware` machinery. The central table's `unique(workspace_id, key)`
-becomes a plain `unique(key)` in the tenant mirror (one tenant database = one workspace, so the
-reference namespace stays per-workspace either way); `creator_id`/`creator_type` follow the same
-nullable, no-cross-DB-FK, auto-stamped-by-`HasCreator` convention as every other table above.
+**`consts` (Phase 3, additive; table renamed from `workflow_globals` in ADR-0028 via a reversible
+`Schema::rename`, not a drop/recreate — no data loss either direction).** Its central `workspace_id`
+is a plain nullable, indexed UUID column, not a declared foreign key — unlike
+`workflows.workspace_id`'s `foreignIdFor(Workspace::class)` — though both are scoped identically at
+the QUERY layer by the same `WorkspaceScope`/`TenantAware` machinery. The central table's
+`unique(workspace_id, key)` becomes a plain `unique(key)` in the tenant mirror (one tenant database =
+one workspace, so the reference namespace stays per-workspace either way); `creator_id`/
+`creator_type` follow the same nullable, no-cross-DB-FK, auto-stamped-by-`HasCreator` convention as
+every other table above.
+
+**`custom_functions` (ADR-0029, new — not a rename).** Same central/tenant split, same nullable
+`workspace_id` (central) / omitted `workspace_id` (tenant), same `creator_id`/`creator_type`
+convention. `name` carries NO uniqueness constraint in either schema (identity is the row's uuid,
+never the name — see "Custom functions" under "The typed variable system" above); `input_type`/
+`return_type` are plain strings (a `VariableType` id), `args`/`body` are `json`.
 
 ---
 
@@ -2917,16 +3540,22 @@ These are documented, reviewed trade-offs — not a TODO list.
   documents exactly this reliance). This is an **app-wide, pre-existing condition, NOT
   introduced by the Workflows module** — a fix (reordering the middleware, or moving workspace
   resolution earlier) is queued separately as a cross-cutting concern, not scoped to this batch.
-- **A `TIME` variable is descriptor-only and not yet conditionable — a deliberate loud tripwire,
-  not an oversight (Phase 1a).** `WorkflowVariableType::TIME` has NO condition operators
+- **A `TIME` variable is descriptor-only and not yet conditionable (Phase 1a).**
+  `VariableType::TIME` — and, since Phase 2a, `OBJECT` — has NO condition operators
   (`operatorCases()` = `[]`) and its flat wire `type` still degrades to `text`
-  (`WorkflowVariableCatalogService::flatType()`) — the resolver, condition evaluator, and
-  operation executor all still dispatch on the ORIGINAL 7-case exhaustive `match` (no `default`
-  arm), and the FE mirrors a closed 7-member type union. Letting `time` flow onto the flat wire
-  today would trip an `UnhandledMatchError` at runtime or break the FE union; keeping it
-  descriptor-only makes the gap loud instead of a landmine for whoever wires up real TIME
-  semantics next. See ADR-0022.
-- **`WorkflowConditionTreeValidator::walkPipeline`'s type gate does not yet know about the
+  (`WorkflowVariableCatalogService::flatType()`), so a descriptor-only type is rejected at write
+  time and the FE keeps mirroring a closed type union. **Update (2026-07-24, safety batch):** the
+  runtime half of this is no longer a "loud tripwire" — it was REACHABLE.
+  `WorkflowConditionEngine` `tryFrom`s a stored `source_type` RAW, so a legacy / hand-written /
+  imported row naming `time`/`object` reached `OperationExecutor::normalizeInput()`'s
+  exhaustive `match` and raised an `UnhandledMatchError` out of a gate that runs INSIDE form
+  submission (a 500). `normalizeInput()` (and `WorkflowVariableResolver::coerce()`) now have a
+  fail-soft `default` arm: an unsupported base type collapses the pipeline to an ordinary failure
+  → the condition is simply `false`, ahead of the presence-family bypass (so `is_null` can not
+  answer `true` for a type the engine cannot read). Write-time rejection remains the primary
+  guard. The condition EVALUATOR (legacy flat clauses) was already total via the empty
+  `operatorCases()` check and needed no change. See ADR-0022's amendment.
+- **`PipelineValidator::walkPipeline`'s type gate does not yet know about the
   presence-op family (Phase 1b).** The write validator for a value-or-variable pipeline
   (`priority`/`deadline`/`submissions_from`/`submissions_to`) still requires an EXACT
   `op->inputType() === currentType` match at every step, including `coalesce`/`is_present`/
@@ -2943,7 +3572,7 @@ These are documented, reviewed trade-offs — not a TODO list.
   defensive hardening items (next bullet's `normalizeInput` gap, and write-time `date_format`
   pattern validation). The actual next batch shipped `object`/`array<object>` containers and the
   `file` composite instead (ADR-0023) — none of the three files those items live in
-  (`WorkflowConditionTreeValidator`, `WorkflowOperationExecutor`, the TIME resolver/evaluator arms)
+  (`PipelineValidator`, `OperationExecutor`, the TIME resolver/evaluator arms)
   were touched. All three remain outstanding, now deferred to a later, unnumbered phase — see
   "Planned / deferred" below.
 - **A structural container (`object`/`array<object>`) is representation-only — no loop, no
@@ -2967,25 +3596,39 @@ These are documented, reviewed trade-offs — not a TODO list.
   above — a non-array container's individual DECLARED FIELDS are, since that update, indexed by
   path one level down from wherever the container itself sits; only a REPEATER still blocks
   everything beneath it, at every depth.)
-- **A global is LITERAL-only — no computed values, no cross-variable references, no cycle
-  detection (Phase 3, ADR-0024).** `WorkflowGlobal` stores exactly a `descriptor` + a matching
-  literal `value`; nothing reads `value` as an expression or a pointer to another global/trigger/
-  step value. A COMPUTED global (one derived from another variable) is real, plausible future
-  demand, explicitly PLANNED — see "Planned / deferred" below — not built in this phase.
-- **A global has no soft-delete/restore, unlike `Workflow` (Phase 3, ADR-0024).**
-  `WorkflowGlobalService::delete()` is a hard `Model::delete()` — there is no `deleted_at` column
-  and no restore endpoint. A workflow that already embeds a since-deleted global's `globals.<key>`
-  reference keeps running: the reference fails SOFT to `null`/`''` at run time (the same "stale
-  targeting id is a safe no-op" doctrine the module already applies to a deleted form/label), never
-  an error — but the deleted global's own stored value cannot be recovered afterward.
-- **The frontend's global-authoring editor ships a narrower type-authoring depth than the backend
-  validator accepts (Phase 3, ADR-0024).** `WorkflowGlobalTypeValidator` already validates a nested
+- **A const is LITERAL-only — no computed values, no cross-variable references, no cycle
+  detection (Phase 3, ADR-0024).** `Constant` (renamed from `WorkflowGlobal`, ADR-0028) stores
+  exactly a `descriptor` + a matching literal `value`; nothing reads `value` as an expression or a
+  pointer to another const/trigger/step value. A COMPUTED const (one derived from another variable)
+  is real, plausible future demand, explicitly PLANNED — see "Planned / deferred" below — not built
+  in this phase.
+- **A const has no soft-delete/restore, unlike `Workflow` (Phase 3, ADR-0024) — and, unlike a
+  custom function, no delete-while-referenced guard either.** `ConstantService::delete()` is a
+  hard `Model::delete()` — there is no `deleted_at` column and no restore endpoint. A workflow that
+  already embeds a since-deleted const's `globals.<key>` reference keeps running: the reference
+  fails SOFT to `null`/`''` at run time (the same "stale targeting id is a safe no-op" doctrine the
+  module already applies to a deleted form/label), never an error — but the deleted const's own
+  stored value cannot be recovered afterward.
+- **The frontend's const-authoring editor ships a narrower type-authoring depth than the backend
+  validator accepts (Phase 3, ADR-0024).** `ConstantTypeValidator` already validates a nested
   object/array/enum child inside an object's `fields`, and `array:true` on an `object` base
-  (array-of-object), recursively and correctly — but `WorkflowGlobalEditorDrawer.vue`'s type
+  (array-of-object), recursively and correctly — but `ConstantEditorDrawer.vue`'s type
   builder does not offer either combination yet (an object field's own type picker is scalar-only;
   the array toggle is disabled for an object base, with an in-UI note). Sending either shape
-  directly to `POST /workflow-globals` validates and persists normally; only the editor's own
+  directly to `POST /api/consts` validates and persists normally; only the editor's own
   picker is narrower. A pure frontend follow-up, not blocked on any backend change.
+- **`map |> array_at |> <op>` fails closed at runtime even though it validates at write time
+  (array-ops, ADR-0026).** The pure, contextless `OperationExecutor` collapses every array to
+  a normalized `MULTI`/`string[]` and cannot recover a non-enum scalar element base a `map`
+  synthesized mid-pipeline; a DIRECT `<multi source> |> array_at |> <op>` is unaffected (its element
+  base comes from the source's own catalog descriptor). See "g. Array transform operations" above and
+  ADR-0026's Consequences for the full reasoning; recovering this needs the executor to carry
+  descriptor state end-to-end, deliberately not attempted in this revision.
+- **`array_at` over an `array<object>`/`array<file>` returns a snapshot that cannot be piped through a
+  further operation (array-ops, ADR-0026).** The snapshot is usable via path/subfield access, but a
+  chained op on it fails closed — object/file per-element transformation is the job of the
+  scope-rooted element pipelines (`map`/`filter`/`sort`/`reduce`), not `array_at`'s O(1) single pick.
+  This is accepted by design, not a gap to close.
 
 ---
 
@@ -3048,12 +3691,12 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `docs/decisions/ADR-0009-workflows-rescope-typed-variables.md` — the 5.1 re-scope decisions
 - `docs/decisions/ADR-0008-workflows-module-design.md` — run-engine decisions that still hold (superseded sections marked)
 - `docs/next/workflows-uxui-spec.md` — the frontend UX/UI specification (REVISION 4 — the v2 compositional builder)
-- `app/modules/Workflows/Services/WorkflowOperationExecutor.php` — the shared pipeline engine (72→77 ops; phase-1b's presence family + `date_format`)
-- `app/modules/Workflows/DTOs/OperationResult.php` — pipeline outcome, incl. the `hard` flag (phase-1b)
-- `app/modules/Workflows/Enums/WorkflowOperation.php` — the 77-op enum (`inputType`/`outputType`/`argDescriptors`/`producesChoice`/`isPresenceOp`)
-- `app/modules/Workflows/Enums/WorkflowVariableType.php` — the 8-case type enum incl. `TIME` and `descriptor()` (phase-1a)
-- `app/modules/Workflows/Services/WorkflowConditionTreeValidator.php` — the value-pipeline write validator (the `walkPipeline` presence-op asymmetry noted above)
-- `tests/Unit/Workflows/WorkflowOperationExecutorTest.php`, `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — phase-1b presence/date-format/default coverage
+- `app/modules/Variables/Services/OperationExecutor.php` — the shared pipeline engine (72→77 ops; phase-1b's presence family + `date_format`)
+- `app/modules/Variables/DTOs/OperationResult.php` — pipeline outcome, incl. the `hard` flag (phase-1b)
+- `app/modules/Variables/Enums/Operation.php` — the 77-op enum (`inputType`/`outputType`/`argDescriptors`/`producesChoice`/`isPresenceOp`)
+- `app/modules/Variables/Enums/VariableType.php` — the 8-case type enum incl. `TIME` and `descriptor()` (phase-1a)
+- `app/modules/Variables/Services/PipelineValidator.php` — the value-pipeline write validator (the `walkPipeline` presence-op asymmetry noted above)
+- `tests/Unit/Workflows/OperationExecutorTest.php`, `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — phase-1b presence/date-format/default coverage
 - `tests/Feature/WorkflowVariableCatalogTest.php` — phase-1a `descriptor` coverage
 - `docs/decisions/ADR-0022-workflows-variable-typesystem-phase1.md` — this phase's design record
 - `app/modules/Disk/Models/File.php` — `serveUrl()` (phase-2b), the `disk.show` URL builder the trigger file snapshot's `url` key reuses
@@ -3062,46 +3705,93 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `resources/js/next/pages/workflows/workflowVariables.ts` — `expandVariables()`/`descriptorBaseToType()`, the structural-descriptor FE expansion (phase-2c)
 - `resources/js/next/pages/workflows/types.ts` — `CatalogDescriptorField`, the widened `CatalogVariableDescriptor.base`/`CatalogTypeId` (phase-2c)
 - `docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md` — this phase's design record (object/array<object> containers, the file composite, phase-2a/2b/2b.1/2c)
-- `app/modules/Workflows/Models/WorkflowGlobal.php` — the LITERAL constant model (Phase 3)
-- `database/migrations/2026_07_22_000000_create_workflow_globals_table.php`, `database/migrations/tenant/0001_01_01_000046_create_workflow_globals_table.php` — the dual central/tenant schema (Phase 3)
-- `app/modules/Workflows/Http/Controllers/WorkflowGlobalController.php` — CRUD (Phase 3)
-- `app/modules/Workflows/Http/Requests/StoreWorkflowGlobalRequest.php`, `UpdateWorkflowGlobalRequest.php` — identity (`name`/`key`) validation + the type-validator hand-off (Phase 3)
-- `app/modules/Workflows/Services/WorkflowGlobalTypeValidator.php` — the single authorable-type + value authority, shared by Store/Update (Phase 3)
-- `app/modules/Workflows/Services/WorkflowGlobalService.php` — CRUD persistence (Phase 3)
-- `app/modules/Workflows/Http/Resources/WorkflowGlobalResource.php` — the `globals.<key>` reference + capability-flag wire shape (Phase 3)
-- `app/modules/Workflows/DTOs/WorkflowGlobalDTO.php` (Phase 3)
-- `app/modules/Workflows/Policies/WorkflowGlobalPolicy.php` — workspace-membership read, creator-only mutation (Phase 3)
-- `database/factories/WorkflowGlobalFactory.php` — `text()`/`number()`/`boolean()`/`date()`/`enum()`/`textList()` states (Phase 3)
-- `app/modules/Workflows/Enums/WorkflowVariableType.php` — `fromDescriptor()`, the inverse of `descriptor()` (Phase 3)
-- `tests/Feature/WorkflowGlobalCrudTest.php` — CRUD, type/value validation, key rules, workspace-scoped authorization (Phase 3)
-- `tests/Feature/WorkflowGlobalCatalogTest.php` — the `globals` catalog source, reference index, runtime type map, workspace scoping (Phase 3)
+- `app/modules/Variables/Models/Constant.php` — the LITERAL constant model (Phase 3; renamed from `WorkflowGlobal` and moved from Workflows in ADR-0028)
+- `database/migrations/2026_07_22_000000_create_workflow_globals_table.php` + `database/migrations/2026_07_26_000000_rename_workflow_globals_to_consts.php`, `database/migrations/tenant/0001_01_01_000046_create_workflow_globals_table.php` + `database/migrations/tenant/0001_01_01_000047_rename_workflow_globals_to_consts.php` — the dual central/tenant schema, create then reversible rename (Phase 3 / ADR-0028)
+- `app/modules/Variables/Http/Controllers/ConstantController.php` — CRUD (Phase 3; renamed from `WorkflowGlobalController`)
+- `app/modules/Variables/Http/Requests/StoreConstantRequest.php`, `UpdateConstantRequest.php` — identity (`name`/`key`) validation + the type-validator hand-off (Phase 3; renamed from `Store`/`UpdateWorkflowGlobalRequest`)
+- `app/modules/Variables/Services/ConstantTypeValidator.php` — the single authorable-type + value authority, shared by Store/Update (Phase 3; renamed from `WorkflowGlobalTypeValidator`)
+- `app/modules/Variables/Services/ConstantService.php` — CRUD persistence (Phase 3; renamed from `WorkflowGlobalService`)
+- `app/modules/Variables/Http/Resources/ConstantResource.php` — the `globals.<key>` reference (byte-identical wire) + capability-flag wire shape (Phase 3; renamed from `WorkflowGlobalResource`)
+- `app/modules/Variables/DTOs/ConstantDTO.php` (Phase 3; renamed from `WorkflowGlobalDTO`)
+- `app/modules/Variables/Policies/ConstantPolicy.php` — workspace-membership read, creator-only mutation (Phase 3; renamed from `WorkflowGlobalPolicy`)
+- `database/factories/ConstantFactory.php` — `text()`/`number()`/`boolean()`/`date()`/`enum()`/`textList()`/`object()`/`objectList()` states (Phase 3; renamed from `WorkflowGlobalFactory`)
+- `app/modules/Variables/Enums/VariableType.php` — `fromDescriptor()`, the inverse of `descriptor()` (Phase 3)
+- `tests/Feature/ConstantCrudTest.php` — CRUD, type/value validation, key rules, workspace-scoped authorization (Phase 3; renamed from `WorkflowGlobalCrudTest`)
+- `tests/Feature/ConstantCatalogTest.php` — the `globals` catalog source, reference index, runtime type map, workspace scoping (Phase 3; renamed from `WorkflowGlobalCatalogTest`)
 - `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — the `globals` root resolution + the injection-safety pin (`test_a_global_value_with_reference_like_bytes_is_not_re_interpreted`) (Phase 3)
-- `resources/js/next/pages/workflows/WorkflowGlobalsView.vue`, `WorkflowGlobalEditorDrawer.vue`, `WorkflowGlobalValueField.vue`, `WorkflowGlobalRow.vue` — the globals management screen (Phase 3, frontend)
-- `resources/js/next/pages/workflows/workflowGlobals.ts` — the draft⇆descriptor mapping + the client-side `WorkflowGlobalTypeValidator` mirror (Phase 3, frontend)
-- `resources/js/next/app/stores/workflowGlobals.ts` — list/CRUD store, invalidates every cached catalog after a mutation (Phase 3, frontend)
-- `docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md` — this phase's design record (LITERAL-only scope, the `globals` root, dual persistence, the authorable-type boundary, the NUL-reject injection invariant, the deferred FE authoring depth)
-- `app/modules/Workflows/Enums/ConditionTreeLimits.php` — `MAX_ARG_VARIABLE_DEPTH`, the one shared arg-variable nesting cap (Phase 4)
-- `app/modules/Workflows/Enums/WorkflowOperationArgType.php` — `argVariablePolicy()`, the per-category gate (Phase 4; renamed from the value-typed-only `variableValueType()` in the Phase 4b widening)
-- `app/modules/Workflows/DTOs/ArgVariablePolicy.php` — the two-facet (`refTypes`/`coerceTo`) per-arg-control policy DTO `argVariablePolicy()` returns; `null`/`null` = STRUCTURAL (Phase 4b)
+- `docs/decisions/ADR-0024-workflows-variable-typesystem-phase3-globals.md` — this phase's design record (LITERAL-only scope, the `globals` root, dual persistence, the authorable-type boundary, the NUL-reject injection invariant, the deferred FE authoring depth); see its 2026-07-26 addendum for the ADR-0028 rename pointer
+- `resources/js/next/pages/variables/ConstantsView.vue`, `ConstantEditorDrawer.vue`, `ConstantValueField.vue`, `ConstantRow.vue` — the consts management screen (Phase 3, frontend; renamed and moved from `resources/js/next/pages/workflows/WorkflowGlobals*.vue`/`WorkflowGlobalValueField.vue`/`WorkflowGlobalRow.vue` into the new top-level Variables area, ADR-0028)
+- `resources/js/next/pages/variables/consts.ts` — the draft⇆descriptor mapping + the client-side `ConstantTypeValidator` mirror (Phase 3, frontend; renamed from `resources/js/next/pages/workflows/workflowGlobals.ts`)
+- `resources/js/next/app/stores/consts.ts` — list/CRUD store, invalidates every cached catalog after a mutation (Phase 3, frontend; renamed from `resources/js/next/app/stores/workflowGlobals.ts`)
+- `resources/js/next/pages/variables/VariablesModuleLayout.vue` — the new top-level "Variables"/"Zmienne" nav shell holding Consts + Functions (ADR-0028)
+- `app/modules/Variables/VariablesModuleServiceProvider.php` — registers the `consts`/`functions` API routes + the `ConstantPolicy`/`CustomFunctionPolicy` gates; registered BEFORE `WorkflowsModuleServiceProvider` in `bootstrap/providers.php` (ADR-0027)
+- `app/modules/Variables/routes/api.php` — `Route::apiResource('consts', ...)->parameters(['consts' => 'constant'])`, `Route::apiResource('functions', ...)->parameters(['functions' => 'function'])`
+- `tests/Feature/ConstantWireCompatTest.php` — characterization pins that the `globals.*` wire (runtime resolution, catalog source/path, the resource's `reference` field) is byte-identical after the ADR-0028 rename
+- `docs/decisions/ADR-0027-variables-module-extraction.md` — the module boundary Consts (and Functions, below) now live behind: the one-way Workflows→Variables dependency, the full symbol-rename map, the `ElementScopeResolver`/`FunctionReferenceLookup` dependency inversions, `VariablesModuleBoundaryTest`
+- `docs/decisions/ADR-0028-consts-rename.md` — this rename's own design record (why `Const`/`const` was unusable, the reversible `Schema::rename` migrations, the new Variables nav, and the wire-preservation decision)
+- `app/modules/Variables/Contracts/OperationDefinition.php` — the shared shape a pipeline step's op resolves to, implemented by BOTH `Operation` (built-in) and `CustomFunctionOperation` (below), so the walk/executor never special-case which kind they are holding (ADR-0027/ADR-0029)
+- `app/modules/Variables/Contracts/ElementScopeResolver.php`, `Contracts/FunctionReferenceLookup.php` — the two dependency-inversion interfaces Variables owns and Workflows implements/binds (`WorkflowVariableCatalogService`, `WorkflowFunctionReferenceScanner`) so the module boundary stays one-way (ADR-0027)
+- `app/modules/Variables/Services/OperationResolver.php` — resolves a step's `op` id to a built-in `Operation` OR a workspace `CustomFunctionOperation` (built-ins checked first, `fn:` prefix required for a function match) — the ONE indirection that replaced every direct `Operation::tryFrom` in the engine (ADR-0029)
+- `app/modules/Variables/Models/CustomFunction.php` — the function definition model: one input type, typed named args, one return type, a saved body pipeline (ADR-0029)
+- `database/migrations/2026_07_27_000000_create_custom_functions_table.php`, `database/migrations/tenant/0001_01_01_000048_create_custom_functions_table.php` — the dual central/tenant schema (ADR-0029)
+- `app/modules/Variables/Http/Controllers/CustomFunctionController.php`, `Http/Requests/Store`/`UpdateCustomFunctionRequest.php`, `Http/Resources/CustomFunctionResource.php`, `Policies/CustomFunctionPolicy.php`, `Services/CustomFunctionService.php` — CRUD + authorization (ADR-0029)
+- `app/modules/Variables/Services/FunctionDefinitionValidator.php` — the single authority for a function's definition (input/return types, arg names/types, the body via `PipelineValidator`) AND the write-time 3-colour-DFS cycle check (`validateAcyclic()`/`hasCycle()`/`referencedFunctionIds()`) (ADR-0029)
+- `app/modules/Variables/Support/CustomFunctionOperation.php` — the `OperationDefinition` view of a `CustomFunction` row (wire id `fn:<uuid>`, the runtime `body()`/`argTypes()` Phase-3b added) (ADR-0029)
+- `app/modules/Variables/Support/FunctionScope.php` — the execution state threaded through `OperationExecutor`: the workspace's functions, the expansion DEPTH, the active-function VISITED chain, and the current scope FRAME; `overDepth()`/`hasVisited()` are the two fail-closed backstops, `frameRoots()` feeds the generalized `ScopeRef` (ADR-0029)
+- `app/modules/Variables/Enums/PipelineLimits.php` — `MAX_FUNCTION_EXPANSION_DEPTH` (5), the function-nesting depth cap (ADR-0029)
+- `app/modules/Workflows/Services/WorkflowFunctionReferenceScanner.php` — implements `FunctionReferenceLookup`; scans live, workspace-scoped workflows for a `fn:<uuid>` reference (the delete guard's Workflows-side half) (ADR-0029)
+- `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — `customFunctionOperations()`/`functionCatalog()`/`functionArgWire()`, merging every workspace function into the `operations` catalog as `{id:'fn:<uuid>', input, output, args, label, description}` (ADR-0029)
+- `app/modules/Workflows/Services/WorkflowStepRunner.php` — threads the workspace's `customFunctionOperations()` into the run's `FunctionScope` so a `fn:<uuid>` step config op executes (ADR-0029)
+- `app/modules/Workflows/Services/WorkflowConditionEngine.php` — threads functions into the condition-gate's own `FunctionScope` so a `fn:<uuid>` op is usable inside a `form_submitted` trigger condition too (ADR-0029)
+- `tests/Feature/CustomFunctionCrudTest.php`, `tests/Feature/CustomFunctionValidationTest.php` — CRUD, definition/body validation, and the self-reference/two-function/three-deep cycle rejections (ADR-0029)
+- `tests/Feature/WorkflowCustomFunctionTest.php` — the catalog `fn:<uuid>` merge, a workflow referencing a type-compatible/incompatible function (write-accept/reject), and the delete-while-referenced-by-a-workflow guard (ADR-0029)
+- `tests/Unit/Variables/OperationExecutorFunctionTest.php` — RUNTIME execution: binding/reading a named arg, nested function calls, a map/filter/reduce element pipeline with a function arg IN SCOPE (the frame stack), the 5-deep-succeeds/6-deep-fails-closed depth cap, and the corrupted/direct self-cycle visited-set pins (ADR-0029)
+- `tests/Unit/Variables/OperationResolverTest.php`, `tests/Unit/Variables/EngineOperationResolverCompletenessTest.php` — `OperationResolver`'s built-in-first/`fn:`-prefix resolution, and the "zero direct `Operation::tryFrom` in engine code" completeness gate (ADR-0027/ADR-0029)
+- `tests/Unit/Variables/ScopeRefTest.php` — `ScopeRef::leaf()`'s generalized, caller-supplied `$roots` parameter (ADR-0029)
+- `tests/Feature/VariablesModuleBoundaryTest.php` — the one-way dependency pin (no `App\Modules\Workflows` string anywhere under `app/modules/Variables`) + the `PipelineValidator::DEFAULT_REFERENCE_SOURCES` ↔ `WorkflowVariableResolver::ROOTS` equality pin (ADR-0027)
+- `resources/js/next/pages/variables/FunctionsView.vue`, `FunctionEditorDrawer.vue`, `FunctionRow.vue` — the functions management screen (ADR-0029, frontend)
+- `resources/js/next/pages/variables/functions.ts` — the reserved-scope-name/safe-identifier mirrors, the arg-draft shape, `functionScopeVars()` (the `{input, <argName>…}` scope feed the body-pipeline editor runs on), and the `fn:<uuid>` op-id helpers (ADR-0029, frontend)
+- `resources/js/next/app/stores/functions.ts` — list/CRUD store, invalidates every cached catalog after a mutation (ADR-0029, frontend)
+- `docs/decisions/ADR-0029-custom-functions.md` — this feature's design record (identity, nesting, the write-time cycle DFS, the runtime depth-cap/visited-set backstops, execution-by-expansion, the frame-stack generalization, the delete guard, the accepted scalar-first arg-control limitation)
+- `app/modules/Variables/Enums/PipelineLimits.php` — `MAX_ARG_VARIABLE_DEPTH`, the one shared arg-variable nesting cap (Phase 4; split out of Workflows' `ConditionTreeLimits` in the Variables module extraction, ADR-0027)
+- `app/modules/Variables/Enums/OperationArgType.php` — `argVariablePolicy()`, the per-category gate (Phase 4; renamed from the value-typed-only `variableValueType()` in the Phase 4b widening)
+- `app/modules/Variables/DTOs/ArgVariablePolicy.php` — the two-facet (`refTypes`/`coerceTo`) per-arg-control policy DTO `argVariablePolicy()` returns; `null`/`null` = STRUCTURAL (Phase 4b)
 - `app/modules/Workflows/Services/WorkflowVariableResolver.php` — `resolvePipelineArgs()`/`resolveStepArgs()`/`resolveArgVariable()`/`resolveStructuralArgVariable()`/`isVariableArg()`, the `argDepth`-threaded pre-resolution ahead of the executor (Phase 4; `resolveStructuralArgVariable()` added in Phase 4b)
-- `app/modules/Workflows/Services/WorkflowConditionTreeValidator.php` — `validateArgVariable()`/`validateArgVariableRef()`/`refFullPath()`, the `refCtx`/`argDepth`-threaded write validation, incl. the STRUCTURAL loose-gate branch (Phase 4 / 4b)
+- `app/modules/Variables/Services/PipelineValidator.php` — `validateArgVariable()`/`validateArgVariableRef()`/`refFullPath()`, the `refCtx`/`argDepth`-threaded write validation, incl. the STRUCTURAL loose-gate branch (Phase 4 / 4b)
 - `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — `descriptorSubfieldTypeMap()`/`objectSubfieldTypeMap()`, indexing a non-array OBJECT descriptor's own fields recursively into the reference index + runtime type map (structural-referenceability follow-up, shipped alongside Phase 4b)
 - `app/modules/Workflows/Http/Requests/StoreWorkflowRequest.php` — `validateVariablePipeline()` now passes its `$refCtx` + `argDepth: 0` into the value-pipeline walk (Phase 4)
-- `app/modules/Workflows/Services/WorkflowOperationExecutor.php` — unchanged this phase; pinned as the "stays pure" boundary (Phase 4)
+- `app/modules/Variables/Services/OperationExecutor.php` — unchanged this phase; pinned as the "stays pure" boundary (Phase 4)
 - `tests/Unit/Workflows/WorkflowVariableResolverTest.php` — argument-variable resolution, the depth-cap resolve/fail-soft pair, the injection-safety pin (Phase 4)
-- `tests/Unit/Workflows/WorkflowOperationExecutorTest.php` — `test_a_variable_union_arg_reaching_the_executor_fails_closed`, the executor-stays-pure boundary pin (Phase 4)
+- `tests/Unit/Workflows/OperationExecutorTest.php` — `test_a_variable_union_arg_reaching_the_executor_fails_closed`, the executor-stays-pure boundary pin (Phase 4)
 - `tests/Feature/WorkflowStepValuePipelineValidationTest.php` — argument-variable write validation, incl. the depth-cap `422`, the byte-verbatim persistence pin, and (Phase 4b) the widened option/structural-control coverage
 - `resources/js/next/ui/editor/extensions/VariablePipelineEditor.vue` — the `depth` prop + `argVariable` scoped slot, offered for EVERY arg control since Phase 4b (Phase 4)
 - `resources/js/next/ui/editor/extensions/PipelineArgLiteralInput.vue` — the literal control for EVERY arg kind (value AND, since Phase 4b, option/map/rules), shared by the editor's own fallback and the arg-variable field's value mode (Phase 4)
 - `resources/js/next/ui/editor/extensions/operationHelpers.ts` — `MAX_ARG_VARIABLE_DEPTH`, `argVariablePolicy()` + `isStructuralArg()` (Phase 4; renamed/widened from `argVariableValueType()` in Phase 4b)
 - `resources/js/next/ui/editor/extensions/types.ts` — `ArgVariableRef`, `ArgVariableValue`, `VariableArgValue` (Phase 4)
 - `resources/js/next/ui/editor/extensions/VariableTypeIcon.vue` — the shared type-icon + `nullable`("?")/`array`("[]") modifier markers, incl. an sr-only `typeLabel` (UX refinement batch, shipped alongside Phase 4b)
-- `resources/js/next/pages/workflows/ValueOrVariableField.vue` — the recursive `#argVariable` slot fill (now for every arg control) + `argToUnion()`/`unionToArg()` adapters; the per-reference "Default when empty" control relocated here into the ops modal, nullable-gated + typed via `WorkflowGlobalValueField.vue` (Phase 4 / UX refinement batch)
+- `resources/js/next/pages/workflows/ValueOrVariableField.vue` — the recursive `#argVariable` slot fill (now for every arg control) + `argToUnion()`/`unionToArg()` adapters; the per-reference "Default when empty" control relocated here into the ops modal, nullable-gated + typed via `ConstantValueField.vue` (renamed from `WorkflowGlobalValueField.vue`, ADR-0028) (Phase 4 / UX refinement batch)
 - `resources/js/next/pages/workflows/VariableTreePicker.vue` — the expandable ARIA-tree variable picker (`role="tree"`/`treeitem`, keyboard expand/collapse/select/type-ahead), replacing the flat qualified-name Select (UX refinement batch)
 - `resources/js/next/pages/workflows/workflowVariables.ts` — `variablePickerTree()`/`flattenPickerNodes()`, building the picker tree from a flat, already-filtered variable list (UX refinement batch)
 - `resources/js/next/pages/workflows/DateOrVariableField.vue`, `resources/js/next/pages/workflows/WorkflowStepCard.vue` — forward the new `arg-variables` pool prop (Phase 4)
 - `resources/js/next/ui/editor/__tests__/pipelineArgVariable.dom.spec.ts` — slot-gating (every control, depth cap) + raw-arg serialization pins (Phase 4, frontend)
 - `resources/js/next/pages/workflows/__tests__/ValueOrVariableField.spec.ts` — the recursive-field pick/round-trip tests (Phase 4, frontend)
+- `app/modules/Variables/Enums/Operation.php` — the 83-op enum (grew from 77); `array_count`/`array_at`/`array_map`/`array_filter`/`array_sort`/`array_reduce`, `isArrayOp()`, `isCollectionOp()`, `outputDescriptor()` (array-ops, ADR-0026)
+- `app/modules/Variables/Enums/OperationArgType.php` — `ELEMENT_PIPELINE`/`REDUCE_SEED` arg-control kinds (array-ops, ADR-0026)
+- `app/modules/Variables/DTOs/ArgVariablePolicy.php` — the third named constructor `elementPipeline()` + `isStructural()` (array-ops, ADR-0026)
+- `app/modules/Variables/DTOs/OperationArg.php` — `elementPipeline()`/`reduceSeed()` descriptor factories (array-ops, ADR-0026)
+- `app/modules/Variables/Support/ScopeRef.php` — the single source-aware `element`/`index`(`.subfield`) scope-ref predicate shared by the validator/resolver/executor (array-ops, ADR-0026 — fixes the Wave-2 Finding B name-collision bug)
+- `app/modules/Variables/Services/PipelineValidator.php` — `walkPipelineDescriptor()`/`opAcceptsDescriptor()`/`validateCollectionArgs()`/`validateElementPipeline()`/`validateScopeRootedElementPipeline()`/`validateReduceSeed()`, the descriptor-tracking walker + terminal-by-construction gate (array-ops, ADR-0026)
+- `app/modules/Variables/Services/OperationExecutor.php` — `applyCollection()`/`arrayMap()`/`arrayFilter()`/`arraySort()`/`arrayReduce()`/`arrayAt()`/`elementRunner()`/`runElement()`/`runReducer()`/`scopeOverlay()`/`resolveScopePipeline()`/`stepOutputType()`, the per-element re-entry + fail-closed matrix + the descriptor-derived `array_at` runtime type (array-ops, ADR-0026)
+- `app/modules/Workflows/Services/WorkflowVariableResolver.php` — scope-aware pre-resolution (`ScopeRef`-gated, keeps a scope ref OUT of global pre-resolution) (array-ops, ADR-0026)
+- `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — `elementScopeSubfields()`, the ONE place a repeater/file array is descended for element-scope access (array-ops, ADR-0026)
+- `app/modules/Variables/Enums/PipelineLimits.php` — `MAX_ARRAY_ITERATIONS` (1000), `MAX_ELEMENT_PIPELINE_DEPTH` (3), the two array-op caps shared by the validator and executor (array-ops, ADR-0026; split out of Workflows' `ConditionTreeLimits` in the Variables module extraction, ADR-0027) — also now `MAX_FUNCTION_EXPANSION_DEPTH` (5), the custom-function expansion depth cap (ADR-0029)
+- `tests/Unit/Workflows/OperationExecutorTest.php`, `tests/Feature/WorkflowConditionTreeValidationTest.php`, `tests/Feature/WorkflowStepValuePipelineValidationTest.php`, `tests/Unit/Workflows/WorkflowElementScopeValidationTest.php` — array-op runtime + write-validation coverage, incl. the fail-closed matrix, the caps, the terminal-by-construction gate, and the scope name-collision fix (array-ops, ADR-0026)
+- `resources/js/next/ui/editor/extensions/standardOperations.ts` — the 6 array ops' FE catalog entries (array-ops, ADR-0026)
+- `resources/js/next/ui/editor/extensions/operationHelpers.ts` — the descriptor-tracking `resolveType`/`computeInputType`/`pipelineSatisfies`, `VariableOperationDefinition.resolveOutput()` (array-ops, ADR-0026)
+- `resources/js/next/ui/editor/extensions/ChoiceRuleWhenField.vue`, `resources/js/next/ui/editor/extensions/VariableSuggest.vue`, `resources/js/next/ui/editor/extensions/variableFeed.ts` — the element-pipeline editor's reused `when`-machinery embedding + the scope-aware variable feed (array-ops, ADR-0026, frontend)
+- `resources/js/next/pages/workflows/WorkflowArgVariableField.vue`, `resources/js/next/pages/workflows/argVariableAdapters.ts` — the array-ops-era `#argVariable` slot fill + adapters, superseding the now-deleted `VariableTreePicker.vue` referenced elsewhere in this list under the Phase-4 UX-refinement batch (that reference is stale — a frontend-agent follow-up should reconcile it)
+- `resources/js/next/ui/editor/__tests__/arrayOperations.spec.ts`, `arrayObjectOps.spec.ts`, `arrayTransformOps.spec.ts`, `elementPipeline.dom.spec.ts`, `elementObjectPipeline.dom.spec.ts` — array-op catalog, element-pipeline editor, and scope-rooted object/file coverage (array-ops, ADR-0026, frontend)
+- `docs/decisions/ADR-0026-workflows-array-transform-operations.md` — this feature's design record (the six ops, the descriptor-tracking walker, scoped `element`/`index`, terminal-by-construction, the fail-closed matrix/caps, and the accepted `map |> array_at` runtime-typing limitation)
 - `docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md` — this phase's design record (the write-split/resolver-pre-resolves split, the cycle-free depth cap, the `refCtx` write split, the deferred trigger-gate wiring and parent-Save-gate UX follow-ups) plus its Phase 4b addendum (the per-category `ArgVariablePolicy` gate replacing the value-typed-only rule) — completes the four-phase variable-typesystem rework
 
 ## Planned / deferred (not implemented)
@@ -3114,9 +3804,15 @@ These are documented, reviewed trade-offs — not a TODO list.
   exists yet.
 - **Bot-authored submission tracking**: `source` cannot express "a bot filled this form in" —
   see the Accepted residual risks section. Needs a new column, not just morph-derived logic.
+- **Descriptor-aware runtime typing for a `map`-produced array** (array-ops, ADR-0026): recovering
+  `map |> array_at |> <op>`'s true (non-enum) scalar element base at RUNTIME — today it validates at
+  write time but fails closed at runtime, see "g. Array transform operations" and the Accepted
+  residual risks entry above. Needs `OperationExecutor` (deliberately pure/contextless per
+  ADR-0013) to carry descriptor state end-to-end, a materially larger change than this feature's
+  scope, not attempted here.
 - ~~Operations pipeline for the typed variable system~~ — **DONE (SB1/SB2, ADR-0013), no longer
   deferred.** A directive and a value-or-variable reference now both transform their resolved
-  value through the shared 68-op `WorkflowOperationExecutor` at run time (string ops, date
+  value through the shared 68-op `OperationExecutor` at run time (string ops, date
   arithmetic, arithmetic, per-option mapping, and — since ADR-0014 — mapping into a destination
   field's fixed choice set); ADR-0009 §2's "deferred" consequence is explicitly reversed. Kept
   struck through so a reader of an older snapshot of this doc understands the change.
@@ -3135,53 +3831,73 @@ These are documented, reviewed trade-offs — not a TODO list.
   rolling-interval case.
 - **`TIME` real runtime semantics** (Phase 2 of the variable-typesystem rework): condition
   operators, resolver/evaluator/executor support, and a flat wire representation beyond the
-  current `text` degrade. `WorkflowVariableType::TIME` (phase-1a) is catalog/descriptor-only
+  current `text` degrade. `VariableType::TIME` (phase-1a) is catalog/descriptor-only
   today — see the Accepted residual risks note above and ADR-0022.
-- **Presence-op write validation on a non-text reference** (Phase 2): `WorkflowConditionTreeValidator::walkPipeline`'s
+- **Presence-op write validation on a non-text reference** (Phase 2): `PipelineValidator::walkPipeline`'s
   exact-type gate does not yet special-case `coalesce`/`is_present`/`is_null`/`assert_present` the
   way the runtime executor already does — see the Accepted residual risks note above and
   ADR-0022.
-- **Defensive `normalizeInput` default arm + write-time `date_format` pattern validation** (Phase
-  2 hardening, neither reachable today): `WorkflowOperationExecutor::normalizeInput()`'s `match`
-  is still exhaustive over the original 7 `WorkflowVariableType` cases (no `default` arm), so a
-  hypothetical future call with `baseType: TIME` would throw an `UnhandledMatchError` instead of
-  failing closed (no such call exists today). `date_format`'s `pattern` arg is validated at write
-  time only as a generic string, not against the safe-token whitelist — a malformed pattern is
-  only caught at RUN time (fails soft), never a `422`. See ADR-0022.
-- **Update: the three items immediately above are STILL deferred — Phase 2 (ADR-0023, this
+- **~~Defensive `normalizeInput` default arm~~ — SHIPPED 2026-07-24 (safety batch), and it was
+  NOT unreachable.** A stored condition's `source_type` is `tryFrom`'d raw by
+  `WorkflowConditionEngine`, so a legacy/hand-written `time`/`object` row DID reach the exhaustive
+  `match` and threw out of the form-submission gate. `normalizeInput()` and
+  `WorkflowVariableResolver::coerce()` now fail soft on an unsupported base type. Shipped in the
+  same batch: the executor's ARRAY-shaped argument readers (`enum_in`/`multi_includes_*`'s
+  `values`, `enum_to_*`'s `mapping`, `match_to_choice`'s `rules`) used to consume an unresolved
+  `{kind:'variable'}` union AS DATA — which could OPEN a gate — and now reject it as malformed via
+  one shared reader and one shared shape predicate
+  (`App\Modules\Variables\Support\ValueOrVariable`). See ADR-0022's amendment.
+- **Write-time `date_format` pattern validation** (Phase 2 hardening, still deferred):
+  `date_format`'s `pattern` arg is validated at write time only as a generic string, not against
+  the safe-token whitelist — a malformed pattern is only caught at RUN time (fails soft), never a
+  `422`. See ADR-0022.
+- **Update: the items immediately above are STILL deferred — Phase 2 (ADR-0023, this
   revision) shipped structural types instead.** `object`/`array<object>` containers and the `file`
   composite (see "Structural descriptor: object containers & the file composite") turned out to be
-  the next batch; none of the three items above were addressed by it. They remain deferred to a
-  later, unnumbered phase.
+  the next batch; none of those items were addressed by it. They remain deferred to a
+  later, unnumbered phase — EXCEPT the `normalizeInput` default arm, which the 2026-07-24 safety
+  batch shipped once it turned out to be reachable (struck through above).
 - **Repeater / multi-file per-element LOOP execution** (deferred to R2-Generator, named explicitly
   by ADR-0023): a repeater now has its own `array<object>` catalog entry and a file's composite
   subfields are individually referenceable (Phase 2a/2b), but nothing added a way to iterate a
   repeater's elements or a multi-file answer — no per-element path, no loop binding. This needs
   R2-Generator's own element-cardinality / output-binding design, not an incremental extension of
   the catalog-visibility work this phase did.
-- **Computed globals** (Phase 3, ADR-0024): a global that DERIVES its value from another global, a
-  trigger field, or a step output — e.g. a global that doubles another global's numeric value —
-  rather than holding a plain stored literal. `WorkflowGlobal` (this revision) is LITERAL-only; a
-  computed global would need its own dependency-graph and cycle-detection design (the same class of
-  work a fenced if-block or a value-or-variable pipeline needed), not a byproduct of the CRUD/
-  catalog wiring this phase shipped. See ADR-0024 Context.
-- **Frontend authoring for array-of-object / nested object-children globals** (Phase 3, ADR-0024):
-  `WorkflowGlobalTypeValidator` already accepts a nested object/array/enum child inside an object
-  global's `fields`, and `array:true` on an `object` base, when sent directly to
-  `POST /workflow-globals` — `WorkflowGlobalEditorDrawer.vue`'s type builder does not offer either
+- **Computed consts** (Phase 3, ADR-0024; renamed from "computed globals" — ADR-0028): a const that
+  DERIVES its value from another const, a trigger field, or a step output — e.g. a const that
+  doubles another const's numeric value — rather than holding a plain stored literal. `Constant`
+  (renamed from `WorkflowGlobal`) is LITERAL-only; a computed const would need its own
+  dependency-graph and cycle-detection design (the same class of work a fenced if-block, a
+  value-or-variable pipeline, or — since this document was last updated — a custom function's own
+  reference graph needed, see "Custom functions" above), not a byproduct of the CRUD/catalog wiring
+  this phase shipped. See ADR-0024 Context.
+- **Frontend authoring for array-of-object / nested object-children consts** (Phase 3, ADR-0024):
+  `ConstantTypeValidator` already accepts a nested object/array/enum child inside an object
+  const's `fields`, and `array:true` on an `object` base, when sent directly to
+  `POST /api/consts` — `ConstantEditorDrawer.vue`'s type builder does not offer either
   combination yet (object-field children are scalar-only; the array toggle is disabled for an
   object base, with an in-UI note). A pure frontend follow-up whenever real authoring demand shows
   up, not blocked on a backend change.
+- **Richer function argument call-controls** (ADR-0029): a custom function's own argument, when
+  called from another pipeline, offers a literal control only for `number`/`boolean`/`date` —
+  `enum`/`multi`/`file`/`object`/`time` all fall back to a plain stringifiable text box rather than a
+  type-appropriate picker (an enum option list, a file picker). The function still executes
+  correctly for any declared arg type; only the CALL-SITE authoring UI is narrower. See "Custom
+  functions" above and ADR-0029 Decision 11.
+- **Default argument values for custom functions** (ADR-0029): every declared arg is required at
+  every call site today — no per-arg default the caller may omit. Real future work if authoring
+  demand shows it is needed, following the same design shape ADR-0022's per-reference `default`
+  needed for an ordinary variable reference.
 - **Trigger-gate (`WorkflowConditionEngine`) argument-variables** (Phase 4, ADR-0025): an operation
   argument may be a variable in a value-or-variable pipeline (`create_task.deadline`/`.priority`,
   `create_form_report.submissions_from`/`.submissions_to`), but NOT in a `form_submitted` condition-
   tree pipeline — rejected at write, and the trigger gate's runtime (`WorkflowConditionEngine`) calls
-  `WorkflowOperationExecutor` directly with no resolver/pre-resolution pass at all. Wiring it would
+  `OperationExecutor` directly with no resolver/pre-resolution pass at all. Wiring it would
   need a resolver dependency (or an equivalent pre-resolution pass) the condition engine has never
   had — a genuinely separate structural change, not a byproduct of this phase. See ADR-0025.
 - **Parent ops-modal Save gate for a nested argument-variable mismatch** (Phase 4, ADR-0025): a
   type-mismatched argument-variable shows its own local "action required" skin in the frontend
   editor, but the OUTER field's modal Save button is not (yet) disabled by it — `pipelineSatisfies()`
   only inspects each pipeline step's output type, never a step's `args`. The backend `422`
-  (`WorkflowConditionTreeValidator::validateArgVariable()`) stays fully authoritative regardless, so
+  (`PipelineValidator::validateArgVariable()`) stays fully authoritative regardless, so
   nothing invalid can be persisted; this is a pure frontend UX follow-up. See ADR-0025.

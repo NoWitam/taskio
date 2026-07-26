@@ -44,6 +44,14 @@ const CATALOG: VariableOperationDefinition[] = [
       { id: 'fallback', label: 'Fallback', type: 'choiceFallback' },
     ],
   },
+  // Boolean-terminal text op the rule LHS `when` pipeline is built from.
+  {
+    id: 'text_equals',
+    label: 'Equals',
+    inputTypes: ['text'],
+    outputType: 'boolean',
+    args: [{ id: 'value', label: 'Value', type: 'text' }],
+  },
 ];
 
 const SOURCE_OPTIONS = [
@@ -177,27 +185,31 @@ describe('VariablePipelineEditor — arg variables (phase-4b, every control)', (
     wrapper.unmount();
   });
 
-  it('OFFERS the slot for a STRUCTURAL sourceMap (map) arg — phase-4b widened it past value args', async () => {
+  it('Defect-3: a STRUCTURAL sourceMap offers a PER-ENTRY slot (one per source option), NOT one whole-arg slot', async () => {
     const wrapper = mountEditor(
       [{ stepId: 's1', operationId: 'enum_to_text', args: { mapping: {} }, outputType: 'text' }],
       { baseType: 'enum', sourceOptions: SOURCE_OPTIONS },
     );
     await edit(wrapper);
 
-    // The structural arg now offers the value/variable toggle (the stub slot replaces the map editor).
-    expect(wrapper.find('.arg-var-slot').exists()).toBe(true);
+    // Each source option's target is its own value-or-variable (the stub slot replaces each leaf) —
+    // two options ⇒ two entry slots — and no inline map inputs render.
+    expect(wrapper.findAll('.arg-var-slot').length).toBe(2);
     expect(wrapper.findAll('input[aria-label^="Value per option:"]').length).toBe(0);
+    // Every entry sits one level below the pipeline (depth 0 → 1).
+    expect(wrapper.findAll('.arg-var-slot').every((s) => s.attributes('data-depth') === '1')).toBe(true);
 
     wrapper.unmount();
   });
 
-  it('OFFERS the slot for choiceRules AND choiceFallback args (one per arg)', async () => {
+  it('Defect-3: choiceRules offers a PER-RULE `then` entry slot; choiceFallback stays a whole-arg slot', async () => {
     const wrapper = mountEditor(
       [
         {
           stepId: 's1',
           operationId: 'match_to_choice',
-          args: { rules: [{ when: 'x', then: 'urgent' }], fallback: 'low' },
+          // `when` is now the WIRE boolean pipeline; its text_equals step is a collapsed chip here.
+          args: { rules: [{ when: [{ op: 'text_equals', args: { value: 'x' } }], then: 'urgent' }], fallback: 'low' },
           outputType: 'enum',
         },
       ],
@@ -205,26 +217,28 @@ describe('VariablePipelineEditor — arg variables (phase-4b, every control)', (
     );
     await edit(wrapper);
 
-    // BOTH the choiceRules and the choiceFallback arg offer the toggle slot.
+    // Two slots: the choiceFallback WHOLE arg + the single rule's `then` ENTRY. The rule LHS `when`
+    // pipeline renders its step as a chip (not in edit mode), so it contributes no arg slot. Adding a
+    // rule adds a slot.
     expect(wrapper.findAll('.arg-var-slot').length).toBe(2);
 
     wrapper.unmount();
   });
 
-  it('the slot receives the running source + target options (for the recursive literal control)', async () => {
-    // A stub cannot echo scoped props, so we assert the passthrough via a dedicated capturing slot.
-    const captured: Array<{ sourceOptions: unknown; targetOptions: unknown }> = [];
+  it('Defect-3: a map entry slot gets the running SOURCE options + the entry target type; a TEXT entry threads NO target options', async () => {
+    const captured: Array<{ resultTypes: unknown; sourceOptions: unknown; targetOptions: unknown }> = [];
     const wrapper = mount(VariablePipelineEditor, {
       props: {
         baseType: 'enum',
         catalog: CATALOG,
         sourceOptions: SOURCE_OPTIONS,
         targetOptions: TARGET_OPTIONS,
+        // enum_to_text → mapType text: each entry is a TEXT value (no destination choice).
         modelValue: [{ stepId: 's1', operationId: 'enum_to_text', args: { mapping: {} }, outputType: 'text' }],
       },
       slots: {
-        argVariable: (p: { sourceOptions: unknown; targetOptions: unknown }) => {
-          captured.push({ sourceOptions: p.sourceOptions, targetOptions: p.targetOptions });
+        argVariable: (p: { resultTypes: unknown; sourceOptions: unknown; targetOptions: unknown }) => {
+          captured.push({ resultTypes: p.resultTypes, sourceOptions: p.sourceOptions, targetOptions: p.targetOptions });
           return h('div', { class: 'arg-var-slot' });
         },
       },
@@ -232,8 +246,47 @@ describe('VariablePipelineEditor — arg variables (phase-4b, every control)', (
     });
     await edit(wrapper);
 
-    expect(captured[captured.length - 1].sourceOptions).toEqual(SOURCE_OPTIONS);
-    expect(captured[captured.length - 1].targetOptions).toEqual(TARGET_OPTIONS);
+    const last = captured[captured.length - 1];
+    expect(last.resultTypes).toEqual(['text']); // typed to the map target
+    expect(last.sourceOptions).toEqual(SOURCE_OPTIONS); // running source options for the leaf
+    expect(last.targetOptions).toEqual([]); // a text entry maps to no destination choice
+
+    wrapper.unmount();
+  });
+
+  it('Defect-3: a CHOICE structural entry (rule `then`) threads the target options + an enum terminal', async () => {
+    const captured: Array<{ resultTypes: unknown; targetOptions: unknown }> = [];
+    const wrapper = mount(VariablePipelineEditor, {
+      props: {
+        baseType: 'text',
+        catalog: CATALOG,
+        targetOptions: TARGET_OPTIONS,
+        modelValue: [
+          {
+            stepId: 's1',
+            operationId: 'match_to_choice',
+            args: { rules: [{ when: [{ op: 'text_equals', args: { value: 'x' } }], then: 'urgent' }], fallback: 'low' },
+            outputType: 'enum',
+          },
+        ],
+      },
+      slots: {
+        argVariable: (p: { resultTypes: unknown; targetOptions: unknown }) => {
+          captured.push({ resultTypes: p.resultTypes, targetOptions: p.targetOptions });
+          return h('div', { class: 'arg-var-slot' });
+        },
+      },
+      attachTo: document.body,
+    });
+    await edit(wrapper);
+
+    // The rule `then` ENTRY is a choice target: enum terminal + the destination options threaded. (The
+    // choiceFallback WHOLE arg has no `resultTypes` — the reference editor derives it — so it is excluded.)
+    const thenEntry = captured.find(
+      (c) => Array.isArray(c.resultTypes) && c.resultTypes.length === 1 && c.resultTypes[0] === 'enum',
+    );
+    expect(thenEntry).toBeTruthy();
+    expect(thenEntry!.targetOptions).toEqual(TARGET_OPTIONS);
 
     wrapper.unmount();
   });

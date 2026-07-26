@@ -2,11 +2,16 @@
 
 namespace App\Modules\Workflows\Services;
 
-use App\Modules\Workflows\DTOs\WorkflowOperationArg;
-use App\Modules\Workflows\Enums\ConditionTreeLimits;
+use App\Modules\Variables\DTOs\OperationArg;
+use App\Modules\Variables\Enums\OperationArgType;
+use App\Modules\Variables\Enums\PipelineLimits;
+use App\Modules\Variables\Enums\VariableType;
+use App\Modules\Variables\Services\OperationExecutor;
+use App\Modules\Variables\Services\OperationResolver;
+use App\Modules\Variables\Support\FunctionScope;
+use App\Modules\Variables\Support\ScopeRef;
+use App\Modules\Variables\Support\ValueOrVariable;
 use App\Modules\Workflows\Enums\WorkflowAiPersona;
-use App\Modules\Workflows\Enums\WorkflowOperation;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
@@ -16,7 +21,7 @@ use Throwable;
 /**
  * Resolves workflow variable references in a step's config against the run context, EXECUTES the
  * transformations those references carry (SB1: directive pipelines, if-block branches, and
- * value-or-variable pipelines) through the shared WorkflowOperationExecutor, and — new in SB2 —
+ * value-or-variable pipelines) through the shared OperationExecutor, and — new in SB2 —
  * EXECUTES `@[ai-text]` directives (generating field text through WorkflowAiTextService). It
  * understands every serialization of the ONE canonical variable identity plus the legacy flat
  * `{{...}}` tokens.
@@ -63,11 +68,25 @@ use Throwable;
  * machinery), then hands the executor literal args exactly as before. The per-arg gate is the arg
  * control's ArgVariablePolicy (the SINGLE source shared with the write-validator): a VALUE arg coerces to
  * its one type, an OPTION arg to a string (enum|text — option-set membership deferred to runtime
- * fail-soft), a multi-OPTION arg to an array, and a STRUCTURAL arg (sourceMap/choiceRules) is handed the
- * RAW context array untouched (its shape deferred to runtime fail-soft — see resolveStructuralArgVariable).
+ * fail-soft), and a multi-OPTION arg to an array.
+ *
+ * STRUCTURAL CONTAINERS (sourceMap/choiceRules, Defect-3): these controls are NOT a single whole-structure
+ * variable — the container is a plain map / rule list whose ENTRIES may EACH be a value-or-variable union.
+ * THIS resolver walks the container and pre-resolves every union ENTRY to a LITERAL of the entry's expected
+ * TARGET type (a sourceMap value → the op's mapType; a choiceRules `then` → the target choice), leaving
+ * scalar entries byte-identical; the executor still reads a plain {option: scalar} map / rule list exactly
+ * as before (see resolveStructuralArgEntries). A choiceRules rule's `when` is now a boolean-terminal
+ * condition PIPELINE, not a scalar: its ops' variable-shaped ARGUMENTS are pre-resolved to literals HERE
+ * (resolvePipelineArgs), but the pipeline STRUCTURE is left intact — the executor RUNS it at execution time
+ * over the op's TEXT input (it depends on the op's runtime value, so it cannot be pre-computed). A per-entry
+ * union that fails to resolve fails that ENTRY closed: a sourceMap value resolves to a null target that
+ * enumMap treats as unmapped → FAIL; a matched choiceRules `then` that resolves non-scalar makes
+ * matchToChoice fail the op closed (NOT fall through to the fallback) — symmetric with enumMap. Either way
+ * an unresolvable entry never OPENS the gate.
+ *
  * There are NO cycles (an arg-variable references CONTEXT DATA, never another arg definition), so the
- * only unboundedness is nesting depth, hard-capped by ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH
- * (beyond it an arg resolves fail-soft to null/empty). A resolved arg value carrying reference-/
+ * only unboundedness is nesting depth, hard-capped by PipelineLimits::MAX_ARG_VARIABLE_DEPTH
+ * (beyond it an arg/entry resolves fail-soft to null/empty). A resolved arg value carrying reference-/
  * directive-like bytes is used LITERALLY by the pure executor and its output rides the SAME NUL-mask
  * path a resolved value does, so it is never re-interpreted (see resolvePipelineArgs).
  *
@@ -126,7 +145,7 @@ class WorkflowVariableResolver
     /**
      * The composite SUBFIELDS a `<file>.<subfield>` reference may address, mapped to their key in the
      * file snapshot object. `type` is the human-facing alias for the snapshot's `mime_type`; the rest
-     * are identity. These are exactly the fields WorkflowVariableType's file descriptor advertises
+     * are identity. These are exactly the fields VariableType's file descriptor advertises
      * (phase-2b). Resolving one collapses the single-file snapshot LIST to its element (multi-file →
      * first, fail-soft — true per-element iteration is the deferred R2 loop) then reads the mapped key.
      */
@@ -147,20 +166,28 @@ class WorkflowVariableResolver
     /** The run step-failure message an opt-in assert_present raises when its value resolves empty. */
     private const ASSERT_FAILED_MESSAGE = 'A required workflow value (assert_present) resolved empty.';
 
+    private OperationResolver $operations;
+
     public function __construct(
-        private WorkflowOperationExecutor $executor,
+        private OperationExecutor $executor,
         private WorkflowAiTextService $ai,
-    ) {}
+        ?OperationResolver $operations = null,
+    ) {
+        // Defaulted so the direct-`new` unit sites keep constructing with two args; the resolver is
+        // stateless, so a fresh instance is safe. Threaded so a step-config pipeline may pre-resolve a
+        // `fn:<uuid>` op's arguments — the functions ride the run context under FunctionScope.
+        $this->operations = $operations ?? new OperationResolver;
+    }
 
     /**
      * Resolve every reference in $value against $context. Scalars resolve directly, arrays
      * recursively. Non-string scalars (int/bool/null) pass through untouched. $typeMap is the
-     * run's path → WorkflowVariableType map (from WorkflowVariableCatalogService::runtimeTypeMap),
+     * run's path → VariableType map (from WorkflowVariableCatalogService::runtimeTypeMap),
      * used to recover a directive/if-block variable's REAL base type; it is optional (an empty map
      * falls back to the pipeline's first-op input type).
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     public function resolve(mixed $value, array $context, array $typeMap = []): mixed
     {
@@ -184,7 +211,7 @@ class WorkflowVariableResolver
      * pipeline is non-empty (or any embedded reference) is stringified into the surrounding text.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     public function resolveString(string $value, array $context, array $typeMap = []): mixed
     {
@@ -196,7 +223,7 @@ class WorkflowVariableResolver
      * so a nested ai-text prompt — resolved recursively through here — can be depth-capped.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveStringAt(string $value, array $context, array $typeMap, int $aiDepth): mixed
     {
@@ -217,7 +244,7 @@ class WorkflowVariableResolver
      * OUTPUT as a reference); the placeholders are restored to their generated strings at the end.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveInline(string $value, array $context, array $typeMap, int $aiDepth): mixed
     {
@@ -240,7 +267,7 @@ class WorkflowVariableResolver
      * placeholder, so it sees only variable references.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveReferences(string $value, array $context, array $typeMap): mixed
     {
@@ -301,7 +328,7 @@ class WorkflowVariableResolver
      *
      * @param  array<string, mixed>  $context
      */
-    public function resolveValueOrVariable(mixed $field, array $context, WorkflowVariableType $expectedType, int $argDepth = 0): mixed
+    public function resolveValueOrVariable(mixed $field, array $context, VariableType $expectedType, int $argDepth = 0): mixed
     {
         if (!is_array($field)) {
             return $this->coerce($field, $expectedType);
@@ -325,7 +352,7 @@ class WorkflowVariableResolver
      * @param  array<string, mixed>  $field
      * @param  array<string, mixed>  $context
      */
-    private function resolveVariableUnion(array $field, array $context, WorkflowVariableType $expectedType, int $argDepth): mixed
+    private function resolveVariableUnion(array $field, array $context, VariableType $expectedType, int $argDepth): mixed
     {
         $ref = $field['ref'] ?? null;
         $path = $this->refPath($ref);
@@ -335,7 +362,8 @@ class WorkflowVariableResolver
         $pipeline = $field['pipeline'] ?? null;
 
         if (is_array($pipeline) && $pipeline !== []) {
-            $refType = WorkflowVariableType::tryFrom((string) (is_array($ref) ? ($ref['type'] ?? '') : '')) ?? $expectedType;
+            $refType = VariableType::tryFrom((string) (is_array($ref) ? ($ref['type'] ?? '') : '')) ?? $expectedType;
+            $refType = $this->arrayPipelineBaseType($raw, $refType, $pipeline);
             $result = $this->executor->execute($raw, $refType, $this->resolvePipelineArgs($pipeline, $context, $argDepth), $context);
 
             if ($result->hard) {
@@ -348,12 +376,63 @@ class WorkflowVariableResolver
         return $this->coerce($raw, $expectedType);
     }
 
+    /**
+     * The base type a value-or-variable pipeline runs FROM, recovered for an ARRAY source (array-ops
+     * wave 3). An array<object> (repeater) / array<file> reference DEGRADES its wire `ref.type` to a scalar
+     * (text/file), so a pipeline that LEADS with an array op (count/at/map/filter/sort/reduce) would hand
+     * the executor a scalar base and fail the array op closed — even though the runtime VALUE is a real
+     * list. When the raw value IS a list AND the pipeline leads with an array op, recover MULTI (the
+     * executor's array type) so the transform runs. Guarded on the value actually being a list, so a
+     * genuine scalar (an invalid leading-array-op config the validator rejects) still fails closed exactly
+     * as before. Every non-array source keeps its declared type — a provable no-op.
+     *
+     * @param  array<int, mixed>  $pipeline
+     */
+    private function arrayPipelineBaseType(mixed $raw, VariableType $refType, array $pipeline): VariableType
+    {
+        if ($refType === VariableType::MULTI || !is_array($raw) || !array_is_list($raw)) {
+            return $refType;
+        }
+
+        // Only a leading ARRAY op (a built-in) triggers the MULTI recovery; a custom function is never one,
+        // so the empty function set suffices here. Routed through the resolver so no direct Operation::tryFrom
+        // survives in the resolver (the completeness gate).
+        $first = $pipeline[0] ?? null;
+        $op = is_array($first) ? $this->operations->resolve((string) ($first['op'] ?? $first['operationId'] ?? ''), []) : null;
+
+        return $op !== null && $op->isArrayOp() ? VariableType::MULTI : $refType;
+    }
+
     // ---- argument variables (phase-4a) ----------------------------------------
+
+    /**
+     * Pre-resolve a pipeline's variable-shaped op ARGUMENTS for a caller that runs the (pure)
+     * OperationExecutor ITSELF instead of going through resolveValueOrVariable — today the
+     * trigger gate (WorkflowConditionEngine, B6), whose base value is a condition SOURCE rather than a
+     * ref. It is a thin, deliberately narrow window onto the private resolvePipelineArgs at a top-level
+     * field's arg depth (0), so what an argument MEANS can never drift between the gate and the step
+     * runtime — the whole reason the gate does not grow its own argument reader.
+     *
+     * $context is the standard run context (`{trigger, steps, globals}`), so an argument ref uses the
+     * module-wide FULL path exactly as it does in a step config.
+     *
+     * LIKE EVERY OTHER RESOLUTION PATH this may THROW the run's standard assert_present step-failure
+     * (see resolveVariableUnion); the gate, which must never throw, catches it into its fail-closed
+     * false.
+     *
+     * @param  array<int, mixed>  $pipeline
+     * @param  array<string, mixed>  $context
+     * @return array<int, mixed>
+     */
+    public function resolveArgsForPipeline(array $pipeline, array $context): array
+    {
+        return $this->resolvePipelineArgs($pipeline, $context, 0);
+    }
 
     /**
      * Pre-resolve every VARIABLE-shaped argument of every op in $pipeline into a LITERAL, returning a
      * NEW pipeline the (pure) executor can run with literal args exactly as before. Each op is matched
-     * to its WorkflowOperation so only DECLARED args (per argDescriptors) are considered; a foreign key,
+     * to its Operation so only DECLARED args (per argDescriptors) are considered; a foreign key,
      * a non-array step, or an unknown op is left untouched (the executor fail-closes on it as today).
      *
      * $argDepth is the nesting level of the pipeline's OWNING field; an argument therefore sits at level
@@ -387,7 +466,11 @@ class WorkflowVariableResolver
             return $step;
         }
 
-        $op = WorkflowOperation::tryFrom((string) ($step['op'] ?? $step['operationId'] ?? ''));
+        // Resolve through the OperationResolver (built-ins ∪ the context's custom functions) so a
+        // `fn:<uuid>` op's variable-shaped arguments are pre-resolved to literals for the pure executor,
+        // exactly like a built-in op's. The functions ride the run context under FunctionScope; with none
+        // threaded a `fn:` id resolves null and the step is left untouched (byte-identical to before).
+        $op = $this->operations->resolve((string) ($step['op'] ?? $step['operationId'] ?? ''), FunctionScope::fromContext($context)->functions);
 
         if ($op === null) {
             return $step;
@@ -396,8 +479,8 @@ class WorkflowVariableResolver
         $args = is_array($step['args'] ?? null) ? $step['args'] : [];
 
         foreach ($op->argDescriptors() as $descriptor) {
-            if (array_key_exists($descriptor->id, $args) && $this->isVariableArg($args[$descriptor->id])) {
-                $args[$descriptor->id] = $this->resolveArgVariable($args[$descriptor->id], $context, $descriptor, $argDepth);
+            if (array_key_exists($descriptor->id, $args)) {
+                $args[$descriptor->id] = $this->resolveDescriptorArg($args[$descriptor->id], $context, $descriptor, $argDepth);
             }
         }
 
@@ -407,67 +490,225 @@ class WorkflowVariableResolver
     }
 
     /**
-     * Resolve ONE variable-shaped argument to the literal the PURE executor's arg reader consumes, driven
-     * by the arg's ArgVariablePolicy (the SINGLE source shared with the write-validator). Over the nesting
-     * cap → fail-soft (the op then fail-closes on the empty/missing arg, collapsing the pipeline — never a
-     * crash or unbounded work). Per category:
-     *   - VALUE / OPTION / OPTIONS   read the ref (+ optional sub-pipeline) via resolveValueOrVariable and
-     *                                coerce to the policy's coerceTo (a scalar for value/option, an array
-     *                                for options). An out-of-set option value is a RUNTIME concern — the
-     *                                op's reader fail-softs on it (not-found / fallback), never a crash.
-     *   - STRUCTURAL (map/rules)     hand the raw context structure through untouched (resolveStructural-
-     *                                ArgVariable); a scalar coercion would destroy the map's keys, and the
-     *                                executor's map/rules reader fail-softs on a malformed value.
+     * Resolve ONE declared operation argument to the literal(s) the PURE executor consumes. Two shapes:
+     *   - STRUCTURAL container (sourceMap / choiceRules): a plain map / rule list whose ENTRIES may EACH be
+     *     a value-or-variable union. The container itself is never a variable — each union entry is walked
+     *     and pre-resolved to a literal of the entry's TARGET type (resolveStructuralArgEntries), leaving
+     *     scalar entries byte-identical.
+     *   - EVERY OTHER control: the WHOLE argument may be a value-or-variable union (resolveArgVariable); a
+     *     plain literal passes through untouched.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function resolveDescriptorArg(mixed $value, array $context, OperationArg $descriptor, int $argDepth): mixed
+    {
+        // A SCOPE reference (element/index, array-ops wave 2) is deliberately LEFT untouched: it resolves
+        // per-iteration inside the executor's element sub-run against the scoped overlay, and it must NEVER
+        // resolve here against the global context (its root is not whitelisted — pre-resolving it would
+        // fail-soft it to null and defeat the whole element pipeline).
+        if ($this->isScopeVariable($value)) {
+            return $value;
+        }
+
+        if ($descriptor->type->argVariablePolicy()->isStructural()) {
+            return $this->resolveStructuralArgEntries($value, $context, $descriptor, $argDepth);
+        }
+
+        if ($this->isVariableArg($value)) {
+            return $this->resolveArgVariable($value, $context, $descriptor, $argDepth);
+        }
+
+        return $value;
+    }
+
+    /**
+     * Resolve ONE WHOLE variable-shaped argument (a VALUE / OPTION / OPTIONS control) to the literal the
+     * PURE executor's arg reader consumes, driven by the arg's ArgVariablePolicy (the SINGLE source shared
+     * with the write-validator). Reads the ref (+ optional sub-pipeline) via resolveValueOrVariable and
+     * coerces to the policy's coerceTo (a scalar for value/option, an array for options). An out-of-set
+     * option value is a RUNTIME concern — the op's reader fail-softs on it (not-found / fallback), never a
+     * crash. Over the nesting cap → fail-soft (the coerced-null empty arg the op then fail-closes on).
+     * STRUCTURAL containers never reach here — their entries are walked in resolveStructuralArgEntries.
+     *
+     * DATE ARGUMENTS are narrowed one step further (argWireDate) — see that method: coerce() speaks the
+     * ISO-8601 instant a step FIELD stores, while an operation ARGUMENT is read by the executor's strict
+     * Y-m-d reader.
      *
      * @param  array<string, mixed>  $field
      * @param  array<string, mixed>  $context
      */
-    private function resolveArgVariable(array $field, array $context, WorkflowOperationArg $descriptor, int $argDepth): mixed
+    private function resolveArgVariable(array $field, array $context, OperationArg $descriptor, int $argDepth): mixed
     {
         $policy = $descriptor->type->argVariablePolicy();
 
         // This argument sits one level below the pipeline it lives in. Because there are NO cycles, the
-        // cap only bites pathological nesting; beyond it the argument resolves fail-soft (structural → the
-        // null the map/rules reader fail-closes on; value/option → the coerced-null empty arg).
-        if ($argDepth + 1 > ConditionTreeLimits::MAX_ARG_VARIABLE_DEPTH) {
-            return $policy->isStructural() ? null : $this->coerce(null, $policy->coerceTo);
+        // cap only bites pathological nesting; beyond it the argument resolves fail-soft (the coerced-null
+        // empty arg the op fail-closes on).
+        if ($argDepth + 1 > PipelineLimits::MAX_ARG_VARIABLE_DEPTH) {
+            return $this->coerce(null, $policy->coerceTo);
         }
 
-        if ($policy->isStructural()) {
-            return $this->resolveStructuralArgVariable($field, $context);
+        $resolved = $this->resolveValueOrVariable($field, $context, $policy->coerceTo, $argDepth + 1);
+
+        return $policy->coerceTo === VariableType::DATE ? $this->argWireDate($resolved) : $resolved;
+    }
+
+    // ---- structural containers: per-entry value-or-variable (Defect-3) --------
+
+    /**
+     * Pre-resolve the ENTRIES of a STRUCTURAL container argument (sourceMap / choiceRules). The container
+     * is a plain map / rule list — NEVER itself a variable; a non-array (or a legacy whole-arg union) is
+     * left as-is for the executor's array reader to fail closed. Each entry is a LITERAL scalar (left
+     * byte-identical) OR a value-or-variable union pre-resolved to a literal of the entry's TARGET type.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function resolveStructuralArgEntries(mixed $value, array $context, OperationArg $descriptor, int $argDepth): mixed
+    {
+        if (!is_array($value) || $this->isVariableArg($value)) {
+            return $value;
         }
 
-        return $this->resolveValueOrVariable($field, $context, $policy->coerceTo, $argDepth + 1);
+        return match ($descriptor->type) {
+            OperationArgType::SOURCE_MAP => $this->resolveSourceMapEntries($value, $context, $descriptor->mapType ?? VariableType::TEXT, $argDepth),
+            OperationArgType::CHOICE_RULES => $this->resolveChoiceRulesEntries($value, $context, $argDepth),
+            // An ELEMENT PIPELINE (map/filter/sort/reduce, wave 2): pre-resolve its ops' NON-scope arg-
+            // variables to literals (exactly like a choiceRules `when`), leaving the pipeline STRUCTURE and
+            // any element/index SCOPE references intact — the executor runs the pipeline and resolves the
+            // scope references per element. A reduce SEED (`{type, value}`) is a plain literal: untouched.
+            OperationArgType::ELEMENT_PIPELINE => is_array($value) && array_is_list($value)
+                ? $this->resolvePipelineArgs($value, $context, $argDepth)
+                : $value,
+            default => $value,
+        };
     }
 
     /**
-     * Resolve a STRUCTURAL arg-variable (sourceMap / choiceRules) to the raw context structure the PURE
-     * executor's map/rules reader consumes. Reads the whitelisted ref path and returns it VERBATIM when it
-     * is an array (a {option: target} map / a {when, then} list), else null (→ the executor's enumMap /
-     * matchToChoice reader fail-softs). No sub-pipeline is run — no op BUILDS a structure — so any pipeline
-     * a hand-written config carries is inert here (an unexpressible shape is a runtime fail-soft concern).
+     * A sourceMap `{optionValue: Entry}` map: resolve each entry to a literal of the map's TARGET type
+     * ($entryType = the op's mapType — text/number/date, or enum for enum_to_choice), preserving the option
+     * keys. A scalar entry is untouched.
      *
-     * INJECTION SAFETY: the returned array is a literal handed to the pure executor, which never scans for
-     * references; the executor's OUTPUT then rides the SAME NUL-mask path a resolved value does (see
-     * resolvePipelineArgs / resolveReferences), so a structure whose values carry `{{…}}` / `@[…]` bytes is
-     * used literally and never re-interpreted as a second reference.
-     *
-     * @param  array<string, mixed>  $field
+     * @param  array<array-key, mixed>  $map
      * @param  array<string, mixed>  $context
+     * @return array<array-key, mixed>
      */
-    private function resolveStructuralArgVariable(array $field, array $context): mixed
+    private function resolveSourceMapEntries(array $map, array $context, VariableType $entryType, int $argDepth): array
     {
-        $ref = $field['ref'] ?? null;
-        $path = $this->refPath($ref);
-        $raw = $path !== null && $this->isReference($path) ? $this->readContext($context, $path) : null;
+        $out = [];
 
-        return is_array($raw) ? $raw : null;
+        foreach ($map as $option => $entry) {
+            $out[$option] = $this->resolveStructuralEntry($entry, $context, $entryType, $argDepth);
+        }
+
+        return $out;
     }
 
-    /** Whether a value is a variable-union argument (`{kind:'variable', …}`) rather than a literal. */
+    /**
+     * A choiceRules `[{when, then}]` list. Each rule's `when` is now a boolean-terminal condition
+     * PIPELINE (run at execution time by the executor over the op's TEXT input) — its ops' variable-
+     * shaped ARGUMENTS are pre-resolved to literals HERE (resolvePipelineArgs, exactly as a directive /
+     * if-block / value pipeline is), leaving the pipeline STRUCTURE intact for the executor to run.
+     * Each rule's `then` is resolved to a literal CHOICE (enum) value (resolveStructuralEntry). A
+     * malformed rule (non-array) passes through for the executor's matchToChoice reader to fail closed.
+     *
+     * @param  array<int, mixed>  $rules
+     * @param  array<string, mixed>  $context
+     * @return array<int, mixed>
+     */
+    private function resolveChoiceRulesEntries(array $rules, array $context, int $argDepth): array
+    {
+        return array_map(function ($rule) use ($context, $argDepth) {
+            if (!is_array($rule)) {
+                return $rule;
+            }
+
+            if (is_array($rule['when'] ?? null)) {
+                $rule['when'] = $this->resolvePipelineArgs($rule['when'], $context, $argDepth);
+            }
+
+            if (array_key_exists('then', $rule)) {
+                $rule['then'] = $this->resolveStructuralEntry($rule['then'], $context, VariableType::ENUM, $argDepth);
+            }
+
+            return $rule;
+        }, $rules);
+    }
+
+    /**
+     * Resolve ONE structural-container entry. A LITERAL scalar returns byte-identical (the wire is a bare
+     * scalar, exactly as before). A value-or-variable union is pre-resolved via the SAME machinery a
+     * top-level arg-variable uses (resolveValueOrVariable), coerced to the entry's expected type and, for a
+     * DATE target, narrowed to the executor's strict Y-m-d wire (argWireDate) — one arg-variable level
+     * deeper, depth-capped by MAX_ARG_VARIABLE_DEPTH. A union that fails to resolve leaves a null (non-scalar)
+     * target that fails THIS ENTRY closed: enumMap treats a sourceMap null as unmapped → FAIL; matchToChoice,
+     * when the enclosing rule's `when` MATCHES but this `then` is non-scalar, fails the op closed rather than
+     * returning the fallback — so a per-entry union that cannot resolve never OPENS the gate. INJECTION: the
+     * resolved literal is handed to the PURE executor and its output rides
+     * the SAME NUL-mask path, so entry bytes like `{{…}}` / `@[…]` are used literally, never re-interpreted.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function resolveStructuralEntry(mixed $entry, array $context, VariableType $entryType, int $argDepth): mixed
+    {
+        if (!$this->isVariableArg($entry)) {
+            return $entry;
+        }
+
+        if ($argDepth + 1 > PipelineLimits::MAX_ARG_VARIABLE_DEPTH) {
+            return null;
+        }
+
+        $resolved = $this->resolveValueOrVariable($entry, $context, $entryType, $argDepth + 1);
+
+        return $entryType === VariableType::DATE ? $this->argWireDate($resolved) : $resolved;
+    }
+
+    /**
+     * Narrow a resolved DATE argument to the module's canonical WIRE date (strict `Y-m-d`).
+     *
+     * coerce(DATE) yields an ISO-8601 INSTANT (`2026-02-01T00:00:00+00:00`) — right for a step FIELD,
+     * which stores a timestamp, but not for an operation ARGUMENT: every date arg is read by
+     * OperationExecutor::parseDate, which accepts ONLY a strict `Y-m-d` (the exact bytes a
+     * LITERAL date argument carries). Without this narrowing a date-typed arg-variable coerced to a
+     * shape its own reader rejects, so it ALWAYS failed the operation closed — silently, in both the
+     * step runtime and (since B6) the trigger gate. Fail-soft: an unparseable/absent value stays null,
+     * which is the same empty argument the reader already fail-closes on.
+     */
+    private function argWireDate(mixed $value): ?string
+    {
+        if (!is_string($value) || $value === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value)->format('Y-m-d');
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether a value is a variable-union argument (`{kind:'variable', …}`) rather than a literal.
+     * Delegates to ValueOrVariable — the ONE definition of the union shape, shared with the write
+     * validator and with the executor's defensive rejection of a union that bypassed pre-resolution.
+     */
     private function isVariableArg(mixed $value): bool
     {
-        return is_array($value) && ($value['kind'] ?? null) === 'variable';
+        return ValueOrVariable::isVariable($value);
+    }
+
+    /**
+     * Whether $value is a SCOPE reference (array-ops wave 2): a variable union whose ref addresses the
+     * synthetic `element` / `index` scope. Delegates to ScopeRef — the ONE source-aware definition shared
+     * with the write-validator and the executor — so an ordinary global / trigger / step ref whose path
+     * leaf merely HAPPENS to be `element` / `index` (source ≠ `scope`) is NOT mis-flagged as scope and is
+     * pre-resolved against the real context here, instead of leaking the loop element/index into its slot.
+     * A true scope reference is never pre-resolved here — it resolves per element inside the executor's
+     * element sub-run — so this predicate keeps it out of the standard context-based resolution paths.
+     */
+    private function isScopeVariable(mixed $value): bool
+    {
+        return ScopeRef::isScopeUnion($value);
     }
 
     // ---- directive resolution -------------------------------------------------
@@ -478,7 +719,7 @@ class WorkflowVariableResolver
      * directive only ever lives in a text field). A malformed / non-reference directive resolves null.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveStandaloneDirective(string $rawPayload, array $context, array $typeMap): mixed
     {
@@ -508,7 +749,7 @@ class WorkflowVariableResolver
      * directives stay literal so the surrounding text is untouched.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveEmbeddedDirective(string $rawPayload, string $original, array $context, array $typeMap): string
     {
@@ -535,13 +776,13 @@ class WorkflowVariableResolver
      *
      * @param  array{id: string, pipeline: array<int, mixed>, type: ?string, default: mixed}  $directive
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function applyDirectivePipeline(mixed $raw, array $directive, array $context, array $typeMap): string
     {
         $baseType = $this->pipelineBaseType($directive['id'], $directive['pipeline'], $typeMap)
-            ?? WorkflowVariableType::tryFrom((string) ($directive['type'] ?? ''))
-            ?? WorkflowVariableType::TEXT;
+            ?? VariableType::tryFrom((string) ($directive['type'] ?? ''))
+            ?? VariableType::TEXT;
 
         // A directive lives at a text field's top level (arg-variable depth 0); pre-resolve any
         // variable-shaped op arguments to literals so the executor stays a pure transformer.
@@ -606,7 +847,7 @@ class WorkflowVariableResolver
      * left literal (the `@[` is emitted and scanning resumes past it), never throwing.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      * @param  array<string, string>  $stash  placeholder → generated text (populated here)
      */
     private function maskAiTextDirectives(string $value, array $context, array $typeMap, int $aiDepth, array &$stash): string
@@ -691,7 +932,7 @@ class WorkflowVariableResolver
      * cap → '' with NO AI call. The service is fail-closed, so this always returns a string.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveAiText(string $payload, array $context, array $typeMap, int $aiDepth): string
     {
@@ -749,7 +990,7 @@ class WorkflowVariableResolver
      * intact into a branch body and re-parsed only when that branch wins.
      *
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveIfBlocks(string $value, array $context, array $typeMap, int $depth, int $aiDepth): string
     {
@@ -823,7 +1064,7 @@ class WorkflowVariableResolver
      *
      * @param  array<int, string>  $bodyLines
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveOneIfBlock(array $bodyLines, array $context, array $typeMap, int $depth, int $aiDepth): string
     {
@@ -962,7 +1203,7 @@ class WorkflowVariableResolver
      *
      * @param  array<string, mixed>|null  $condition
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function evaluateBranchCondition(?array $condition, array $context, array $typeMap): bool
     {
@@ -983,14 +1224,14 @@ class WorkflowVariableResolver
         }
 
         $pipeline = is_array($condition['pipeline'] ?? null) ? $condition['pipeline'] : [];
-        $baseType = $this->pipelineBaseType($variableId, $pipeline, $typeMap) ?? WorkflowVariableType::BOOLEAN;
+        $baseType = $this->pipelineBaseType($variableId, $pipeline, $typeMap) ?? VariableType::BOOLEAN;
 
         // An if-block condition is a top-level pipeline (arg-variable depth 0); pre-resolve its ops'
         // variable-shaped arguments to literals before the pure executor evaluates the branch.
         $result = $this->executor->execute($raw, $baseType, $this->resolvePipelineArgs($pipeline, $context, 0), $context);
 
         return !$result->failed
-            && $result->type === WorkflowVariableType::BOOLEAN
+            && $result->type === VariableType::BOOLEAN
             && $result->value === true;
     }
 
@@ -1000,7 +1241,7 @@ class WorkflowVariableResolver
      *
      * @param  array<int, string>  $bodyLines
      * @param  array<string, mixed>  $context
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
     private function resolveBranchBody(array $bodyLines, array $context, array $typeMap, int $depth, int $aiDepth): string
     {
@@ -1026,18 +1267,18 @@ class WorkflowVariableResolver
      * input type (the editor authored the pipeline against the real type), else null.
      *
      * @param  array<int, mixed>  $pipeline
-     * @param  array<string, WorkflowVariableType|string>  $typeMap
+     * @param  array<string, VariableType|string>  $typeMap
      */
-    private function pipelineBaseType(string $path, array $pipeline, array $typeMap): ?WorkflowVariableType
+    private function pipelineBaseType(string $path, array $pipeline, array $typeMap): ?VariableType
     {
         $mapped = $typeMap[$path] ?? null;
 
-        if ($mapped instanceof WorkflowVariableType) {
+        if ($mapped instanceof VariableType) {
             return $mapped;
         }
 
         if (is_string($mapped)) {
-            $type = WorkflowVariableType::tryFrom($mapped);
+            $type = VariableType::tryFrom($mapped);
 
             if ($type !== null) {
                 return $type;
@@ -1047,7 +1288,10 @@ class WorkflowVariableResolver
         $first = $pipeline[0] ?? null;
 
         if (is_array($first)) {
-            $op = WorkflowOperation::tryFrom((string) ($first['op'] ?? $first['operationId'] ?? ''));
+            // Routed through the resolver (built-ins only — the run type map is the authoritative base-type
+            // source for a real ref, so this first-op fallback need not resolve a leading custom function)
+            // so no direct Operation::tryFrom survives in the resolver.
+            $op = $this->operations->resolve((string) ($first['op'] ?? $first['operationId'] ?? ''), []);
 
             if ($op !== null) {
                 return $op->inputType();
@@ -1231,9 +1475,9 @@ class WorkflowVariableResolver
      * as Y-m-d; everything else routes through stringify (numbers render naturally, booleans as
      * 'true'/'false' — the same coercion the identity embed uses, kept for consistency).
      */
-    private function stringifyResult(mixed $value, ?WorkflowVariableType $type): string
+    private function stringifyResult(mixed $value, ?VariableType $type): string
     {
-        if ($type === WorkflowVariableType::DATE && $value instanceof CarbonInterface) {
+        if ($type === VariableType::DATE && $value instanceof CarbonInterface) {
             return $value->format('Y-m-d');
         }
 
@@ -1250,22 +1494,29 @@ class WorkflowVariableResolver
      *   multi   → array (a scalar is wrapped)
      *   file    → array of file IDS (the consumers — attachments — need ids, not snapshots)
      */
-    private function coerce(mixed $value, WorkflowVariableType $type): mixed
+    private function coerce(mixed $value, VariableType $type): mixed
     {
         if ($value === null) {
             return match ($type) {
-                WorkflowVariableType::MULTI, WorkflowVariableType::FILE => [],
+                VariableType::MULTI, VariableType::FILE => [],
                 default => null,
             };
         }
 
         return match ($type) {
-            WorkflowVariableType::DATE => $this->coerceDate($value),
-            WorkflowVariableType::NUMBER => is_numeric($value) ? $value + 0 : null,
-            WorkflowVariableType::BOOLEAN => filter_var($value, FILTER_VALIDATE_BOOLEAN),
-            WorkflowVariableType::MULTI => is_array($value) ? array_values($value) : [$value],
-            WorkflowVariableType::FILE => $this->coerceFileIds($value),
-            WorkflowVariableType::ENUM, WorkflowVariableType::TEXT => is_scalar($value) ? (string) $value : null,
+            VariableType::DATE => $this->coerceDate($value),
+            VariableType::NUMBER => is_numeric($value) ? $value + 0 : null,
+            VariableType::BOOLEAN => filter_var($value, FILTER_VALIDATE_BOOLEAN),
+            VariableType::MULTI => is_array($value) ? array_values($value) : [$value],
+            VariableType::FILE => $this->coerceFileIds($value),
+            VariableType::ENUM, VariableType::TEXT => is_scalar($value) ? (string) $value : null,
+            // TOTALITY over the enum — do NOT remove. A DESCRIPTOR-ONLY type (`time`/`object`) has no
+            // runtime representation, so an expected type this resolver cannot express coerces to the
+            // same soft null an uncoercible VALUE does, instead of raising an UnhandledMatchError out
+            // of a step run. Unreachable today (the catalog degrades both to text on the flat wire and
+            // every caller passes a core type), which is exactly what made the sibling gap in
+            // OperationExecutor::normalizeInput look unreachable too — see ADR-0022's amendment.
+            default => null,
         };
     }
 

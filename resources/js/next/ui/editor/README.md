@@ -21,8 +21,9 @@ language as the rest of the `next` form controls.
 | `extensions/index.ts` | `createCoreExtensions()` + `mergeExtensions()` + `buildPart2Extensions()` — the Tiptap schema assembly + the PART 2 feature assembly. |
 | `extensions/placeholder.ts` | Tiny local Placeholder extension (avoids a new npm dependency). |
 | `extensions/types.ts` | PART 2 runtime payloads (mirror the legacy `types/editor.ts` shapes for portability). |
-| `extensions/mention.ts` + `MentionChip.vue` + `MentionSuggest.vue` + `suggestionStore.ts` | `@`-mention node + caret-anchored suggestion popup (no tippy). The popup + store are shared with the variable trigger. |
-| `extensions/variable.ts` + `VariableChip.vue` + `VariablePanel.vue` | Template-variable node. Inserted via a `{` **trigger** (same suggestion architecture as mentions, local fuzzy filter over the predefined list); the chip opens a **Modal** with the full operations-pipeline editor. |
+| `extensions/mention.ts` + `MentionChip.vue` + `MentionSuggest.vue` + `suggestionStore.ts` | `@`-mention node + caret-anchored suggestion popup (no tippy). The **store** (caret rect / query / key forwarding) is shared with the variable trigger; the popup is per-variant (see `VariableSuggest.vue`). |
+| `extensions/variable.ts` + `VariableChip.vue` + `VariablePanel.vue` | Template-variable node. Inserted via a `{` **trigger**; the chip opens a **Modal** whose body is the SHARED `ui/variables/VariableReferenceEditor` (source header → nullable-gated TYPED "default when empty" → operations pipeline incl. arg-variables → "Returns: <type>" → change source). The panel keeps only the markdown-only display **name + lock**. |
+| `extensions/VariableSuggest.vue` + `variableFeed.ts` | The `{`-insert popup: the SHARED `ui/variables/VariableBrowser` (an inline ARIA tree with type glyphs, `?`/`[]` markers and expandable containers) anchored to the caret. `variableFeed.ts` turns whichever feed the host gave the editor — the live `source()` list or the flat `VariableDefinition[]` — into that one tree. An object container is **expand-only**, so it can never be inserted. |
 | `extensions/VariablePipelineEditor.vue` + `operationHelpers.ts` | The **shared** operations-pipeline editor (add-operation dropdown filtered by the current running type → steps → per-arg inputs → computed `resultType`) + its pure type-flow helpers. Used by BOTH the VariablePanel and the IF condition editor (DRY). |
 | `extensions/PipelineArgLiteralInput.vue` | The literal control for EVERY pipeline-operation argument kind — value (text/number/boolean/date) AND option/map/rules (select/sourceOption/sourceOptions/sourceMap/choiceRules/choiceFallback) — extracted verbatim from `VariablePipelineEditor`'s previous inline controls (Workflows variable-typesystem Phase 4; widened to the option/map/rules controls in a later "Phase 4b" batch) — rendered both as the editor's own literal fallback and inside a host's `argVariable` slot's value mode, so the two always look/behave identically. |
 | `extensions/VariableTypeIcon.vue` | Shared type-icon glyph + `nullable` ("?") / `array` ("[]") modifier markers (title + sr-only text), and an optional sr-only `typeLabel` prop. Used by `VariableChip` here and by the Workflows module's value-or-variable token, picker-tree rows, and operations-modal header, so a variable's type reads with the same glyph everywhere. |
@@ -162,17 +163,26 @@ the one host that fills this slot today, recursively, with itself; its recursive
 FULL show-all variable pool for every arg (not a type-prefiltered one — the terminal gate plus the
 mismatch skin enforce appropriateness instead), and a STRUCTURAL arg's recursive field gets no
 operations catalog at all (no sub-pipeline — the ref supplies the whole map/rule-list). That same
-host's picker — for a top-level field and for a recursive arg-variable alike — is
-`VariableTreePicker.vue` (`pages/workflows/`, not part of this shared module): an expandable ARIA
-tree (`role="tree"`/`treeitem`, keyboard expand/collapse/select/type-ahead) built by
-`variablePickerTree()` in `workflowVariables.ts`, replacing a flat qualified-name `Select`. An
-object-shaped entry (a file composite or an object global) expands to its child fields on pick —
-a form SECTION never reaches the tree at all, its leaves already being flattened upstream by the
-same `expandVariables()` filter that feeds every variable-offering list; a repeater stays one
-non-expandable list entry. It reads each variable's type
+host's picker — for a top-level field and for a recursive arg-variable alike — is the SHARED
+`ui/variables/VariableBrowserPopover.vue` + `VariableBrowser.vue` (B2, reworked in B3), driven by
+`buildVariableTree()` in `ui/variables/variableTree.ts`. It presents the offered variables as ONE
+INLINE TREE: expanding a container reveals its children directly BENEATH it, indented, with a guide
+rail per ancestor level and a rotating chevron on container rows; a search box switches to a flat
+result list. It IS an ARIA `tree` — the body is one focusable element carrying `role="tree"` +
+`aria-activedescendant` (virtual focus, so the search input drives the same cursor) and each row is
+a `treeitem` with `aria-level`/`aria-expanded` (+ `aria-posinset`/`aria-setsize`, the DOM being
+flattened); only the search RESULTS are a `listbox` of `option`s. Keyboard: ↑/↓ over the visible
+rows, → expand or step in, ← collapse or step out, Home/End, Enter/Space pick-or-toggle, Esc, and
+type-ahead. An object-shaped entry (a file composite, an object global, a form section, the
+workflows "Globals" group) expands to its child fields; an object container is expand-ONLY (a whole
+object resolves to a map, so it is never itself a reference) while a file composite is both
+expandable and selectable; a repeater stays one non-expandable list entry. Note a form SECTION only
+reaches the browser if the host's feed carries it — the workflows value-field feed carries it (and
+the globals group) while the flat markdown `{` feed still flattens both upstream in
+`expandVariables()`. The browser reads each variable's type
 through this module's own `VariableTypeIcon.vue` (see the Files table above), so a variable's type
-glyph — plus its `nullable`/`array` markers — looks identical in the tree, the chip, and the picked
-token.
+glyph — plus its `nullable`/`array` markers — looks identical in the browser, the chip, and the
+picked token.
 
 ### Variable value types (extended vocabulary)
 
@@ -304,6 +314,22 @@ rather than re-creating the anchor per frame) and repositions against. When the
 caret's editor line scrolls fully out of the viewport, the plugin's re-measure
 finds no rect and the store closes the popup instead of leaving it pinned to a
 stale, now-meaningless position.
+
+**The `{` variant renders the shared VariableBrowser, with VIRTUAL focus.** The
+mention popup is a flat listbox; the variable popup (`VariableSuggest.vue`) puts
+the same caret anchoring around `ui/variables/VariableBrowser` — type glyphs with
+their `?` / `[]` markers, containers you can expand inline, and a search mode fed
+by the query typed after `{`. The ProseMirror contract is unchanged and is the
+thing to protect when touching it: **DOM focus never leaves the editor**, so the
+plugin FORWARDS keys into the browser through `suggestionStore.onKey` —
+`↑ ↓ Enter Esc` always, and `← →` **only while the query is empty** (they are the
+tree's expand/collapse keys there; once a query exists they belong to the caret).
+Nothing else is forwarded, so a printable key can never be swallowed by the
+tree's type-ahead, and the panel prevents `mousedown` so a click cannot blur the
+editor. Because `buildVariableTree` makes a non-array object **never selectable**,
+a form section / object global / the "Globals" group can only be OPENED here —
+inserting one (which the old flat list allowed) would have written a directive
+that resolves to a map inside the text.
 
 ## v-model loop prevention
 

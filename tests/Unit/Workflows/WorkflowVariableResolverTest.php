@@ -2,8 +2,8 @@
 
 namespace Tests\Unit\Workflows;
 
-use App\Modules\Workflows\Enums\WorkflowVariableType;
-use App\Modules\Workflows\Services\WorkflowOperationExecutor;
+use App\Modules\Variables\Enums\VariableType as WorkflowVariableType;
+use App\Modules\Variables\Services\OperationExecutor as WorkflowOperationExecutor;
 use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
 use RuntimeException;
@@ -267,6 +267,86 @@ class WorkflowVariableResolverTest extends TestCase
         $field = ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.budget', 'type' => 'number']];
 
         $this->assertSame(5000, $this->resolver->resolveValueOrVariable($field, $this->context(), WorkflowVariableType::NUMBER));
+    }
+
+    // ---- Finding B: source-aware scope detection (a global NAMED index/element) ---
+
+    public function test_a_global_whose_path_leaf_is_index_is_pre_resolved_not_treated_as_loop_scope(): void
+    {
+        // A workspace global literally NAMED "index" (source 'globals', path leaf 'index') is an ORDINARY
+        // ref, NOT the synthetic per-element loop scope. Before the source-aware fix the resolver mis-flagged
+        // it as scope by its path LEAF alone and refused to pre-resolve it — so as an OP ARGUMENT it reached
+        // the pure executor as an unresolved union and failed closed. It must now pre-resolve to the GLOBAL's
+        // value (100), so `meta.count (7) + globals.index (100)` = 107.
+        $context = $this->context();
+        $context['globals']['index'] = 100;
+
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'meta.count', 'type' => 'number'],
+            'pipeline' => [
+                ['op' => 'num_add', 'args' => [
+                    'value' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.index', 'type' => 'number']],
+                ]],
+            ],
+        ];
+
+        $this->assertSame(107.0, $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::NUMBER));
+    }
+
+    public function test_a_global_named_index_wins_over_the_loop_scope_inside_an_element_pipeline(): void
+    {
+        // The INSIDE case: the SAME global "index" used as an op argument WITHIN an element pipeline (a
+        // reduce reducer) must still resolve to the GLOBAL's value (100 every iteration), NOT the per-element
+        // loop index (1, 2, 3). Its source is 'globals', not 'scope', so the resolver pre-resolves it to a
+        // literal for ALL elements and the executor never overlays the loop index onto it. Sum = 0 + 100 +
+        // 100 + 100 = 300 (the OLD leaf-only detectors leaked the loop index → 0 + 1 + 2 + 3 = 6).
+        $context = $this->context();
+        $context['globals']['index'] = 100;
+        $context['trigger']['fields']['nums'] = ['1', '2', '3'];
+
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.nums', 'type' => 'multi'],
+            'pipeline' => [
+                ['op' => 'array_reduce', 'args' => [
+                    'seed' => ['type' => 'number', 'value' => 0],
+                    'reducer' => [
+                        ['op' => 'num_add', 'args' => [
+                            'value' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.index', 'type' => 'number']],
+                        ]],
+                    ],
+                ]],
+            ],
+        ];
+
+        $this->assertSame(300.0, $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::NUMBER));
+    }
+
+    public function test_a_genuine_scope_index_ref_still_folds_the_loop_index(): void
+    {
+        // The counterpart that MUST keep working: a TRUE scope ref (source 'scope') still resolves per
+        // element to the 1-based loop index — proving the source-aware fix narrowed scope detection to
+        // `source:'scope'` WITHOUT breaking genuine scope references. Sum of indices 1 + 2 + 3 = 6.
+        $context = $this->context();
+        $context['trigger']['fields']['nums'] = ['a', 'b', 'c'];
+
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.nums', 'type' => 'multi'],
+            'pipeline' => [
+                ['op' => 'array_reduce', 'args' => [
+                    'seed' => ['type' => 'number', 'value' => 0],
+                    'reducer' => [
+                        ['op' => 'num_add', 'args' => [
+                            'value' => ['kind' => 'variable', 'ref' => ['source' => 'scope', 'path' => 'index', 'type' => 'number']],
+                        ]],
+                    ],
+                ]],
+            ],
+        ];
+
+        $this->assertSame(6.0, $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::NUMBER));
     }
 
     /**
@@ -801,6 +881,40 @@ class WorkflowVariableResolverTest extends TestCase
         $this->assertSame([['item_name' => 'A']], $this->resolver->resolveValueOrVariable($listField, $listContext, WorkflowVariableType::MULTI));
     }
 
+    // ---- array<object> (repeater) element pipelines at runtime (wave 3) --------
+
+    public function test_repeater_filter_then_count_resolves_at_runtime_despite_a_degraded_wire_type(): void
+    {
+        // A repeater ref carries the DEGRADED wire type `text`, but its runtime VALUE is a real list and the
+        // pipeline LEADS with an array op — so the base type is recovered as an array (arrayPipelineBaseType)
+        // and filter(element.price > 100) |> count runs, yielding 2.
+        $field = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.rows', 'type' => 'text'], 'pipeline' => [
+            ['op' => 'array_filter', 'args' => ['pipeline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'scope', 'path' => 'element.price', 'type' => 'number'],
+                'pipeline' => [['op' => 'num_gt', 'args' => ['value' => 100]]],
+            ]]],
+            ['op' => 'array_count', 'args' => []],
+        ]];
+        $context = ['trigger' => ['fields' => ['rows' => [['price' => 150], ['price' => 50], ['price' => 200]]]], 'steps' => []];
+
+        $this->assertSame(2.0, $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::NUMBER));
+    }
+
+    public function test_repeater_map_to_a_subfield_resolves_an_array_of_that_field_at_runtime(): void
+    {
+        $field = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.rows', 'type' => 'text'], 'pipeline' => [
+            ['op' => 'array_map', 'args' => ['pipeline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'scope', 'path' => 'element.name', 'type' => 'text'],
+                'pipeline' => [],
+            ]]],
+        ]];
+        $context = ['trigger' => ['fields' => ['rows' => [['name' => 'Ann'], ['name' => 'Bob']]]], 'steps' => []];
+
+        $this->assertSame(['Ann', 'Bob'], $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::MULTI));
+    }
+
     // ---- composite file subfield references (phase-2b) ------------------------
 
     /**
@@ -1243,46 +1357,129 @@ class WorkflowVariableResolverTest extends TestCase
         $this->assertTrue($this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::BOOLEAN));
     }
 
-    public function test_op_source_map_argument_supplied_by_a_variable_resolves(): void
+    public function test_op_source_map_entry_supplied_by_a_variable_resolves(): void
     {
-        // enum_to_text's `mapping` (a STRUCTURAL arg) is a VARIABLE resolving to the WHOLE {option: target}
-        // map from context — handed to the pure executor untouched (its string keys preserved).
+        // PER-ENTRY (Defect-3): enum_to_text's `mapping` is a {option: Entry} map whose 'high' TARGET is a
+        // VARIABLE (referencing globals.target). The executor still reads a plain {option: scalar} map.
         $field = [
             'kind' => 'variable',
             'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
             'pipeline' => [['op' => 'enum_to_text', 'args' => ['mapping' => [
-                'kind' => 'variable',
-                'ref' => ['source' => 'globals', 'path' => 'globals.map', 'type' => 'object'],
+                'high' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.target', 'type' => 'text']],
             ]]]],
         ];
         $context = [
             'trigger' => ['fields' => ['priority' => 'high']],
             'steps' => [],
-            'globals' => ['map' => ['high' => 'urgent', 'low' => 'normal']],
+            'globals' => ['target' => 'urgent'],
         ];
 
         $this->assertSame('urgent', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
     }
 
-    public function test_op_choice_rules_argument_supplied_by_a_variable_resolves(): void
+    public function test_op_source_map_mixes_literal_and_variable_entries_byte_identically(): void
     {
-        // match_to_choice's `rules` (a STRUCTURAL arg) is a VARIABLE resolving to the whole {when,then}
-        // list from context. 'BREAKING' matches the first rule → 'high'.
+        // A literal entry is byte-identical to today (a bare scalar); a variable entry pre-resolves. The
+        // picked option decides which one the executor reads.
+        $mapping = [
+            'low' => 'normal', // literal, untouched
+            'high' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.target', 'type' => 'text']],
+        ];
+        $context = ['trigger' => ['fields' => ['priority' => 'low']], 'steps' => [], 'globals' => ['target' => 'urgent']];
+
+        $field = fn () => [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_to_text', 'args' => ['mapping' => $mapping]]],
+        ];
+
+        // priority 'low' picks the LITERAL entry, unchanged.
+        $this->assertSame('normal', $this->resolver->resolveValueOrVariable($field(), $context, WorkflowVariableType::TEXT));
+
+        // priority 'high' picks the VARIABLE entry.
+        $context['trigger']['fields']['priority'] = 'high';
+        $this->assertSame('urgent', $this->resolver->resolveValueOrVariable($field(), $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_op_choice_rules_then_entry_supplied_by_a_variable_resolves(): void
+    {
+        // PER-ENTRY (Defect-3): match_to_choice's `rules` is a [{when, then}] list whose matched rule's
+        // `then` is a VARIABLE. 'BREAKING' matches → the resolved `then` ('high').
         $field = [
             'kind' => 'variable',
             'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
             'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                'rules' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.rules', 'type' => 'object']],
+                'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'BREAKING']]], 'then' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.chosen', 'type' => 'enum']]]],
                 'fallback' => 'low',
             ]]],
         ];
         $context = [
             'trigger' => ['fields' => ['headline' => 'BREAKING']],
             'steps' => [],
-            'globals' => ['rules' => [['when' => 'BREAKING', 'then' => 'high']]],
+            'globals' => ['chosen' => 'high'],
         ];
 
         $this->assertSame('high', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::ENUM));
+
+        // A literal `then` beside a variable `when`-match is unchanged.
+        $literal = $field;
+        $literal['pipeline'][0]['args']['rules'] = [['when' => [['op' => 'text_equals', 'args' => ['value' => 'BREAKING']]], 'then' => 'high']];
+        $this->assertSame('high', $this->resolver->resolveValueOrVariable($literal, $context, WorkflowVariableType::ENUM));
+    }
+
+    public function test_op_source_map_date_entry_variable_narrows_to_the_wire_date(): void
+    {
+        // enum_to_date's target is DATE: a variable entry coerces to the ISO instant a FIELD stores, then
+        // narrows to the strict Y-m-d the executor's enumMap date reader accepts (argWireDate).
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [
+                ['op' => 'enum_to_date', 'args' => ['mapping' => [
+                    'high' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.when', 'type' => 'date']],
+                ]]],
+                ['op' => 'date_to_text'],
+            ],
+        ];
+        $context = ['trigger' => ['fields' => ['priority' => 'high']], 'steps' => [], 'globals' => ['when' => '2026-01-01']];
+
+        $this->assertSame('2026-01-01', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_op_source_map_entry_with_its_own_sub_pipeline_resolves_depth_capped(): void
+    {
+        // A per-entry variable may carry its OWN sub-pipeline — uppercased here — resolved one arg-variable
+        // level deeper (depth-capped like a top-level arg-variable).
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_to_text', 'args' => ['mapping' => [
+                'high' => [
+                    'kind' => 'variable',
+                    'ref' => ['source' => 'globals', 'path' => 'globals.target', 'type' => 'text'],
+                    'pipeline' => [['op' => 'text_uppercase']],
+                ],
+            ]]]],
+        ];
+        $context = ['trigger' => ['fields' => ['priority' => 'high']], 'steps' => [], 'globals' => ['target' => 'urgent']];
+
+        $this->assertSame('URGENT', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
+    }
+
+    public function test_op_source_map_entry_variable_that_fails_to_resolve_fails_the_entry_closed(): void
+    {
+        // A per-entry variable pointing at an UNANSWERED field resolves to null → the option maps to null →
+        // enumMap treats it as unmapped and the pipeline fails closed (never opens a gate). Fail-soft null.
+        $field = [
+            'kind' => 'variable',
+            'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
+            'pipeline' => [['op' => 'enum_to_text', 'args' => ['mapping' => [
+                'high' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.missing', 'type' => 'text']],
+            ]]]],
+        ];
+        $context = ['trigger' => ['fields' => ['priority' => 'high']], 'steps' => [], 'globals' => []];
+
+        $this->assertNull($this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
     }
 
     public function test_op_choice_fallback_variable_out_of_set_returns_the_value_fail_soft(): void
@@ -1294,7 +1491,7 @@ class WorkflowVariableResolverTest extends TestCase
             'kind' => 'variable',
             'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
             'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                'rules' => [['when' => 'x', 'then' => 'high']],
+                'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'x']]], 'then' => 'high']],
                 'fallback' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.brand', 'type' => 'text']],
             ]]],
         ];
@@ -1304,10 +1501,11 @@ class WorkflowVariableResolverTest extends TestCase
         $this->assertSame('Taskio', $this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::ENUM));
     }
 
-    public function test_op_source_map_variable_malformed_shape_fails_soft(): void
+    public function test_op_source_map_whole_arg_union_is_rejected_fail_soft(): void
     {
-        // The STRUCTURAL mapping resolves to a NON-map (a scalar). The executor's enumMap fail-softs (not a
-        // map → FAIL), so the pipeline soft-resolves to null. Never a crash / UnhandledMatchError.
+        // DEFENSIVE (Defect-3): the whole-structure design was removed — a sourceMap is a per-entry
+        // container, never itself a variable. A legacy/hand-written whole-arg union left as-is is rejected
+        // by the executor's array reader, so the pipeline soft-resolves to null. Never a crash.
         $field = [
             'kind' => 'variable',
             'ref' => ['source' => 'trigger', 'path' => 'fields.priority', 'type' => 'enum'],
@@ -1319,27 +1517,26 @@ class WorkflowVariableResolverTest extends TestCase
         $context = [
             'trigger' => ['fields' => ['priority' => 'high']],
             'steps' => [],
-            'globals' => ['map' => 'not-a-map'],
+            'globals' => ['map' => ['high' => 'urgent']],
         ];
 
         $this->assertNull($this->resolver->resolveValueOrVariable($field, $context, WorkflowVariableType::TEXT));
     }
 
-    public function test_structural_arg_variable_value_with_reference_like_bytes_is_not_re_interpreted(): void
+    public function test_structural_entry_variable_value_with_reference_like_bytes_is_not_re_interpreted(): void
     {
-        // INJECTION SAFETY (structural): a mapping VALUE from context literally contains `{{…}}` bytes. The
-        // pure executor maps to it verbatim and the OUTPUT rides the SAME NUL-mask as any resolved value —
-        // so an embedded directive pipeline renders it literally, never re-scanning it back into 'high'.
+        // INJECTION SAFETY (per-entry): a mapping ENTRY variable resolves to a VALUE that literally contains
+        // `{{…}}` bytes. The pure executor maps to it verbatim and the OUTPUT rides the SAME NUL-mask as any
+        // resolved value — so an embedded directive pipeline renders it literally, never re-scanning it.
         $directive = $this->directiveWithPipeline('trigger.fields.priority', 'text', [
             $this->step('enum_to_text', ['mapping' => [
-                'kind' => 'variable',
-                'ref' => ['source' => 'globals', 'path' => 'globals.map', 'type' => 'object'],
+                'high' => ['kind' => 'variable', 'ref' => ['source' => 'globals', 'path' => 'globals.evil', 'type' => 'text']],
             ]]),
         ]);
         $context = [
             'trigger' => ['fields' => ['priority' => 'high']],
             'steps' => [],
-            'globals' => ['map' => ['high' => '{{trigger.fields.priority}}']],
+            'globals' => ['evil' => '{{trigger.fields.priority}}'],
         ];
 
         $this->assertSame(

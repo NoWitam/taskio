@@ -11,10 +11,12 @@ import SegmentedControl, { type SegmentOption } from '../../ui/forms/SegmentedCo
 import Button from '../../ui/primitives/Button.vue';
 import Icon from '../../ui/primitives/Icon.vue';
 import Tooltip from '../../ui/overlay/Tooltip.vue';
+import VariableTypeIcon from '../../ui/editor/extensions/VariableTypeIcon.vue';
 import { useI18n } from '../../app/i18n';
-import { variableIcon } from './workflowVariables';
+import { variableIcon, variableNodeIcon } from './workflowVariables';
 import { CONDITION_TREE_KEY } from './conditionTreeContext';
-import type { ConditionLogic } from './types';
+import type { IconName } from '../../ui/primitives/icons';
+import type { CatalogVariable, ConditionLogic } from './types';
 import type { DraftCondition, DraftConditionGroup } from './workflowConditions';
 
 const props = defineProps<{
@@ -73,6 +75,25 @@ function onLogic(value: ConditionLogic | null): void {
 }
 
 // --- Chip helpers -----------------------------------------------------------
+/** The picker variables keyed by their condition `source` path (one lookup map per render). */
+const sourcesByPath = computed<Map<string, CatalogVariable>>(
+  () => new Map(ctx.sources().map((variable) => [variable.path, variable])),
+);
+
+/**
+ * The chip's source glyph: the SAME type icon + nullable (`?`) / array (`[]`) markers the Modal's
+ * tree picker shows for that field. A source the catalog no longer describes degrades to the plain
+ * type glyph (its saved `sourceType`), exactly as before.
+ */
+function sourceGlyph(condition: DraftCondition): { icon: IconName; nullable?: boolean; array?: boolean } {
+  const variable = sourcesByPath.value.get(condition.source);
+  return {
+    icon: variable ? variableNodeIcon(variable) : variableIcon(condition.sourceType),
+    nullable: variable?.descriptor?.nullable,
+    array: variable?.descriptor?.array,
+  };
+}
+
 /** The full human sentence for a condition (chip aria-label). */
 function chipSentence(condition: DraftCondition): string {
   const { fieldLabel, steps } = ctx.summarize(condition);
@@ -159,7 +180,7 @@ function chipSentence(condition: DraftCondition): string {
             :aria-label="t('workflows.condition.chipEdit', 'Edit condition: {sentence}', { sentence: chipSentence(child) })"
             @click="ctx.editCondition(child.uid)"
           >
-            <Icon :name="variableIcon(child.sourceType)" class="shrink-0 text-next-primary" />
+            <VariableTypeIcon v-bind="sourceGlyph(child)" class="shrink-0 text-next-primary" />
             <span class="text-next-sm font-next-semibold text-next-fg">{{ ctx.summarize(child).fieldLabel }}</span>
             <template v-for="(step, i) in ctx.summarize(child).steps" :key="i">
               <Icon name="arrow-right" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />

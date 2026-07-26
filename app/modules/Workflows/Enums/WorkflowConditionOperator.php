@@ -4,7 +4,8 @@ namespace App\Modules\Workflows\Enums;
 
 /**
  * A TYPED condition operator. Every operator belongs to exactly one field type's allow-list
- * (see WorkflowVariableType::operatorCases) and the WorkflowConditionEvaluator implements each.
+ * (see VariableType::operators, which now returns these ids as strings) and the
+ * WorkflowConditionEvaluator implements each.
  *
  * Conditions gate whether a form_submitted workflow runs: a flat AND-combined list of
  * {field, field_type, operator, value} clauses evaluated over the trigger payload's `fields`

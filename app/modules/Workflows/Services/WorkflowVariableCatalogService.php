@@ -5,13 +5,17 @@ namespace App\Modules\Workflows\Services;
 use App\Modules\Forms\Enums\FormElementType;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Traits\InteractsWithFormSchema;
+use App\Modules\Variables\Contracts\ElementScopeResolver;
+use App\Modules\Variables\Enums\Operation;
+use App\Modules\Variables\Enums\VariableType;
+use App\Modules\Variables\Models\Constant;
+use App\Modules\Variables\Models\CustomFunction;
+use App\Modules\Variables\Support\CustomFunctionOperation;
 use App\Modules\Workflows\Enums\WorkflowAiPersona;
-use App\Modules\Workflows\Enums\WorkflowOperation;
 use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\Workflow;
-use App\Modules\Workflows\Models\WorkflowGlobal;
+use App\Tenancy\TenantContext;
 
 /**
  * Builds the TYPED variable catalog the workflow editor (B6/B7) and AI-assist (B5) consume: the
@@ -25,12 +29,20 @@ use App\Modules\Workflows\Models\WorkflowGlobal;
  *   - source  'trigger' | 'steps'
  *   - path    the full dotted path a reference resolves against ('trigger.fields.abc',
  *             'steps.<key>.task_id') — identical in both serializations.
- *   - type    a WorkflowVariableType — the LEGACY FLAT wire type (back-compat; TIME degrades to text).
+ *   - name    DISPLAY metadata only (the identity is `path`): the human label the picker/chips show.
+ *             For a form field it is the ELEMENT CONFIG label — the same label the container
+ *             descriptors' children carry — falling back to the field id. Nothing server-side ever
+ *             matches on it (the reference index, runtime type map and condition-tree validator all
+ *             key on `path` / `field_id`).
+ *   - type    a VariableType — the LEGACY FLAT wire type (back-compat; TIME degrades to text).
  *   - descriptor the ADDITIVE structured type descriptor `{ base, nullable, array, options? }`
  *             (phase-1a). `time` gets its own base here even while `type` stays text; enum/multi
  *             carry `{key,label}` options with the REAL human labels from the form element config.
- *   - nullable true when the path is only present sometimes (the task snapshot on a
- *             task-attached submission) — the FE can badge it and the engine null-resolves it.
+ *   - nullable true when the path is only present sometimes — the task snapshot on a
+ *             task-attached submission, or an OPTIONAL form field (one whose element config
+ *             carries no `required`, so a submission may simply not answer it). The FE badges it
+ *             and offers the per-reference "default when empty" literal; the engine
+ *             null-resolves it. Emitted on BOTH the flat `nullable` key and `descriptor.nullable`.
  *
  * A field descriptor is `{ path, field_id, label, type, enumOptions?, operators }`: the subset
  * of form-field variables usable in the CONDITION builder, each with its per-type operator set.
@@ -44,12 +56,13 @@ use App\Modules\Workflows\Models\WorkflowGlobal;
  * node — REPRESENTATION ONLY (no per-element execution) — degraded to a text flat wire type and not a
  * condition source. Every field variable maps to a real key in the whitelisted submission answer map.
  */
-class WorkflowVariableCatalogService
+class WorkflowVariableCatalogService implements ElementScopeResolver
 {
     use InteractsWithFormSchema;
 
     public function __construct(
         private WorkflowStepFactory $steps,
+        private TenantContext $tenant,
     ) {}
 
     /**
@@ -83,26 +96,30 @@ class WorkflowVariableCatalogService
     public function forContext(?WorkflowTriggerType $triggerType, ?Form $form = null): array
     {
         $fieldVariables = $form !== null ? $this->formFieldVariables($form) : [];
+        // Read ONCE (a DB read) and used twice: as catalog variables, and as condition sources.
+        $globalVariables = $this->globalVariables();
 
         $variables = array_merge(
             $triggerType !== null ? $this->triggerSystemVariables($triggerType) : [],
             $fieldVariables,
             $this->stepOutputVariables(),
             // The workspace's GLOBALS — form-independent, so composed for every trigger type.
-            $this->globalVariables(),
+            $globalVariables,
         );
 
         return [
             'variables' => $variables,
-            'fields' => $this->conditionFields($fieldVariables),
-            'operations' => WorkflowOperation::catalog(),
+            'fields' => array_merge($this->conditionFields($fieldVariables), $this->globalConditionFields($globalVariables)),
+            // The built-in op catalog PLUS the workspace's custom functions, so the FE add-menu offers a
+            // function like any other op (filtered by input type). ADDITIVE: built-ins are unchanged.
+            'operations' => array_merge(Operation::catalog(), $this->functionCatalog()),
             'ai_personas' => WorkflowAiPersona::catalog(),
             'types' => $this->variableTypes(),
         ];
     }
 
     /**
-     * The variable-TYPE list: every WorkflowVariableType with the editor PRIMITIVE it degrades to
+     * The variable-TYPE list: every VariableType with the editor PRIMITIVE it degrades to
      * inside a directive and its condition operator set. Label-less (the FE localizes), mirroring
      * the operations / ai_personas descriptor pattern. Lets a form-LESS catalog describe the full
      * type vocabulary — and the degrade rule — the editor needs without a static FE mirror. Built
@@ -112,34 +129,42 @@ class WorkflowVariableCatalogService
      */
     public function variableTypes(): array
     {
-        return array_map(fn (WorkflowVariableType $type): array => [
+        return array_map(fn (VariableType $type): array => [
             'id' => $type->value,
             'primitive' => $type->editorPrimitive(),
             'operators' => $type->operators(),
-        ], WorkflowVariableType::cases());
+        ], VariableType::cases());
     }
 
     /**
-     * The CONDITION field descriptors for a form — the valid condition sources ({path, field_id,
-     * label, type, operators, enumOptions?}). Exposed for the condition-tree write-validator, which
-     * checks a condition's `source`/`source_type` against this same set (so the builder and the
-     * validator can never disagree on which fields are conditionable).
+     * The CONDITION SOURCE descriptors for a form — every valid condition `source` ({source, path,
+     * field_id?, label, type, operators, enumOptions?}). Exposed for the condition-tree write-validator,
+     * which checks a condition's `source`/`source_type` against this same set (so the builder and the
+     * validator can never disagree on what is conditionable).
+     *
+     * TWO VOCABULARIES, one table (B6): the form's own fields keep the legacy UNPREFIXED `fields.<id>`
+     * path (what every stored row and the flat clause list carry), while a workspace GLOBAL uses its
+     * full catalog path `globals.<key>` — its catalog source IS its root, so no new spelling is
+     * invented. Both are keyed by `path`, which is the identity the validator matches on.
      *
      * @return array<int, array<string, mixed>>
      */
     public function conditionFieldsFor(Form $form): array
     {
-        return $this->conditionFields($this->formFieldVariables($form));
+        return array_merge(
+            $this->conditionFields($this->formFieldVariables($form)),
+            $this->globalConditionFields($this->globalVariables()),
+        );
     }
 
     /**
-     * The RUNTIME path → WorkflowVariableType map the step runner hands the resolver so a directive
+     * The RUNTIME path → VariableType map the step runner hands the resolver so a directive
      * or if-block pipeline executes against each reference's REAL type (recovered here, never from
      * the degraded editor primitive on the wire). It covers the trigger's system variables, its
      * form-field variables (when a form_submitted workflow selected a resolvable form), and every
      * step's outputs keyed by the workflow's actual step KEYS (`steps.<key>.<output>`).
      *
-     * @return array<string, WorkflowVariableType>
+     * @return array<string, VariableType>
      */
     public function runtimeTypeMap(Workflow $workflow): array
     {
@@ -148,7 +173,7 @@ class WorkflowVariableCatalogService
 
         if ($triggerType instanceof WorkflowTriggerType) {
             foreach ($this->triggerSystemVariables($triggerType) as $variable) {
-                $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['descriptor'] ?? null);
+                $this->addTypeMapEntry($map, $variable['path'], VariableType::from($variable['type']), $variable['descriptor'] ?? null);
             }
 
             if ($triggerType === WorkflowTriggerType::FORM_SUBMITTED) {
@@ -157,7 +182,7 @@ class WorkflowVariableCatalogService
 
                 if ($form !== null) {
                     foreach ($this->formFieldVariables($form) as $variable) {
-                        $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['descriptor'] ?? null);
+                        $this->addTypeMapEntry($map, $variable['path'], VariableType::from($variable['type']), $variable['descriptor'] ?? null);
                     }
                 }
             }
@@ -171,7 +196,7 @@ class WorkflowVariableCatalogService
         // present (form-independent). Lets a directive / if-block pipeline on a `globals.<key>`
         // recover the global's REAL base type (not the degraded editor primitive on the wire).
         foreach ($this->globalVariables() as $variable) {
-            $this->addTypeMapEntry($map, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['descriptor'] ?? null);
+            $this->addTypeMapEntry($map, $variable['path'], VariableType::from($variable['type']), $variable['descriptor'] ?? null);
         }
 
         return $map;
@@ -188,10 +213,10 @@ class WorkflowVariableCatalogService
      * A subfield NEVER overwrites an entry an earlier (flat) variable already owns: a form section's
      * leaves are emitted flat by formFieldVariables and keep their own authoritative entry.
      *
-     * @param  array<string, WorkflowVariableType>  $map
+     * @param  array<string, VariableType>  $map
      * @param  array<string, mixed>|null  $descriptor  the variable's structured descriptor, when it has one
      */
-    private function addTypeMapEntry(array &$map, string $path, WorkflowVariableType $type, ?array $descriptor = null): void
+    private function addTypeMapEntry(array &$map, string $path, VariableType $type, ?array $descriptor = null): void
     {
         $map[$path] = $type;
 
@@ -207,7 +232,7 @@ class WorkflowVariableCatalogService
      * runtime map but carries option lists for the pipeline's sourceOption/sourceMap arg checks.
      *
      * @param  array<int, array<string, mixed>>  $priorSteps
-     * @return array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>
+     * @return array<string, array{type: VariableType, enumOptions: array<int, string>|null}>
      */
     public function referenceIndex(?WorkflowTriggerType $triggerType, ?Form $form, array $priorSteps): array
     {
@@ -215,13 +240,13 @@ class WorkflowVariableCatalogService
 
         if ($triggerType !== null) {
             foreach ($this->triggerSystemVariables($triggerType) as $variable) {
-                $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
+                $this->addReferenceEntry($index, $variable['path'], VariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
             }
         }
 
         if ($form !== null) {
             foreach ($this->formFieldVariables($form) as $variable) {
-                $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
+                $this->addReferenceEntry($index, $variable['path'], VariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
             }
         }
 
@@ -233,7 +258,7 @@ class WorkflowVariableCatalogService
         // variable pipeline targeting a `globals.<key>` write-validates against the global's type +
         // option list — the same gate a trigger/step reference passes.
         foreach ($this->globalVariables() as $variable) {
-            $this->addReferenceEntry($index, $variable['path'], WorkflowVariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
+            $this->addReferenceEntry($index, $variable['path'], VariableType::from($variable['type']), $variable['enumOptions'] ?? null, $variable['descriptor'] ?? null);
         }
 
         return $index;
@@ -251,16 +276,21 @@ class WorkflowVariableCatalogService
      * its leaves as flat `section.leaf` variables in the pass BEFORE its container entry, so those keep
      * their own richer entry (their enumOptions) and are not re-emitted from the descriptor.
      *
-     * @param  array<string, array{type: WorkflowVariableType, enumOptions: array<int, string>|null}>  $index
+     * @param  array<string, array{type: VariableType, enumOptions: array<int, string>|null}>  $index
      * @param  array<int, string>|null  $enumOptions
      * @param  array<string, mixed>|null  $descriptor  the variable's structured descriptor, when it has one
      */
-    private function addReferenceEntry(array &$index, string $path, WorkflowVariableType $type, ?array $enumOptions, ?array $descriptor = null): void
+    private function addReferenceEntry(array &$index, string $path, VariableType $type, ?array $enumOptions, ?array $descriptor = null): void
     {
-        $index[$path] = ['type' => $type, 'enumOptions' => $enumOptions];
+        // The variable's OWN structured descriptor rides the entry (array-ops wave 3): an array<object>
+        // (repeater) / array<file> reference degrades its flat wire `type` to text, so ONLY the descriptor
+        // still carries its array-ness + element `fields`. The write-validator seeds the descriptor-tracking
+        // walker with it (validateValuePipeline/validateArgVariable), so an array op over a repeater roots at
+        // the real array descriptor rather than the degraded scalar. Null for a source with no descriptor.
+        $index[$path] = ['type' => $type, 'enumOptions' => $enumOptions, 'descriptor' => $descriptor];
 
         foreach ($this->descriptorSubfieldTypeMap($path, $type, $descriptor) as $subPath => $subType) {
-            $index[$subPath] ??= ['type' => $subType, 'enumOptions' => null];
+            $index[$subPath] ??= ['type' => $subType, 'enumOptions' => null, 'descriptor' => null];
         }
     }
 
@@ -273,31 +303,31 @@ class WorkflowVariableCatalogService
      * Anything else adds nothing.
      *
      * @param  array<string, mixed>|null  $descriptor
-     * @return array<string, WorkflowVariableType>
+     * @return array<string, VariableType>
      */
-    private function descriptorSubfieldTypeMap(string $path, WorkflowVariableType $type, ?array $descriptor): array
+    private function descriptorSubfieldTypeMap(string $path, VariableType $type, ?array $descriptor): array
     {
         return $this->fileSubfieldTypeMap($path, $type) + $this->objectSubfieldTypeMap($path, $descriptor);
     }
 
     /**
      * The `<file>.<subfield>` PATH → type entries for a FILE variable at $path — empty for any non-file
-     * type. The subfield SET + types come from the single source WorkflowVariableType::fileSubfieldTypes
+     * type. The subfield SET + types come from the single source VariableType::fileSubfieldTypes
      * (id/name/type/url=text, size=number), so the catalog descriptor, the write-validation reference
      * index and the runtime type map can never disagree. NOT emitted for a REPEATER (a text `object`
      * container here): per-element subfield access is the deferred R2 loop.
      *
-     * @return array<string, WorkflowVariableType>
+     * @return array<string, VariableType>
      */
-    private function fileSubfieldTypeMap(string $path, WorkflowVariableType $type): array
+    private function fileSubfieldTypeMap(string $path, VariableType $type): array
     {
-        if ($type !== WorkflowVariableType::FILE) {
+        if ($type !== VariableType::FILE) {
             return [];
         }
 
         $map = [];
 
-        foreach (WorkflowVariableType::fileSubfieldTypes() as $subfield => $subType) {
+        foreach (VariableType::fileSubfieldTypes() as $subfield => $subType) {
             $map[$path . '.' . $subfield] = $subType;
         }
 
@@ -325,7 +355,7 @@ class WorkflowVariableCatalogService
      * skipped rather than throwing.
      *
      * @param  array<string, mixed>|null  $descriptor
-     * @return array<string, WorkflowVariableType>
+     * @return array<string, VariableType>
      */
     private function objectSubfieldTypeMap(string $path, ?array $descriptor): array
     {
@@ -344,7 +374,7 @@ class WorkflowVariableCatalogService
             }
 
             $childPath = $path . '.' . $key;
-            $childType = $this->flatType(WorkflowVariableType::fromDescriptor($childDescriptor));
+            $childType = $this->flatType(VariableType::fromDescriptor($childDescriptor));
 
             $map[$childPath] = $childType;
             $map += $this->descriptorSubfieldTypeMap($childPath, $childType, $childDescriptor);
@@ -364,9 +394,44 @@ class WorkflowVariableCatalogService
     private function isObjectContainer(?array $descriptor): bool
     {
         return $descriptor !== null
-            && ($descriptor['base'] ?? null) === WorkflowVariableType::OBJECT->value
+            && ($descriptor['base'] ?? null) === VariableType::OBJECT->value
             && ($descriptor['array'] ?? false) !== true
             && is_array($descriptor['fields'] ?? null);
+    }
+
+    /**
+     * The ELEMENT-SCOPE subfield index for an array<object>/array<file> descriptor (array-ops wave 3):
+     * `element.<subfield> => flat type`, the synthetic scope an element pipeline exposes so its ops can
+     * reference `element.<field>` (a repeater row's fields, a file's {id,name,type,size,url}).
+     *
+     * This is the ONE place descriptorSubfieldTypeMap is allowed to DESCEND into a repeater — and it does
+     * so cleanly, because the repeater's ELEMENT descriptor is a NON-array object (`array:false`), which
+     * objectSubfieldTypeMap already descends exactly like a form section. The descent is scoped to the
+     * synthetic `element` root, ONLY for this pipeline's write-validation + resolution — a repeater's
+     * subfield is STILL not a global reference (the reference index / condition table refuse it, unchanged).
+     * A scalar/enum element array has no subfields and yields none. Nested repeaters inside the element
+     * stay fail-closed (objectSubfieldTypeMap refuses an `array:true` child), matching the doctrine.
+     *
+     * @param  array<string, mixed>  $arrayDescriptor  the ARRAY variable's descriptor ({base, array:true, fields|elementDescriptor})
+     * @return array<string, VariableType>
+     */
+    public function elementScopeSubfields(array $arrayDescriptor): array
+    {
+        $element = is_array($arrayDescriptor['elementDescriptor'] ?? null)
+            ? $arrayDescriptor['elementDescriptor']
+            : array_merge($arrayDescriptor, ['array' => false]);
+
+        $base = $element['base'] ?? null;
+
+        if ($base === VariableType::OBJECT->value && is_array($element['fields'] ?? null)) {
+            return $this->objectSubfieldTypeMap('element', $element);
+        }
+
+        if ($base === VariableType::FILE->value) {
+            return $this->fileSubfieldTypeMap('element', VariableType::FILE);
+        }
+
+        return [];
     }
 
     /**
@@ -376,7 +441,7 @@ class WorkflowVariableCatalogService
      * step TYPE for the editor catalog).
      *
      * @param  array<int, mixed>  $steps
-     * @return array<string, WorkflowVariableType>
+     * @return array<string, VariableType>
      */
     public function stepOutputTypeMap(array $steps): array
     {
@@ -419,15 +484,15 @@ class WorkflowVariableCatalogService
     {
         return match ($type) {
             WorkflowTriggerType::SCHEDULE => [
-                $this->variable('trigger', 'trigger.scheduled_at', 'Scheduled at', WorkflowVariableType::DATE),
+                $this->variable('trigger', 'trigger.scheduled_at', 'Scheduled at', VariableType::DATE),
             ],
             WorkflowTriggerType::FORM_SUBMITTED => [
-                $this->variable('trigger', 'trigger.submission.id', 'Submission ID', WorkflowVariableType::TEXT),
-                $this->variable('trigger', 'trigger.form.id', 'Form ID', WorkflowVariableType::TEXT),
-                $this->variable('trigger', 'trigger.form.name', 'Form name', WorkflowVariableType::TEXT),
-                $this->variable('trigger', 'trigger.source', 'Source', WorkflowVariableType::ENUM, enumOptions: ['manual', 'task']),
-                $this->variable('trigger', 'trigger.submitted_at', 'Submitted at', WorkflowVariableType::DATE),
-                $this->variable('trigger', 'trigger.task.id', 'Task ID', WorkflowVariableType::TEXT, nullable: true),
+                $this->variable('trigger', 'trigger.submission.id', 'Submission ID', VariableType::TEXT),
+                $this->variable('trigger', 'trigger.form.id', 'Form ID', VariableType::TEXT),
+                $this->variable('trigger', 'trigger.form.name', 'Form name', VariableType::TEXT),
+                $this->variable('trigger', 'trigger.source', 'Source', VariableType::ENUM, enumOptions: ['manual', 'task']),
+                $this->variable('trigger', 'trigger.submitted_at', 'Submitted at', VariableType::DATE),
+                $this->variable('trigger', 'trigger.task.id', 'Task ID', VariableType::TEXT, nullable: true),
             ],
         };
     }
@@ -435,11 +500,22 @@ class WorkflowVariableCatalogService
     /**
      * Per-form FIELD variables derived from the form's JSON schema. Each usable input becomes a
      * `trigger.fields.<fieldPath>` LEAF variable typed by its element kind. Repeaters have no flat leaf
-     * and are skipped in this pass. The human name is the field's schema label (fallback: the path).
+     * and are skipped in this pass.
+     *
+     * The human `name` is the element CONFIG label — read from the SAME content walk (contentMetadata)
+     * the container descriptors' child labels come from, so one form no longer shows two naming styles
+     * (raw field ids on the flat leaves, real labels on the container children). The JSON schema keeps
+     * no per-field label — extractFieldPaths seeds its `label` with the field KEY — so labelFor() is
+     * now only the FALLBACK for a path the content walk did not record. DISPLAY-only: the identity is
+     * `path`, and nothing server-side matches on `name`.
      *
      * ADDITIVE (phase-2a): the STRUCTURAL container variables (a SECTION as an `object`, a REPEATER as
      * an `array<object>`) are appended by containerVariables() — the flat leaves above are UNCHANGED, so
      * every existing `section.subfield` reference keeps resolving. See containerVariables().
+     *
+     * NULLABILITY comes from the element CONTENT, not the schema: an OPTIONAL field (no
+     * `config.required`) may be absent/empty in a submission, so its variable is `nullable` — the flag
+     * that makes the editor offer a per-reference "default when empty" literal. See contentMetadata().
      *
      * @return array<int, array<string, mixed>>
      */
@@ -450,6 +526,8 @@ class WorkflowVariableCatalogService
         // Human option labels live in the ELEMENT CONFIG, not the JSON schema (which keeps only the
         // option VALUES). Resolve them once per form (no N+1), keyed by the same field path.
         $optionLabels = $this->schemaOptionLabels($form);
+        // The rest of the config-only metadata (labels + per-path REQUIRED-ness), one walk per form.
+        $metadata = $this->contentMetadata($form);
 
         foreach ($this->extractFieldPaths($schema) as $info) {
             if (($info['type'] ?? null) === 'repeater') {
@@ -463,15 +541,16 @@ class WorkflowVariableCatalogService
             $variables[] = $this->variable(
                 'trigger',
                 'trigger.fields.' . $info['path'],
-                $this->labelFor($fieldSchema, $info['path']),
+                $metadata['labels'][$info['path']] ?? $this->labelFor($fieldSchema, $info['path']),
                 $type,
                 enumOptions: $enumOptions,
+                nullable: $this->isNullableField($metadata, $info['path']),
                 fieldId: $info['path'],
                 descriptorOptions: $optionLabels[$info['path']] ?? null,
             );
         }
 
-        return array_merge($variables, $this->containerVariables($form, $schema));
+        return array_merge($variables, $this->containerVariables($schema, $metadata));
     }
 
     /**
@@ -483,19 +562,17 @@ class WorkflowVariableCatalogService
      *
      * The container STRUCTURE + child types come from the form JSON $schema (real typed fragments,
      * reusing mapSchemaToVariableType); the human labels (field names + enum option labels, INCLUDING
-     * inside repeaters) come from the element config tree — the JSON schema drops both. The shared
-     * InteractsWithFormSchema trait is deliberately left untouched (Forms depend on its exact contract).
+     * inside repeaters) and the per-field REQUIRED-ness come from the element config tree — the JSON
+     * schema keeps neither in a per-field-path form. The shared InteractsWithFormSchema trait is
+     * deliberately left untouched (Forms depend on its exact contract).
      *
      * @param  array<string, mixed>  $schema  the form's JSON schema (passed in so it is built once)
+     * @param  array{labels: array<string, string>, options: array<string, array<int, array{key: string, label: string}>>, required: array<string, bool>}  $metadata
      * @return array<int, array<string, mixed>>
      */
-    private function containerVariables(Form $form, array $schema): array
+    private function containerVariables(array $schema, array $metadata): array
     {
         $properties = is_array($schema['properties'] ?? null) ? $schema['properties'] : [];
-
-        $fieldLabels = [];
-        $optionLabels = [];
-        $this->collectContainerLabels(is_array($form->content) ? $form->content : [], '', $fieldLabels, $optionLabels);
 
         $variables = [];
 
@@ -505,7 +582,7 @@ class WorkflowVariableCatalogService
             }
 
             $path = (string) $key;
-            $descriptor = $this->containerDescriptorFor($childSchema, $path, $fieldLabels, $optionLabels);
+            $descriptor = $this->containerDescriptorFor($childSchema, $path, $metadata);
 
             if ($descriptor === null) {
                 continue; // a plain scalar/enum/multi leaf — already emitted by the leaf pass above.
@@ -513,7 +590,7 @@ class WorkflowVariableCatalogService
 
             $variables[] = $this->containerVariable(
                 'trigger.fields.' . $path,
-                $fieldLabels[$path] ?? $path,
+                $metadata['labels'][$path] ?? $path,
                 $descriptor,
             );
         }
@@ -525,20 +602,25 @@ class WorkflowVariableCatalogService
      * The object DESCRIPTOR for a schema fragment when it is a CONTAINER — a SECTION (`type:object`) or
      * a REPEATER (`type:array` whose `items` are objects) — else null (a scalar/enum/multi leaf, whose
      * descriptor the leaf pass owns). A repeater yields `array:true`, a section `array:false`; both
-     * carry an ordered `fields` list built recursively from the child schema fragments + the label maps.
+     * carry an ordered `fields` list built recursively from the child schema fragments + the metadata.
+     *
+     * A container's OWN `nullable` stays FALSE by design: a grouping node is not an answerable field —
+     * `config.required` is a per-INPUT flag, a section/repeater has none, and the container is always
+     * structurally present (an unanswered section is an empty object, an empty repeater an empty list).
+     * "Default when empty" is a per-LEAF affordance, so the nullability that matters lives on the
+     * children (each built with its own required-ness below).
      *
      * @param  array<string, mixed>  $schema
-     * @param  array<string, string>  $fieldLabels
-     * @param  array<string, array<int, array{key: string, label: string}>>  $optionLabels
+     * @param  array{labels: array<string, string>, options: array<string, array<int, array{key: string, label: string}>>, required: array<string, bool>}  $metadata
      * @return array<string, mixed>|null
      */
-    private function containerDescriptorFor(array $schema, string $path, array $fieldLabels, array $optionLabels): ?array
+    private function containerDescriptorFor(array $schema, string $path, array $metadata): ?array
     {
         // SECTION → an object whose `properties` are the children.
         if (($schema['type'] ?? null) === 'object' && is_array($schema['properties'] ?? null)) {
-            return WorkflowVariableType::OBJECT->descriptor(
+            return VariableType::OBJECT->descriptor(
                 nullable: false,
-                fields: $this->buildContainerFields($schema['properties'], $path, $fieldLabels, $optionLabels),
+                fields: $this->buildContainerFields($schema['properties'], $path, $metadata),
                 array: false,
             );
         }
@@ -548,9 +630,9 @@ class WorkflowVariableCatalogService
             && ($schema['items']['type'] ?? null) === 'object'
             && is_array($schema['items']['properties'] ?? null)
         ) {
-            return WorkflowVariableType::OBJECT->descriptor(
+            return VariableType::OBJECT->descriptor(
                 nullable: false,
-                fields: $this->buildContainerFields($schema['items']['properties'], $path, $fieldLabels, $optionLabels),
+                fields: $this->buildContainerFields($schema['items']['properties'], $path, $metadata),
                 array: true,
             );
         }
@@ -565,11 +647,10 @@ class WorkflowVariableCatalogService
      * descriptor. Order follows the schema's property order (which mirrors the form element order).
      *
      * @param  array<string, mixed>  $properties  child schema fragments keyed by field key
-     * @param  array<string, string>  $fieldLabels
-     * @param  array<string, array<int, array{key: string, label: string}>>  $optionLabels
+     * @param  array{labels: array<string, string>, options: array<string, array<int, array{key: string, label: string}>>, required: array<string, bool>}  $metadata
      * @return array<int, array{key: string, label: string, descriptor: array<string, mixed>}>
      */
-    private function buildContainerFields(array $properties, string $prefix, array $fieldLabels, array $optionLabels): array
+    private function buildContainerFields(array $properties, string $prefix, array $metadata): array
     {
         $fields = [];
 
@@ -581,12 +662,12 @@ class WorkflowVariableCatalogService
             $childKey = (string) $key;
             $childPath = $this->joinPath($prefix, $childKey);
 
-            $descriptor = $this->containerDescriptorFor($childSchema, $childPath, $fieldLabels, $optionLabels)
-                ?? $this->leafDescriptor($childSchema, $childPath, $optionLabels);
+            $descriptor = $this->containerDescriptorFor($childSchema, $childPath, $metadata)
+                ?? $this->leafDescriptor($childSchema, $childPath, $metadata);
 
             $fields[] = [
                 'key' => $childKey,
-                'label' => $fieldLabels[$childPath] ?? $childKey,
+                'label' => $metadata['labels'][$childPath] ?? $childKey,
                 'descriptor' => $descriptor,
             ];
         }
@@ -599,16 +680,21 @@ class WorkflowVariableCatalogService
      * for the base + array flag, and the config-sourced option labels (falling back to the raw value as
      * its own label when the element config carried none).
      *
+     * `nullable` is the SAME per-path required-ness the flat leaf variables use, so a section child
+     * reads identically whether the editor reaches it through the flat `section.leaf` variable or
+     * through the container descriptor's `fields` tree (a repeater's element fields, which exist ONLY
+     * here, get the same honest flag).
+     *
      * @param  array<string, mixed>  $schema
-     * @param  array<string, array<int, array{key: string, label: string}>>  $optionLabels
+     * @param  array{labels: array<string, string>, options: array<string, array<int, array{key: string, label: string}>>, required: array<string, bool>}  $metadata
      * @return array<string, mixed>
      */
-    private function leafDescriptor(array $schema, string $path, array $optionLabels): array
+    private function leafDescriptor(array $schema, string $path, array $metadata): array
     {
         $type = $this->mapSchemaToVariableType($schema);
-        $options = $optionLabels[$path] ?? $this->optionsFromValues($this->enumOptions($type, $schema));
+        $options = $metadata['options'][$path] ?? $this->optionsFromValues($this->enumOptions($type, $schema));
 
-        return $type->descriptor($options, false);
+        return $type->descriptor($options, $this->isNullableField($metadata, $path));
     }
 
     /**
@@ -626,7 +712,7 @@ class WorkflowVariableCatalogService
             'source' => 'trigger',
             'path' => $path,
             'name' => $name,
-            'type' => $this->flatType(WorkflowVariableType::OBJECT)->value,
+            'type' => $this->flatType(VariableType::OBJECT)->value,
             'descriptor' => $descriptor,
         ];
     }
@@ -675,26 +761,117 @@ class WorkflowVariableCatalogService
      */
     public function globalVariables(): array
     {
-        return WorkflowGlobal::query()
+        return Constant::query()
             ->orderBy('name')
             ->get()
-            ->map(fn (WorkflowGlobal $global): array => $this->globalVariable($global))
+            ->map(fn (Constant $global): array => $this->globalVariable($global))
             ->all();
     }
 
     /**
      * The workspace's globals as a `{<key>: <literal value>}` map — the payload the step runner
-     * injects into the run context under the `globals` root. Values are the STORED literals (scalar,
-     * list, object, or null); the resolver reads them by a plain whitelisted dotted lookup.
+     * injects into the run context under the `globals` root, and the tier the trigger gate
+     * (WorkflowConditionEngine) reads a `globals.*` condition source from. Values are the STORED
+     * literals (scalar, list, object, or null); the resolver reads them by a plain whitelisted dotted
+     * lookup.
+     *
+     * NO ACTIVE WORKSPACE ⇒ NO GLOBALS (security hardening). WorkspaceScope deliberately leaves a
+     * query UNCONSTRAINED when no workspace context is set (queue jobs, console, login), and this
+     * method COLLAPSES its rows into one `key => value` map — so without this guard every workspace's
+     * globals would flatten into a single map (last row wins) and a run / a gate could read a FOREIGN
+     * workspace's constant. There is no tenant to read globals FOR in that state, so the honest answer
+     * is none. Both db_modes are covered: `hasWorkspace()` (not `isShared()`) is the question, because
+     * an own-DB workspace is isolated by its connection and a shared one by the scope, and neither is
+     * true with no workspace at all.
      *
      * @return array<string, mixed>
      */
     public function globalValues(): array
     {
-        return WorkflowGlobal::query()
+        if (!$this->tenant->hasWorkspace()) {
+            return [];
+        }
+
+        return Constant::query()
             ->get()
-            ->mapWithKeys(fn (WorkflowGlobal $global): array => [$global->key => $global->value])
+            ->mapWithKeys(fn (Constant $global): array => [$global->key => $global->value])
             ->all();
+    }
+
+    /**
+     * The workspace's custom FUNCTIONS as pipeline OPERATIONS (CustomFunctionOperation VOs) — the runtime
+     * + write-validation view. Threaded into the OperationExecutor (so a `fn:<uuid>` op EXECUTES) via the
+     * run-context FunctionScope, and into the workflow write-validator's refCtx (so a workflow pipeline
+     * referencing a function type-checks). Mirrors globalValues()'s workspace guard: NO active workspace ⇒
+     * NONE (a queue/console read must never leak a foreign workspace's functions), ordered by name for
+     * stability.
+     *
+     * @return array<int, CustomFunctionOperation>
+     */
+    public function customFunctionOperations(): array
+    {
+        if (!$this->tenant->hasWorkspace()) {
+            return [];
+        }
+
+        return CustomFunction::query()
+            ->orderBy('name')
+            ->get()
+            ->map(fn (CustomFunction $function): CustomFunctionOperation => CustomFunctionOperation::fromModel($function))
+            ->all();
+    }
+
+    /**
+     * The workspace's custom functions as label-carrying operation-catalog entries, MERGED into the
+     * operations catalog forContext() exposes so the FE add-menu offers them. Each is
+     * `{id:'fn:<uuid>', input:input_type, output:return_type, args:[{id:argName, type:argType}], label:
+     * name, description}` — label/description are ADDITIVE, function-only wire fields (a built-in has no
+     * label: the FE localizes those, but reads a user function's own name/description verbatim).
+     * Workspace-guarded like globalValues().
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function functionCatalog(): array
+    {
+        if (!$this->tenant->hasWorkspace()) {
+            return [];
+        }
+
+        return CustomFunction::query()
+            ->orderBy('name')
+            ->get()
+            ->map(fn (CustomFunction $function): array => [
+                'id' => 'fn:' . $function->getKey(),
+                'input' => (VariableType::tryFrom((string) $function->input_type) ?? VariableType::TEXT)->value,
+                'output' => (VariableType::tryFrom((string) $function->return_type) ?? VariableType::TEXT)->value,
+                'args' => $this->functionArgWire($function),
+                'label' => $function->name,
+                'description' => $function->description,
+            ])
+            ->all();
+    }
+
+    /**
+     * The wire arg descriptors for a function op — `[{id: argName, type: argType}]`, the arg's DECLARED
+     * value type (not a runtime control) so the FE renders each arg's input by its real type. A malformed
+     * arg entry is skipped, mirroring CustomFunctionOperation::fromModel.
+     *
+     * @return array<int, array{id: string, type: string}>
+     */
+    private function functionArgWire(CustomFunction $function): array
+    {
+        $args = [];
+
+        foreach (is_array($function->args) ? $function->args : [] as $arg) {
+            if (!is_array($arg) || !is_string($arg['name'] ?? null)) {
+                continue;
+            }
+
+            $type = VariableType::tryFrom((string) ($arg['type'] ?? '')) ?? VariableType::TEXT;
+            $args[] = ['id' => $arg['name'], 'type' => $type->value];
+        }
+
+        return $args;
     }
 
     /**
@@ -708,10 +885,10 @@ class WorkflowVariableCatalogService
      *
      * @return array<string, mixed>
      */
-    private function globalVariable(WorkflowGlobal $global): array
+    private function globalVariable(Constant $global): array
     {
         $descriptor = is_array($global->descriptor) ? $global->descriptor : [];
-        $type = WorkflowVariableType::fromDescriptor($descriptor);
+        $type = VariableType::fromDescriptor($descriptor);
 
         $variable = [
             'source' => 'globals',
@@ -723,51 +900,242 @@ class WorkflowVariableCatalogService
 
         // Surface the enum option KEYS on the flat wire (mirrors a form enum/multi variable) only
         // when the descriptor is actually enum-based — a plain array<text> global carries none.
-        if (($descriptor['base'] ?? null) === WorkflowVariableType::ENUM->value) {
-            $variable['enumOptions'] = array_values(array_map(
-                fn ($option): string => (string) (is_array($option) ? ($option['key'] ?? '') : $option),
-                is_array($descriptor['options'] ?? null) ? $descriptor['options'] : [],
-            ));
+        $enumOptions = $this->descriptorOptionKeys($descriptor);
+
+        if ($enumOptions !== null) {
+            $variable['enumOptions'] = $enumOptions;
         }
 
         return $variable;
     }
 
     /**
-     * The CONDITION field descriptors: the subset of form-field variables usable in the
+     * The FORM half of the condition-source table: the subset of form-field variables usable in the
      * condition builder, each carrying its field_id, label, type, options, and the operator set
-     * valid for its type (WorkflowVariableType::operators — the same set the validator enforces).
+     * valid for its type (VariableType::operators — the same set the validator enforces).
+     * The GLOBALS half is built by globalConditionFields(); both go through conditionField().
+     *
+     * `label` is the variable's own `name`, so the condition builder and the variable picker always
+     * show one form field under ONE name. Display-only: the condition-tree validator keys this table
+     * by `path` and checks `type`/`enumOptions`, never the label.
      *
      * @param  array<int, array<string, mixed>>  $fieldVariables
      * @return array<int, array<string, mixed>>
      */
     private function conditionFields(array $fieldVariables): array
     {
-        // Container (object / array<object>) grouping entries are NOT condition sources — their flat
-        // `type` degrades to text, so leaving them in would mis-advertise them as text-conditionable
-        // (and they carry no field_id). Drop them before mapping to condition field descriptors.
+        // A NON-ARRAY object container (a form SECTION) is NOT a condition source — it has no meaningful
+        // operator set and its flat `type` degrades to text (mis-advertising it as text-conditionable).
+        // But an ARRAY container — a repeater (array<object>) or an array<file> field — IS conditionable
+        // (F2): an array op gates on the value being an array, so the pipeline builder can filter/count/map
+        // it. Drop only the non-array object containers; every flat leaf and every array carrier stays.
         $conditionable = array_values(array_filter(
             $fieldVariables,
-            fn (array $variable): bool => ($variable['descriptor']['base'] ?? null) !== 'object',
+            fn (array $variable): bool => !$this->isNonArrayObjectContainer($variable['descriptor'] ?? null),
         ));
 
-        return array_map(function (array $variable): array {
-            $type = WorkflowVariableType::from($variable['type']);
+        return array_map(fn (array $variable): array => $this->fieldConditionField($variable), $conditionable);
+    }
 
-            $field = [
-                'path' => 'fields.' . $variable['field_id'],
-                'field_id' => $variable['field_id'],
-                'label' => $variable['name'],
-                'type' => $type->value,
-                'operators' => $type->operators(),
-            ];
+    /**
+     * One FORM-FIELD condition source from a catalog variable (F2). An ARRAY-of-* source — a repeater
+     * (array<object>), an array<file>, a checklist (array<enum>/multi) — rides the `multi` wire type (the
+     * ONE array-carrying flat type, so the legacy `source_type === entry.type` equality and the validator's
+     * flat rooting keep working) and threads its FULL descriptor so the condition-pipeline walk can gate
+     * array ops on `array===true` and validate element pipelines + `element.<subfield>` refs. A scalar/enum/
+     * date leaf keeps its own flat wire type and carries no descriptor (unchanged).
+     *
+     * @param  array<string, mixed>  $variable
+     * @return array<string, mixed>
+     */
+    private function fieldConditionField(array $variable): array
+    {
+        $descriptor = is_array($variable['descriptor'] ?? null) ? $variable['descriptor'] : [];
+        $isArray = ($descriptor['array'] ?? false) === true;
+        // A container variable carries no `field_id` of its own — derive it from the catalog path
+        // (`trigger.fields.<id>` → `<id>`), the SAME unprefixed id a flat leaf and the runtime payload use.
+        $fieldId = $variable['field_id'] ?? $this->fieldIdFromPath((string) ($variable['path'] ?? ''));
 
-            if (isset($variable['enumOptions'])) {
-                $field['enumOptions'] = $variable['enumOptions'];
+        return $this->conditionField(
+            'trigger',
+            'fields.' . $fieldId,
+            $variable['name'],
+            $isArray ? VariableType::MULTI : VariableType::from($variable['type']),
+            $variable['enumOptions'] ?? null,
+            fieldId: $fieldId,
+            descriptor: $isArray ? $descriptor : null,
+        );
+    }
+
+    /**
+     * Whether a descriptor is a NON-ARRAY object container (a form SECTION) — the ONE shape dropped from the
+     * condition sources (no operator set, degraded flat type). An `array:true` object is a repeater, which
+     * F2 keeps as a source.
+     *
+     * @param  array<string, mixed>|null  $descriptor
+     */
+    private function isNonArrayObjectContainer(?array $descriptor): bool
+    {
+        return is_array($descriptor)
+            && ($descriptor['base'] ?? null) === VariableType::OBJECT->value
+            && ($descriptor['array'] ?? false) !== true;
+    }
+
+    /** The unprefixed field id of a `trigger.fields.<id>` catalog path (the container-variable case). */
+    private function fieldIdFromPath(string $path): string
+    {
+        $prefix = 'trigger.fields.';
+
+        return str_starts_with($path, $prefix) ? substr($path, strlen($prefix)) : $path;
+    }
+
+    /**
+     * The workspace GLOBALS as CONDITION SOURCES (B6) — the second half of the condition-source table,
+     * so a workflow can be gated on a workspace constant and not only on the submitted form.
+     *
+     * A global is addressed by its FULL catalog path (`globals.<key>`), unlike a form field's legacy
+     * unprefixed `fields.<id>` — see conditionFieldsFor for the one vocabulary rule. A NON-array OBJECT
+     * global is not itself conditionable (an object has no meaningful operator set — the same reason
+     * conditionFields drops a form section container), so it is RECURSED into and each declared leaf becomes
+     * its own `globals.<key>.<field>` source. An `array<object>` global (F2), like a form repeater, IS
+     * conditionable via the pipeline builder — emitted as a source riding `multi` + its full descriptor. An
+     * `array<scalar>` global rides `multi` exactly like a checklist field and IS conditionable.
+     *
+     * @param  array<int, array<string, mixed>>  $globalVariables  the already-read globalVariables()
+     * @return array<int, array<string, mixed>>
+     */
+    private function globalConditionFields(array $globalVariables): array
+    {
+        $fields = [];
+
+        foreach ($globalVariables as $variable) {
+            $this->collectGlobalConditionFields(
+                (string) ($variable['path'] ?? ''),
+                (string) ($variable['name'] ?? ''),
+                is_array($variable['descriptor'] ?? null) ? $variable['descriptor'] : [],
+                $fields,
+            );
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Append the condition sources one global (or one of its object leaves) offers. An ARRAY<object> global
+     * is emitted as ONE `multi` source carrying its full descriptor (F2). A NON-array OBJECT container
+     * offers none of its own and recurses into its declared `fields` — reusing isObjectContainer, so exactly
+     * the interiors the reference index already knows are conditionable. A child's label is qualified with
+     * its parent's ("Firma · Miasto") so a flat picker still reads unambiguously. Fail-soft on a malformed
+     * stored descriptor.
+     *
+     * @param  array<string, mixed>  $descriptor
+     * @param  array<int, array<string, mixed>>  $fields
+     */
+    private function collectGlobalConditionFields(string $path, string $label, array $descriptor, array &$fields): void
+    {
+        if (($descriptor['base'] ?? null) === VariableType::OBJECT->value) {
+            // An ARRAY<object> global (repeater-like) IS conditionable via the pipeline builder (F2) — emit
+            // it as a source riding the `multi` wire type + its FULL descriptor, exactly like a form repeater,
+            // so the condition-pipeline walk gates array ops on `array===true` and validates its element
+            // pipelines / `element.<subfield>` refs. A NON-array object (section-like) has no operator set of
+            // its own, so recurse into its declared leaves (each a scalar condition source).
+            if (($descriptor['array'] ?? false) === true) {
+                $fields[] = $this->conditionField('globals', $path, $label, VariableType::MULTI, null, descriptor: $descriptor);
+
+                return;
             }
 
-            return $field;
-        }, $conditionable);
+            if (!$this->isObjectContainer($descriptor)) {
+                return; // a malformed object with no declared `fields` — nothing conditionable
+            }
+
+            foreach ($descriptor['fields'] as $field) {
+                $key = is_array($field) ? ($field['key'] ?? null) : null;
+                $childDescriptor = is_array($field) && is_array($field['descriptor'] ?? null) ? $field['descriptor'] : null;
+
+                if (!is_string($key) || $key === '' || $childDescriptor === null) {
+                    continue;
+                }
+
+                $childLabel = is_array($field) && is_string($field['label'] ?? null) && $field['label'] !== '' ? $field['label'] : $key;
+
+                $this->collectGlobalConditionFields($path . '.' . $key, $label . ' · ' . $childLabel, $childDescriptor, $fields);
+            }
+
+            return;
+        }
+
+        $fields[] = $this->conditionField(
+            'globals',
+            $path,
+            $label,
+            $this->flatType(VariableType::fromDescriptor($descriptor)),
+            $this->descriptorOptionKeys($descriptor),
+        );
+    }
+
+    /**
+     * One CONDITION SOURCE descriptor. ONE builder for both vocabularies so a form field and a global
+     * can never grow different shapes: `source` names which catalog root the `path` belongs to
+     * (`trigger` = the form's own fields, `globals` = a workspace constant), `path` is the identity the
+     * write-validator matches, and `field_id` stays a FORM-only key (a global has no field id).
+     *
+     * @param  array<int, string>|null  $enumOptions
+     * @param  array<string, mixed>|null  $descriptor  the source's REAL structured descriptor (F2) — threaded
+     *                                                 for an array-of-* source so the condition-pipeline walk
+     *                                                 keeps its array-ness + element `fields`; null otherwise
+     * @return array<string, mixed>
+     */
+    private function conditionField(
+        string $source,
+        string $path,
+        string $label,
+        VariableType $type,
+        ?array $enumOptions,
+        ?string $fieldId = null,
+        ?array $descriptor = null,
+    ): array {
+        $field = ['path' => $path];
+
+        if ($fieldId !== null) {
+            $field['field_id'] = $fieldId;
+        }
+
+        $field['label'] = $label;
+        $field['type'] = $type->value;
+        $field['operators'] = $type->operators();
+
+        if ($enumOptions !== null) {
+            $field['enumOptions'] = $enumOptions;
+        }
+
+        $field['source'] = $source;
+
+        if ($descriptor !== null) {
+            $field['descriptor'] = $descriptor;
+        }
+
+        return $field;
+    }
+
+    /**
+     * The flat option-KEY list an ENUM-based descriptor carries (null for any other base) — the same
+     * `enumOptions` wire shape globalVariable() emits, reused for a global's condition descriptor and
+     * for its object LEAVES (which have no catalog variable of their own to read it from).
+     *
+     * @param  array<string, mixed>  $descriptor
+     * @return array<int, string>|null
+     */
+    private function descriptorOptionKeys(array $descriptor): ?array
+    {
+        if (($descriptor['base'] ?? null) !== VariableType::ENUM->value) {
+            return null;
+        }
+
+        return array_values(array_map(
+            fn ($option): string => (string) (is_array($option) ? ($option['key'] ?? '') : $option),
+            is_array($descriptor['options'] ?? null) ? $descriptor['options'] : [],
+        ));
     }
 
     /**
@@ -784,7 +1152,7 @@ class WorkflowVariableCatalogService
      *
      * @param  array<string, mixed>  $schema
      */
-    private function mapSchemaToVariableType(array $schema): WorkflowVariableType
+    private function mapSchemaToVariableType(array $schema): VariableType
     {
         $jsonType = $schema['type'] ?? 'string';
 
@@ -792,36 +1160,36 @@ class WorkflowVariableCatalogService
         // a future multi-file field could arrive as an array and must still read as FILE, never
         // as a plain multi-select.
         if (($schema['format'] ?? null) === 'file') {
-            return WorkflowVariableType::FILE;
+            return VariableType::FILE;
         }
 
         if ($jsonType === 'array') {
-            return WorkflowVariableType::MULTI; // multi-select / checklist
+            return VariableType::MULTI; // multi-select / checklist
         }
 
         if ($jsonType === 'number' || $jsonType === 'integer') {
-            return WorkflowVariableType::NUMBER;
+            return VariableType::NUMBER;
         }
 
         if ($jsonType === 'boolean') {
-            return WorkflowVariableType::BOOLEAN;
+            return VariableType::BOOLEAN;
         }
 
         if (($schema['format'] ?? null) === 'date') {
-            return WorkflowVariableType::DATE;
+            return VariableType::DATE;
         }
 
         // A time-of-day input (the form TIME element) carries format:'time'.
         if (($schema['format'] ?? null) === 'time') {
-            return WorkflowVariableType::TIME;
+            return VariableType::TIME;
         }
 
         // A single-select carries an enum of allowed values on a string schema.
         if (!empty($schema['enum']) && is_array($schema['enum'])) {
-            return WorkflowVariableType::ENUM;
+            return VariableType::ENUM;
         }
 
-        return WorkflowVariableType::TEXT; // short/long text, url, time, image, unknown
+        return VariableType::TEXT; // short/long text, url, time, image, unknown
     }
 
     /**
@@ -831,13 +1199,13 @@ class WorkflowVariableCatalogService
      * @param  array<string, mixed>  $schema
      * @return array<int, string>|null
      */
-    private function enumOptions(WorkflowVariableType $type, array $schema): ?array
+    private function enumOptions(VariableType $type, array $schema): ?array
     {
-        if ($type === WorkflowVariableType::ENUM && !empty($schema['enum']) && is_array($schema['enum'])) {
+        if ($type === VariableType::ENUM && !empty($schema['enum']) && is_array($schema['enum'])) {
             return array_values(array_map(fn ($v) => (string) $v, $schema['enum']));
         }
 
-        if ($type === WorkflowVariableType::MULTI) {
+        if ($type === VariableType::MULTI) {
             $itemEnum = $schema['items']['enum'] ?? null;
 
             if (is_array($itemEnum) && $itemEnum !== []) {
@@ -849,8 +1217,11 @@ class WorkflowVariableCatalogService
     }
 
     /**
-     * The human label for a field. extractFieldPaths seeds `label` from the field name; the
-     * schema's own `title`/`description` are preferred when present. Falls back to the path.
+     * The SCHEMA-derived label for a field — the FALLBACK used only when the content walk recorded no
+     * label for the path (see formFieldVariables, which prefers the element config label). The JSON
+     * schema carries no real per-field label: extractFieldPaths seeds `label` with the field KEY, so
+     * this effectively yields the field id; the schema's own `title`/`description` win when present.
+     * Falls back to the path.
      *
      * @param  array<string, mixed>  $schema
      */
@@ -885,7 +1256,7 @@ class WorkflowVariableCatalogService
         string $source,
         string $path,
         string $name,
-        WorkflowVariableType $type,
+        VariableType $type,
         ?array $enumOptions = null,
         bool $nullable = false,
         ?string $fieldId = null,
@@ -926,10 +1297,10 @@ class WorkflowVariableCatalogService
      * or `object` with its `fields`). Every other type is itself. Retiring these shims is a deferred
      * runtime-semantics slice (and, for OBJECT, R2-Generator's per-element loop execution).
      */
-    private function flatType(WorkflowVariableType $type): WorkflowVariableType
+    private function flatType(VariableType $type): VariableType
     {
         return match ($type) {
-            WorkflowVariableType::TIME, WorkflowVariableType::OBJECT => WorkflowVariableType::TEXT,
+            VariableType::TIME, VariableType::OBJECT => VariableType::TEXT,
             default => $type,
         };
     }
@@ -1000,18 +1371,51 @@ class WorkflowVariableCatalogService
     }
 
     /**
-     * Collect, for a form's element tree, the human FIELD labels (config.label/name) and the enum/multi
-     * OPTION labels — keyed by full dotted path and INCLUDING container interiors (sections AND
-     * repeaters). Separate from collectOptionLabels (which powers the flat leaf variables and
-     * deliberately excludes repeaters), so neither the leaf behaviour nor the shared trait changes. The
-     * path shape mirrors buildJsonSchema (sections/repeaters nest under their id, grids flatten), so
-     * each key aligns with the JSON-schema property path the container walk reads. No DB work.
+     * The per-path metadata that lives ONLY in a form's element CONTENT — one walk, three maps:
+     *   - `labels`   the human field/container labels (config.label/name),
+     *   - `options`  the enum/multi option `{key,label}` lists,
+     *   - `required` the per-INPUT `config.required` flag (the source of variable NULLABILITY).
+     * Keyed by the full dotted field path (see collectContentMetadata). No DB work.
+     *
+     * @return array{labels: array<string, string>, options: array<string, array<int, array{key: string, label: string}>>, required: array<string, bool>}
+     */
+    private function contentMetadata(Form $form): array
+    {
+        $labels = [];
+        $options = [];
+        $required = [];
+
+        $this->collectContentMetadata(
+            is_array($form->content) ? $form->content : [],
+            '',
+            $labels,
+            $options,
+            $required,
+        );
+
+        return ['labels' => $labels, 'options' => $options, 'required' => $required];
+    }
+
+    /**
+     * Collect, for a form's element tree, the human FIELD labels (config.label/name), the enum/multi
+     * OPTION labels, and each input's REQUIRED flag — keyed by full dotted path and INCLUDING container
+     * interiors (sections AND repeaters). Separate from collectOptionLabels (which powers the flat leaf
+     * variables' option labels and deliberately excludes repeaters), so neither the leaf option
+     * behaviour nor the shared trait changes. The path shape mirrors buildJsonSchema (sections/repeaters
+     * nest under their id, grids flatten), so each key aligns with the JSON-schema property path both
+     * the leaf pass (extractFieldPaths) and the container walk read. No DB work.
+     *
+     * REQUIRED-ness is read here — from `config.required` — because the JSON schema keeps it only as a
+     * per-OBJECT-level `required` name list (Illuminate\JsonSchema\Serializer derives it from the child
+     * types), never on the field fragment itself, and extractFieldPaths does not carry the parent level
+     * down. Reading the same config key FormElementType::toJsonSchema reads keeps one source of truth.
      *
      * @param  array<int, mixed>  $elements
      * @param  array<string, string>  $fieldLabels
      * @param  array<string, array<int, array{key: string, label: string}>>  $optionLabels
+     * @param  array<string, bool>  $requiredPaths
      */
-    private function collectContainerLabels(array $elements, string $prefix, array &$fieldLabels, array &$optionLabels): void
+    private function collectContentMetadata(array $elements, string $prefix, array &$fieldLabels, array &$optionLabels, array &$requiredPaths): void
     {
         foreach ($elements as $element) {
             if (!is_array($element)) {
@@ -1026,7 +1430,7 @@ class WorkflowVariableCatalogService
             if ($type === FormElementType::GRID && is_array($config['columns'] ?? null)) {
                 foreach ($config['columns'] as $column) {
                     if (is_array($column['element'] ?? null)) {
-                        $this->collectContainerLabels([$column['element']], $prefix, $fieldLabels, $optionLabels);
+                        $this->collectContentMetadata([$column['element']], $prefix, $fieldLabels, $optionLabels, $requiredPaths);
                     }
                 }
 
@@ -1041,16 +1445,20 @@ class WorkflowVariableCatalogService
 
             // Section / repeater: record the container's own label, then recurse into its children
             // (unlike collectOptionLabels, a REPEATER is recursed too — its element fields need labels).
+            // A container carries NO required flag of its own (see containerDescriptorFor).
             if (in_array($type, [FormElementType::SECTION, FormElementType::REPEATER], true) && is_array($config['children'] ?? null)) {
                 $fieldLabels[$path] = $this->elementLabel($config, $id);
-                $this->collectContainerLabels($config['children'], $path, $fieldLabels, $optionLabels);
+                $this->collectContentMetadata($config['children'], $path, $fieldLabels, $optionLabels, $requiredPaths);
 
                 continue;
             }
 
-            // Input field: its human label + (for select/checklist) its option labels.
+            // Input field: its human label, its REQUIRED flag, + (for select/checklist) its option labels.
             if ($type !== null && $type->isInputElement()) {
                 $fieldLabels[$path] = $this->elementLabel($config, $id);
+                // The SAME truthy read FormElementType::toJsonSchema applies when marking the schema
+                // property required, so the catalog and the submission validator agree per field.
+                $requiredPaths[$path] = (bool) ($config['required'] ?? false);
 
                 if (in_array($type, [FormElementType::SELECT, FormElementType::CHECKLIST], true)) {
                     $options = $this->labeledOptions($config['options'] ?? null);
@@ -1061,6 +1469,23 @@ class WorkflowVariableCatalogService
                 }
             }
         }
+    }
+
+    /**
+     * Whether a form field PATH is NULLABLE: an optional field (no `config.required`) may be absent or
+     * empty in a submission, which is exactly when a per-reference "default when empty" literal matters.
+     * A REQUIRED field is never nullable.
+     *
+     * FAIL-SOFT: a path the content walk did not record (an unexpected content shape — the two walks
+     * derive their paths the same way, so this should not happen) is treated as optional, mirroring JSON
+     * Schema's own rule that a property absent from `required` is optional. The cost of that direction is
+     * a harmless unused default control; the opposite direction would silently re-hide the affordance.
+     *
+     * @param  array{labels: array<string, string>, options: array<string, array<int, array{key: string, label: string}>>, required: array<string, bool>}  $metadata
+     */
+    private function isNullableField(array $metadata, string $path): bool
+    {
+        return ($metadata['required'][$path] ?? false) !== true;
     }
 
     /** The human label for an element (config.label, then config.name), falling back to its id/key. */

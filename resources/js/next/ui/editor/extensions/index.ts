@@ -140,7 +140,13 @@ export function buildPart2Extensions(features: Part2Features): {
       createVariable({
         variables: features.variables.variables,
         operationsCatalog: features.variables.operationsCatalog,
+        // The LIVE getters ride through untouched: the extension reads them at CALL time,
+        // so an async / changing host feed reaches an already-open editor (see types.ts).
+        source: features.variables.source,
+        catalog: features.variables.catalog,
         trigger: features.variables.trigger,
+        // The host's value-or-variable control for ONE pipeline argument (B4, optional).
+        argVariableField: features.variables.argVariableField,
       }),
     );
   }

@@ -19,6 +19,7 @@ import Alert from '../../ui/feedback/Alert.vue';
 import WorkflowConditionGroup from './WorkflowConditionGroup.vue';
 import WorkflowConditionModal from './WorkflowConditionModal.vue';
 import { useI18n } from '../../app/i18n';
+import { allValueVariables, conditionSourceVariables } from './workflowVariables';
 import { CONDITION_TREE_KEY, type ConditionTreeContext } from './conditionTreeContext';
 import {
   CONDITION_LIMITS,
@@ -36,7 +37,7 @@ import {
   type DraftCondition,
   type DraftConditionGroup,
 } from './workflowConditions';
-import type { CatalogField, ConditionLogic, WorkflowCatalog } from './types';
+import type { CatalogField, CatalogVariable, ConditionLogic, WorkflowCatalog } from './types';
 
 const props = withDefaults(
   defineProps<{
@@ -56,7 +57,25 @@ const { t } = useI18n();
 
 const gated = computed(() => !props.formSelected);
 const fields = computed<CatalogField[]>(() => props.catalog?.fields ?? []);
+const variables = computed<CatalogVariable[]>(() => props.catalog?.variables ?? []);
 const operations = computed(() => resolveOperationCatalog(props.catalog));
+
+/**
+ * The condition fields as PICKER variables — the fields' own paths/labels/types enriched with the
+ * structured descriptors their `trigger.fields.*` catalog variables carry (plus section group
+ * nodes). Shared with the chips through the tree context so a chip's glyph + nullable/array markers
+ * match the Modal's picker exactly.
+ */
+const sources = computed<CatalogVariable[]>(() => conditionSourceVariables(fields.value, variables.value));
+
+/**
+ * The show-all pool an op ARGUMENT in a condition pipeline may reference (B6). It is the GATE-TIME
+ * sources — the trigger's variables + workspace globals — and NEVER `steps.*`: no step has run when a
+ * gate is evaluated (the backend builds the condition ref-index with NO prior steps, so it rejects
+ * `steps.*` arg refs). Passing empty steps + position 0 to `allValueVariables` yields exactly that set,
+ * carrying the FULL `trigger.*` / `globals.*` paths a variable arg ref stores.
+ */
+const argVariables = computed<CatalogVariable[]>(() => allValueVariables(props.catalog, [], 0));
 
 // The first conditions.* server error (the section shows one aggregate message).
 const sectionError = computed<string | null>(() => {
@@ -111,6 +130,7 @@ function onSetLogic(groupUid: string, logic: ConditionLogic): void {
 // --- Provide the recursion context ------------------------------------------
 const context: ConditionTreeContext = {
   fields: () => fields.value,
+  sources: () => sources.value,
   operations: () => operations.value,
   errors: () => props.errors,
   addCondition: openAddCondition,
@@ -158,7 +178,9 @@ provide(CONDITION_TREE_KEY, context);
       v-model:open="modalOpen"
       :condition="editingCondition"
       :fields="fields"
+      :variables="variables"
       :catalog="operations"
+      :arg-variables="argVariables"
       @save="onModalSave"
     />
   </section>

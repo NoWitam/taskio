@@ -216,3 +216,79 @@ defaults (phase-1b)", and "Presence, null-handling, and date-format ops (phase-1
 under "The typed variable system" / "Runtime operations, if-blocks, and AI text") for the full
 wire contracts this phase shipped, and the "Accepted residual risks" / "Planned / deferred"
 sections for the Phase-2 items named above.
+
+---
+
+## Amendment (2026-07-24) — the "loud tripwire" was REACHABLE through the condition gate; the defensive `default` arm ships
+
+This amends Decision 2 and the "two defensive gaps, neither reachable today" trade-off above. Both
+rested on one claim: a DESCRIPTOR-ONLY `WorkflowVariableType` (`time`, and later `object` via
+ADR-0023) can never reach `WorkflowOperationExecutor::normalizeInput()`, so its `default`-less
+`match` is a LOUD tripwire rather than a live crash. A defensive `default` arm was declined twice on
+that reasoning.
+
+**That reasoning is disproven for the CONDITION GATE.** `WorkflowConditionEngine::evaluateCondition()`
+does not read a type from the catalog — it does `WorkflowVariableType::tryFrom($node['source_type'])`
+on the RAW stored value, which happily returns `TIME`/`OBJECT`. The engine then hands that base type
+to the executor, whose exhaustive `match` raised an `UnhandledMatchError` out of
+`WorkflowConditionEngine::passes()` → `WorkflowDispatchService::dispatch()` → a **500 during form
+submission**, from a gate whose documented contract is that it NEVER throws and always fails CLOSED.
+`WorkflowConditionTreeValidator` rejects such a `source_type` at write time, so this is reachable
+only through a LEGACY / hand-written / imported row — but that is a real row, not a hypothetical, and
+the catalog's `flatType()` degrade (which is what made the type unreachable everywhere else) simply
+does not run on the condition-tree read path.
+
+**Decision (reversal).** `normalizeInput()` gains a `default` arm that FAILS SOFT. It returns a new
+`UNSUPPORTED_BASE` sentinel, distinct from the existing `FAIL`, and `execute()` collapses it to an
+ordinary `OperationResult::failure()` BEFORE the presence-family bypass. The distinction is the whole
+point: `FAIL` means "an unrepresentable VALUE of a supported type", which the presence family
+legitimately reads as EMPTY (so `is_null` answers boolean `true`) — while an unrepresentable TYPE
+must not be readable at all, or `source_type: 'time'` + `[is_null]` would have OPENED the gate
+instead of crashing it. `WorkflowVariableResolver::coerce()` gained the same `default => null` arm
+for the identical exposure on the step-run path (still unreachable there — every caller passes a core
+type and the runtime type map is built from the degraded flat type — but the executor's gap looked
+unreachable too).
+
+**Type-safety at WRITE time remains the primary guard**, unchanged: `TIME`/`OBJECT` still carry no
+condition operators, their flat wire `type` still degrades to `text`, and
+`WorkflowConditionTreeValidator` still rejects a descriptor-only `source_type` with a 422. The
+`default` arm is the backstop for rows that never passed through that guard, not a replacement for
+it — and it is NOT a step toward runtime `TIME` semantics (an unsupported base type produces a
+failure, never a value). What is LOST is the tripwire's loudness: the day someone wires up real TIME
+semantics, a forgotten `normalizeInput` arm no longer announces itself with an exception. That is
+accepted — a soft failure in a runtime this fail-closed is discoverable in a test, while a 500 on a
+user's form submission is not; the unit pins
+(`WorkflowOperationExecutorTest::test_a_base_type_with_no_runtime_semantics_fails_closed_instead_of_throwing`
+and its presence-family sibling) exist to make the gap visible instead.
+
+**Sibling defect fixed in the same batch: array-shaped operation arguments could FAIL OPEN.** The
+executor's SCALAR arg readers (`withStringArg`/`withNumberArg`/`withDateArg`) reject a value-or-
+variable union for free via `is_scalar`. The ARRAY-shaped readers (`enum_in`'s `values`,
+`multi_includes_any`/`_all`'s `values`, every `enum_to_*`'s `mapping` including `enum_to_choice`, and
+`match_to_choice`'s `rules`) only checked `is_array` — and a `{kind:'variable', ref:{…}}` union IS an
+array — so they consumed the UNION ITSELF as data: `enum_in` treated the literal string `variable`
+(the `kind` key's VALUE) as a candidate option, `enum_to_*` used the union's own KEYS as the option
+map, and `match_to_choice` iterated it, matched nothing and returned its fallback — i.e. SUCCEEDED on
+garbage rules. Each of those can OPEN a gate that should have failed closed. All four now read
+through one shared `arrayArg()` reader that rejects a union as a malformed argument, and the union
+SHAPE itself is defined in exactly one place — the new `App\Modules\Workflows\Support\ValueOrVariable`
+— which `WorkflowVariableResolver` (which pre-resolves a union into a literal) and
+`WorkflowConditionTreeValidator` (which gates one at write time) now both delegate to, replacing
+their private copies. Two layers detecting the union and a third not detecting it is exactly how this
+defect arose. Once the gate gains resolver-backed argument pre-resolution, a union should never reach
+the executor at all; the guard stays as defence in depth for rows that bypass pre-resolution.
+
+**Accepted trade-off:** a STRUCTURAL arg-variable (`sourceMap`/`choiceRules`) that resolves to a
+context array which itself carries a `kind` key equal to `'variable'` is now rejected as malformed
+rather than used as a map. That shape is indistinguishable from an unresolved union by construction;
+rejecting it is the fail-closed choice, and the executor's reader was already fail-soft for every
+other malformed structure.
+
+**Behaviour preserved.** No valid configuration changes: the seven runtime types, every literal
+argument, an absent/null `rules` (still "no rules" → the fallback), and the presence family's
+treatment of an unrepresentable VALUE all evaluate byte-identically. The two characterization pins
+that recorded the buggy behaviour
+(`WorkflowConditionEngineTest::test_a_descriptor_only_source_type_escapes_the_never_throws_contract_today`
+and the three `..._is_not_even_fail_closed_today_...` tests in
+`WorkflowConditionEngineArgVariableTest`) were flipped and renamed as part of this batch; every other
+pin is unchanged.

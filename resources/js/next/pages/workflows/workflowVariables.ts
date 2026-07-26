@@ -12,12 +12,17 @@
 //   • variablesOfType(catalog, steps, position, type) → the add-on picker filters
 //     (which variables are offered for a value-or-variable field of a given type),
 //   • variableIcon(type) → the workflow-type → icon map (§7.5) for the ADD-ON chips
-//     (the editor's own chips stay primitive-mapped; this covers date/enum/multi too).
+//     (the editor's own chips stay primitive-mapped; this covers date/enum/multi too),
+//   • conditionSourceVariables(fields, variables) → the CONDITION builder's picker feed:
+//     the catalog's condition FIELDS (the only accepted `source` paths) enriched with the
+//     structured descriptors their form-field variables carry, so the shared tree picker
+//     can group sections and mark nullable / array sources there too.
 //
 // Identity-only: a variable's `id` IS its `path` (the editor directive stores only
 // `data.id`), so the real type is always recoverable from the catalog by path.
 import type { IconName } from '../../ui/primitives/icons';
 import { translate } from '../../app/i18n';
+import { isSystemIdentifierPath } from '../../ui/variables/variableTree';
 import type {
   VariableDefinition,
   VariableOption,
@@ -25,6 +30,7 @@ import type {
 } from '../../ui/editor/extensions/types';
 import type {
   CatalogDescriptorField,
+  CatalogField,
   CatalogVariable,
   CatalogVariableDescriptor,
   WorkflowCatalog,
@@ -157,22 +163,25 @@ export function positionScopedStepOutputs(
 // `triggerType` params below are retained only for call-site stability (now inert — the
 // catalog is fetched per trigger type and is authoritative).
 
-// --- isIdVariable (SF3.2 — drop identifiers from the OFFERED lists) ----------
+// --- isIdVariable (SF3.2 — drop SYSTEM identifiers from the OFFERED lists) ---
 //
-// An IDENTIFIER variable (a path ending in `.id` — trigger.submission.id,
-// trigger.form.id, trigger.task.id — or in `_id` — the step outputs task_id /
-// report_id) is a machine key, not something a human wants to drop into a title,
-// a priority, or a deadline. SF3.2 stops OFFERING them: they are stripped from
-// every "which variables can I insert / pick" list. They are NOT stripped from the
-// RESOLVING side (resolveVariableType / resolveVariable / stripVariableDirectives),
-// so a SAVED flow that already references an id still hydrates + renders correctly.
+// A SYSTEM IDENTITY variable (`trigger.submission.id`, `trigger.form.id`,
+// `trigger.task.id`, and the step outputs `task_id` / `report_id`) is a machine key
+// the engine generates, not something a human wants to drop into a title, a priority,
+// or a deadline. SF3.2 stops OFFERING them: they are stripped from every "which
+// variables can I insert / pick" list. They are NOT stripped from the RESOLVING side
+// (resolveVariableType / resolveVariable / stripVariableDirectives), so a SAVED flow
+// that already references an id still hydrates + renders correctly.
+//
+// A USER-AUTHORED form field named `numer_id` / `order_id` is NOT one of those — it is
+// an ordinary variable and stays offered everywhere. That scoping lives in ONE place,
+// the shared variable model (`ui/variables/variableTree`), and this is the workflows-side
+// alias of it, so the markdown `{`-insert feed and the tree picker can never disagree.
 /**
- * Whether a variable `path` is an identifier (ends with `.id` or `_id`) — the
- * dot / underscore boundary avoids false positives (`fields.valid`, `fields.paid`).
+ * Whether a variable `path` is a SYSTEM identity path. Re-exported from the shared model
+ * (`isSystemIdentifierPath`) — do NOT re-implement the suffix test here.
  */
-export function isIdVariable(path: string): boolean {
-  return path.endsWith('.id') || path.endsWith('_id');
-}
+export const isIdVariable = isSystemIdentifierPath;
 
 /**
  * The trigger SYSTEM variables the catalog carries, OFFERED for insertion: the catalog's
@@ -216,9 +225,11 @@ function nonStepVariables(
 //                pickable — see the file-subfield contract).
 //   • REPEATER (object + array:true) → ONE entry, relabelled as a list/collection (no per-element
 //                subfields — per-element access is deferred to the R2 loop).
-//   • SECTION  (object, array:false) → NOTHING: its leaves are ALREADY emitted as flat top-level
-//                variables, so re-surfacing the whole object (which resolves to a map) would only
-//                duplicate + confuse.
+//   • SECTION  (object, array:false) → the EXPAND-ONLY container entry. Its leaves keep riding as
+//                flat top-level variables — the container merely GROUPS them in the tree picker; it
+//                is never selectable (a whole object resolves to a map). Since B4 EVERY feed
+//                carries it, the markdown `{` list included: they all render through the shared
+//                browser, which enforces the never-selectable rule structurally.
 //   • anything else → itself (subject to the SF3.2 id-strip rule) — descriptor-less variables and
 //                the locally-synthesised step outputs pass straight through (a no-op).
 
@@ -280,18 +291,41 @@ function repeaterListVariable(variable: CatalogVariable): CatalogVariable {
   };
 }
 
+/** The dotted root every workspace global lives under (`globals.<key>`). */
+const GLOBALS_ROOT = 'globals';
+
 /**
- * A GLOBAL (`source:'globals'`) entry, relabelled with a "Globals ›" qualifier so the flat picker
- * (which has no group headers) visually groups the workspace's user-authored literal constants
- * apart from trigger/step variables (phase-3). A global is a SELF-CONTAINED literal — its whole
- * value is the reference — so it is surfaced AS ITSELF for every base (even an `object`, which a
- * trigger container would instead drop, its leaves being flat elsewhere). Keeps the descriptor +
- * enum options so downstream (icons, option lists) stays uniform.
+ * The "Globals" GROUP node: one expand-only container at the `globals` root that every global
+ * nests under by its own dotted path (`globals.<key>`), replacing the per-entry "Globals ›" text
+ * prefix with a real tree node (B3; B4 removed that prefix — and its i18n key — for good, since
+ * EVERY feed is a tree now). It carries NO `descriptor.fields`, so its children can only ever be
+ * the REAL offered globals — never a synthesized path — exactly like a form section container.
+ * Being a non-array object it is NEVER selectable, and `buildVariableTree` prunes it when the feed
+ * ends up carrying no global at all.
  */
-function globalVariable(variable: CatalogVariable): CatalogVariable {
+function globalsGroupVariable(): CatalogVariable {
+  return {
+    source: 'globals',
+    path: GLOBALS_ROOT,
+    name: translate('workflows.variable.globalsGroup', 'Globals'),
+    type: 'text',
+    descriptor: { base: 'object', nullable: false, array: false },
+  };
+}
+
+/**
+ * A form SECTION as an EXPAND-ONLY container entry: the container itself with its
+ * `descriptor.fields` DROPPED. A section's children are its OWN flat leaf variables (the backend
+ * emits every leaf top-level as `<section>.<leaf>`), which nest under it by dotted path in
+ * `buildVariableTree` — so dropping the descriptor fields is exactly what guarantees each leaf
+ * appears ONCE and that every SELECTABLE node under the section is a REAL offered catalog entry
+ * (already type-filtered by the caller), never a synthesized path the feed did not offer. Mirrors
+ * `conditionContainerVariable` below, for the same reason.
+ */
+function sectionContainerVariable(variable: CatalogVariable): CatalogVariable {
   return {
     ...variable,
-    name: translate('workflows.variable.global', `Globals › ${variable.name}`, { name: variable.name }),
+    descriptor: { base: 'object', nullable: variable.descriptor?.nullable ?? false, array: false },
   };
 }
 
@@ -301,18 +335,35 @@ function globalVariable(variable: CatalogVariable): CatalogVariable {
  * shape AND the locally-synthesised step outputs — pass through unchanged, so this is a no-op for
  * every non-structural catalog. Applies the SF3.2 id-strip rule to top-level variables here (file
  * subfields are exempt, being generated below it).
+ *
+ * ONE feed shape for EVERY surface (B4). This used to take an `includeContainers` option, off by
+ * default, because the markdown `{`-insert list was rendered by a FLAT list where every row was
+ * insertable — a whole-section row there would have let a user drop a directive that resolves to an
+ * object MAP into their text. That list now renders through `buildVariableTree` + `VariableBrowser`
+ * like every other picker, where a non-array object is EXPAND-ONLY and can never be inserted, so
+ * the exclusion (and the per-entry "Globals ›" text prefix it forced) is gone: containers ride in
+ * all feeds, and no surface can disagree about what is offered.
  */
 function expandVariables(variables: CatalogVariable[]): CatalogVariable[] {
   const out: CatalogVariable[] = [];
+  // The "Globals" group node is emitted ONCE, in front of the first global, so the feed's own
+  // ordering (globals wherever the catalog put them) is preserved.
+  let globalsGrouped = false;
   for (const variable of variables) {
     const descriptor = variable.descriptor;
     const base = descriptor?.base;
 
-    // GLOBAL: a self-contained literal — surfaced as ONE relabelled entry for every base
-    // (its whole value IS the reference), before the container rules that would drop an
-    // object section. Globals paths (`globals.<key>`) never trip the SF3.2 id-strip.
+    // GLOBAL: the workspace's user-authored literal constants. They ride AS THEMSELVES under the
+    // "Globals" GROUP node, which their dotted path nests them beneath. A SCALAR global is a
+    // selectable leaf; an OBJECT global keeps its `descriptor.fields` and therefore becomes an
+    // EXPANDABLE, never-selectable container of its own fields — the same treatment a form section
+    // gets. Globals paths never trip the SF3.2 id-strip (they are user-authored).
     if (variable.source === 'globals') {
-      out.push(globalVariable(variable));
+      if (!globalsGrouped) {
+        globalsGrouped = true;
+        out.push(globalsGroupVariable());
+      }
+      out.push(variable);
       continue;
     }
 
@@ -325,11 +376,12 @@ function expandVariables(variables: CatalogVariable[]): CatalogVariable[] {
       continue;
     }
 
-    // OBJECT container: a REPEATER (array) → one list entry; a SECTION (non-array) → nothing.
+    // OBJECT container: a REPEATER (array) → one list entry; a SECTION (non-array) → the
+    // expand-only container entry that groups its own flat leaves.
     if (base === 'object') {
-      if (descriptor?.array && !isIdVariable(variable.path)) {
-        out.push(repeaterListVariable(variable));
-      }
+      if (isIdVariable(variable.path)) continue;
+      if (descriptor?.array) out.push(repeaterListVariable(variable));
+      else out.push(sectionContainerVariable(variable));
       continue;
     }
 
@@ -370,13 +422,19 @@ export function toEditorVariables(
 
   const stepOutputs = positionScopedStepOutputs(catalog, steps, position);
 
-  // Expand structural descriptors (file subfields + repeater list; section leaves stay flat) and
-  // strip SF3.2 identifiers, then degrade each to the editor PRIMITIVE.
-  return expandVariables([...nonStep, ...stepOutputs]).map((variable) => ({
-    id: variable.path, // identity-only: id === path
-    name: variable.name,
-    type: editorPrimitive(variable.type),
-  }));
+  // Expand structural descriptors (file subfields + repeater list; section containers group their
+  // flat leaves) and strip SF3.2 identifiers, then degrade each to the editor PRIMITIVE.
+  return expandVariables([...nonStep, ...stepOutputs]).map((variable) => {
+    const definition: VariableDefinition = {
+      id: variable.path, // identity-only: id === path
+      name: variable.name,
+      type: editorPrimitive(variable.type),
+    };
+    // An OBJECT container degrades to the `text` flat type; carrying the base keeps it a
+    // never-selectable branch when this flat feed is promoted back into the shared tree.
+    if (variable.descriptor?.base === 'object') definition.base = 'object';
+    return definition;
+  });
 }
 
 // --- toEditorVariablesTyped (§4.9 — the TRUE-type + options editor feed) -----
@@ -424,7 +482,9 @@ export function toEditorVariablesTyped(
   const stepOutputs = positionScopedStepOutputs(catalog, steps, position);
 
   // Expand structural descriptors (file subfields become pickable at their scalar type; a repeater
-  // is one list entry; section leaves stay flat) and strip SF3.2 identifiers.
+  // is one list entry; a section / object global / the "Globals" group ride as EXPAND-ONLY
+  // containers) and strip SF3.2 identifiers. B4: this IS the markdown `{`-insert feed, and it now
+  // renders through the shared browser, so it carries exactly what every other feed carries.
   return expandVariables([...nonStep, ...stepOutputs]).map((variable) => {
     const options = variableOptionList(variable);
     const definition: VariableDefinition = {
@@ -438,6 +498,9 @@ export function toEditorVariablesTyped(
     // editor chip can mark an optional / list variable. Emit-or-omit keeps definitions lean.
     if (variable.descriptor?.nullable) definition.nullable = true;
     if (variable.descriptor?.array) definition.array = true;
+    // The STRUCTURAL base of an OBJECT container (B4): it degrades to the `text` flat type, and
+    // the `{` browser must still know it is a container — an EXPAND-ONLY, never-insertable row.
+    if (variable.descriptor?.base === 'object') definition.base = 'object';
     return definition;
   });
 }
@@ -502,6 +565,28 @@ export function resolveVariableDescriptor(
 // --- variablesOfType (the add-on picker filters, §4.9) ----------------------
 
 /**
+ * The shared body of every OFFERED-variable feed: the catalog's non-step variables + the
+ * position-scoped, KEY-substituted step outputs, structurally expanded, then filtered to the
+ * accepted flat type(s).
+ *
+ * A CONTAINER carries the degraded `text` flat type, so a type-filtered feed keeps only the
+ * containers a text-accepting field could group leaves under — and `buildVariableTree` prunes any
+ * that end up with no offered leaf, so a filter can never leave a dead branch behind.
+ */
+function offeredVariables(
+  catalog: WorkflowCatalog | null | undefined,
+  steps: StepLike[],
+  position: number,
+  types: WorkflowVariableType | WorkflowVariableType[],
+): CatalogVariable[] {
+  const accepted = new Set(Array.isArray(types) ? types : [types]);
+  const nonStep = nonStepVariables(catalog);
+  const stepOutputs = positionScopedStepOutputs(catalog, steps, position);
+
+  return expandVariables([...nonStep, ...stepOutputs]).filter((v) => accepted.has(v.type));
+}
+
+/**
  * The variables offered to a value-or-variable ADD-ON field at `position`, filtered
  * to the compatible types. A `ValueOrVariableField` over an enum literal offers
  * enum + text variables; a `DateOrVariableField` offers date variables; etc. Pass
@@ -518,16 +603,11 @@ export function variablesOfType(
   types: WorkflowVariableType | WorkflowVariableType[],
   triggerType?: WorkflowTriggerType | null,
 ): CatalogVariable[] {
-  const accepted = new Set(Array.isArray(types) ? types : [types]);
-
-  const nonStep = nonStepVariables(catalog);
-  const stepOutputs = positionScopedStepOutputs(catalog, steps, position);
-
   // Expand structural descriptors then filter to the accepted type(s). `expandVariables` applies
   // the SF3.2 id-strip to top-level vars (file subfields — incl. `<file>.id` — are exempt); a file
   // subfield surfaces at its scalar type (text/number), so a `.name` reaches a text/priority field
   // and a `.size` a number field, while the whole-file entry (type `file`) still feeds a file pick.
-  return expandVariables([...nonStep, ...stepOutputs]).filter((v) => accepted.has(v.type));
+  return offeredVariables(catalog, steps, position, types);
 }
 
 /** Every type a value-or-variable field may reference. */
@@ -538,7 +618,13 @@ const ALL_VALUE_TYPES: WorkflowVariableType[] = ['text', 'number', 'boolean', 'd
  * picker feed. A value-or-variable field no longer PRE-FILTERS its picker to the
  * field's own type(s); the user picks any variable and COERCES it with operations to
  * the field's terminal (a text → a date via ops, an enum → a choice via enum_to_choice,
- * etc.). Identifiers (`*.id` / `*_id`) stay stripped (SF3.2 — via `variablesOfType`).
+ * etc.). Identifiers (`*.id` / `*_id`) stay stripped (SF3.2).
+ *
+ * Like every other feed (B4) it carries the OBJECT CONTAINERS — a form SECTION, an object GLOBAL,
+ * and the "Globals" GROUP node every global hangs under: they are rendered by `buildVariableTree` +
+ * `VariableBrowser`, where a container is an EXPANDABLE, never-selectable row that groups its own
+ * leaves. Nothing new becomes pickable — the leaves ride as they always did and are merely nested —
+ * so every emitted ref stays byte-identical.
  */
 export function allValueVariables(
   catalog: WorkflowCatalog | null | undefined,
@@ -546,7 +632,7 @@ export function allValueVariables(
   position: number,
   triggerType?: WorkflowTriggerType | null,
 ): CatalogVariable[] {
-  return variablesOfType(catalog, steps, position, ALL_VALUE_TYPES, triggerType);
+  return offeredVariables(catalog, steps, position, ALL_VALUE_TYPES);
 }
 
 // --- variableIcon (§7.5 — the workflow-type → icon map for the add-on chips) -
@@ -718,6 +804,151 @@ export function variablePickerTree(variables: CatalogVariable[]): VariablePicker
   }
 
   return roots;
+}
+
+// --- Condition SOURCE variables (the condition builder's picker feed) --------
+//
+// The condition builder picks its source from the catalog's `fields` (`CatalogField`:
+// `{path:'fields.<id>', field_id, label, type, enumOptions?, operators}`) — and ONLY those paths are
+// accepted as a condition source (WorkflowConditionTreeValidator checks `source` against
+// `conditionFieldsFor($form)`). Those descriptors carry NO structured `descriptor`, so on their own
+// they cannot drive the shared VariableBrowser, which reads `descriptor` for the object tree and
+// for the nullable / array markers.
+//
+// This adapter closes that gap WITHOUT inventing data and WITHOUT widening the accepted source set.
+// Each condition field is re-shaped into a `CatalogVariable` that KEEPS the field's own `path` (the
+// emitted contract), `label`, `type` and `enumOptions`, and BORROWS the structured `descriptor` from
+// the catalog variable describing the SAME form field: the backend builds both from one form-field
+// variable (`'fields.' . $field_id` vs `'trigger.fields.' . $field_id`), so the mapping
+// `fields.<id>` ↔ `trigger.fields.<id>` is exact. A field with no matching variable (an older /
+// variable-less catalog) stays descriptor-less — the picker then renders exactly the flat glyph it
+// rendered before.
+//
+// It additionally re-surfaces a form SECTION (an `object`, non-array container) as a NON-selectable
+// GROUP node so the flat `fields.<section>.<leaf>` entries nest under it (the condition field list
+// drops containers — a container is not conditionable). A section is emitted ONLY when it actually
+// holds an offered leaf, and WITHOUT its `descriptor.fields`, so the tree can never synthesize a
+// child that is not itself an offered condition field: every SELECTABLE node stays exactly one
+// `fields.<id>` path the write-validator accepts. A REPEATER (`array:true`) is never surfaced — its
+// per-element fields are not conditionable (they have no flat leaf).
+
+/** The root a FORM condition source resolves under — `fields.<id>` lives at `trigger.fields.<id>`. */
+const CONDITION_SOURCE_ROOT = 'trigger' as const;
+
+/** The condition SOURCE root a field belongs to — `globals.*` is a workspace global, else the form. */
+function conditionFieldSource(field: CatalogField): CatalogVariable['source'] {
+  return field.source ?? (field.path.startsWith('globals.') || field.path === 'globals' ? 'globals' : 'trigger');
+}
+
+/**
+ * One condition FIELD as a picker variable: the field's own contract (`path` / `label` / `type` /
+ * `enumOptions`) plus the structured `descriptor` (and `nullable` flag) of the catalog variable for
+ * the same field, when the catalog carries one. `source` is the field's real catalog root (B6:
+ * `trigger` for a form field, `globals` for a workspace global) so a pick emits the correct root.
+ */
+function conditionLeafVariable(
+  field: CatalogField,
+  variable: CatalogVariable | undefined,
+  source: CatalogVariable['source'],
+): CatalogVariable {
+  const leaf: CatalogVariable = {
+    source,
+    path: field.path,
+    name: field.label,
+    type: field.type,
+  };
+  if (field.enumOptions) leaf.enumOptions = field.enumOptions;
+  if (variable?.descriptor) leaf.descriptor = variable.descriptor;
+  if (variable?.nullable) leaf.nullable = true;
+  return leaf;
+}
+
+/**
+ * A non-selectable GROUP node (a form SECTION at `fields.<section>`, or an object GLOBAL at
+ * `globals.<key>`) its nested condition leaves hang under. Keeps the object base (so it reads with the
+ * braces glyph) but DROPS `descriptor.fields` — the tree must nest only the real, offered condition
+ * leaves under it, never synthesized children.
+ */
+function conditionContainerVariable(path: string, variable: CatalogVariable, source: CatalogVariable['source']): CatalogVariable {
+  return {
+    source,
+    path,
+    name: variable.name,
+    type: variable.type,
+    descriptor: { base: 'object', nullable: variable.descriptor?.nullable ?? false, array: false },
+  };
+}
+
+/**
+ * The container prefixes a condition field path sits under, OUTERMOST first, EXCLUDING the root
+ * segment (`fields.a.b.c` → `fields.a`, `fields.a.b`; `globals.a.b.c` → `globals.a`, `globals.a.b`).
+ * A top-level field (`fields.x` / `globals.x`) has none — the shared "Globals" group node covers the
+ * globals root, and form fields nest under the tree's implicit roots.
+ */
+function conditionContainerPaths(fieldPath: string): string[] {
+  const segments = fieldPath.split('.');
+  const paths: string[] = [];
+  for (let i = 2; i < segments.length; i += 1) paths.push(segments.slice(0, i).join('.'));
+  return paths;
+}
+
+/**
+ * The condition builder's picker feed: the catalog's condition SOURCES (form FIELDS + workspace
+ * GLOBALS, B6) enriched with their structured descriptors and grouped in the shared tree — form
+ * sections nest their leaves, and every global hangs under ONE "Globals" GROUP node exactly like every
+ * other variable surface. The emitted `source` path contract is unchanged (`fields.<id>` for a form
+ * field, `globals.<key>[.<sub>]` for a global); this only carries the real ROOT source + the structure
+ * and type markers the shared tree picker needs.
+ *
+ * A GLOBAL leaf's descriptor lookup keys on its FULL catalog path (`globals.<key>` — its catalog source
+ * IS its root); a form field's keys on `trigger.<path>`. Either falling back to descriptor-less (the
+ * plain glyph) when the catalog carries no matching variable.
+ */
+export function conditionSourceVariables(
+  fields: CatalogField[],
+  variables: CatalogVariable[] | null | undefined,
+): CatalogVariable[] {
+  const byPath = new Map((variables ?? []).map((variable) => [variable.path, variable]));
+  const out: CatalogVariable[] = [];
+  const emitted = new Set<string>();
+  let globalsGrouped = false;
+
+  for (const field of fields) {
+    const source = conditionFieldSource(field);
+
+    // GLOBALS half (B6): a single "Globals" GROUP node (emitted once, before the first global) that
+    // every `globals.<key>` leaf nests beneath by its dotted path — the SAME grouping the value / markdown
+    // feeds use. The container's descriptor lookup uses the full catalog path directly.
+    if (source === 'globals') {
+      if (!globalsGrouped) {
+        globalsGrouped = true;
+        out.push(globalsGroupVariable());
+      }
+      for (const containerPath of conditionContainerPaths(field.path)) {
+        if (emitted.has(containerPath)) continue;
+        const container = byPath.get(containerPath);
+        if (!container || container.descriptor?.base !== 'object' || container.descriptor.array) continue;
+        emitted.add(containerPath);
+        out.push(conditionContainerVariable(containerPath, container, 'globals'));
+      }
+      out.push(conditionLeafVariable(field, byPath.get(field.path), 'globals'));
+      continue;
+    }
+
+    // FORM half: a section is emitted just BEFORE its first offered leaf, so the tree's root order
+    // follows the form's own field order.
+    for (const containerPath of conditionContainerPaths(field.path)) {
+      if (emitted.has(containerPath)) continue;
+      const container = byPath.get(`${CONDITION_SOURCE_ROOT}.${containerPath}`);
+      if (!container || container.descriptor?.base !== 'object' || container.descriptor.array) continue;
+      emitted.add(containerPath);
+      out.push(conditionContainerVariable(containerPath, container, 'trigger'));
+    }
+
+    out.push(conditionLeafVariable(field, byPath.get(`${CONDITION_SOURCE_ROOT}.${field.path}`), 'trigger'));
+  }
+
+  return out;
 }
 
 /** Flatten a picker tree to every node in pre-order (for path→node lookup + selection resolution). */

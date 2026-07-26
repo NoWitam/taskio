@@ -5,7 +5,9 @@
 **Updated:** 2026-07-23 — Addendum below: an object global's own DECLARED FIELDS join the write-side
 reference index (closes a picker/validator asymmetry a later UX batch's tree picker would otherwise
 have opened)
-**Module:** `App\Modules\Workflows`
+**Updated:** 2026-07-26 — Superseding addendum below: the persistence this ADR shipped (`WorkflowGlobal`,
+table `workflow_globals`, `/api/workflow-globals`) was RENAMED and MOVED — see ADR-0028
+**Module:** `App\Modules\Workflows` (persistence moved to `App\Modules\Variables` — see the 2026-07-26 addendum)
 **Relates to:** ADR-0021 (Phase 0: the composable, form-independent catalog + the resolver
 whitelist recipe this phase applies to a genuinely new root — `globals` was already named there
 as a planned example), ADR-0022 (Phase 1: the `descriptor` spine this phase's stored type reuses
@@ -285,3 +287,32 @@ unaffected by this addendum, and per-element access into it remains out of scope
 ADR-0023 established for a form repeater. See
 `docs/decisions/ADR-0023-workflows-variable-typesystem-phase2.md`'s addendum for the shared mechanism
 and `docs/backend/workflows-api.md` for the updated wire description.
+
+---
+
+## Addendum (2026-07-26) — persistence renamed: `WorkflowGlobal` → `Constant`, `workflow_globals` →
+`consts`, `/workflow-globals` → `/consts`, moved into a new `App\Modules\Variables` module (see ADR-0028)
+
+Once the variable-typesystem rework's TYPE SYSTEM and PIPELINE ENGINE were extracted into a new,
+lower-layer `App\Modules\Variables` module (ADR-0027), the persistence this ADR shipped moved with the
+rest of the feature's natural home, and was renamed at the same time: `Const` being a PHP reserved word,
+the model became `Constant` (table `consts`, still explicit via `$table` since Eloquent's own
+pluralization would guess `constants`); the URL became `/api/consts`; the FE gained a NEW top-level
+"Variables" (PL "Zmienne") nav area (`ConstantsView.vue` etc., replacing the Workflows sub-page this ADR
+originally described) alongside the sibling custom-Functions feature (ADR-0029).
+
+**Every decision recorded above in this ADR — the LITERAL-only scope, the 3-point catalog-root recipe,
+the authorable-type boundary (`AUTHORABLE_BASES`, now on `ConstantTypeValidator`), the NUL-byte
+injection guard, the no-soft-delete trade-off, and the deferred computed-global / deferred FE authoring
+depth — is UNCHANGED by the rename.** Only the class/table/URL names and the module they live in moved.
+**The one thing explicitly NOT renamed is the runtime WIRE**: `WorkflowVariableResolver::ROOTS` still
+whitelists `'globals'`, the run-context key is still `globals`, a catalog entry's `source`/`path` are
+still `'globals'`/`'globals.<key>'`, `WorkflowConditionEngine::GLOBALS_ROOT` is still `'globals'`, and
+`ConstantResource` still emits `reference => 'globals.' . $key` — a workflow stored before this rename
+keeps resolving its `globals.<key>` references byte-for-byte unchanged, pinned by a dedicated
+characterization test, `tests/Feature/ConstantWireCompatTest.php`.
+
+See `docs/decisions/ADR-0028-consts-rename.md` for the full record of the rename itself (why `Const` was
+unusable, the reversible `Schema::rename` migrations, the new nav, and the wire-preservation decision and
+its trade-offs) and `docs/backend/workflows-api.md` (the "Consts" endpoints under "## Endpoints") for the
+current wire contract.

@@ -2,7 +2,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import VariablePipelineEditor from '../extensions/VariablePipelineEditor.vue';
-import type { VariableOperationDefinition } from '../extensions/types';
+import { standardOperationsCatalog } from '../extensions/standardOperations';
+import type { VariableOperationDefinition, VariablePipelineStep } from '../extensions/types';
 
 const CATALOG: VariableOperationDefinition[] = [
   { id: 'uppercase', label: 'Uppercase', inputTypes: ['text'], outputType: 'text' },
@@ -199,6 +200,15 @@ const MATCH_CATALOG: VariableOperationDefinition[] = [
       { id: 'fallback', label: 'Fallback', type: 'choiceFallback' },
     ],
   },
+  // Boolean-terminal + plain text ops the rule LHS `when` sub-editor may offer/chain.
+  {
+    id: 'text_equals',
+    label: 'Equals',
+    inputTypes: ['text'],
+    outputType: 'boolean',
+    args: [{ id: 'value', label: 'Value', type: 'text' }],
+  },
+  { id: 'uppercase', label: 'Uppercase', inputTypes: ['text'], outputType: 'text' },
 ];
 
 describe('VariablePipelineEditor — choice-producing args (targetOptions)', () => {
@@ -239,7 +249,7 @@ describe('VariablePipelineEditor — choice-producing args (targetOptions)', () 
     wrapper.unmount();
   });
 
-  it('a choiceRules arg renders repeatable when→then rows (then = target Select) + a choiceFallback Select', async () => {
+  it('a choiceRules rule LHS is a boolean-terminal `when` pipeline over TEXT (NOT free text); RHS `then` + fallback Selects unchanged', async () => {
     const wrapper = mount(VariablePipelineEditor, {
       props: {
         baseType: 'text',
@@ -249,7 +259,8 @@ describe('VariablePipelineEditor — choice-producing args (targetOptions)', () 
           {
             stepId: 's1',
             operationId: 'match_to_choice',
-            args: { rules: [{ when: 'BREAKING', then: 'urgent' }], fallback: 'low' },
+            // `when` is now the WIRE `{op,args}[]` boolean pipeline, not a free-text string.
+            args: { rules: [{ when: [{ op: 'text_equals', args: { value: 'BREAKING' } }], then: 'urgent' }], fallback: 'low' },
             outputType: 'enum' as const,
           },
         ],
@@ -259,27 +270,117 @@ describe('VariablePipelineEditor — choice-producing args (targetOptions)', () 
     await wrapper.get('ol button').trigger('click');
     await flush();
 
-    // The single rule row shows its `when` text input carrying the saved value.
-    const whenInputs = wrapper.findAll('input[aria-label^="Rule 1: when"]');
-    expect(whenInputs.length).toBe(1);
-    expect((whenInputs[0].element as HTMLInputElement).value).toBe('BREAKING');
-    // Comboboxes: 1 operation + 1 rule `then` + 1 fallback = 3 (both target-option fed).
+    // The rule LHS is a condition-pipeline sub-editor (a role="group"), NOT a free-text input.
+    expect(wrapper.findAll('input[aria-label^="Rule 1: when"]').length).toBe(0);
+    const whenGroup = wrapper.find('[role="group"][aria-label^="Rule 1: when"]');
+    expect(whenGroup.exists()).toBe(true);
+    // The saved `when` pipeline renders its text_equals step as a chip (op label + value badge).
+    expect(whenGroup.text()).toContain('Equals');
+    expect(whenGroup.text()).toContain('BREAKING');
+
+    // Comboboxes: 1 operation + 1 rule `then` + 1 fallback = 3 (both target-option fed). The `when`
+    // step is a chip, so it adds none.
     const combos = wrapper.findAll('[role="combobox"]');
     expect(combos.length).toBe(3);
     // The fallback (last) Select offers the destination choices.
     await combos[combos.length - 1].trigger('click');
     await flush();
     expect(document.body.textContent).toContain('Pilne');
+    // Close the fallback listbox before probing the `when` op Select.
+    await combos[combos.length - 1].trigger('click');
+    await flush();
 
-    // "Add rule" appends an empty rule row to the choiceRules value.
+    // The `when` sub-editor OFFERS all type-valid ops for TEXT (boolean-terminal + chainable) and NOT
+    // choice-producing ops (no targetOptions in a condition context). Enter the `when` step's edit mode
+    // and open its operation Select to read the offered ops.
+    await whenGroup.get('ol button').trigger('click');
+    await flush();
+    const whenCombo = wrapper.find('[role="group"][aria-label^="Rule 1: when"]').find('[role="combobox"]');
+    expect(whenCombo.exists()).toBe(true);
+    await whenCombo.trigger('click');
+    await flush();
+    const optionLabels = Array.from(document.body.querySelectorAll('[role="option"]')).map(
+      (o) => o.textContent ?? '',
+    );
+    expect(optionLabels.some((l) => l.includes('Equals'))).toBe(true);
+    expect(optionLabels.some((l) => l.includes('Uppercase'))).toBe(true);
+    expect(optionLabels.some((l) => l.includes('Match to a choice'))).toBe(false);
+
+    // "Add rule" appends a rule SEEDED with a single `text_equals` `when` step (empty value) — the wire
+    // `when` is a `{op,args}[]` pipeline, exactly the BE contract.
     const addBtn = wrapper.findAll('button').find((b) => b.text() === 'Add rule');
     expect(addBtn).toBeTruthy();
     await addBtn!.trigger('click');
     await flush();
     const emitted = wrapper.emitted('update:modelValue');
     const last = emitted![emitted!.length - 1][0] as Array<{ args: Record<string, unknown> }>;
-    expect((last[0].args.rules as unknown[]).length).toBe(2);
+    const rules = last[0].args.rules as Array<{ when: unknown; then: unknown }>;
+    expect(rules.length).toBe(2);
+    expect(rules[1].when).toEqual([{ op: 'text_equals', args: { value: '' } }]);
 
+    wrapper.unmount();
+  });
+
+  it('Defect 4: surfaces the choice terminal + AUTO-BRIDGES a non-text value to a priority choice', async () => {
+    // A NUMBER value: the choice terminal (match_to_choice, text input) is not directly offerable, yet
+    // it must be reachable. It is surfaced in the add menu AND picking it auto-inserts num_to_text first.
+    const wrapper = mount(VariablePipelineEditor, {
+      props: { baseType: 'number', catalog: standardOperationsCatalog(), targetOptions: TARGET_OPTIONS, modelValue: [] },
+      attachTo: document.body,
+    });
+    await wrapper.get('button').trigger('click');
+    await flush();
+    await flush();
+    const menuBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Match to a choice'),
+    );
+    expect(menuBtn).toBeTruthy();
+    menuBtn!.click();
+    await flush();
+
+    const emitted = wrapper.emitted('update:modelValue');
+    const last = emitted![emitted!.length - 1][0] as VariablePipelineStep[];
+    expect(last.map((s) => s.operationId)).toEqual(['num_to_text', 'match_to_choice']);
+    wrapper.unmount();
+  });
+
+  it('Defect 4: a DATE value also reaches the choice terminal via its date→text bridge', async () => {
+    const wrapper = mount(VariablePipelineEditor, {
+      props: { baseType: 'date', catalog: standardOperationsCatalog(), targetOptions: TARGET_OPTIONS, modelValue: [] },
+      attachTo: document.body,
+    });
+    await wrapper.get('button').trigger('click');
+    await flush();
+    await flush();
+    const menuBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Match to a choice'),
+    );
+    expect(menuBtn).toBeTruthy();
+    menuBtn!.click();
+    await flush();
+    const emitted = wrapper.emitted('update:modelValue');
+    const last = emitted![emitted!.length - 1][0] as VariablePipelineStep[];
+    expect(last.map((s) => s.operationId)).toEqual(['date_to_text', 'match_to_choice']);
+    wrapper.unmount();
+  });
+
+  it('Defect 4: an ENUM value reaches the choice terminal DIRECTLY (enum_to_choice, no bridge)', async () => {
+    const wrapper = mount(VariablePipelineEditor, {
+      props: { baseType: 'enum', catalog: standardOperationsCatalog(), targetOptions: TARGET_OPTIONS, modelValue: [] },
+      attachTo: document.body,
+    });
+    await wrapper.get('button').trigger('click');
+    await flush();
+    await flush();
+    const menuBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
+      b.textContent?.trim().startsWith('To a choice'),
+    );
+    expect(menuBtn).toBeTruthy();
+    menuBtn!.click();
+    await flush();
+    const emitted = wrapper.emitted('update:modelValue');
+    const last = emitted![emitted!.length - 1][0] as VariablePipelineStep[];
+    expect(last.map((s) => s.operationId)).toEqual(['enum_to_choice']);
     wrapper.unmount();
   });
 
@@ -307,5 +408,49 @@ describe('VariablePipelineEditor — choice-producing args (targetOptions)', () 
     bodyText = document.body.textContent ?? '';
     expect(bodyText).toContain('To a choice');
     withTargets.unmount();
+  });
+});
+
+// --- Markdown cleanup: the presence family is offered on condition surfaces, hidden on reference ones ---
+describe('VariablePipelineEditor — presence-op offering (hidePresenceOps)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('OFFERS the presence family by default (the direct-pipeline condition surfaces)', async () => {
+    const wrapper = mount(VariablePipelineEditor, {
+      props: { baseType: 'text', catalog: standardOperationsCatalog(), modelValue: [] },
+      attachTo: document.body,
+    });
+    await wrapper.get('button').trigger('click');
+    await flush();
+    await flush();
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('Has a value'); // is_present
+    expect(text).toContain('Has no value'); // is_null
+    expect(text).toContain('Fallback when empty'); // coalesce
+    expect(text).toContain('Require a value'); // assert_present
+    wrapper.unmount();
+  });
+
+  it('HIDES the presence family when hidePresenceOps is set (the reference surfaces), keeping other text ops', async () => {
+    const wrapper = mount(VariablePipelineEditor, {
+      props: { baseType: 'text', catalog: standardOperationsCatalog(), hidePresenceOps: true, modelValue: [] },
+      attachTo: document.body,
+    });
+    await wrapper.get('button').trigger('click');
+    await flush();
+    await flush();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('Has a value');
+    expect(text).not.toContain('Has no value');
+    expect(text).not.toContain('Fallback when empty');
+    expect(text).not.toContain('Require a value');
+    // A non-presence text op is still offered (only the presence family is dropped).
+    expect(text).toContain('Uppercase');
+    wrapper.unmount();
   });
 });

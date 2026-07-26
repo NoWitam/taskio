@@ -117,8 +117,8 @@ describe('next i18n', () => {
     it('the boolean TYPE label is Condition (en) / Warunek (pl) everywhere it is named', () => {
       expect(get(en, 'editor.types.boolean')).toBe('Condition');
       expect(get(pl, 'editor.types.boolean')).toBe('Warunek');
-      expect(get(en, 'workflows.globals.base.boolean')).toBe('Condition');
-      expect(get(pl, 'workflows.globals.base.boolean')).toBe('Warunek');
+      expect(get(en, 'variables.consts.base.boolean')).toBe('Condition');
+      expect(get(pl, 'variables.consts.base.boolean')).toBe('Warunek');
     });
 
     it('no user-facing "yes/no" / "tak/nie" / "boolean"-as-type copy remains in the condition strings', () => {

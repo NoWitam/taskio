@@ -141,7 +141,7 @@ describe('WorkflowStepCard — create_task', () => {
     await Promise.resolve();
     await nextTick();
 
-    // The Variable picker is now an expandable TREE (§refinement 5); these are flat leaf rows.
+    // The Variable picker is the shared inline TREE (B3); these are flat leaf treeitems.
     const options = document.body.querySelectorAll<HTMLElement>('[role="treeitem"]');
     // SHOW-ALL: the picker no longer pre-filters by type — every referenceable
     // variable is offered (Status, Title, Submitted at) and the user coerces it.

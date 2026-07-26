@@ -2,10 +2,10 @@
 
 namespace Tests\Unit\Workflows;
 
+use App\Modules\Variables\Services\OperationExecutor as WorkflowOperationExecutor;
 use App\Modules\Workflows\Agents\WorkflowAiTextAgent;
 use App\Modules\Workflows\Enums\WorkflowAiPersona;
 use App\Modules\Workflows\Services\WorkflowAiTextService;
-use App\Modules\Workflows\Services\WorkflowOperationExecutor;
 use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Tests\Support\ScriptedWorkflowAiTextService;
 use Tests\TestCase;

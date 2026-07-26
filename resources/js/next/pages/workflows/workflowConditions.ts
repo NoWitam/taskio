@@ -30,6 +30,7 @@ import type {
   VariablePipelineStep,
   VariablePrimitive,
 } from '../../ui/editor/extensions/types';
+import type { VariableLiteral } from '../../ui/variables/types';
 import { resolveType } from '../../ui/editor/extensions/operationHelpers';
 import { standardOperationsCatalog } from '../../ui/editor/extensions/standardOperations';
 import type {
@@ -58,11 +59,16 @@ export const CONDITION_LIMITS = {
 export interface DraftCondition {
   uid: string;
   kind: 'condition';
-  /** `fields.<id>` path, or '' before a field is chosen. */
+  /** `fields.<id>` (form field) or `globals.<key>[.<sub>]` (global), or '' before a source is chosen. */
   source: string;
-  /** The field's TRUE workflow type (the pipeline's base type). */
+  /** The source's TRUE workflow type (the pipeline's base type). */
   sourceType: WorkflowVariableType;
   pipeline: VariablePipelineStep[];
+  /**
+   * The OPTIONAL scalar substituted when the source resolves missing/empty (B6). `null`/absent ⇒
+   * NO default — the wire key is OMITTED so a default-less condition round-trips byte-identically.
+   */
+  default?: VariableLiteral;
 }
 
 /** A group draft: logic over children. */
@@ -80,6 +86,13 @@ export interface ConditionDraftPayload {
   source: string;
   sourceType: WorkflowVariableType;
   pipeline: VariablePipelineStep[];
+  /** Emit-or-OMIT: present ONLY when the author set a typed default (null/absent ⇒ no default). */
+  default?: VariableLiteral;
+}
+
+/** Whether a drafted default counts as "unset" (the wire OMITS the key). `false`/`0` are meaningful. */
+function defaultIsEmpty(value: VariableLiteral | undefined): boolean {
+  return value == null || value === '';
 }
 
 // --- Local uid sequence (never sent to the server) --------------------------
@@ -96,13 +109,15 @@ export function emptyConditionTree(): DraftConditionGroup {
 
 /** Wrap a Modal payload into an identified condition draft. */
 export function makeCondition(payload: ConditionDraftPayload): DraftCondition {
-  return {
+  const draft: DraftCondition = {
     uid: conditionUid('cond'),
     kind: 'condition',
     source: payload.source,
     sourceType: payload.sourceType,
     pipeline: payload.pipeline,
   };
+  if (!defaultIsEmpty(payload.default)) draft.default = payload.default;
+  return draft;
 }
 
 // --- op → outputType lookup (lazy; for display fallback only) ----------------
@@ -178,7 +193,16 @@ export function updateCondition(
   payload: ConditionDraftPayload,
 ): DraftConditionGroup {
   return replaceNode(root, uid, (n) =>
-    n.kind === 'condition' ? { ...n, source: payload.source, sourceType: payload.sourceType, pipeline: payload.pipeline } : n,
+    n.kind === 'condition'
+      ? {
+          ...n,
+          source: payload.source,
+          sourceType: payload.sourceType,
+          pipeline: payload.pipeline,
+          // Emit-or-omit: drop the key when the author cleared the default (byte-identical round-trip).
+          default: defaultIsEmpty(payload.default) ? undefined : payload.default,
+        }
+      : n,
   ) as DraftConditionGroup;
 }
 
@@ -236,12 +260,16 @@ function groupToWire(group: DraftConditionGroup, isRoot: boolean): WireCondition
 
 function nodeToWire(node: DraftConditionNode): WireConditionNode {
   if (node.kind === 'group') return groupToWire(node, false);
-  return {
+  const wire: WireCondition = {
     kind: 'condition',
     source: node.source,
     source_type: node.sourceType,
     pipeline: node.pipeline.map((step) => ({ op: step.operationId, args: step.args })),
   };
+  // The typed "default when empty" (B6) — OMITTED when unset, so a condition that never had a
+  // default serialises exactly as before.
+  if (!defaultIsEmpty(node.default)) wire.default = node.default;
+  return wire;
 }
 
 // --- wireToDraft (tree OR legacy flat list) ---------------------------------
@@ -275,13 +303,18 @@ function isGroupWire(node: WireConditionNode): node is WireConditionGroup {
 function wireNodeToDraft(node: WireConditionNode): DraftConditionNode {
   if (isGroupWire(node)) return groupToDraft(node);
   const condition = node as WireCondition;
-  return {
+  const draft: DraftCondition = {
     uid: conditionUid('cond'),
     kind: 'condition',
     source: condition.source,
     sourceType: condition.source_type,
     pipeline: (condition.pipeline ?? []).map((step) => makePipelineStep(step.op, step.args ?? {})),
   };
+  // Hydrate the typed default (B6) when the wire carries one; a scalar rides through unchanged.
+  if (!defaultIsEmpty(condition.default as VariableLiteral | undefined)) {
+    draft.default = condition.default as VariableLiteral;
+  }
+  return draft;
 }
 
 // --- LEGACY flat list → tree ------------------------------------------------
@@ -371,11 +404,27 @@ function nodeComplete(node: DraftConditionNode, catalog: VariableOperationDefini
 // --- resolveOperationCatalog (descriptors × FE labels) ----------------------
 
 /**
- * The operations catalog the condition UI runs on. When the backend catalog carries
- * `operations` DESCRIPTORS, each is mapped to its FULL `standardOperationsCatalog()`
- * definition by id (labels + arg labels + control types); a descriptor with NO known
- * label degrades to `label = id`. When `operations` is absent (older responses) the
- * whole standard catalog is used. Call inside a computed for locale reactivity.
+ * The value type of a custom-FUNCTION op's declared arg → the editor CONTROL type its literal
+ * input renders. The four base scalars keep their real control (the wire carries the arg's
+ * DECLARED type so the FE renders it by type); every other value type (enum/multi/file/…) has no
+ * standalone literal control here and collapses to a stringifiable TEXT input — mirroring the
+ * backend's CustomFunctionOperation::argControl.
+ */
+const FN_ARG_CONTROL: Record<string, VariableOperationArgumentType> = {
+  text: 'text',
+  number: 'number',
+  boolean: 'boolean',
+  date: 'date',
+};
+
+/**
+ * The operations catalog the pipeline UIs run on. When the backend catalog carries `operations`
+ * DESCRIPTORS, each is mapped to its FULL `standardOperationsCatalog()` definition by id (labels +
+ * arg labels + control types). A descriptor with NO known built-in label is a WIRE-DEFINED op — a
+ * custom FUNCTION (`fn:<uuid>`) or a forward-compat built-in — so it keeps its own `label` /
+ * `description` (functions carry theirs verbatim; the id is the fallback) and renders each declared
+ * ARG by its value type. When `operations` is absent (older responses) the whole standard catalog
+ * is used. Call inside a computed for locale reactivity.
  */
 export function resolveOperationCatalog(
   catalog: WorkflowCatalog | null | undefined,
@@ -388,19 +437,24 @@ export function resolveOperationCatalog(
   return descriptors.map((descriptor) => {
     const known = byId.get(descriptor.id);
     if (known) return known;
-    // Defensive: an unknown descriptor is still usable, just unlabeled (id as label).
-    return {
+    // A wire-defined op (a custom `fn:<uuid>` function or a forward-compat id): prefer its own
+    // wire label/description over the id-as-label fallback, and render each arg by its value type.
+    const definition: VariableOperationDefinition = {
       id: descriptor.id,
-      label: descriptor.id,
+      label: descriptor.label ?? descriptor.id,
       inputTypes: [descriptor.input] as VariablePrimitive[],
       outputType: descriptor.output as VariablePrimitive,
       args: (descriptor.args ?? []).map((arg) => ({
         id: arg.id,
         label: arg.id,
-        type: arg.type as VariableOperationArgumentType,
+        type: FN_ARG_CONTROL[arg.type as string] ?? 'text',
         mapType: arg.mapType,
       })),
     };
+    if (descriptor.description != null && descriptor.description !== '') {
+      definition.description = descriptor.description;
+    }
+    return definition;
   });
 }
 

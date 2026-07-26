@@ -4,10 +4,10 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Forms\Models\Form;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
-use App\Modules\Workflows\Models\WorkflowGlobal;
+use App\Modules\Variables\Enums\VariableType as WorkflowVariableType;
+use App\Modules\Variables\Models\Constant;
 use App\Modules\Workspaces\Models\Workspace;
-use Database\Factories\WorkflowGlobalFactory;
+use Database\Factories\ConstantFactory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -188,8 +188,8 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
                     'rules' => [
-                        ['when' => 'BREAKING', 'then' => 'urgent'],
-                        ['when' => 'note', 'then' => 'low'],
+                        ['when' => [['op' => 'text_equals', 'args' => ['value' => 'BREAKING']]], 'then' => 'urgent'],
+                        ['when' => [['op' => 'text_equals', 'args' => ['value' => 'note']]], 'then' => 'low'],
                     ],
                     'fallback' => 'medium',
                 ]]],
@@ -209,7 +209,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                    'rules' => [['when' => 'BREAKING', 'then' => 'ghostpriority']],
+                    'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'BREAKING']]], 'then' => 'ghostpriority']],
                     'fallback' => 'nope',
                 ]]],
             ],
@@ -217,6 +217,86 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
             'steps.0.config.priority.pipeline.0.args.rules.0.then',
             'steps.0.config.priority.pipeline.0.args.fallback',
         ]);
+    }
+
+    public function test_accepts_a_match_to_choice_with_a_multi_step_when_pipeline(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A rule's `when` is a boolean-terminal pipeline over the op's TEXT input: text_contains → boolean.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => [['op' => 'text_contains', 'args' => ['value' => 'urgent']]], 'then' => 'urgent']],
+                    'fallback' => 'medium',
+                ]]],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_rejects_a_match_to_choice_when_that_is_not_a_pipeline(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // The old scalar-equality `when` is gone: a non-pipeline `when` is a granular error under …when.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => 'BREAKING', 'then' => 'urgent']],
+                    'fallback' => 'medium',
+                ]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.rules.0.when']);
+    }
+
+    public function test_rejects_a_match_to_choice_when_that_does_not_end_in_a_boolean(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A `when` terminating in TEXT (text_uppercase) is not a condition → rejected under …when.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => [['op' => 'text_uppercase', 'args' => []]], 'then' => 'urgent']],
+                    'fallback' => 'medium',
+                ]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.rules.0.when']);
+    }
+
+    public function test_rejects_a_choice_op_inside_a_match_to_choice_when(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A choice-producing op may not sit inside a `when` (no destination option set in a condition
+        // context; it would let the runtime sub-run re-enter the choice machinery). Rejected under …when.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
+                'pipeline' => [['op' => 'match_to_choice', 'args' => [
+                    'rules' => [['when' => [
+                        ['op' => 'match_to_choice', 'args' => ['rules' => [], 'fallback' => 'high']],
+                        ['op' => 'enum_is', 'args' => ['value' => 'high']],
+                    ], 'then' => 'urgent']],
+                    'fallback' => 'medium',
+                ]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.rules.0.when']);
     }
 
     public function test_rejects_a_deadline_pipeline_that_does_not_end_in_a_date(): void
@@ -389,7 +469,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'pipeline' => [
                     ['op' => 'text_uppercase', 'args' => []],
                     ['op' => 'match_to_choice', 'args' => [
-                        'rules' => [['when' => 'RAPORT.PDF', 'then' => 'high']],
+                        'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'RAPORT.PDF']]], 'then' => 'high']],
                         'fallback' => 'low',
                     ]],
                 ],
@@ -412,7 +492,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'pipeline' => [
                     ['op' => 'num_to_text', 'args' => []],
                     ['op' => 'match_to_choice', 'args' => [
-                        'rules' => [['when' => '2048', 'then' => 'high']],
+                        'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => '2048']]], 'then' => 'high']],
                         'fallback' => 'low',
                     ]],
                 ],
@@ -428,7 +508,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
 
         $pipeline = [
             ['op' => 'text_uppercase', 'args' => []],
-            ['op' => 'match_to_choice', 'args' => ['rules' => [['when' => 'RAPORT.PDF', 'then' => 'high']], 'fallback' => 'low']],
+            ['op' => 'match_to_choice', 'args' => ['rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'RAPORT.PDF']]], 'then' => 'high']], 'fallback' => 'low']],
         ];
 
         $response = $this->postWorkflow($owner, $workspace, $this->payload($form, [
@@ -483,7 +563,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.items.item_name', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'x']]], 'then' => 'high']],
                     'fallback' => 'low',
                 ]]],
             ],
@@ -503,7 +583,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.details.note', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                    'rules' => [['when' => 'urgent', 'then' => 'urgent']],
+                    'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'urgent']]], 'then' => 'urgent']],
                     'fallback' => 'low',
                 ]]],
             ],
@@ -676,53 +756,120 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
         $this->assertSame($pipeline, $workflow->steps[0]['config']['deadline']['pipeline']);
     }
 
-    // ---- op ARGUMENTS: option / multi-option / structural variables (phase-4b) ----
+    // ---- op ARGUMENTS: option / multi-option / structural variables (phase-4b + Defect-3) ----
     //
-    // Beyond the value args, EVERY op-arg control now accepts a variable: single/multi OPTION args
-    // (enum|text / multi ref, option-set membership deferred to runtime) and STRUCTURAL args
-    // (sourceMap/choiceRules, gated LOOSELY — any whitelisted + indexed ref, exact shape deferred to
-    // runtime fail-soft). All are validated against the SAME reference index the top-level ref uses.
+    // Beyond the value args, EVERY op-arg control accepts a variable: single/multi OPTION args (enum|text
+    // / multi ref, option-set membership deferred to runtime), and STRUCTURAL CONTAINERS (sourceMap/
+    // choiceRules) PER ENTRY — each map value / rule `then` may itself be a value-or-variable union,
+    // validated against the SAME reference index as the top-level ref, at the entry's TARGET type.
 
-    public function test_accepts_a_source_map_arg_supplied_by_a_variable(): void
+    public function test_accepts_a_source_map_arg_with_a_variable_entry(): void
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
         $form = $this->form($owner, $workspace);
 
-        // enum_to_choice's `mapping` (a sourceMap = STRUCTURAL arg) is a VARIABLE, not a literal map. The
-        // loose gate accepts any whitelisted + indexed ref (fields.details is an object container in the
-        // index); the exact {option: target} shape is deferred to runtime fail-soft.
+        // enum_to_date's `mapping` (a sourceMap of DATE targets) on the deadline field: the 'blog' entry is
+        // a VARIABLE (a date ref), the 'news' entry a literal — a mix of literal + variable entries.
         $this->postWorkflow($owner, $workspace, $this->payload($form, [
-            'priority' => [
+            'deadline' => [
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
-                'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
-                    'kind' => 'variable',
-                    'ref' => ['source' => 'trigger', 'path' => 'fields.details', 'type' => 'object'],
+                'pipeline' => [['op' => 'enum_to_date', 'args' => ['mapping' => [
+                    'blog' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date']],
+                    'news' => '2026-06-01',
                 ]]]],
             ],
         ]))->assertCreated();
     }
 
-    public function test_accepts_choice_rules_and_fallback_args_supplied_by_variables(): void
+    public function test_accepts_a_choice_mapping_entry_supplied_by_a_variable(): void
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
         $form = $this->form($owner, $workspace);
 
-        // match_to_choice's `rules` (choiceRules = STRUCTURAL) AND `fallback` (choiceFallback = single
-        // OPTION) are BOTH variables: rules → a loose indexed ref, fallback → an enum|text ref. Target
-        // option-set membership is unverifiable for a variable, so it is deferred to runtime fail-soft.
+        // enum_to_choice's `mapping` targets the priority option set. A variable ENTRY must MAP into those
+        // options — a sub-pipeline ending in a choice-producing op (here nested enum_to_choice) — exactly
+        // like a top-level choice field. The 'news' entry stays a literal priority option.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
+                    'blog' => [
+                        'kind' => 'variable',
+                        'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                        'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => ['blog' => 'high', 'news' => 'low']]]],
+                    ],
+                    'news' => 'low',
+                ]]]],
+            ],
+        ]))->assertCreated();
+    }
+
+    public function test_accepts_choice_rules_then_entry_and_fallback_supplied_by_variables(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // match_to_choice's rule `then` (a CHOICE entry) is a variable that MAPS into the priority options
+        // via a choice-producing sub-pipeline; the `fallback` (choiceFallback = single OPTION) is a whole-
+        // arg enum|text variable (membership deferred to runtime).
         $this->postWorkflow($owner, $workspace, $this->payload($form, [
             'priority' => [
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                    'rules' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.details', 'type' => 'object']],
+                    'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'BREAKING']]], 'then' => [
+                        'kind' => 'variable',
+                        'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                        'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => ['blog' => 'high', 'news' => 'low']]]],
+                    ]]],
                     'fallback' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text']],
                 ]]],
             ],
         ]))->assertCreated();
+    }
+
+    public function test_rejects_a_type_mismatched_source_map_entry_variable(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // enum_to_date's `mapping` entry expects a DATE target. A variable entry whose ref is TEXT
+        // (fields.headline) is rejected under the entry's own key — the same per-arg gate a value arg gets.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'deadline' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [['op' => 'enum_to_date', 'args' => ['mapping' => [
+                    'blog' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text']],
+                ]]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.deadline.pipeline.0.args.mapping.blog']);
+    }
+
+    public function test_rejects_a_choice_mapping_entry_variable_that_does_not_map_into_the_options(): void
+    {
+        $owner = User::factory()->create();
+        $workspace = $this->workspaceFor($owner);
+        $form = $this->form($owner, $workspace);
+
+        // A CHOICE mapping entry variable with a bare/identity ref (no mapping pipeline) cannot be shown to
+        // land in the priority option set at write time — it is rejected exactly like a top-level choice
+        // field with no pipeline.
+        $this->postWorkflow($owner, $workspace, $this->payload($form, [
+            'priority' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
+                    'blog' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum']],
+                ]]]],
+            ],
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.mapping.blog']);
     }
 
     public function test_accepts_a_source_option_arg_supplied_by_a_variable(): void
@@ -744,7 +891,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                     ]]],
                     ['op' => 'bool_to_text', 'args' => ['when_true' => 'hot', 'when_false' => 'cold']],
                     ['op' => 'match_to_choice', 'args' => [
-                        'rules' => [['when' => 'hot', 'then' => 'high'], ['when' => 'cold', 'then' => 'low']],
+                        'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'hot']]], 'then' => 'high'], ['when' => [['op' => 'text_equals', 'args' => ['value' => 'cold']]], 'then' => 'low']],
                         'fallback' => 'medium',
                     ]],
                 ],
@@ -771,7 +918,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                     ]]],
                     ['op' => 'bool_to_text', 'args' => ['when_true' => 'hot', 'when_false' => 'cold']],
                     ['op' => 'match_to_choice', 'args' => [
-                        'rules' => [['when' => 'hot', 'then' => 'high'], ['when' => 'cold', 'then' => 'low']],
+                        'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'hot']]], 'then' => 'high'], ['when' => [['op' => 'text_equals', 'args' => ['value' => 'cold']]], 'then' => 'low']],
                         'fallback' => 'medium',
                     ]],
                 ],
@@ -779,43 +926,41 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
         ]))->assertCreated();
     }
 
-    public function test_rejects_a_structural_arg_variable_referencing_an_unknown_path(): void
+    public function test_rejects_a_source_map_entry_variable_referencing_an_unknown_path(): void
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
         $form = $this->form($owner, $workspace);
 
-        // The loose STRUCTURAL gate still requires a RESOLVABLE ref: fields.ghost is not in the index, so
-        // the sourceMap variable is rejected exactly like an unknown value ref — under the arg's ref.path.
+        // A per-entry variable still requires a RESOLVABLE ref: fields.ghost is not in the index, so the
+        // entry is rejected exactly like an unknown value ref — under the entry's own ref.path.
         $this->postWorkflow($owner, $workspace, $this->payload($form, [
             'priority' => [
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
                 'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
-                    'kind' => 'variable',
-                    'ref' => ['source' => 'trigger', 'path' => 'fields.ghost', 'type' => 'object'],
+                    'blog' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.ghost', 'type' => 'enum']],
                 ]]]],
             ],
-        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.mapping.ref.path']);
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.mapping.blog.ref.path']);
     }
 
-    public function test_rejects_a_structural_arg_variable_referencing_a_non_whitelisted_root(): void
+    public function test_rejects_a_source_map_entry_variable_referencing_a_non_whitelisted_root(): void
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
         $form = $this->form($owner, $workspace);
 
-        // Exfil safety at a structural arg: only trigger/steps/globals are references — `env` is not.
+        // Exfil safety at a per-entry variable: only trigger/steps/globals are references — `env` is not.
         $this->postWorkflow($owner, $workspace, $this->payload($form, [
             'priority' => [
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
                 'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => [
-                    'kind' => 'variable',
-                    'ref' => ['source' => 'env', 'path' => 'SECRET', 'type' => 'object'],
+                    'blog' => ['kind' => 'variable', 'ref' => ['source' => 'env', 'path' => 'SECRET', 'type' => 'enum']],
                 ]]]],
             ],
-        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.mapping.ref.source']);
+        ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.mapping.blog.ref.source']);
     }
 
     public function test_rejects_an_option_arg_variable_whose_type_is_not_enum_or_text(): void
@@ -831,27 +976,35 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'kind' => 'variable',
                 'ref' => ['source' => 'trigger', 'path' => 'fields.headline', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'x']]], 'then' => 'high']],
                     'fallback' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.due', 'type' => 'date']],
                 ]]],
             ],
         ]))->assertUnprocessable()->assertJsonValidationErrors(['steps.0.config.priority.pipeline.0.args.fallback']);
     }
 
-    public function test_a_structural_arg_variable_persists_verbatim(): void
+    public function test_a_structural_arg_entry_variable_persists_verbatim(): void
     {
         $owner = User::factory()->create();
         $workspace = $this->workspaceFor($owner);
         $form = $this->form($owner, $workspace);
 
-        $mapping = ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.details', 'type' => 'object']];
+        // A per-entry variable (a choice mapping value that maps into the priority options) round-trips into
+        // the stored step config unchanged — pre-resolution happens at RUN time, never at write time.
+        $mapping = [
+            'blog' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'],
+                'pipeline' => [['op' => 'enum_to_choice', 'args' => ['mapping' => ['blog' => 'high', 'news' => 'low']]]],
+            ],
+            'news' => 'low',
+        ];
         $pipeline = [['op' => 'enum_to_choice', 'args' => ['mapping' => $mapping]]];
 
         $response = $this->postWorkflow($owner, $workspace, $this->payload($form, [
             'priority' => ['kind' => 'variable', 'ref' => ['source' => 'trigger', 'path' => 'fields.category', 'type' => 'enum'], 'pipeline' => $pipeline],
         ]))->assertCreated();
 
-        // The structural arg-variable round-trips into the stored step config unchanged (no coercion).
         $workflow = \App\Modules\Workflows\Models\Workflow::findOrFail($response->json('data.id'));
 
         $this->assertSame($mapping, $workflow->steps[0]['config']['priority']['pipeline'][0]['args']['mapping']);
@@ -866,17 +1019,17 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
     // (a repeater) keeps its ELEMENTS non-referenceable (per-element access is the deferred R2 loop).
 
     /** The workspace's `firma` object global: scalars, a nested object, and an array<object> list. */
-    private function objectGlobal(User $owner, Workspace $workspace): WorkflowGlobal
+    private function objectGlobal(User $owner, Workspace $workspace): Constant
     {
-        return WorkflowGlobal::factory()->object('firma', [
-            WorkflowGlobalFactory::field('miasto', WorkflowVariableType::TEXT->descriptor()),
-            WorkflowGlobalFactory::field('pracownicy', WorkflowVariableType::NUMBER->descriptor()),
-            WorkflowGlobalFactory::field('zalozona', WorkflowVariableType::DATE->descriptor()),
-            WorkflowGlobalFactory::field('geo', WorkflowVariableType::OBJECT->descriptor(fields: [
-                WorkflowGlobalFactory::field('lat', WorkflowVariableType::NUMBER->descriptor()),
+        return Constant::factory()->object('firma', [
+            ConstantFactory::field('miasto', WorkflowVariableType::TEXT->descriptor()),
+            ConstantFactory::field('pracownicy', WorkflowVariableType::NUMBER->descriptor()),
+            ConstantFactory::field('zalozona', WorkflowVariableType::DATE->descriptor()),
+            ConstantFactory::field('geo', WorkflowVariableType::OBJECT->descriptor(fields: [
+                ConstantFactory::field('lat', WorkflowVariableType::NUMBER->descriptor()),
             ], array: false)),
-            WorkflowGlobalFactory::field('kontakty', WorkflowVariableType::OBJECT->descriptor(fields: [
-                WorkflowGlobalFactory::field('email', WorkflowVariableType::TEXT->descriptor()),
+            ConstantFactory::field('kontakty', WorkflowVariableType::OBJECT->descriptor(fields: [
+                ConstantFactory::field('email', WorkflowVariableType::TEXT->descriptor()),
             ], array: true)),
         ], [
             'miasto' => 'Warszawa',
@@ -903,7 +1056,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'pipeline' => [
                     ['op' => 'text_uppercase', 'args' => []],
                     ['op' => 'match_to_choice', 'args' => [
-                        'rules' => [['when' => 'WARSZAWA', 'then' => 'high']],
+                        'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'WARSZAWA']]], 'then' => 'high']],
                         'fallback' => 'low',
                     ]],
                 ],
@@ -933,7 +1086,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'pipeline' => [
                     ['op' => 'num_to_text', 'args' => []],
                     ['op' => 'match_to_choice', 'args' => [
-                        'rules' => [['when' => '52.23', 'then' => 'high']],
+                        'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => '52.23']]], 'then' => 'high']],
                         'fallback' => 'low',
                     ]],
                 ],
@@ -955,7 +1108,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'kind' => 'variable',
                 'ref' => ['source' => 'globals', 'path' => 'globals.firma.pracownicy', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'x']]], 'then' => 'high']],
                     'fallback' => 'low',
                 ]]],
             ],
@@ -979,7 +1132,7 @@ class WorkflowStepValuePipelineValidationTest extends TestCase
                 'kind' => 'variable',
                 'ref' => ['source' => 'globals', 'path' => 'globals.firma.kontakty.email', 'type' => 'text'],
                 'pipeline' => [['op' => 'match_to_choice', 'args' => [
-                    'rules' => [['when' => 'x', 'then' => 'high']],
+                    'rules' => [['when' => [['op' => 'text_equals', 'args' => ['value' => 'x']]], 'then' => 'high']],
                     'fallback' => 'low',
                 ]]],
             ],

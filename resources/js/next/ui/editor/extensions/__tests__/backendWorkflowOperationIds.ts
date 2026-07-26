@@ -31,6 +31,8 @@ export const BACKEND_WORKFLOW_OPERATION_IDS: string[] = [
   // MULTI (input: multi)
   'multi_includes', 'multi_excludes', 'multi_includes_any', 'multi_includes_all',
   'multi_count', 'multi_is_empty', 'multi_to_text',
+  // ARRAY (input: array — the flat multi slot; array-transform wave 1 + wave 2 transforms)
+  'array_count', 'array_at', 'array_map', 'array_filter', 'array_sort', 'array_reduce',
   // FILE (input: file)
   'file_is_empty', 'file_is_not_empty', 'file_count', 'file_name',
   // GENERIC / NULL-HANDLING (append-only, phase-1b)

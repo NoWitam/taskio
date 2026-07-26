@@ -2,6 +2,7 @@
 
 namespace App\Modules\Workflows\Services;
 
+use App\Modules\Variables\Support\FunctionScope;
 use App\Modules\Workflows\Enums\WorkflowRunState;
 use App\Modules\Workflows\Enums\WorkflowRunStepStatus;
 use App\Modules\Workflows\Models\WorkflowRun;
@@ -52,6 +53,12 @@ class WorkflowStepRunner
             'globals' => $this->catalog->globalValues(),
         ];
 
+        // The workspace's custom FUNCTIONS (workspace-scoped like globalValues), fetched once. They ride
+        // the resolver/executor context under FunctionScope so a `fn:<uuid>` op in a step config resolves +
+        // executes — but are kept OUT of the persisted $context (a VO is not JSON), by threading them only
+        // into a per-step $execContext while $context stays the clean, persistable run state.
+        $functions = $this->catalog->customFunctionOperations();
+
         // The run's path → variable-type map lets the resolver execute directive / if-block
         // pipelines against each reference's REAL type (recovered from the catalog, not the
         // degraded editor primitive). Built once for the whole run.
@@ -65,9 +72,12 @@ class WorkflowStepRunner
                 $type = (string) ($step['type'] ?? '');
                 $rawConfig = is_array($step['config'] ?? null) ? $step['config'] : [];
 
+                // Thread the functions into the context the resolver + step see (never the persisted one).
+                $execContext = $functions === [] ? $context : FunctionScope::forFunctions($functions)->writeInto($context);
+
                 try {
-                    $config = $this->resolver->resolve($rawConfig, $context, $typeMap);
-                    $output = $this->steps->makeFromValue($type)->run($config, $run, $context);
+                    $config = $this->resolver->resolve($rawConfig, $execContext, $typeMap);
+                    $output = $this->steps->makeFromValue($type)->run($config, $run, $execContext);
                 } catch (Throwable $e) {
                     $this->recordStep($run, $position, $type, $key, WorkflowRunStepStatus::FAILED, null, $e->getMessage());
                     $this->runManager->release($run, WorkflowRunState::FAILED, $e->getMessage());

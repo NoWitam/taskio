@@ -5,8 +5,8 @@ namespace App\Modules\Workflows\Steps;
 use App\Modules\Forms\DTOs\FormReportDTO;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Services\FormReportService;
+use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Workflows\Enums\WorkflowStepType;
-use App\Modules\Workflows\Enums\WorkflowVariableType;
 use App\Modules\Workflows\Models\WorkflowRun;
 use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
@@ -61,11 +61,11 @@ class CreateFormReportStep implements WorkflowStep
     public static function outputDescriptors(): array
     {
         return [
-            ['name' => 'report_id', 'type' => WorkflowVariableType::TEXT],
-            ['name' => 'report_name', 'type' => WorkflowVariableType::TEXT],
+            ['name' => 'report_id', 'type' => VariableType::TEXT],
+            ['name' => 'report_name', 'type' => VariableType::TEXT],
             // The report's FORM — lets the run detail deep-link to the report's view
             // (reports are form-scoped: /forms/{form_id}/reports).
-            ['name' => 'form_id', 'type' => WorkflowVariableType::TEXT],
+            ['name' => 'form_id', 'type' => VariableType::TEXT],
         ];
     }
 
@@ -166,7 +166,7 @@ class CreateFormReportStep implements WorkflowStep
             return $default;
         }
 
-        $resolved = $this->resolver->resolveValueOrVariable($config[$key], $context, WorkflowVariableType::DATE);
+        $resolved = $this->resolver->resolveValueOrVariable($config[$key], $context, VariableType::DATE);
 
         if (!is_string($resolved) || $resolved === '') {
             return $default;

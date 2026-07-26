@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Tasks\Models\Task;
+use App\Modules\Variables\Models\Constant;
 use App\Modules\Workflows\Enums\WorkflowRunOrigin;
 use App\Modules\Workflows\Enums\WorkflowRunState;
 use App\Modules\Workflows\Enums\WorkflowStatus;
@@ -14,6 +15,8 @@ use App\Modules\Workflows\Enums\WorkflowTriggerType;
 use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workflows\Models\WorkflowRun;
 use App\Modules\Workflows\Services\WorkflowRunContext;
+use App\Modules\Workspaces\Models\Workspace;
+use App\Tenancy\TenantContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\FakesBotExecutionAgent;
 use Tests\TestCase;
@@ -307,6 +310,132 @@ class WorkflowDispatchTest extends TestCase
         // The and-group branch is satisfied → another run starts.
         $this->submit($form, $owner, ['data' => ['category' => 'news', 'priority' => 'high-value', 'score' => 42]]);
         $this->assertCount(2, $this->runsFor($workflow));
+    }
+
+    // ---- Conditions: the B6 capabilities, end to end -------------------------
+
+    /** A one-condition tree; $extra merges onto the condition (e.g. a `default`). */
+    private function conditionTree(string $source, string $sourceType, array $pipeline, array $extra = []): array
+    {
+        return [
+            'logic' => 'and',
+            'children' => [array_merge(
+                ['kind' => 'condition', 'source' => $source, 'source_type' => $sourceType, 'pipeline' => $pipeline],
+                $extra,
+            )],
+        ];
+    }
+
+    /**
+     * Activate a workspace for the rest of the test, exactly as the ResolveWorkspace middleware does
+     * for a real submit. Required for any GLOBALS-touching gate: a workspace global is a workspace-
+     * scoped constant, and WorkflowVariableCatalogService::globalValues() refuses to answer with no
+     * active workspace rather than collapse every workspace's globals into one map (WorkspaceScope
+     * leaves a query unconstrained in that state). Called BEFORE the fixtures so they are stamped.
+     */
+    private function activateWorkspace(User $owner): Workspace
+    {
+        $workspace = Workspace::factory()->create(['owner_id' => $owner->id]);
+        $workspace->users()->attach($owner->id);
+        app(TenantContext::class)->set($workspace);
+
+        return $workspace;
+    }
+
+    public function test_a_condition_gated_on_a_workspace_global_fires_only_when_it_matches(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $this->activateWorkspace($owner);
+
+        $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
+        Constant::factory()->text('nazwa_marki', 'Taskio')->create(['creator_id' => $owner->id]);
+
+        // A `globals.<key>` SOURCE reads the workspace's own constants — nothing about the submission
+        // decides this gate, which is exactly the point (e.g. "only while this brand is active").
+        $matching = $this->formSubmittedWorkflow($owner, conditions: $this->conditionTree('globals.nazwa_marki', 'text', [
+            ['op' => 'text_equals', 'args' => ['value' => 'Taskio']],
+        ]));
+        $notMatching = $this->formSubmittedWorkflow($owner, conditions: $this->conditionTree('globals.nazwa_marki', 'text', [
+            ['op' => 'text_equals', 'args' => ['value' => 'Inna marka']],
+        ]));
+        $unknownGlobal = $this->formSubmittedWorkflow($owner, conditions: $this->conditionTree('globals.nie_istnieje', 'text', [
+            ['op' => 'text_is_empty', 'args' => []],
+        ]));
+
+        $this->submit($form, $owner, ['data' => ['priority' => 'high']]);
+
+        $this->assertCount(1, $this->runsFor($matching));
+        $this->assertCount(0, $this->runsFor($notMatching));
+        $this->assertCount(0, $this->runsFor($unknownGlobal), 'an absent global fails the gate closed');
+    }
+
+    public function test_a_condition_can_compare_a_submitted_field_against_a_global(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $this->activateWorkspace($owner);
+
+        $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
+        Constant::factory()->number('limit', 1000)->create(['creator_id' => $owner->id]);
+
+        // An operation ARGUMENT is itself a variable — the gate pre-resolves it through the same
+        // resolver the step runtime uses. "Fire when this submission's budget exceeds the workspace
+        // ceiling" was inexpressible before B6.
+        $workflow = $this->formSubmittedWorkflow($owner, conditions: $this->conditionTree('fields.budget', 'number', [
+            ['op' => 'num_gt', 'args' => ['value' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'globals', 'path' => 'limit', 'type' => 'number'],
+            ]]],
+        ]));
+
+        $this->submit($form, $owner, ['data' => ['budget' => 100]]);
+        $this->assertCount(0, $this->runsFor($workflow));
+
+        $this->submit($form, $owner, ['data' => ['budget' => 5000]]);
+        $this->assertCount(1, $this->runsFor($workflow));
+    }
+
+    public function test_a_condition_can_compare_two_submitted_fields(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
+
+        $workflow = $this->formSubmittedWorkflow($owner, conditions: $this->conditionTree('fields.a', 'text', [
+            ['op' => 'text_equals', 'args' => ['value' => [
+                'kind' => 'variable',
+                'ref' => ['source' => 'trigger', 'path' => 'fields.b', 'type' => 'text'],
+            ]]],
+        ]));
+
+        $this->submit($form, $owner, ['data' => ['a' => 'x', 'b' => 'y']]);
+        $this->assertCount(0, $this->runsFor($workflow));
+
+        $this->submit($form, $owner, ['data' => ['a' => 'x', 'b' => 'x']]);
+        $this->assertCount(1, $this->runsFor($workflow));
+    }
+
+    public function test_an_opt_in_default_lets_an_unanswered_field_still_gate(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
+
+        $withDefault = $this->formSubmittedWorkflow($owner, conditions: $this->conditionTree('fields.priority', 'text', [
+            ['op' => 'text_equals', 'args' => ['value' => 'low']],
+        ], ['default' => 'low']));
+        $withoutDefault = $this->formSubmittedWorkflow($owner, conditions: $this->conditionTree('fields.priority', 'text', [
+            ['op' => 'text_equals', 'args' => ['value' => 'low']],
+        ]));
+
+        // The submission does not answer `priority` at all.
+        $this->submit($form, $owner, ['data' => ['other' => 'x']]);
+
+        $this->assertCount(1, $this->runsFor($withDefault));
+        $this->assertCount(0, $this->runsFor($withoutDefault), 'without the key the missing path is still false');
     }
 
     // ---- Loop protection (depth cap machinery) -------------------------------

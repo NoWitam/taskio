@@ -722,10 +722,11 @@ WorkflowRun (one execution)
 
         <!-- Workflow Globals (Phase 3, ADR-0024) -->
         <Alert variant="info" size="sm">
-          <strong>Workflow GLOBALS — user-created LITERAL constants (Phase 3 of the
-          variable-typesystem rework, ADR-0024).</strong> A workspace member can create a
-          <strong>global</strong> from the module's "Globals" nav item
-          (<code class="font-next-mono">/next/workflows/globals</code>): a named, typed LITERAL
+          <strong>Consts — user-created LITERAL constants (Phase 3 of the
+          variable-typesystem rework, ADR-0024; renamed from "Workflow globals" and moved to a new
+          top-level Variables area in ADR-0028).</strong> A workspace member can create a
+          <strong>const</strong> from the top-level "Variables" nav's "Consts" item
+          (<code class="font-next-mono">/next/variables/consts</code>): a named, typed LITERAL
           value — a brand name, a budget number, a hashtag list — that becomes a
           <code class="font-next-mono">globals.&lt;key&gt;</code> reference usable in EVERY
           workflow, form-independent (present for a <code class="font-next-mono">schedule</code>
@@ -740,7 +741,7 @@ WorkflowRun (one execution)
           the deleted key simply resolves it to nothing (the same fail-soft behavior any missing
           reference already has).
         </Alert>
-        <ApiTable title="Authorable global types (WorkflowGlobalTypeValidator::AUTHORABLE_BASES)" type-header="Shape" :rows="globalAuthorableTypeRows" />
+        <ApiTable title="Authorable const types (ConstantTypeValidator::AUTHORABLE_BASES)" type-header="Shape" :rows="globalAuthorableTypeRows" />
 
         <Alert variant="warning" size="sm">
           <strong>Injection safety — a global's value renders VERBATIM, never re-interpreted (a
@@ -1422,16 +1423,20 @@ WHERE id = ? AND state = 'pending'</pre>
             field surface and INTO the operations modal, where it shows ONLY once a variable is
             picked AND its <code class="font-next-mono">descriptor.nullable</code> is
             <code class="font-next-mono">true</code> — TYPED to the variable's own base by reusing
-            the Globals module's <code class="font-next-mono">WorkflowGlobalValueField.vue</code>
+            the Variables module's <code class="font-next-mono">ConstantValueField.vue</code>
             (a boolean default is a TRI-STATE Select — no default / yes / no — so "no default" can
             never silently serialize <code class="font-next-mono">false</code>). The markdown
             editor's <code class="font-next-mono">VariablePanel.vue</code> (the
-            <code class="font-next-mono">@[variable]</code> chip's own edit modal) is UNCHANGED by
-            that later batch — it still shows its ORIGINAL always-visible, untyped plain
-            <code class="font-next-mono">TextInput</code> default regardless of nullability, a known
-            accepted asymmetry between the two default UIs. Both wire serializations stay
-            emit-or-omit — leaving the default blank keeps the payload byte-identical to before
-            Phase 1. Wherever a variable's options render (the variable picker, and a pipeline's
+            <code class="font-next-mono">@[variable]</code> chip's own edit modal) NO LONGER differs:
+            the asymmetry — an always-visible, untyped plain
+            <code class="font-next-mono">TextInput</code> regardless of nullability — is closed by
+            routing its whole body through the shared
+            <code class="font-next-mono">VariableReferenceEditor</code>, so it renders the SAME
+            nullable-gated, TYPED control. A typed default round-trips through the directive as a
+            JSON scalar (<code class="font-next-mono">"default":12</code> /
+            <code class="font-next-mono">false</code>) rather than being stringified by a text input.
+            Both wire serializations stay emit-or-omit — leaving the default blank keeps the payload
+            byte-identical to before Phase 1. Wherever a variable's options render (the variable picker, and a pipeline's
             <code class="font-next-mono">sourceOption</code>/<code class="font-next-mono">sourceOptions</code>/<code class="font-next-mono">sourceMap</code>
             args), <code class="font-next-mono">variableOptionList()</code>
             (<code class="font-next-mono">workflowVariables.ts</code>) now prefers the catalog
@@ -1484,8 +1489,16 @@ WHERE id = ? AND state = 'pending'</pre>
             <code class="font-next-mono">DateOrVariableField.vue</code> and every
             operations-modal-enabled field in <code class="font-next-mono">WorkflowStepCard.vue</code>
             (priority, deadline, the report window dates) forward the same
-            <code class="font-next-mono">arg-variables</code> pool prop. Only the condition modal and
-            the markdown if-block/directive panels never provide the slot at all — they render
+            <code class="font-next-mono">arg-variables</code> pool prop. The markdown chip's
+            <code class="font-next-mono">VariablePanel.vue</code> fills it too, without ever importing
+            a page: the step card INJECTS its control
+            (<code class="font-next-mono">VariableFeatureConfig.argVariableField</code> →
+            <code class="font-next-mono">WorkflowArgVariableField.vue</code>, a thin adapter over the
+            same <code class="font-next-mono">ValueOrVariableField</code> +
+            <code class="font-next-mono">PipelineArgLiteralInput</code> pair), so a chip's pipeline
+            argument offers exactly the same value/variable toggle a step field's does. A host that
+            injects nothing (the docs page, any plain embed) keeps LITERAL-ONLY arguments. Only the
+            condition modal and the if-block panel never provide the slot — they render
             <code class="font-next-mono">PipelineArgLiteralInput.vue</code>, which is now the SINGLE
             literal control for every arg kind (value AND option/map/rules — the editor no longer
             inlines any literal control itself). See
@@ -1517,18 +1530,82 @@ WHERE id = ? AND state = 'pending'</pre>
             operations-modal header — one glyph vocabulary everywhere a variable's type is shown.
           </p>
           <p class="mt-next-2 text-next-xs text-next-muted-foreground">
-            <strong>The variable picker is an expandable ARIA tree.</strong> A new
-            <code class="font-next-mono">VariableTreePicker.vue</code> replaces the flat,
-            qualified-name Select in <code class="font-next-mono">ValueOrVariableField.vue</code>
-            (<code class="font-next-mono">role="tree"</code>/<code class="font-next-mono">treeitem</code>,
-            keyboard expand/collapse/select/type-ahead, built by
-            <code class="font-next-mono">variablePickerTree()</code> in
-            <code class="font-next-mono">workflowVariables.ts</code>). A file composite, an object
-            GLOBAL, or (on the picker side) any self-contained object entry expands to its child
-            fields on demand instead of pre-flattening every subfield into the list; objects gained
-            their own "braces" type icon; a REPEATER stays a single, non-expandable list entry
-            (per-element access is still deferred to R2). The emitted ref shape is byte-identical —
-            this is presentation only.
+            <strong>The variable picker is the shared VariableBrowser (one inline tree).</strong>
+            <code class="font-next-mono">ui/variables/VariableBrowserPopover.vue</code> +
+            <code class="font-next-mono">VariableBrowser.vue</code> — built by
+            <code class="font-next-mono">buildVariableTree()</code> in
+            <code class="font-next-mono">ui/variables/variableTree.ts</code> — serve the
+            value-or-variable field, the condition source AND (since B4) the markdown editor's
+            <code class="font-next-mono">{</code>-insert popup
+            (<code class="font-next-mono">ui/editor/extensions/VariableSuggest.vue</code>, which keeps
+            ProseMirror's VIRTUAL focus: the plugin forwards ↑/↓/Enter/Esc, and ←/→ only while the
+            query is empty, so the caret never leaves the text). Expanding a container reveals its
+            children DIRECTLY BENEATH it, indented; depth is carried by per-level indentation, a
+            guide rail per ancestor level (the nearest rail strongest) and a container row skin
+            (rotating chevron, braces glyph, heavier label). A search box switches to a flat result
+            list of selectable hits. It IS an ARIA tree: the body is one focusable element carrying
+            <code class="font-next-mono">role="tree"</code> +
+            <code class="font-next-mono">aria-activedescendant</code> (virtual focus, so the search
+            input can drive the same cursor) and each row is a
+            <code class="font-next-mono">treeitem</code> with
+            <code class="font-next-mono">aria-level</code>/<code class="font-next-mono">aria-expanded</code>
+            plus <code class="font-next-mono">aria-posinset</code>/<code class="font-next-mono">aria-setsize</code>
+            (the DOM is flattened); only the search results are a
+            <code class="font-next-mono">listbox</code> of
+            <code class="font-next-mono">option</code>s. Keyboard: ↑/↓ over visible rows, → expand /
+            step in, ← collapse / step out, Home/End, Enter/Space pick-or-toggle, Esc closes,
+            type-ahead. A file composite is expandable AND selectable (its chevron is a separate,
+            non-selecting target); an object container — a form SECTION, an object GLOBAL, or the
+            "Globals" group node — is EXPAND-ONLY, since a whole object resolves to a map at run
+            time, so its leaves are picked instead; a REPEATER stays a single, non-expandable list
+            entry (per-element access is still deferred to R2). The emitted ref shape is
+            byte-identical — this is presentation only.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>ONE feed shape for every surface, and where the identifier strip applies.</strong>
+            Every offered-variable feed — the value fields
+            (<code class="font-next-mono">allValueVariables</code>), the type-filtered pickers
+            (<code class="font-next-mono">variablesOfType</code>) AND the markdown
+            <code class="font-next-mono">{</code>-insert list
+            (<code class="font-next-mono">toEditorVariables[Typed]</code>) — carries the section
+            CONTAINER so the picker can group its leaves beneath it, with its
+            <code class="font-next-mono">descriptor.fields</code> DROPPED so only the real, already
+            offered flat leaves nest under it and nothing new becomes pickable. The old
+            <code class="font-next-mono">includeContainers</code> switch is gone: it only existed
+            because the <code class="font-next-mono">{</code> list used to be a flat
+            insert-everything renderer; it now browses this same tree, where an object container is
+            EXPAND-ONLY and therefore never insertable.
+            Separately, the SF3.2 identifier strip is scoped to <strong>SYSTEM identity paths</strong>
+            (<code class="font-next-mono">isSystemIdentifierPath</code>): a
+            <code class="font-next-mono">*.id</code> / <code class="font-next-mono">*_id</code> path is
+            hidden only when it is NOT user-authored, i.e. never under
+            <code class="font-next-mono">trigger.fields.</code> (nor the conditions surface's
+            prefix-stripped <code class="font-next-mono">fields.</code>) and never under
+            <code class="font-next-mono">globals.</code>. So
+            <code class="font-next-mono">trigger.submission.id</code> and a step's
+            <code class="font-next-mono">task_id</code> stay out of every offered list, while a field —
+            or a workspace GLOBAL — a USER named <code class="font-next-mono">numer_id</code> is offered
+            everywhere: the picker, the markdown feed AND the condition source. That is correct BY
+            CONSTRUCTION, so the former per-slot
+            <code class="font-next-mono">stripIdentifiers</code> escape hatch was removed.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Globals are a real GROUP node in the tree feeds.</strong> The workspace's
+            user-authored constants used to ride as flat
+            <code class="font-next-mono">Globals › &lt;name&gt;</code> rows, and an OBJECT global
+            could never expand (the globals branch of
+            <code class="font-next-mono">expandVariables()</code> returned before the container
+            rules). The VALUE-FIELD feed now emits ONE expand-only container at the
+            <code class="font-next-mono">globals</code> root — labelled
+            <code class="font-next-mono">workflows.variable.globalsGroup</code> — that every
+            <code class="font-next-mono">globals.&lt;key&gt;</code> nests under by its own dotted
+            path, with a scalar global as a selectable leaf and an object global as a further
+            expand-only branch over its declared fields. The group carries no
+            <code class="font-next-mono">descriptor.fields</code>, so only REAL offered globals can
+            ever appear inside it. Every feed emits it — the markdown
+            <code class="font-next-mono">{</code> list included — so the
+            <code class="font-next-mono">Globals › &lt;name&gt;</code> text prefix (and its
+            <code class="font-next-mono">workflows.variable.global</code> key) is gone.
           </p>
           <p class="mt-next-2 text-next-xs text-next-muted-foreground">
             <strong>Follow-up: non-array OBJECT descriptor fields joined the write-side index.</strong>

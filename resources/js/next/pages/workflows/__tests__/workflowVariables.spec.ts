@@ -5,6 +5,8 @@
 // are guarded WITHOUT mounting an editor.
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  allValueVariables,
+  conditionSourceVariables,
   descriptorBaseToType,
   editorPrimitive,
   flattenPickerNodes,
@@ -25,7 +27,9 @@ import {
   type StepLike,
 } from '../workflowVariables';
 import { setLocale } from '../../../app/i18n';
-import type { CatalogVariable, WorkflowCatalog, WorkflowVariableType } from '../types';
+import { buildVariableTree, flattenNodes } from '../../../ui/variables/variableTree';
+import { variableFeedTree } from '../../../ui/editor/extensions/variableFeed';
+import type { CatalogField, CatalogVariable, WorkflowCatalog, WorkflowVariableType } from '../types';
 
 /** Build a `@[variable]("<escaped-json>")` directive the way the editor serializes it. */
 function variableDirective(data: { id: string; name: string; type?: string }): string {
@@ -679,20 +683,253 @@ describe('structural descriptors — file subfields / section / repeater (phase-
     expect(vars.some((v) => v.id.startsWith('trigger.fields.items.'))).toBe(false);
   });
 
-  it('drops the SECTION whole-object entry and does NOT duplicate its flat leaves', () => {
+  // B4 — FLIPPED. This used to assert the markdown `{` feed DROPPED the section container,
+  // because that list was rendered by the flat insert-everything renderer where every row was
+  // insertable. It now renders through `buildVariableTree` + `VariableBrowser`, where a non-array
+  // object is EXPAND-ONLY, so the container rides along and merely GROUPS its leaves.
+  it('the MARKDOWN `{` feed carries the SECTION container and does NOT duplicate its leaves', () => {
     const vars = toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0);
-    // The confusing whole-section object entry (resolves to a map) is not offered.
-    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(false);
+    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(true);
     // Its flat leaves appear EXACTLY once (they are already top-level variables).
     expect(vars.filter((v) => v.id === 'trigger.fields.details.note')).toHaveLength(1);
     expect(vars.filter((v) => v.id === 'trigger.fields.details.section_tags')).toHaveLength(1);
+    // The primitive feed (read/summary side) agrees — ONE feed shape for every surface.
+    expect(toEditorVariables(STRUCTURAL_CATALOG, [], 0).some((v) => v.id === 'trigger.fields.details')).toBe(true);
+  });
+
+  it('a SECTION reached through the markdown feed is EXPAND-ONLY — never insertable from `{`', () => {
+    // Through the REAL `{`-popup path, and specifically its DEFINITION-ONLY fallback (a host that
+    // passes no live `source()`): the flat definition carries `base:'object'`, so promoting it back
+    // still yields a container. A container row can only be OPENED — inserting one would drop a
+    // directive that resolves to a MAP, which is what the old flat renderer allowed.
+    const tree = variableFeedTree(null, toEditorVariablesTyped(STRUCTURAL_CATALOG, [], 0));
+
+    const section = tree.find((n) => n.path === 'trigger.fields.details')!;
+    expect(section.selectable).toBe(false);
+    expect(section.base).toBe('object');
+    expect(section.children?.map((c) => c.path)).toEqual([
+      'trigger.fields.details.note',
+      'trigger.fields.details.section_tags',
+    ]);
+    // …and the leaves it groups stay insertable, exactly as before.
+    expect(section.children?.every((c) => c.selectable)).toBe(true);
+  });
+
+  // --- EVERY feed carries the containers (B2.1 → B4) --------------------------
+  // They are all rendered by `buildVariableTree` + VariableBrowser now, where an object is an
+  // EXPAND-ONLY row. Nothing new becomes pickable — the leaves are merely grouped.
+
+  it('the VALUE-FIELD feed carries the SECTION as a fields-LESS container, its leaves still flat + once', () => {
+    const vars = allValueVariables(STRUCTURAL_CATALOG, [], 0);
+
+    const section = vars.filter((v) => v.path === 'trigger.fields.details');
+    expect(section).toHaveLength(1);
+    // The descriptor FIELDS are dropped: only real, offered flat leaves may nest under it.
+    expect(section[0].descriptor).toEqual({ base: 'object', nullable: false, array: false });
+    expect(section[0].name).toBe('Details'); // the section's own label, unqualified
+
+    // The flat leaves are untouched — still emitted exactly once each.
+    expect(vars.filter((v) => v.path === 'trigger.fields.details.note')).toHaveLength(1);
+    expect(vars.filter((v) => v.path === 'trigger.fields.details.section_tags')).toHaveLength(1);
+  });
+
+  it('the SECTION renders as an EXPANDABLE, NON-SELECTABLE column whose leaves appear exactly once', () => {
+    // The REAL feed shape a step field's picker runs on.
+    const tree = buildVariableTree(allValueVariables(STRUCTURAL_CATALOG, [], 0), {});
+
+    // The leaves are no longer roots — they moved INSIDE the section column.
+    expect(tree.map((n) => n.path)).toEqual([
+      'trigger.fields.attachment',
+      'trigger.fields.details',
+      'trigger.fields.items',
+    ]);
+
+    const section = tree[1];
+    expect(section.selectable).toBe(false); // a whole object resolves to a map — never a ref
+    expect(section.base).toBe('object');
+    expect(section.children?.map((c) => c.path)).toEqual([
+      'trigger.fields.details.note',
+      'trigger.fields.details.section_tags',
+    ]);
+    expect(section.children?.every((c) => c.selectable)).toBe(true);
+
+    // EXACTLY once each, anywhere in the tree — never both nested and flat.
+    const all = flattenNodes(tree).map((n) => n.path);
+    expect(all.filter((p) => p === 'trigger.fields.details.note')).toHaveLength(1);
+    expect(all.filter((p) => p === 'trigger.fields.details.section_tags')).toHaveLength(1);
+    // The real catalog leaf wins over the descriptor field of the same key (name + type).
+    expect(section.children?.[1].type).toBe('multi');
+  });
+
+  it('a NESTED section gives a leaf no SECOND route — only real flat leaves ever nest', () => {
+    // The backend emits a container entry for TOP-LEVEL sections only, while the leaf pass
+    // emits every leaf flat at full depth. Dropping the container's `descriptor.fields` is what
+    // keeps that unambiguous: the inner section is not re-synthesized as a second parent, so the
+    // leaf can never appear both under `outer` and under `outer.inner`.
+    const catalog: WorkflowCatalog = {
+      variables: [
+        {
+          source: 'trigger', path: 'trigger.fields.outer', name: 'Outer', type: 'text',
+          descriptor: {
+            base: 'object', nullable: false, array: false,
+            fields: [{
+              key: 'inner', label: 'Inner',
+              descriptor: {
+                base: 'object', nullable: false, array: false,
+                fields: [{ key: 'leaf', label: 'Leaf', descriptor: { base: 'text', nullable: false, array: false } }],
+              },
+            }],
+          },
+        },
+        { source: 'trigger', path: 'trigger.fields.outer.inner.leaf', name: 'Leaf', type: 'text' },
+      ],
+      fields: [],
+    };
+
+    const tree = buildVariableTree(allValueVariables(catalog, [], 0), {});
+    expect(flattenNodes(tree).map((n) => n.path)).toEqual([
+      'trigger.fields.outer',
+      'trigger.fields.outer.inner.leaf',
+    ]);
+  });
+
+  // B4 — FLIPPED: there is no per-feed container switch any more. A type-filtered feed keeps the
+  // containers its filter admits (an object degrades to the `text` type), and the tree prunes any
+  // that end up holding no offered leaf — so a filter can never leave a dead branch behind.
+  it('a type-FILTERED feed carries the container too, and a filter can leave no dead branch', () => {
+    const text = variablesOfType(STRUCTURAL_CATALOG, [], 0, 'text').map((v) => v.path);
+    expect(text).toContain('trigger.fields.details');
+    expect(text).toContain('trigger.fields.details.note'); // its leaves are unaffected
+
+    // A NUMBER-only field admits no leaf of that section, so the container is pruned by the tree.
+    const numberTree = buildVariableTree(variablesOfType(STRUCTURAL_CATALOG, [], 0, 'number'), {});
+    expect(numberTree.map((n) => n.path)).not.toContain('trigger.fields.details');
+  });
+
+  it('a section whose leaves are all missing/filtered can never render as a dead row', () => {
+    // A container with NO offered leaf is neither selectable nor expandable ⇒ the tree prunes it.
+    const leafless: WorkflowCatalog = { variables: [STRUCTURAL_CATALOG.variables[1]], fields: [] };
+    expect(allValueVariables(leafless, [], 0).map((v) => v.path)).toEqual(['trigger.fields.details']);
+    expect(buildVariableTree(allValueVariables(leafless, [], 0), {})).toEqual([]);
+  });
+
+  // --- GLOBALS are a real group node in EVERY feed (B3 CHANGE 3 → B4) ---------
+  // The globals branch used to short-circuit BEFORE the container rules, so an object global
+  // could only ever be ONE flat `Globals › <name>` row that never expanded. It now rides as
+  // itself under a synthesized `globals` GROUP container — in every feed, the markdown `{` list
+  // included, so the "Globals ›" text prefix (and its i18n key) is gone.
+
+  const GLOBALS_CATALOG: WorkflowCatalog = {
+    variables: [
+      { source: 'trigger', path: 'trigger.title', name: 'Title', type: 'text' },
+      {
+        source: 'globals',
+        path: 'globals.brand',
+        name: 'Brand',
+        type: 'text',
+        descriptor: { base: 'text', nullable: false, array: false },
+      },
+      {
+        source: 'globals',
+        path: 'globals.address',
+        name: 'Address',
+        type: 'text',
+        descriptor: {
+          base: 'object',
+          nullable: false,
+          array: false,
+          fields: [{ key: 'city', label: 'City', descriptor: { base: 'text', nullable: false, array: false } }],
+        },
+      },
+    ],
+    fields: [],
+  };
+
+  it('the VALUE-FIELD feed emits ONE "Globals" group node and the globals unqualified beneath it', () => {
+    const vars = allValueVariables(GLOBALS_CATALOG, [], 0);
+
+    // The group is emitted once, in front of the first global (feed order is preserved).
+    expect(vars.map((v) => v.path)).toEqual([
+      'trigger.title',
+      'globals',
+      'globals.brand',
+      'globals.address',
+    ]);
+    const group = vars[1];
+    expect(group.name).toBe('Globals');
+    expect(group.source).toBe('globals');
+    // No `descriptor.fields`: only REAL offered globals may ever nest under it.
+    expect(group.descriptor).toEqual({ base: 'object', nullable: false, array: false });
+    // The globals themselves keep their own names (the "Globals ›" text prefix is the group
+    // node now) and an OBJECT global keeps its fields, which is what makes it expandable.
+    expect(vars[2].name).toBe('Brand');
+    expect(vars[3].descriptor?.fields?.[0].key).toBe('city');
+  });
+
+  it('the tree hangs every global under that ONE node; an object global is an expand-only branch', () => {
+    const tree = buildVariableTree(allValueVariables(GLOBALS_CATALOG, [], 0), {});
+
+    expect(tree.map((n) => n.path)).toEqual(['trigger.title', 'globals']);
+    const globals = tree[1];
+    expect(globals.selectable).toBe(false); // a group is never a reference
+    expect(globals.children?.map((c) => c.path)).toEqual(['globals.brand', 'globals.address']);
+
+    const [brand, address] = globals.children ?? [];
+    expect(brand.selectable).toBe(true); // a scalar global is a pickable leaf
+    expect(brand.children).toBeUndefined();
+    expect(address.selectable).toBe(false); // an OBJECT global is expand-only (owner rule)
+    expect(address.children?.map((c) => c.path)).toEqual(['globals.address.city']);
+
+    // The composed leaf keeps the globals SOURCE + the byte-identical ref path.
+    const city = address.children?.[0];
+    expect(city).toMatchObject({ source: 'globals', path: 'globals.address.city', type: 'text' });
+    expect(city?.selectable).toBe(true);
+  });
+
+  // B4 — FLIPPED. The markdown `{` feed gets the SAME group node as every other feed (it browses
+  // the same tree now), so a global no longer needs the "Globals ›" text prefix.
+  it('the markdown `{` feed carries the group node and UNQUALIFIED global names', () => {
+    const vars = toEditorVariablesTyped(GLOBALS_CATALOG, [], 0);
+    expect(vars.map((v) => v.id)).toEqual([
+      'trigger.title',
+      'globals',
+      'globals.brand',
+      'globals.address',
+    ]);
+    expect(vars.map((v) => v.name)).toContain('Globals'); // the group node itself
+    expect(vars.find((v) => v.id === 'globals.brand')?.name).toBe('Brand'); // no text prefix
+    // The group node is marked as a CONTAINER so the flat definition promotes back to one.
+    expect(vars.find((v) => v.id === 'globals')?.base).toBe('object');
+    // The primitive feed behaves identically.
+    expect(toEditorVariables(GLOBALS_CATALOG, [], 0).map((v) => v.id)).toContain('globals');
+  });
+
+  it('the `{` tree hangs the globals under that node, and the group is NOT insertable', () => {
+    // The definition-only fallback (no live `source()`), i.e. the worst case for the `{` popup.
+    const tree = variableFeedTree(null, toEditorVariablesTyped(GLOBALS_CATALOG, [], 0));
+
+    expect(tree.map((n) => n.path)).toEqual(['trigger.title', 'globals']);
+    const group = tree[1];
+    expect(group.selectable).toBe(false); // a group is never a reference
+    // Only `globals.brand`: an OBJECT global's `descriptor.fields` cannot ride on a FLAT
+    // definition, so in this fallback it has no children and the tree prunes it rather than
+    // offering a dead row. A host that feeds the live `source()` list (the real step card) keeps
+    // the fields — see the value-field spec above, where `globals.address.city` is pickable.
+    expect(group.children?.map((c) => c.path)).toEqual(['globals.brand']);
+    expect(group.children?.[0].selectable).toBe(true); // a scalar global is insertable
+  });
+
+  it('a type-FILTERED feed carries the group node too (unqualified globals)', () => {
+    const text = variablesOfType(GLOBALS_CATALOG, [], 0, 'text');
+    expect(text.map((v) => v.path)).toContain('globals');
+    expect(text.find((v) => v.path === 'globals.brand')?.name).toBe('Brand');
   });
 
   it('the primitive feed expands the same way (file subfields degrade to text/number)', () => {
     const vars = toEditorVariables(STRUCTURAL_CATALOG, [], 0);
     expect(sub(vars, 'name')?.type).toBe('text');
     expect(sub(vars, 'size')?.type).toBe('number');
-    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(false); // section dropped
+    expect(vars.some((v) => v.id === 'trigger.fields.details')).toBe(true); // section container
     expect(vars.filter((v) => v.id === 'trigger.fields.items')).toHaveLength(1); // repeater once
   });
 
@@ -731,8 +968,13 @@ describe('structural descriptors — file subfields / section / repeater (phase-
 
     expect(() => toEditorVariablesTyped(catalog, [], 0)).not.toThrow();
     expect(() => variablesOfType(catalog, [], 0, 'text')).not.toThrow();
-    // The empty section is dropped (no whole-object entry surfaces).
-    expect(toEditorVariablesTyped(catalog, [], 0)).toEqual([]);
+    // The empty section rides in the feed as a container (B4 — every feed carries containers) …
+    expect(toEditorVariablesTyped(catalog, [], 0).map((v) => v.id)).toEqual([
+      'trigger.fields.empty_section',
+    ]);
+    // … but it holds no offered leaf, so it is neither selectable nor expandable and the TREE
+    // prunes it: nothing is ever OFFERED, exactly as before.
+    expect(variableFeedTree(null, toEditorVariablesTyped(catalog, [], 0))).toEqual([]);
   });
 });
 
@@ -827,5 +1069,197 @@ describe('variablePickerTree — the expandable picker tree (§refinement 5)', (
     expect(variableNodeIcon({ type: 'text', descriptor: { base: 'object', nullable: false, array: false } })).toBe('braces');
     expect(variableNodeIcon({ type: 'file' })).toBe(variableIcon('file'));
     expect(variableNodeIcon({ type: 'number' })).toBe('hash');
+  });
+});
+
+describe('conditionSourceVariables — the condition builder picker feed', () => {
+  /** The catalog VARIABLES a form's fields derive from (`fields.x` ↔ `trigger.fields.x`). */
+  const VARIABLES: CatalogVariable[] = [
+    {
+      source: 'trigger', path: 'trigger.fields.status', name: 'Status (catalog)', type: 'enum',
+      descriptor: {
+        base: 'enum', nullable: true, array: false,
+        options: [{ key: 'open', label: 'Open' }],
+      },
+      nullable: true,
+    },
+    {
+      source: 'trigger', path: 'trigger.fields.contact', name: 'Contact', type: 'text',
+      descriptor: {
+        base: 'object', nullable: false, array: false,
+        fields: [{ key: 'email', label: 'Email', descriptor: { base: 'text', nullable: false, array: false } }],
+      },
+    },
+    {
+      source: 'trigger', path: 'trigger.fields.contact.email', name: 'Email', type: 'text',
+      descriptor: { base: 'text', nullable: false, array: false },
+    },
+    {
+      source: 'trigger', path: 'trigger.fields.items', name: 'Items', type: 'text',
+      descriptor: { base: 'object', nullable: false, array: true, fields: [] },
+    },
+  ];
+
+  const FIELDS: CatalogField[] = [
+    { path: 'fields.status', field_id: 'status', label: 'Status', type: 'enum', enumOptions: ['open'], operators: ['is'] },
+    { path: 'fields.contact.email', field_id: 'contact.email', label: 'Email', type: 'text', operators: ['equals'] },
+  ];
+
+  it('keeps the FIELD contract (path/label/type/options) and borrows the descriptor by path', () => {
+    const leaves = conditionSourceVariables(FIELDS, VARIABLES).filter((v) => v.path.endsWith('status'));
+
+    expect(leaves).toHaveLength(1);
+    expect(leaves[0]).toMatchObject({
+      source: 'trigger',
+      path: 'fields.status', // the emitted condition source — NEVER the trigger.* variable path
+      name: 'Status', // the FIELD's label wins over the variable's name
+      type: 'enum',
+      enumOptions: ['open'],
+      nullable: true,
+      descriptor: { base: 'enum', nullable: true, array: false },
+    });
+  });
+
+  it('re-surfaces a SECTION as a non-selectable group node its leaves nest under', () => {
+    const sources = conditionSourceVariables(FIELDS, VARIABLES);
+    const tree = variablePickerTree(sources);
+
+    // Roots: the flat `status` leaf + the `contact` group (emitted just before its first leaf).
+    expect(tree.map((n) => n.variable.path)).toEqual(['fields.status', 'fields.contact']);
+
+    const section = tree[1];
+    expect(section.selectable).toBe(false); // a whole section is not a condition source
+    expect(section.variable.descriptor?.base).toBe('object'); // → the braces glyph
+    // The container NEVER carries descriptor.fields, so the tree can only ever offer real
+    // condition fields as its children.
+    expect(section.variable.descriptor?.fields).toBeUndefined();
+    expect(section.children?.map((c) => c.variable.path)).toEqual(['fields.contact.email']);
+    expect(section.children?.[0].selectable).toBe(true);
+  });
+
+  it('never surfaces a repeater or a container with no offered leaf', () => {
+    const sources = conditionSourceVariables(FIELDS, VARIABLES);
+    expect(sources.some((v) => v.path === 'fields.items')).toBe(false);
+  });
+
+  // --- The identifier strip is SYSTEM-ONLY, on EVERY surface (B3) -------------
+  it('a user-named `*_id` form field is offered on EVERY surface (condition source, step field, markdown feed)', () => {
+    // A form field a user named `numer_id` / `order_id`: a machine-sounding NAME, but an
+    // ordinary user field. SF3.2 was only ever aimed at the SYSTEM identity paths
+    // (trigger.submission.id / trigger.form.id / trigger.task.id / a step's task_id), so
+    // hiding this was a silent capability regression on the insertion surfaces.
+    const fields: CatalogField[] = [
+      { path: 'fields.numer_id', field_id: 'numer_id', label: 'Order number', type: 'text', operators: ['equals'] },
+    ];
+    const variables: CatalogVariable[] = [
+      {
+        source: 'trigger', path: 'trigger.fields.numer_id', name: 'Order number', type: 'text',
+        descriptor: { base: 'text', nullable: false, array: false },
+      },
+    ];
+
+    // CONDITIONS surface — offered + selectable, with NO policy escape hatch.
+    const sources = conditionSourceVariables(fields, variables);
+    const conditionTree = buildVariableTree(sources, {});
+    expect(conditionTree.map((n) => n.path)).toEqual(['fields.numer_id']);
+    expect(conditionTree[0].selectable).toBe(true);
+
+    // STEP-FIELD picker — now the SAME: the feed carries it and the tree offers it.
+    const catalog: WorkflowCatalog = { variables, fields };
+    expect(allValueVariables(catalog, [], 0).map((v) => v.path)).toContain('trigger.fields.numer_id');
+    const valueTree = buildVariableTree(allValueVariables(catalog, [], 0), {});
+    expect(valueTree.map((n) => n.path)).toEqual(['trigger.fields.numer_id']);
+    expect(valueTree[0].selectable).toBe(true);
+
+    // MARKDOWN `{`-insert feed — same.
+    expect(toEditorVariablesTyped(catalog, [], 0).map((v) => v.id)).toContain('trigger.fields.numer_id');
+    expect(toEditorVariables(catalog, [], 0).map((v) => v.id)).toContain('trigger.fields.numer_id');
+  });
+
+  it('still hides the SYSTEM identity paths from every offered feed', () => {
+    const catalog: WorkflowCatalog = {
+      variables: [
+        { source: 'trigger', path: 'trigger.submission.id', name: 'Submission ID', type: 'text' },
+        { source: 'trigger', path: 'trigger.task.id', name: 'Task ID', type: 'text' },
+        { source: 'trigger', path: 'trigger.form.name', name: 'Form name', type: 'text' },
+        { source: 'steps', path: 'steps.create_task.task_id', name: 'Create task · task_id', type: 'text' },
+        { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+      ],
+      fields: [],
+    };
+    const steps: StepLike[] = [{ type: 'create_task', key: 'make' }];
+
+    const offered = allValueVariables(catalog, steps, 1).map((v) => v.path);
+    expect(offered).toEqual(['trigger.form.name', 'steps.make.title']);
+    expect(buildVariableTree(allValueVariables(catalog, steps, 1), {}).map((n) => n.path)).toEqual([
+      'trigger.form.name',
+      'steps.make.title',
+    ]);
+    expect(toEditorVariablesTyped(catalog, steps, 1).map((v) => v.id)).toEqual([
+      'trigger.form.name',
+      'steps.make.title',
+    ]);
+  });
+
+  it('degrades to a plain flat list when the catalog carries no variables', () => {
+    const sources = conditionSourceVariables(FIELDS, []);
+    expect(sources.map((v) => v.path)).toEqual(['fields.status', 'fields.contact.email']);
+    expect(sources.every((v) => v.descriptor === undefined)).toBe(true);
+    // Both stay pickable leaves (no grouping without a described section).
+    expect(variablePickerTree(sources).every((n) => n.selectable && !n.children)).toBe(true);
+  });
+
+  // --- B6: workspace GLOBALS as condition sources, grouped under one "Globals" node ---
+  it('groups globals under ONE "Globals" node, carries their real source, and keeps the globals.<key> path', () => {
+    const fields: CatalogField[] = [
+      { path: 'fields.title', field_id: 'title', source: 'trigger', label: 'Title', type: 'text', operators: ['equals'] },
+      { path: 'globals.brand', source: 'globals', label: 'Brand', type: 'text', operators: ['equals'] },
+      { path: 'globals.region', source: 'globals', label: 'Region', type: 'enum', enumOptions: ['eu', 'us'], operators: ['is'] },
+    ];
+    const variables: CatalogVariable[] = [
+      { source: 'trigger', path: 'trigger.fields.title', name: 'Title', type: 'text', descriptor: { base: 'text', nullable: false, array: false } },
+      { source: 'globals', path: 'globals.brand', name: 'Brand', type: 'text', descriptor: { base: 'text', nullable: false, array: false } },
+      { source: 'globals', path: 'globals.region', name: 'Region', type: 'enum', descriptor: { base: 'enum', nullable: false, array: false, options: [{ key: 'eu', label: 'EU' }] } },
+    ];
+
+    const sources = conditionSourceVariables(fields, variables);
+    // The "Globals" GROUP node is emitted ONCE, before the first global.
+    expect(sources.map((v) => v.path)).toEqual(['fields.title', 'globals', 'globals.brand', 'globals.region']);
+    const group = sources.find((v) => v.path === 'globals');
+    expect(group?.source).toBe('globals');
+    expect(group?.descriptor?.base).toBe('object');
+    expect(group?.descriptor?.fields).toBeUndefined();
+    // Each global leaf keeps its real source + its globals.<key> path (the accepted write vocab).
+    expect(sources.find((v) => v.path === 'globals.brand')?.source).toBe('globals');
+
+    // In the tree: the form field is a root, and the globals nest UNDER the expand-only group.
+    const tree = buildVariableTree(sources, {});
+    expect(tree.map((n) => n.path)).toEqual(['fields.title', 'globals']);
+    const globalsNode = tree[1];
+    expect(globalsNode.selectable).toBe(false); // an object container is never a source
+    expect(globalsNode.children?.map((c) => c.path)).toEqual(['globals.brand', 'globals.region']);
+    expect(globalsNode.children?.every((c) => c.selectable)).toBe(true);
+  });
+
+  // --- B6: the condition ARG-VARIABLE pool excludes steps.* (nothing has run at gate time) ---
+  it('the condition arg-variable pool (allValueVariables at position 0) carries trigger + globals but NEVER steps.*', () => {
+    const catalog: WorkflowCatalog = {
+      variables: [
+        { source: 'trigger', path: 'trigger.fields.name', name: 'Name', type: 'text' },
+        { source: 'globals', path: 'globals.brand', name: 'Brand', type: 'text', descriptor: { base: 'text', nullable: false, array: false } },
+        { source: 'steps', path: 'steps.create_task.title', name: 'Create task · title', type: 'text' },
+      ],
+      fields: [],
+    };
+    const steps: StepLike[] = [{ type: 'create_task', key: 'make' }];
+
+    // The editor builds the pool with NO prior steps + position 0 (the gate sees no step output).
+    const pool = allValueVariables(catalog, [], 0).map((v) => v.path);
+    expect(pool).toContain('trigger.fields.name');
+    expect(pool).toContain('globals.brand');
+    expect(pool.some((p) => p.startsWith('steps.'))).toBe(false);
+
+    // Even given the real steps, position 0 still excludes every step output.
+    expect(allValueVariables(catalog, steps, 0).some((v) => v.path.startsWith('steps.'))).toBe(false);
   });
 });
