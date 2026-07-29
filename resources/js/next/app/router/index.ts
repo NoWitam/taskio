@@ -68,6 +68,15 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, titleKey: 'members.title' },
       },
       {
+        // Workspace AI-usage meter (R2 sub-stage 4): the $-first cost summary for ANY member, plus the
+        // owner-only monthly cap editor (gated on the server can_manage flag in the page). Reached from the
+        // user-menu "AI usage" entry. Minimal — there is no full workspace-settings shell yet.
+        path: 'settings/ai-usage',
+        name: 'next.settings.aiUsage',
+        component: () => import('../../pages/workspaces/AiUsagePage.vue'),
+        meta: { requiresAuth: true, titleKey: 'workspaces.aiUsage.title' },
+      },
+      {
         // Forms module shell: inner sub-nav + the list / per-form sub-views.
         path: 'forms',
         component: () => import('../../pages/forms/FormsModuleLayout.vue'),
@@ -268,6 +277,46 @@ const routes: RouteRecordRaw[] = [
             name: 'next.variables.functions',
             component: () => import('../../pages/variables/FunctionsView.vue'),
             meta: { requiresAuth: true, titleKey: 'nav.variables' },
+          },
+        ],
+      },
+      {
+        // Top-level "Generator" (PL "Generator") module shell: inner sub-nav + its pages. Templates
+        // (PL "Szablony") is the workspace generation-prompt library (R2 Generator / Templatki): a
+        // reusable prompt with DECLARED typed `slots.<name>`, authored in the SAME shared markdown /
+        // variable editor the workflows use, with a server-faithful live preview. Generation Sessions
+        // join this nav in a later sub-stage.
+        path: 'generator',
+        component: () => import('../../pages/generator/GeneratorModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.generator' },
+        children: [
+          {
+            path: '',
+            name: 'next.generator',
+            redirect: { name: 'next.generator.templates' },
+          },
+          {
+            path: 'templates',
+            name: 'next.generator.templates',
+            component: () => import('../../pages/generator/TemplatesView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.generator' },
+          },
+          {
+            // Generation SESSIONS list (R2 sub-stage 2b). Declared BEFORE the dynamic
+            // `sessions/:id` chat so the static segment reads clearly (Vue Router ranks
+            // static above dynamic regardless).
+            path: 'sessions',
+            name: 'next.generator.sessions',
+            component: () => import('../../pages/generator/SessionsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.generator' },
+          },
+          {
+            // The generation-session CHAT — a resource-scoped, full-height page. The
+            // module layout shows the open session as the selected aside resource.
+            path: 'sessions/:id',
+            name: 'next.generator.sessions.detail',
+            component: () => import('../../pages/generator/session/SessionChatView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.generator' },
           },
         ],
       },

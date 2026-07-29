@@ -40,6 +40,7 @@ import type { IconName } from '../../ui/primitives/icons';
 import type {
   CreateFormReportStepConfig,
   CreateTaskStepConfig,
+  GenerateContentStepConfig,
   FormSubmittedTriggerConfig,
   ScheduleTriggerConfig,
   SubmissionSource,
@@ -199,7 +200,28 @@ function isBetween(cond: WorkflowCondition): boolean {
  * renders base markdown only and would otherwise print the raw `@[variable](…)` bytes.
  */
 function stepSummary(step: WorkflowStep): string {
-  const cfg = (step.config ?? {}) as Partial<CreateTaskStepConfig & CreateFormReportStepConfig>;
+  const cfg = (step.config ?? {}) as Partial<
+    CreateTaskStepConfig & CreateFormReportStepConfig & GenerateContentStepConfig
+  >;
+
+  // generate_content: the recipe IS the step's identity, but the READ resource carries only
+  // `template_id` — never a template name — so (exactly as the trigger panel does for
+  // `form_id`, §3.2/§9-note-2) we NEVER surface a raw id. The optional session name is the
+  // only human string in the config; otherwise the count of mapped inputs says something
+  // true without a second fetch.
+  if (step.type === 'generate_content') {
+    const name = stripVariableDirectives(
+      typeof cfg.name === 'string' ? cfg.name : '',
+      catalog.value,
+      steps.value,
+    ).trim();
+    if (name !== '') return name;
+    const mapped = cfg.slots && typeof cfg.slots === 'object' ? Object.keys(cfg.slots).length : 0;
+    return mapped > 0
+      ? t('workflows.step.summary.generateContentInputs', '', { count: mapped })
+      : t('workflows.step.summary.generateContentFallback');
+  }
+
   const raw = step.type === 'create_task' ? cfg.title : cfg.name;
   const echoed = stripVariableDirectives(typeof raw === 'string' ? raw : '', catalog.value, steps.value);
   if (echoed.trim() !== '') return echoed;

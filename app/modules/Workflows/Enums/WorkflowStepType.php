@@ -11,6 +11,12 @@ enum WorkflowStepType: string
 {
     case CREATE_TASK = 'create_task';
     case CREATE_FORM_REPORT = 'create_form_report';
+    /**
+     * Runs a Generator TEMPLATE and waits for the produced content (R2 sub-stage 5). The ONLY
+     * SUSPENDING step type: it hands the generation to the Generator's own async worker and parks the
+     * run until that settles — see {@see \App\Modules\Workflows\Steps\GenerateContentStep}.
+     */
+    case GENERATE_CONTENT = 'generate_content';
 
     /** @return array<int, string> */
     public static function ids(): array
@@ -23,6 +29,7 @@ enum WorkflowStepType: string
         return match ($this) {
             self::CREATE_TASK => 'Utwórz zadanie',
             self::CREATE_FORM_REPORT => 'Utwórz raport formularza',
+            self::GENERATE_CONTENT => 'Wygeneruj treść',
         };
     }
 }

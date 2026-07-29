@@ -4,7 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Tasks\Enums\TaskStatus;
-use App\Modules\Workflows\Agents\WorkflowAiTextAgent;
+use App\Modules\Variables\Agents\AiTextAgent;
 use App\Modules\Workflows\Enums\WorkflowRunOrigin;
 use App\Modules\Workflows\Enums\WorkflowRunState;
 use App\Modules\Workflows\Enums\WorkflowRunStepStatus;
@@ -156,7 +156,7 @@ class WorkflowRunEngineTest extends TestCase
 
         // The whole pipeline: the create_task title is an `@[ai-text]` directive. The agent is
         // faked (Promptable::fake), so the run generates the title deterministically end-to-end.
-        WorkflowAiTextAgent::fake(['AI Generated Task Title']);
+        AiTextAgent::fake(['AI Generated Task Title']);
 
         $payload = json_encode([
             'v' => 1,

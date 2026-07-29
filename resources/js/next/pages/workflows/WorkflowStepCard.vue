@@ -6,6 +6,12 @@
 // Buttons (disabled at the ends, keyboard-reachable, aria-labelled). Body: the
 // required `key` field (mono, client uniqueness) + the type-specific config fields.
 //
+// R2 sub-stage 5 adds the THIRD type, `generate_content`: a TemplateSelect + one typed row
+// per declared template slot (fetched from the chosen template — no new endpoint), the
+// composite-slot refusal, the template-DRIFT warning, an optional Disk destination + session
+// name, and the recipe's honest scale/cost note. See the block in the script for the two
+// invariants it protects.
+//
 // 5.1 (B7c): TWO step types. create_task carries a MarkdownEditor title/description
 // (variable chips), a value-or-variable priority + deadline, LabelSelect, an
 // assignee SegmentedControl (user/bot) + UserSelect/BotSelect, and single FormSelect
@@ -31,23 +37,35 @@ import UserSelect from '../../ui/forms/UserSelect.vue';
 import BotSelect from '../../ui/forms/BotSelect.vue';
 import FormSelect from '../../ui/forms/FormSelect.vue';
 import PipelineSelect from '../../ui/forms/PipelineSelect.vue';
+import TemplateSelect from '../../ui/forms/TemplateSelect.vue';
 import Checkbox from '../../ui/forms/Checkbox.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Badge from '../../ui/primitives/Badge.vue';
 import Icon from '../../ui/primitives/Icon.vue';
+import Alert from '../../ui/feedback/Alert.vue';
+import Skeleton from '../../ui/data/Skeleton.vue';
 import MarkdownEditor from '../../ui/editor/MarkdownEditor.vue';
+import TypedLiteralInput from '../../ui/variables/TypedLiteralInput.vue';
 import ValueOrVariableField from './ValueOrVariableField.vue';
 import DateOrVariableField from './DateOrVariableField.vue';
 import WorkflowArgVariableField from './WorkflowArgVariableField.vue';
 import FormFileInput from '../forms/FormFileInput.vue';
+import FolderPickerPanel from '../disk/FolderPickerPanel.vue';
 import { useI18n } from '../../app/i18n';
+import { useTemplatesStore } from '../../app/stores/templates';
 import { stepIcon, stepLabel } from './workflowMeta';
 import { allValueVariables, stripVariableDirectives, toEditorVariablesTyped, variablesOfType } from './workflowVariables';
 import { resolveOperationCatalog } from './workflowConditions';
-import { pipelineSatisfies } from '../../ui/editor/extensions/operationHelpers';
+import { getVariableIconLabel, pipelineSatisfies } from '../../ui/editor/extensions/operationHelpers';
 import { sanitizeStepKey, type StepDraft } from './workflowEditorModel';
+import { defaultSingleValue } from '../variables/consts';
+import { contentTypeLabel } from '../generator/templateMeta';
+import { STORYBOARD_MAX_SHOTS, type Template, type TemplateSlot } from '../generator/types';
+import type { VariableDescriptorOption, VariableLiteralBase } from '../../ui/variables/types';
 import type {
   CatalogVariable,
+  CatalogVariableDescriptor,
+  ConstantBase,
   FormReportSource,
   WorkflowCatalog,
   WorkflowFieldPipelineStep,
@@ -120,14 +138,28 @@ const bodyId = computed(() => `wf-step-body-${props.step.uid}`);
 // gate stayed open until the server 422. `hasTypeError` (declared below, near the
 // value-or-variable field specs) is the single source of truth bubbled to the drawer.
 
-/** Whether this card carries ANY error (config 422, duplicate key, or a field type mismatch). */
+/**
+ * Whether this card carries ANY error worth painting the row RED: a server/client 422,
+ * a duplicate key, a value-or-variable type mismatch, or a HARD generate_content problem
+ * (a composite slot the workflow can never supply, or template drift). A merely
+ * not-yet-filled required slot is deliberately NOT here — it blocks Save (see
+ * `blocksSave`) and is surfaced by its own warning, but a freshly-added card must not
+ * greet the author in red before they have done anything.
+ */
 const hasError = computed(
-  () => Object.keys(props.errors).length > 0 || props.duplicateKey || hasTypeError.value,
+  () =>
+    Object.keys(props.errors).length > 0 ||
+    props.duplicateKey ||
+    hasTypeError.value ||
+    generateContentHardError.value,
 );
 
 /**
  * The one-line collapsed summary: the step's title / report name with its variable
  * directives stripped to their names (§3.2), or a type fallback when still blank.
+ * A generate_content step summarises as "<template name> · N inputs" (the recipe IS the
+ * step's identity); before the template resolves it falls back to the session name, then
+ * to the type fallback — never a blank row, never a raw uuid.
  */
 const summary = computed<string>(() => {
   if (props.step.type === 'create_task') {
@@ -137,6 +169,15 @@ const summary = computed<string>(() => {
   if (props.step.type === 'create_form_report') {
     const name = stripVariableDirectives(strValue('name'), props.catalog, props.steps, props.triggerType).trim();
     return name || t('workflows.step.summary.createFormReportFallback');
+  }
+  if (props.step.type === 'generate_content') {
+    if (template.value) {
+      return t('workflows.step.generate_content.summary', '', {
+        name: template.value.name,
+        count: declaredSlots.value.length,
+      });
+    }
+    return strValue('name').trim() || t('workflows.step.summary.generateContentFallback');
   }
   return '';
 });
@@ -286,6 +327,412 @@ const fileVariables = computed<CatalogVariable[]>(() =>
   variablesOfType(props.catalog, props.steps, props.position, 'file', props.triggerType),
 );
 
+// --- generate_content (R2 sub-stage 5) ---------------------------------------
+// The step runs a Generator TEMPLATE, and everything the editor needs beyond `template_id`
+// lives ON that template (its DECLARED slots + its content_type). So the card FETCHES it
+// (`GET /generator/templates/{id}` — the existing read, no new endpoint) and renders one
+// typed row per declared slot.
+//
+// TWO invariants this block exists to protect:
+//   • COMPOSITE slots. A descriptor with base `object`, or `array:true` with base `file`,
+//     can NEVER be supplied by a workflow: the shared resolver has no object coercion and
+//     the automation fill scope refuses the deferred composites, so the mapped value would
+//     be silently discarded — which is why the backend 422s it. We therefore mark it
+//     unsupported BEFORE save: the input is DISABLED with an explanation, and a REQUIRED
+//     composite condemns the WHOLE template (an inline warning says so) rather than letting
+//     the author save a step that would hard-fail every single run.
+//   • DRIFT. A saved mapping is NEVER silently reset when the template changed underneath
+//     it. The differences are NAMED inline while they are still fixable (the run hard-fails
+//     on drift), and dropping a stale mapping is an explicit, author-driven action.
+const template = ref<Template | null>(null);
+const templateLoading = ref(false);
+const templateError = ref(false);
+
+/** The chosen template id (null until one is picked). */
+const templateId = computed<string | null>(() => idValue('template_id'));
+
+/** The TemplateSelect seed, so the chosen template's NAME renders before its page loads. */
+const templateSeed = computed(() =>
+  template.value
+    ? [{ id: template.value.id, name: template.value.name, content_type: template.value.content_type }]
+    : [],
+);
+
+// A request token so a fast re-pick can never let a stale response win.
+let templateToken = 0;
+
+async function loadTemplate(id: string | null): Promise<void> {
+  const myToken = (templateToken += 1);
+  if (!id) {
+    template.value = null;
+    templateLoading.value = false;
+    templateError.value = false;
+    return;
+  }
+  templateLoading.value = true;
+  templateError.value = false;
+  try {
+    // Resolved LAZILY (not at setup) so a create_task / create_form_report card — which
+    // never needs it — carries no Pinia dependency at all.
+    const result = await useTemplatesStore().fetchTemplate(id);
+    if (myToken !== templateToken) return;
+    template.value = result;
+  } catch {
+    if (myToken !== templateToken) return;
+    template.value = null;
+    templateError.value = true;
+  } finally {
+    if (myToken === templateToken) templateLoading.value = false;
+  }
+}
+
+// Load on hydration AND whenever the id changes (a re-pick, or an id restored from a saved
+// step). This watcher only READS — it never touches the author's slot mapping.
+watch(
+  templateId,
+  (id) => {
+    if (props.step.type !== 'generate_content') return;
+    void loadTemplate(id);
+  },
+  { immediate: true },
+);
+
+function retryTemplate(): void {
+  void loadTemplate(templateId.value);
+}
+
+/**
+ * Pick a template from the Select. Choosing a DIFFERENT recipe makes the previous slot
+ * mapping meaningless (the names/types belong to another template), so it is cleared HERE —
+ * on an explicit, author-initiated change only. Hydration goes through the watcher above
+ * and never clears anything.
+ */
+function onTemplatePick(next: string | null): void {
+  if (next === templateId.value) return;
+  setCfg('template_id', next);
+  setCfg('slots', {});
+  // A freshly-picked recipe has no authoring history, so nothing about it can have DRIFTED
+  // (see `authoredSlotNames`): its required inputs are merely unfilled.
+  authoredSlotNames.value = null;
+}
+
+/** The chosen template's DECLARED slots ([] until it resolves). */
+const declaredSlots = computed<TemplateSlot[]>(() => template.value?.slots ?? []);
+
+/** The saved `<slot name> => value-or-variable` map (never mutated in place). */
+const slotMap = computed<Record<string, unknown>>(() => {
+  const raw = cfg<Record<string, unknown> | null>('slots');
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+});
+
+function slotValue(name: string): unknown {
+  return slotMap.value[name] ?? null;
+}
+function setSlot(name: string, value: unknown): void {
+  setCfg('slots', { ...slotMap.value, [name]: value });
+}
+/** Drop a slot from the map entirely — "unmapped", not "mapped to empty". */
+function unsetSlot(name: string): void {
+  const next = { ...slotMap.value };
+  delete next[name];
+  setCfg('slots', next);
+}
+
+/**
+ * A slot is REQUIRED unless its descriptor says `nullable: true`. There is NO `required`
+ * key — everything is required BY DEFAULT — which is exactly why every row carries an
+ * explicit marker instead of only flagging the exceptions.
+ */
+function slotRequired(descriptor: CatalogVariableDescriptor): boolean {
+  return descriptor.nullable !== true;
+}
+
+/**
+ * Whether a declared slot is a COMPOSITE a workflow cannot supply — the FE mirror of
+ * `StoreWorkflowRequest::isUnsuppliableSlot`: base `object` (any shape), or `array:true`
+ * with base `file`. A plain SCALAR `file` slot is deliberately NOT one: it resolves, and it
+ * is the owner-approved automation path.
+ */
+function slotUnsupported(descriptor: CatalogVariableDescriptor): boolean {
+  if (descriptor.base === 'object') return true;
+  return descriptor.base === 'file' && descriptor.array === true;
+}
+
+/**
+ * The slot's own workflow TYPE, recovered from its descriptor exactly as the backend's
+ * `VariableType::fromDescriptor` does: an `enum` base is enum / multi by `array`, every
+ * other base is itself (or multi when arrayed). The DESCRIPTOR-only bases (`object`,
+ * `time`) degrade to text — neither is reachable here (`object` is refused as a composite
+ * and `time` is not an authorable slot base).
+ */
+function slotResultType(descriptor: CatalogVariableDescriptor): WorkflowVariableType {
+  if (descriptor.base === 'object') return 'text';
+  if (descriptor.base === 'enum') return descriptor.array ? 'multi' : 'enum';
+  const scalar: WorkflowVariableType =
+    descriptor.base === 'number' || descriptor.base === 'boolean' || descriptor.base === 'date' || descriptor.base === 'file'
+      ? descriptor.base
+      : 'text';
+  return descriptor.array ? 'multi' : scalar;
+}
+
+/**
+ * The slot's ELEMENT type — its own base, ignoring `array`. This is both the label vocabulary
+ * for an arrayed row (a list of TEXT is "Text (list)", not "Multi-choice (list)") and the
+ * scalar terminal an arrayed slot additionally accepts (see `slotResultTypes`).
+ */
+function slotElementType(descriptor: CatalogVariableDescriptor): WorkflowVariableType {
+  if (descriptor.base === 'object') return 'text';
+  if (descriptor.base === 'enum') return 'enum';
+  return descriptor.base === 'number' || descriptor.base === 'boolean' || descriptor.base === 'date' || descriptor.base === 'file'
+    ? descriptor.base
+    : 'text';
+}
+
+/**
+ * The terminal types a slot's variable pipeline may END on.
+ *
+ * A SCALAR slot accepts exactly its own type — the FE tightening is safe there because a cast
+ * operation always exists to reach it (same precedent as `create_task.deadline`).
+ *
+ * An ARRAYED slot accepts its `multi` type OR its plain ELEMENT type, because:
+ *   • NO operation produces `multi` from a scalar (only array_map/filter/sort do, and those
+ *     need an array INPUT), so demanding `multi` made every scalar variable an unreachable
+ *     dead end — the picker offered it and the gate then refused the save with no way out;
+ *   • the SERVER admits the SAME pair — `StoreWorkflowRequest::slotPipelineTerminals` passes
+ *     both the slot's `multi` and its element type to the pipeline validator (an empty/identity
+ *     pipeline was always accepted; the element terminal was the missing half) — and the runtime
+ *     WRAPS it: `VariableResolver::coerce` does
+ *     `MULTI => is_array($value) ? array_values($value) : [$value]`.
+ * Mirroring the documented runtime wrap is what keeps the picker and the validator agreeing;
+ * both sides are pinned by tests, so neither can tighten alone.
+ */
+function slotResultTypes(descriptor: CatalogVariableDescriptor): WorkflowVariableType[] {
+  const terminal = slotResultType(descriptor);
+  if (terminal !== 'multi') return [terminal];
+  return ['multi', slotElementType(descriptor)];
+}
+
+/** The declared slots a workflow CAN supply (the ones that get a live input). */
+const supportedSlots = computed<TemplateSlot[]>(() =>
+  declaredSlots.value.filter((slot) => !slotUnsupported(slot.descriptor)),
+);
+
+/** REQUIRED composites — these condemn the whole template for workflow use. */
+const requiredCompositeSlots = computed<string[]>(() =>
+  declaredSlots.value
+    .filter((slot) => slotUnsupported(slot.descriptor) && slotRequired(slot.descriptor))
+    .map((slot) => slot.name),
+);
+
+/** NULLABLE composites that were nonetheless MAPPED (the backend rejects only these). */
+const mappedCompositeSlots = computed<string[]>(() =>
+  declaredSlots.value
+    .filter(
+      (slot) =>
+        slotUnsupported(slot.descriptor) &&
+        !slotRequired(slot.descriptor) &&
+        Object.prototype.hasOwnProperty.call(slotMap.value, slot.name),
+    )
+    .map((slot) => slot.name),
+);
+
+/** Required, supportable slots the author has not mapped yet. */
+const missingRequiredSlots = computed<string[]>(() =>
+  supportedSlots.value
+    .filter((slot) => slotRequired(slot.descriptor) && !hasUsableSlotValue(slot.name))
+    .map((slot) => slot.name),
+);
+
+/**
+ * Whether a mapped value would actually SURVIVE `buildStepConfig` (which drops null / ''),
+ * so "mapped" here means the same thing it will mean on the wire — otherwise a cleared
+ * field would read as satisfied here and 422 on save.
+ */
+function hasUsableSlotValue(name: string): boolean {
+  const value = slotMap.value[name];
+  if (value == null || value === '') return false;
+  if (typeof value === 'object' && (value as WorkflowFieldValue).kind === 'literal') {
+    const literal = (value as Extract<WorkflowFieldValue, { kind: 'literal' }>).value;
+    return literal != null && literal !== '';
+  }
+  return true;
+}
+
+// --- Template DRIFT ---------------------------------------------------------
+/** Mapped names the template no longer declares (a slot removed or renamed after authoring). */
+const driftRemoved = computed<string[]>(() => {
+  if (!template.value) return [];
+  const declared = new Set(declaredSlots.value.map((slot) => slot.name));
+  return Object.keys(slotMap.value).filter((name) => !declared.has(name));
+});
+
+/**
+ * The slot names this step was AUTHORED against — snapshotted ONCE, from the mapping the
+ * card hydrated with, and never updated afterwards. Null when the step carries no saved
+ * mapping (a brand-new step, or one whose recipe was just re-picked): there is no authoring
+ * history to compare against, so nothing can have drifted.
+ *
+ * This is the whole point of the snapshot: drift means "unknown AT AUTHORING TIME", NOT
+ * "absent from the live draft". Deriving it from the live draft made ordinary authoring —
+ * pick a recipe with two required inputs, fill the first — announce that "this template
+ * changed after the step was saved", which is simply false, and suppressed the accurate
+ * "these inputs still need a value" message in the process.
+ */
+const authoredSlotNames = ref<string[] | null>(
+  props.step.type === 'generate_content' &&
+  idValue('template_id') &&
+  Object.keys(slotMap.value).length > 0
+    ? Object.keys(slotMap.value)
+    : null,
+);
+
+/**
+ * Required slots the template gained AFTER this step was authored: required, still unmapped,
+ * and absent from the authoring-time snapshot. A step with no snapshot reports none.
+ */
+const driftAdded = computed<string[]>(() => {
+  const authored = authoredSlotNames.value;
+  if (!template.value || authored === null) return [];
+  return missingRequiredSlots.value.filter((name) => !authored.includes(name));
+});
+
+/**
+ * Required slots that are simply NOT FILLED IN YET (the unfinished case), minus the ones the
+ * drift alert already names — so the author is never told the same thing twice, and never
+ * told "the template drifted" when the truth is "you haven't filled this in".
+ */
+const unfilledRequiredSlots = computed<string[]>(() =>
+  missingRequiredSlots.value.filter((name) => !driftAdded.value.includes(name)),
+);
+
+const hasDrift = computed(() => driftRemoved.value.length > 0 || driftAdded.value.length > 0);
+
+/** Explicitly drop the stale mappings the template no longer declares (never automatic). */
+function dropUnknownSlots(): void {
+  const declared = new Set(declaredSlots.value.map((slot) => slot.name));
+  const next: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(slotMap.value)) {
+    if (declared.has(name)) next[name] = value;
+  }
+  setCfg('slots', next);
+}
+
+/**
+ * The HARD problems: a composite the workflow can never supply, or drift the server will
+ * reject. These paint the card red immediately — they are broken now, not merely unfinished.
+ */
+const generateContentHardError = computed(
+  () =>
+    props.step.type === 'generate_content' &&
+    (requiredCompositeSlots.value.length > 0 ||
+      mappedCompositeSlots.value.length > 0 ||
+      driftRemoved.value.length > 0),
+);
+
+/**
+ * Everything that must block SAVE — the hard problems plus the unfinished ones.
+ *
+ * While the template is still LOADING, Save is blocked so it WAITS rather than round-trips:
+ * the declarations are simply not known yet, and letting a fast Save through skipped every
+ * per-slot check and came back as a 422. A FAILED fetch is deliberately non-blocking — we
+ * cannot check anything and the server stays authoritative — as is a step with no template
+ * picked (its own `template_id` required error covers that).
+ */
+const generateContentBlocked = computed(() => {
+  if (props.step.type !== 'generate_content') return false;
+  if (templateLoading.value) return true;
+  if (!template.value) return false;
+  return generateContentHardError.value || missingRequiredSlots.value.length > 0;
+});
+
+// --- Slot ROW rendering helpers ---------------------------------------------
+/**
+ * The human TYPE marker for a slot row (reuses the shared type vocabulary). Labelled from the
+ * descriptor's OWN base + its array flag, NOT from the engine type: an `array:true, base:text`
+ * slot resolves to the engine's `multi`, so labelling from that read "Multi-choice (list)" over
+ * a repeater of free-text inputs. An arrayed ENUM keeps the genuine "Multi-choice" word.
+ */
+function slotTypeLabel(descriptor: CatalogVariableDescriptor): string {
+  if (descriptor.base === 'enum') {
+    return getVariableIconLabel(descriptor.array ? 'multi' : 'enum');
+  }
+  const base = getVariableIconLabel(slotElementType(descriptor) as VariablePrimitive);
+  return descriptor.array ? t('workflows.variable.collection', '', { name: base }) : base;
+}
+
+/** The literal-control base for a slot (the composites never reach a control). */
+function slotLiteralBase(descriptor: CatalogVariableDescriptor): VariableLiteralBase {
+  return descriptor.base === 'enum' ? 'enum' : ((descriptor.base === 'number' || descriptor.base === 'boolean' || descriptor.base === 'date' ? descriptor.base : 'text') as VariableLiteralBase);
+}
+function slotOptions(descriptor: CatalogVariableDescriptor): VariableDescriptorOption[] {
+  return (descriptor.options ?? []) as VariableDescriptorOption[];
+}
+/** Whether the row's literal side is a repeatable list (an arrayed scalar/enum slot). */
+function slotIsList(descriptor: CatalogVariableDescriptor): boolean {
+  return descriptor.array === true && descriptor.base !== 'file';
+}
+/** Whether the row's literal side is a FILE pick (a scalar file slot — mirrors `attachments`). */
+function slotIsFile(descriptor: CatalogVariableDescriptor): boolean {
+  return descriptor.base === 'file' && descriptor.array !== true;
+}
+
+/** The literal LIST behind an arrayed slot's value (always an array for the repeater). */
+function slotList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+function setSlotListItem(list: unknown[], index: number, item: unknown, setValue: (v: unknown) => void): void {
+  const next = [...list];
+  next[index] = item;
+  setValue(next);
+}
+function addSlotListItem(descriptor: CatalogVariableDescriptor, list: unknown[], setValue: (v: unknown) => void): void {
+  setValue([...list, defaultSingleValue(slotLiteralBase(descriptor) as ConstantBase, descriptor.options ?? [])]);
+}
+function removeSlotListItem(list: unknown[], index: number, setValue: (v: unknown) => void): void {
+  setValue(list.filter((_, i) => i !== index));
+}
+
+/** The value-or-variable union currently held by a slot row (null ⇒ unmapped). */
+function slotUnion(name: string): WorkflowFieldValue | null {
+  return (slotValue(name) as WorkflowFieldValue | null) ?? null;
+}
+
+/**
+ * Write one slot row. A `null` (the field's fully-cleared state) UNSETS the key rather
+ * than storing an empty value, so "unmapped" stays unmapped — the exact distinction the
+ * backend's per-slot rules read (`array_key_exists`).
+ */
+function onSlotInput(name: string, value: WorkflowFieldValue | null): void {
+  if (value == null) unsetSlot(name);
+  else setSlot(name, value);
+}
+
+// --- The optional Disk folder + session name --------------------------------
+/** Where produced images are exported; null = the Disk ROOT (the picker's current level). */
+const folderModel = computed<string | null>({
+  get: () => idValue('folder_id'),
+  set: (value) => setCfg('folder_id', value),
+});
+
+/**
+ * The SCALE / COST note for the chosen recipe, keyed off its `content_type`: a
+ * `video_script` fans out to one image per shot (up to the platform ceiling) in a single
+ * run, while `post` / `post_with_image` are one piece. Honest, not alarmist — and it falls
+ * back to a generic note so a new content type still says something true.
+ */
+const scaleHint = computed<string>(() => {
+  const type = template.value?.content_type;
+  if (!type) return '';
+  const key = `workflows.step.generate_content.scale.${type}`;
+  const fallback = t('workflows.step.generate_content.scale.other');
+  return t(key, fallback, { max: STORYBOARD_MAX_SHOTS });
+});
+
+/** The chosen recipe's localized content-type name (for the scale note's heading). */
+const contentTypeName = computed<string>(() =>
+  template.value ? contentTypeLabel(template.value.content_type, t) : '',
+);
+
 // --- Value-or-variable field SPECS + the saved-model type-error gate ----------
 // ONE spec map: each value-or-variable config field the card owns → its terminal
 // contract ({resultTypes, targetOptions}). The template binds :result-types /
@@ -327,29 +774,55 @@ const typeErrorFields = computed<string[]>(() => {
   // reactively once resolveOperationCatalog yields a non-empty set).
   if (catalog.length === 0) return [];
   const fields: string[] = [];
+  // The fixed per-type specs (create_task / create_form_report). A generate_content step
+  // owns none of these keys, so the loop is a no-op there.
   for (const [field, spec] of Object.entries(vovFieldSpecs.value)) {
     const value = cfg<WorkflowFieldValue | null>(field) ?? null;
     if (!value || value.kind !== 'variable') continue;
     const pipeline = (value.pipeline ?? []).map(toEditorStep);
     const satisfied = pipelineSatisfies(
       catalog,
-      value.ref.type as VariablePrimitive,
+      value.ref.type as WorkflowVariableType as VariablePrimitive,
       pipeline,
       spec.resultTypes as VariablePrimitive[],
       spec.targetOptions,
     );
     if (!satisfied) fields.push(field);
   }
+  // generate_content: one DYNAMIC spec per declared slot (its terminal is the slot's own
+  // type, recovered from its descriptor exactly as the backend does). Reported under the
+  // `slots.<name>` key so the row can highlight itself.
+  for (const slot of supportedSlots.value) {
+    const value = slotValue(slot.name);
+    if (!value || typeof value !== 'object' || (value as WorkflowFieldValue).kind !== 'variable') continue;
+    const union = value as Extract<WorkflowFieldValue, { kind: 'variable' }>;
+    const pipeline = (union.pipeline ?? []).map(toEditorStep);
+    const satisfied = pipelineSatisfies(
+      catalog,
+      union.ref.type as WorkflowVariableType as VariablePrimitive,
+      pipeline,
+      slotResultTypes(slot.descriptor) as VariablePrimitive[],
+    );
+    if (!satisfied) fields.push(`slots.${slot.name}`);
+  }
   return fields;
 });
 const hasTypeError = computed(() => typeErrorFields.value.length > 0);
 
+/**
+ * Whether this card BLOCKS Save. A superset of `hasError`: it additionally covers the
+ * generate_content "you have not filled the required inputs yet" case, which must stop a
+ * doomed round-trip without painting a brand-new card red.
+ */
+const blocksSave = computed(() => hasTypeError.value || generateContentBlocked.value);
+
 // Bubble the gate to the list editor → drawer (same `type-error` boolean contract as
-// before). Immediate so an ALWAYS-mounted collapsed card reports its state on hydration;
-// `flush: 'post'` defers the FIRST emit until AFTER this card has mounted, so the parent's
-// reaction (auto-expand mutating expandedUids, which feeds back into this card's own
-// render) never re-enters an instance that is still initializing (emitsOptions/flags null).
-watch(hasTypeError, (value) => emit('type-error', value), { immediate: true, flush: 'post' });
+// before — it means "this card is not saveable yet"). Immediate so an ALWAYS-mounted
+// collapsed card reports its state on hydration; `flush: 'post'` defers the FIRST emit
+// until AFTER this card has mounted, so the parent's reaction (auto-expand mutating
+// expandedUids, which feeds back into this card's own render) never re-enters an instance
+// that is still initializing (emitsOptions/flags null).
+watch(blocksSave, (value) => emit('type-error', value), { immediate: true, flush: 'post' });
 
 // --- create_task: assignee (SegmentedControl user/bot + picker) ------------
 const assigneeSegments = computed<SegmentOption<'user' | 'bot'>[]>(() => [
@@ -757,6 +1230,327 @@ const labelsModel = computed<string[]>({
               :date-label="t('workflows.step.report.submissionsTo')"
             />
           </FormField>
+        </div>
+      </template>
+
+      <!-- generate_content (R2 sub-stage 5) -->
+      <template v-else-if="step.type === 'generate_content'">
+        <!-- The RECIPE (required). Changing it clears the slot mapping (it belonged to the
+             old recipe); hydration never does. -->
+        <FormField
+          :label="t('workflows.step.generate_content.templateLabel')"
+          required
+          :description="t('workflows.step.generate_content.templateHint')"
+          :error="fieldError('template_id')"
+        >
+          <TemplateSelect
+            :model-value="templateId"
+            :seed="templateSeed"
+            :aria-label="t('workflows.step.generate_content.templateLabel')"
+            :placeholder="t('workflows.step.generate_content.templatePlaceholder')"
+            @update:model-value="onTemplatePick"
+          />
+        </FormField>
+
+        <!-- Loading the chosen recipe's declarations. -->
+        <div
+          v-if="templateLoading"
+          class="flex flex-col gap-next-2"
+          role="status"
+          :aria-label="t('workflows.step.generate_content.templateLoading')"
+        >
+          <Skeleton variant="rect" height="1.25rem" width="12rem" />
+          <Skeleton variant="rect" height="2.5rem" />
+          <Skeleton variant="rect" height="2.5rem" />
+        </div>
+
+        <!-- The recipe could not be read — the slot rows are unknown, so say so instead of
+             rendering an empty (and misleading) "no inputs" state. -->
+        <Alert v-else-if="templateError" variant="danger" size="sm">
+          {{ t('workflows.step.generate_content.templateLoadError') }}
+          <template #actions>
+            <Button variant="outline" size="sm" leading-icon="rotate-ccw" @click="retryTemplate">
+              {{ t('workflows.step.generate_content.templateRetry') }}
+            </Button>
+          </template>
+        </Alert>
+
+        <template v-else-if="template">
+          <!-- SCALE / COST: how much one run of THIS recipe actually produces. -->
+          <Alert v-if="scaleHint" variant="info" size="sm" :title="contentTypeName">
+            {{ scaleHint }}
+          </Alert>
+
+          <!-- A REQUIRED composite condemns the whole recipe for workflow use: it can never
+               be supplied, so every run would hard-fail. Say it here, not via a 422. -->
+          <Alert
+            v-if="requiredCompositeSlots.length"
+            variant="danger"
+            size="sm"
+            :title="t('workflows.step.generate_content.composite.requiredWarningTitle')"
+          >
+            {{
+              t('workflows.step.generate_content.composite.requiredWarning', '', {
+                slots: requiredCompositeSlots.join(', '),
+              })
+            }}
+          </Alert>
+
+          <!-- DRIFT: the recipe changed after this step was authored. NAME the differences;
+               never silently reset the author's mapping. -->
+          <Alert
+            v-if="hasDrift"
+            variant="warning"
+            size="sm"
+            :title="t('workflows.step.generate_content.drift.title')"
+          >
+            <span v-if="driftRemoved.length" class="block">
+              {{ t('workflows.step.generate_content.drift.removed', '', { slots: driftRemoved.join(', ') }) }}
+            </span>
+            <span v-if="driftAdded.length" class="block">
+              {{ t('workflows.step.generate_content.drift.added', '', { slots: driftAdded.join(', ') }) }}
+            </span>
+            <template v-if="driftRemoved.length" #actions>
+              <Button variant="outline" size="sm" leading-icon="x" @click="dropUnknownSlots">
+                {{ t('workflows.step.generate_content.drift.removeUnknown') }}
+              </Button>
+            </template>
+          </Alert>
+
+          <!-- Still-unfilled required inputs: blocks Save, but a WARNING (not an error) —
+               a freshly-picked recipe is unfinished, not broken. -->
+          <Alert v-if="unfilledRequiredSlots.length" variant="warning" size="sm">
+            {{
+              t('workflows.step.generate_content.missingRequired', '', {
+                slots: unfilledRequiredSlots.join(', '),
+              })
+            }}
+          </Alert>
+
+          <!-- The recipe's DECLARED inputs, one typed row each. -->
+          <div class="flex flex-col gap-next-3">
+            <div>
+              <h4 class="text-next-sm font-next-semibold text-next-fg">
+                {{ t('workflows.step.generate_content.slotsTitle') }}
+              </h4>
+              <p class="mt-next-0_5 text-next-xs text-next-muted-foreground">
+                {{ t('workflows.step.generate_content.slotsHint') }}
+              </p>
+            </div>
+
+            <p v-if="declaredSlots.length === 0" class="text-next-xs text-next-muted-foreground">
+              {{ t('workflows.step.generate_content.noSlots') }}
+            </p>
+
+            <FormField
+              v-for="slot in declaredSlots"
+              :key="slot.name"
+              :label="slot.name"
+              :required="slotRequired(slot.descriptor)"
+              :description="slot.description ?? undefined"
+              :error="fieldError(`slots.${slot.name}`)"
+            >
+              <div class="flex flex-col gap-next-1_5">
+                <!-- TYPE + REQUIRED markers. Required is the DEFAULT (a descriptor has no
+                     `required` key — it is `nullable !== true`), so BOTH states are marked
+                     explicitly rather than only flagging the exception. -->
+                <div class="flex flex-wrap items-center gap-next-1_5">
+                  <Badge variant="neutral" tone="subtle" size="sm">{{ slotTypeLabel(slot.descriptor) }}</Badge>
+                  <Badge
+                    :variant="slotRequired(slot.descriptor) ? 'warning' : 'neutral'"
+                    tone="subtle"
+                    size="sm"
+                    :icon="slotRequired(slot.descriptor) ? 'alert-circle' : 'circle'"
+                  >
+                    {{
+                      slotRequired(slot.descriptor)
+                        ? t('workflows.step.generate_content.requiredMarker')
+                        : t('workflows.step.generate_content.optionalMarker')
+                    }}
+                  </Badge>
+                </div>
+
+                <!-- COMPOSITE: a workflow can never supply it. Disabled + explained, never
+                     hidden — the author must be able to see why the recipe is limited. -->
+                <template v-if="slotUnsupported(slot.descriptor)">
+                  <TextInput
+                    model-value=""
+                    disabled
+                    :aria-label="slot.name"
+                    :placeholder="t('workflows.step.generate_content.composite.placeholder')"
+                  />
+                  <p class="flex items-start gap-next-1 text-next-xs text-next-muted-foreground">
+                    <Icon name="info" class="mt-px shrink-0" aria-hidden="true" />
+                    <span>
+                      {{
+                        slotRequired(slot.descriptor)
+                          ? t('workflows.step.generate_content.composite.requiredNote')
+                          : t('workflows.step.generate_content.composite.optionalNote')
+                      }}
+                    </span>
+                  </p>
+                  <!-- Already mapped (an older step, or the recipe was retyped): the server
+                       rejects it, so offer the one-click fix rather than a silent drop. -->
+                  <p
+                    v-if="mappedCompositeSlots.includes(slot.name)"
+                    class="flex flex-wrap items-center gap-next-2 text-next-xs text-next-danger"
+                    role="alert"
+                  >
+                    <span>{{ t('workflows.step.generate_content.composite.mappedNote') }}</span>
+                    <Button variant="outline" size="xs" leading-icon="x" @click="unsetSlot(slot.name)">
+                      {{ t('workflows.step.generate_content.composite.unmap') }}
+                    </Button>
+                  </p>
+                </template>
+
+                <!-- FILE (scalar): mirrors create_task's attachment — upload a file OR
+                     reference a FILE variable. No operations: nothing coerces INTO a file,
+                     so the picker is type-filtered instead of show-all. -->
+                <ValueOrVariableField
+                  v-else-if="slotIsFile(slot.descriptor)"
+                  :model-value="slotUnion(slot.name)"
+                  :variables="fileVariables"
+                  :result-types="slotResultTypes(slot.descriptor)"
+                  :external-error-present="!!fieldError(`slots.${slot.name}`)"
+                  :picker-label="slot.name"
+                  @update:model-value="(v) => onSlotInput(slot.name, v)"
+                >
+                  <template #default="{ value, setValue, disabled }">
+                    <FormFileInput
+                      :model-value="(value as string | null) ?? null"
+                      :disabled="disabled"
+                      @update:model-value="(v) => setValue(v)"
+                    />
+                  </template>
+                </ValueOrVariableField>
+
+                <!-- LIST (an arrayed scalar / choice): a repeatable literal, or one
+                     multi-valued variable coerced by operations. -->
+                <ValueOrVariableField
+                  v-else-if="slotIsList(slot.descriptor)"
+                  :model-value="slotUnion(slot.name)"
+                  :variables="allVariables"
+                  :operations-catalog="operationsCatalog"
+                  :arg-variables="allVariables"
+                  :result-types="slotResultTypes(slot.descriptor)"
+                  :external-error-present="!!fieldError(`slots.${slot.name}`)"
+                  :picker-label="slot.name"
+                  @update:model-value="(v) => onSlotInput(slot.name, v)"
+                >
+                  <template #default="{ value, setValue, disabled }">
+                    <div class="flex w-full flex-col gap-next-2 py-next-1_5">
+                      <div
+                        v-for="(item, i) in slotList(value)"
+                        :key="i"
+                        class="flex items-start gap-next-2"
+                      >
+                        <div class="min-w-0 flex-1">
+                          <TypedLiteralInput
+                            :model-value="item"
+                            :base="slotLiteralBase(slot.descriptor)"
+                            :options="slotOptions(slot.descriptor)"
+                            :disabled="disabled"
+                            :aria-label="slot.name"
+                            @update:model-value="(v) => setSlotListItem(slotList(value), i, v, setValue)"
+                          />
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          type="button"
+                          leading-icon="trash"
+                          :disabled="disabled"
+                          :aria-label="t('workflows.step.generate_content.removeItem')"
+                          @click="removeSlotListItem(slotList(value), i, setValue)"
+                        />
+                      </div>
+                      <div>
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          type="button"
+                          leading-icon="plus"
+                          :disabled="disabled"
+                          @click="addSlotListItem(slot.descriptor, slotList(value), setValue)"
+                        >
+                          {{ t('workflows.step.generate_content.addItem') }}
+                        </Button>
+                      </div>
+                    </div>
+                  </template>
+                </ValueOrVariableField>
+
+                <!-- SCALAR / CHOICE: the shared typed literal, or any variable coerced by
+                     operations to the slot's own type. -->
+                <ValueOrVariableField
+                  v-else
+                  :model-value="slotUnion(slot.name)"
+                  :variables="allVariables"
+                  :operations-catalog="operationsCatalog"
+                  :arg-variables="allVariables"
+                  :result-types="slotResultTypes(slot.descriptor)"
+                  :external-error-present="!!fieldError(`slots.${slot.name}`)"
+                  :picker-label="slot.name"
+                  @update:model-value="(v) => onSlotInput(slot.name, v)"
+                >
+                  <template #default="{ value, setValue, disabled }">
+                    <TypedLiteralInput
+                      :model-value="value"
+                      :base="slotLiteralBase(slot.descriptor)"
+                      :options="slotOptions(slot.descriptor)"
+                      :disabled="disabled"
+                      :aria-label="slot.name"
+                      @update:model-value="(v) => setValue(v)"
+                    />
+                  </template>
+                </ValueOrVariableField>
+              </div>
+            </FormField>
+          </div>
+        </template>
+
+        <!-- Optional session NAME + the Disk destination for the produced images. -->
+        <FormField
+          :label="t('workflows.step.generate_content.nameLabel')"
+          :description="t('workflows.step.generate_content.nameHint')"
+          :error="fieldError('name')"
+        >
+          <TextInput
+            :model-value="strValue('name')"
+            :maxlength="255"
+            :aria-label="t('workflows.step.generate_content.nameLabel')"
+            :placeholder="t('workflows.step.generate_content.namePlaceholder')"
+            @update:model-value="(v: string) => setCfg('name', v)"
+          />
+        </FormField>
+
+        <FormField
+          :label="t('workflows.step.generate_content.folderLabel')"
+          :description="t('workflows.step.generate_content.folderHint')"
+          :error="fieldError('folder_id')"
+        >
+          <div class="flex flex-col gap-next-2">
+            <!-- The picker's CURRENT level IS the destination (the same panel the Disk
+                 copy/move dialogs use); staying at the root means the Disk root. -->
+            <FolderPickerPanel v-model="folderModel" />
+            <p class="text-next-xs text-next-muted-foreground">
+              {{ folderModel ? t('workflows.step.generate_content.folderChosen') : t('workflows.step.generate_content.folderRoot') }}
+            </p>
+          </div>
+        </FormField>
+
+        <!-- What this step publishes for LATER steps. `status` is listed because the
+             backend publishes it, and labelled honestly: it is always `ready` today. -->
+        <div class="flex flex-col gap-next-1 rounded-next-md border border-next-border bg-next-muted/20 p-next-3">
+          <p class="text-next-xs font-next-medium text-next-fg">
+            {{ t('workflows.step.generate_content.outputs.title') }}
+          </p>
+          <p class="text-next-xs text-next-muted-foreground">
+            {{ t('workflows.step.generate_content.outputs.hint', '', { key: step.key || 'content' }) }}
+          </p>
+          <p class="text-next-xs text-next-muted-foreground">
+            {{ t('workflows.step.generate_content.outputs.statusNote') }}
+          </p>
         </div>
       </template>
     </div>

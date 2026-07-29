@@ -62,11 +62,13 @@ describe('WorkflowStepListEditor', () => {
     const steps = twoSteps();
     const wrapper = mountEditor(steps);
 
-    // Two add cards (not a dropdown), one per 5.1 step type, in a stable order.
+    // One add card per step type (not a dropdown), in a stable order. R2 sub-stage 5
+    // appended the third, `generate_content`.
     const cards = wrapper.findAll('button[aria-label^="Add step:"]');
     expect(cards.map((c) => c.attributes('aria-label'))).toEqual([
       'Add step: Create task',
       'Add step: Create form report',
+      'Add step: Generate content',
     ]);
 
     // Clicking "Create form report" appends a correctly-typed card with a unique key.
@@ -93,8 +95,38 @@ describe('WorkflowStepListEditor', () => {
     const wrapper = mountEditor(many);
 
     const cards = wrapper.findAll('button[aria-label^="Add step:"]');
-    expect(cards).toHaveLength(2);
+    expect(cards).toHaveLength(3);
     expect(cards.every((c) => c.attributes('disabled') !== undefined)).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it('disables ONLY the generate_content card once its own per-type cap is reached', async () => {
+    // Two generate_content steps is the backend budget guard (GENERATE_CONTENT_MAX); the
+    // third would 422 on `steps.<i>.type`, so its add card goes disabled while the other
+    // types stay available.
+    const keys: string[] = [];
+    const steps = ['generate_content', 'generate_content'].map((type) => {
+      const draft = makeStepDraft(type as StepDraft['type'], keys);
+      keys.push(draft.key);
+      return draft;
+    });
+    const wrapper = mountEditor(steps);
+
+    const cards = wrapper.findAll('button[aria-label^="Add step:"]');
+    expect(cards).toHaveLength(3);
+    expect(cards[0].attributes('disabled')).toBeUndefined();
+    expect(cards[1].attributes('disabled')).toBeUndefined();
+    expect(cards[2].attributes('disabled')).toBeDefined();
+    expect(cards[2].attributes('title')).toContain('2');
+    // "Disabled actions must remain understandable": the reason is VISIBLE on the card, not
+    // only in a `title` tooltip a keyboard/touch user can never reach.
+    expect(cards[2].text()).toContain('A workflow can contain at most 2 content-generation steps.');
+    expect(cards[0].text()).not.toContain('at most');
+
+    // A click on the capped card is a no-op (no step is appended).
+    await cards[2].trigger('click');
+    expect(wrapper.emitted('update:steps')).toBeUndefined();
 
     wrapper.unmount();
   });

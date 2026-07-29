@@ -34,6 +34,8 @@ import type { VariableDefinition } from './types';
 function sourceOfPath(path: string): VariableSource {
   if (path.startsWith('steps.')) return 'steps';
   if (path.startsWith('globals.')) return 'globals';
+  // TEMPLATE SLOTS (R2 Generator): a `slots.<name>` definition-shaped feed implies the `slots` root.
+  if (path.startsWith('slots.')) return 'slots';
   // The two SCOPED synthetic roots of an element pipeline (array-transform wave 2). They only
   // ever exist inside an element-pipeline browser feed; recognising them here keeps a scope ref's
   // implied source correct if a definition-shaped feed ever carries one.

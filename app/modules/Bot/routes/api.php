@@ -3,6 +3,7 @@
 use App\Modules\Bot\Http\Controllers\BotActionController;
 use App\Modules\Bot\Http\Controllers\BotController;
 use App\Modules\Bot\Http\Controllers\BotInboxController;
+use App\Modules\Bot\Http\Controllers\BotSessionDelegationController;
 use App\Modules\Bot\Http\Controllers\BotToolRegistryController;
 use Illuminate\Support\Facades\Route;
 
@@ -22,6 +23,20 @@ Route::middleware('auth:sanctum')->group(function () {
     // Bot-action audit log (read-only): per bot and per task.
     Route::get('bots/{bot}/actions', [BotActionController::class, 'index'])->name('bots.actions.index');
     Route::get('tasks/{task}/bot-actions', [BotActionController::class, 'forTask'])->name('tasks.bot-actions.index');
+
+    // Bot ↔ generation-session DELEGATION (R2 sub-stage 3): the ONLY new Bot → Generator edge. Delegate
+    // hands an editable session to a bot (compose voice + autonomous slot-fill + stamp the overlay);
+    // DELETE undoes it. Owner-only (the session's `update` ability, in the FormRequest); {bot} + {session}
+    // are workspace-scoped bindings (a foreign id 404s at bind), so a cross-workspace bot/session is
+    // rejected before any work. Declared before the {bot} resource so the deeper path binds cleanly.
+    Route::post('bots/{bot}/sessions/{session}/delegate', [BotSessionDelegationController::class, 'store'])
+        ->whereUuid('bot')
+        ->whereUuid('session')
+        ->name('bots.sessions.delegate');
+    Route::delete('bots/{bot}/sessions/{session}/delegate', [BotSessionDelegationController::class, 'destroy'])
+        ->whereUuid('bot')
+        ->whereUuid('session')
+        ->name('bots.sessions.undelegate');
 
     Route::resource('bots', BotController::class)
         ->only(['index', 'show', 'store', 'update', 'destroy'])

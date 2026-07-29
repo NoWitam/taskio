@@ -111,26 +111,395 @@ spójność z istniejącymi załącznikami (migracja danych?).
 **Cel:** użytkownik (lub workflow) generuje treść z szablonu; sesja jak w czacie;
 wynik da się zapisać na dysku, delegować botowi, podpiąć pod akceptacje.
 
-**Podetapy (osobne PR-y):**
-1. **Templatki:** model szablonu (prompt + zmienne + parametry typu długość/format/kanał),
-   szablony systemowe: post, post ze zdjęciem, wideo (prosty prompt), wideo (scenariusz);
-   lista + edytor z podglądem zmiennych. *Decyzja projektowa: zmienne szablonu reużywają
-   typowanego systemu zmiennych z Workflows 5.1 (katalog po ścieżce) — nie budować drugiego.*
-2. **Generator (sesje):** sesja generowania per szablon (formularz pod zmienne),
-   historia zmian z możliwością cofnięcia (nie logi!), zapis wyniku na Dysk;
-   auto-czyszczenie: sesje żyją tydzień → kosz → miesiąc → trwałe usunięcie; archiwizacja
-   wyłącza czyszczenie.
-3. **Boty w generatorze:** delegowanie „niech bot uzupełni formularz"; bot jako **autor**
-   (treść generowana w jego stylu — reuse modułu tekstowego bota).
-4. **Limity kosztów AI:** licznik kosztów per sesja/workspace + progi ostrzeżeń —
-   fundament wymagany zanim workflow zacznie generować masowo.
-5. **Workflow:** krok `generate_content` (szablon + mapowanie zmiennych) — od tej chwili
-   workflow potrafi produkować treści.
+**Podetapy (osobne PR-y) — numeracja poniżej to REFERENCYJNA numeracja podetapów R2 (wraca
+w ADR-ach i w docs/backend/generator-api.md pod nazwą „sub-stage N"), doprecyzowana po
+ukończeniu podetapu 1:**
+1. **Templatki** ✅ **UKOŃCZONE, w modelu CONTENT-RECIPE** (patrz Status niżej): szablon =
+   RECEPTURA na gotowy post — `content_type` (rejestr typów zdefiniowany w kodzie: post /
+   post ze zdjęciem / wideo-scenariusz, każdy złożony z typowanych CZĘŚCI) + zadeklarowane
+   typowane sloty (bez zmian) + mapa treści per część, autorowana JAKO gotowy post
+   (tekst + sloty + pierwszoklasowe bloki `@[ai-text]`; dla obrazu — deklarowany PLAN:
+   baza + uporządkowany łańcuch filtrów). *Decyzja projektowa: zmienne szablonu reużywają
+   typowanego systemu zmiennych z Workflows 5.1 (katalog po ścieżce) — nie budować
+   drugiego; wymagało to najpierw zejścia ze wspólnym silnikiem w dół do modułu
+   `Variables`, żeby `Generator` i `Workflows` nie zależały od siebie nawzajem (patrz
+   Status → PR-1a).* **Rework (2026-07-27):** pierwotny model „prompt + parametry"
+   (pojedynczy `prompt_body` + `type` + `parameters`) został ODRZUCONY przez właściciela
+   przed zamknięciem podetapu — nie miał miejsca na plan medialny i traktował „cały post
+   przez AI" jako przypadek specjalny zamiast jednego dużego bloku `@[ai-text]`. Zastąpiony
+   modelem content-recipe w miejscu (branch niezacommitowany, zero danych) — patrz
+   **ADR-0032** (unieważnia zmienione decyzje **ADR-0031**).
+2. **Generator (sesje)** ✅ **UKOŃCZONE** (patrz Status niżej): sesja generowania per szablon
+   (formularz pod zmienne), historia zmian z możliwością cofnięcia (nie logi!);
+   auto-czyszczenie: sesje żyją tydzień → kosz → miesiąc → trwałe usunięcie, archiwizacja
+   wyłącza czyszczenie. **Doprecyzowanie sekwencji (po podetapie 1):** to jest pierwszy
+   podetap z PRAWDZIWYM wydawaniem AI, więc niósł ze sobą **fundament limitów kosztów AI**
+   (przeniesiony tu z dawnego punktu 4 — patrz niżej, zbudowany jako 2a) ORAZ **integrację
+   zapisu wyniku na Dysk** (reuse modułu `Disk`/R1, zbudowana jako 2c) — zapis na Dysk był
+   integracją WEWNĄTRZ tego podetapu, nie osobnym podetapem/rozdziałem planu.
+3. **Boty w generatorze** ✅ **UKOŃCZONE** (patrz Status niżej): delegowanie „niech bot uzupełni
+   formularz"; bot jako **autor** (treść generowana w jego stylu — reuse modułu tekstowego bota).
+4. ~~Limity kosztów AI~~ — **PRZENIESIONE do podetapu 2** (pierwszy realny wydawca AI —
+   podetap 1 nie wykonuje ŻADNEGO prawdziwego wywołania AI: dyrektywa `@[ai-text]` w
+   podglądzie szablonu renderuje się jako pusty tekst, celowo).
+5. **Workflow:** krok `generate_content` (szablon + mapowanie zmiennych) ✅ **UKOŃCZONE, KOMPLETUJE
+   CAŁY ROZDZIAŁ R2** (patrz Status niżej) — od tej chwili workflow potrafi produkować treści.
+   Bezcyklowy DZIĘKI podetapowi 1 (PR-1a): `Generator` zależy tylko od `Variables`, nigdy od
+   `Workflows`, więc krok `Workflows → Generator` nie tworzy cyklu zależności.
 6. **Typy mediów:** start = tekst + obraz; wideo jako scenariusz tekstowy (bez renderu);
-   audio/muzyka — decyzja otwarta nr 2 z wizji.
+   audio/muzyka — decyzja otwarta nr 2 z wizji. Typ szablonu `post_with_image` ma od podetapu 1
+   (po rework) pełny, DEKLAROWANY plan obrazu (baza: plik z Dysku / slot plikowy / `ai_generate`
+   + uporządkowany łańcuch filtrów pikselowych/AI) — zamodelowany i zwalidowany przy zapisie,
+   wiernie podglądany jako streszczenie planu. **WYKONANIE zbudowane w podetapie 2c** ✅:
+   rozwiązanie bazy do realnych bajtów (odczyt z Dysku, tenant-scoped) i uruchomienie łańcucha
+   (Imagick + `ImageAiService::edit()` dla `ai_edit`) — patrz Status niżej. **Klient text→image
+   dla `ai_generate` ZBUDOWANY w podetapie 6** ✅ (`Disk\Services\ImageGenerateService`, metrykowany
+   kanał `ai_image_generate`) — baza `ai_generate` jest teraz w pełni RUNNABLE, nie tylko
+   zamodelowana. `video_script` (pierwotnie `scene_plan`) przemodelowany na `shot_list` +
+   `storyboard` — patrz Status R2 podetap 2 rozszerzenie (Faza A+B, ADR-0035) niżej: `storyboard`
+   używa `ai_generate` WEWNĘTRZNIE, per shot, bez autorowanej bazy.
 
 **Ryzyka:** największy rozdział — ciąć na podetapy; koszty API w testach (mock providerów
 przez Laravel AI); UX sesji (wzorzec czatu) wymaga solidnego projektu UX przed kodem.
+
+### Status R2 podetap 1 „Templatki" (2026-07-27) — UKOŃCZONY, W MODELU CONTENT-RECIPE (branch, niezacommitowany)
+
+Zbudowane i zielone na branchu `feat/r2-generator-templatki` (backend: ~51 testów Generator +
+~828 Workflow + Variables; frontend: ~1537; Pint/build czyste). **Niezacommitowane** — zero
+commitów na branchu ponad `main` w chwili pisania (implementacja, testy i dokumentacja gotowe,
+czekają na commit/PR).
+
+- **PR-1a (prekursor, czysty refaktor):** wspólny silnik interpolacji przeniesiony w dół, z
+  `Workflows` do `Variables` — `WorkflowVariableResolver` → `App\Modules\Variables\Services\
+  VariableResolver`; forma-niezależna część katalogu wydzielona do nowego `App\Modules\
+  Variables\Services\VariableCatalog`; nowy port `App\Modules\Variables\Contracts\
+  AiTextGenerator` (odwrócenie zależności — `WorkflowAiTextService` go implementuje, bindowany
+  w module Workflows). Zero zmiany zachowania — test charakteryzacyjny przypina bajt-identyczne
+  wyjście przed/po — zero plików frontendu ruszonych. Patrz **ADR-0030**.
+- **PR-1b (funkcja, pierwotny model — ODRZUCONY, patrz rework niżej):** nowy moduł
+  `App\Modules\Generator` (jednokierunkowo `Generator → Variables`, NIGDY `Workflows` — osobny
+  test graniczny, mirror wzorca z modułu `Variables`) + model `Template` w modelu „prompt +
+  parametry" (`type` + `prompt_body` + `parameters`). Ten kształt opisuje **ADR-0031** —
+  zachowany jako historia, NIE jako aktualny kontrakt.
+- **Rework (ten sam podetap, przed pierwszym commitem) → model CONTENT-RECIPE:** `Template`
+  przemodelowany w miejscu na `content_type` (rejestr typów **zdefiniowany w kodzie**,
+  `ContentTypeRegistry` — 3 typy systemowe: `post`, `post_with_image`, `video_script`, każdy
+  złożony z CZĘŚCI o zamkniętym zestawie `kind`: `text_body`/`image_plan`/`script`/`scene_plan`)
+  + mapę `content` per część. Treść tekstowa autorowana JAKO gotowy post (pierwszoklasowe bloki
+  `@[ai-text]` — „cały post przez AI" to jeden duży blok, nie osobny tryb). Obraz = DEKLAROWANY
+  plan: baza (`disk_file` / `from_slot` / `ai_generate` — ten ostatni zamodelowany, ale
+  WYŁĄCZONY w edytorze do podetapu 6) + uporządkowany łańcuch filtrów (piksel ∪ `ai_edit`).
+  `video_script` rezerwuje TERAZ pełny `scene_plan` (lista scen: narracja + opcjonalny plan
+  obrazu). Wierny, PER-CZĘŚĆ podgląd server-side przez TEN SAM silnik (`@[ai-text]` nieaktywny,
+  ale OZNACZONY placeholderem `[AI: …]` — bez realnego AI, patrz punkt 4 wyżej). Generator
+  celowo ODSPRZĘGNIĘTY od Dysku w tym podetapie (id pliku z Dysku nieprzezroczyste — walidacja
+  istnienia dopiero przy wykonaniu, podetap 2). Wspólny, na razie no-op „metered AI call"
+  (kontrakt D7) zdefiniowany w module `Variables` — realny licznik kosztów w podetapie 2.
+  Endpointy + pełny kontrakt: `docs/backend/generator-api.md`. Patrz **ADR-0032** (unieważnia
+  zmienione decyzje **ADR-0031**).
+
+**Świadomie POZA zakresem podetapu 1** (patrz „Doprecyzowanie" wyżej oraz
+`docs/backend/generator-api.md` → „Planned / deferred"): sesje generowania, zapis na Dysk,
+delegacja do bota, realne wywołania/koszty AI, krok workflow `generate_content`, WYKONANIE planu
+obrazu (rozwiązanie bazy + uruchomienie łańcucha filtrów), klient text→image dla `ai_generate`,
+walidacja istnienia pliku z Dysku (`disk_file`), typ treści tworzony przez użytkownika.
+
+### Status R2 podetap 2 „Sesje" (2a–2d) — UKOŃCZONY (branch, niezacommitowany)
+
+Zbudowane i zielone na branchu `feat/r2-generator-templatki`, na wierzchu podetapu 1 (backend:
+~127 testów Generator + testy `AiCostMeterTest` w module `Variables`; frontend: dodatkowe specy
+sesji w `pages/generator/session/**`; Pint/build czyste). **Niezacommitowane** — jak cały branch.
+Cztery pod-fazy (2a–2d), każda swój PR-ready krok, razem stanowiące jeden spójny silnik:
+
+- **2a — licznik kosztów AI + zejście generatora tekstu w dół:** seam `MeteredAiCall` (D7,
+  zdefiniowany w podetapie 1 jako no-op) podpięty pod prawdziwy licznik-ledger
+  (`LedgerMeteredAiCall`) — bramkowanie PRZED wydatkiem na miesięczny limit tokenów per
+  workspace (kalendarzowy miesiąc; `0` = wyłączone, zachowanie zgodne wstecz), zapis do
+  `AiUsageEvent`. Logika generowania `@[ai-text]` zeszła w dół do `Variables\Services\
+  AiTextGenerationService` (dzielona przez Workflows i Generator — każdy tylko cienki dekorator
+  z własnym budżetem per-uruchomienie). `ImageAiService` (edycja obrazu na Dysku) przepięty przez
+  ten sam seam. Patrz **ADR-0033**.
+- **2b — silnik sesji:** model `GenerationSession` (migawka receptury `recipe_snapshot`,
+  `slot_values`, `results`, maszyna stanów draft→generating→ready→failed, SoftDeletes,
+  HasCreator), asynchroniczny bieg z atomowym „claim" (`GenerationSessionRunManager` +
+  `RunGenerationSessionJob` + `GenerationSessionExecutor`), żywy `@[ai-text]` przez
+  `GeneratorAiTextService` (budżetowany, metrykowany), CRUD + czat FE.
+- **2c — łańcuch obrazu server-side:** `ImagePixelProcessor` (Imagick, wierny `imageOps.ts`,
+  łącznie z clampem HDRI), `ImageBaseResolver` (`disk_file`/`from_slot` — jedyna świadoma
+  krawędź `Generator → Disk`; `ai_generate` wciąż niewspierany), `ImageChainExecutor`
+  (piksele + metrykowany `ai_edit`), `GeneratedImageStore` (wersjonowany), endpoint serwowania +
+  `POST …/save-to-disk` (krawędź Generator→Disk w drugą stronę — zapis).
+- **2d — pętla dopracowania:** per-część `regenerate`, instruowany `refine` (rewizja bieżącego
+  wyniku), synchroniczny wersjonowany `undo`, `part_history`/`version`/`last_op_status`/
+  `last_op_error`; reaper cyklu życia (`generator:reap-sessions`: stale→failed, tydzień→kosz,
+  miesiąc→trwałe usunięcie + GC blobów, archiwizacja = zamrożenie) + `archive`/`unarchive`.
+
+Patrz **ADR-0034** (silnik sesji: async bieg, refine-jako-rewizja + undo, łańcuch obrazu, cykl
+życia) i **ADR-0033** (licznik kosztów AI). Pełny kontrakt API:
+`docs/backend/generator-sessions-api.md`. In-app dokumentacja:
+`resources/js/next/docs/pages/GeneratorPage.vue` (sekcje §11–§16).
+
+**Świadomie POZA zakresem podetapu 2** (patrz `docs/backend/generator-sessions-api.md` →
+„Planned / deferred"): sesje autorowane przez bota (podetap 3 — od tej pory ✅ UKOŃCZONY, patrz
+Status niżej), bogatszy UX limitów kosztów AI —
+panel/wskaźnik zużycia ponad już istniejący `AiUsageService::cap()/remaining()/warnRatio()`
+(podetap 4 — od tej pory ✅ UKOŃCZONY, patrz Status niżej), krok workflow `generate_content`
+(podetap 5 — od tej pory ✅ UKOŃCZONY, KOMPLETUJE cały rozdział R2, patrz Status niżej), redo (undo jest jednokierunkowe), osobny limit wydatku PER SESJA (dziś tylko
+miesięczny limit workspace'u jest twardym budżetem $; limity per-uruchomienie w sesji ograniczają
+tylko fan-out, nie koszt — nadal poza zakresem, patrz Status podetap 4). **Klient text→image dla
+`ai_generate` (podetap 6)** ✅ **ZBUDOWANY** — patrz niżej.
+
+### Status R2 podetap 2 rozszerzenie — rework `video_script`: kontekst międzyczęściowy + `shot_list`/`storyboard` (Faza A+B) — UKOŃCZONY (branch, niezacommitowany)
+
+Właściciel ODRZUCIŁ pierwotny wynik `video_script` (`[script, scene_plan]`) jako bezużyteczny dla
+realnego krótkiego wideo TikTok — proza scenariusza + luźne narracje scen, bez spójnej struktury
+hook/shoty/timing i bez możliwości odwołania się jednej części do WYGENEROWANEGO wyniku innej.
+Zbudowane na `feat/r2-generator-templatki`, na wierzchu podetapu 2, w dwóch fazach:
+
+- **Faza A — kontekst międzyczęściowy (`parts.<klucz>`):** OGÓLNY prymityw silnika (nie
+  specyficzny dla `video_script`) — część treści może odwołać się do WYGENEROWANEGO wyniku
+  WCZEŚNIEJSZEJ części przez nowy korzeń zmiennych `parts.<klucz>` (`VariableResolver::ROOTS`,
+  TYLKO TEKST), rozwiązywany dokładnie jak `globals.<klucz>`. Wyłącznie WCZEŚNIEJSZE i acykliczne
+  z konstrukcji — egzekwowane niezależnie na trzech warstwach: katalog edytora oferuje tylko
+  wcześniejsze klucze, walidator zapisu (`TemplateSlotValidator`) odrzuca odwołanie w przód/do
+  siebie/nieznane jako 422, a egzekutor sesji niezależnie ponownie wyprowadza ten sam zakres przy
+  renderze. Jeden WSPÓLNY skaner (`VariableResolver::collectReferenceIds()`) jest jedynym
+  autorytetem co liczy się jako odwołanie `parts.*` — znajduje je WSZĘDZIE gdzie resolver by je
+  rozwiązał (dyrektywa najwyższego poziomu, prompt `@[ai-text]`, warunek/ciało if-bloku, płaski
+  token `{{parts.<klucz>}}`) — dwie rundy przeglądu to zahardenowały. Refine/regenerate części
+  NADRZĘDNEJ oznacza zależne części NIŻSZE jako `stale: true` (bierna podpowiedź FE, BEZ
+  auto-kaskady ponownego uruchomienia — kontrola kosztów); pełny `generate` czyści flagę.
+  Podgląd szablonu (`POST /generator/preview`) CELOWO NIE wypełnia `parts` — odwołanie
+  `parts.<klucz>` w podglądzie zawsze rozwiązuje się pusto (asymetria podgląd/uruchomienie).
+- **Faza B — strukturalny `shot_list` + iterowany przez egzekutor `storyboard`:** `video_script`
+  przekomponowany na `[shot_list, storyboard]` (stare `script`/`scene_plan` ZACHOWANE w zamkniętym
+  słowniku `PartKind` i nadal renderują/refine'ują istniejącą migawkę sesji — snapshot-authoritative
+  — ale nieautorowalne dla nowego szablonu). `shot_list` = autorowany BRIEF kreatywny → JEDNO
+  metrykowane wywołanie AI zwracające ustrukturyzowany JSON (hook / uporządkowane shoty z timingiem
+  / cta) — celowo PROMPT-AND-PARSE zamiast natywnego structured output `laravel/ai` v0.4.3 (jazda na
+  istniejącym, budżetowanym seamie `ai_text`, zero nowego okablowania metrykowania; defensywny parse
+  potrzebny tak czy inaczej). `storyboard` = opcjonalny styl + łańcuch filtrów; egzekutor ITERUJE
+  shoty rodzeństwa `shot_list` i generuje JEDEN obraz AI na shot (`storyboard.<i>`, adresowanie
+  reużywające ISTNIEJĄCY kontrakt per-część regenerate/refine/undo/serve/save-to-disk — zero nowych
+  endpointów); wizual shota rozwiązywany TOŻSAMOŚCIOWO (nigdy jako dyrektywa — ochrona przed
+  wstrzyknięciem AI→AI). `storyboard_max_shots` (domyślnie 5) to REALNA granica fan-out (przycina
+  też sparsowaną listę shotów); `image_generate_max_calls_per_session` podniesiony z 2 na 5 żeby
+  pełny storyboard się zmieścił w budżecie jednego uruchomienia; timeout joba (300s) CELOWO BEZ
+  ZMIAN — rozumowanie z istniejącej niezmienniczości timeoutu rozszerzone, nie otwarte na nowo.
+
+Patrz **ADR-0035** (pełny zapis decyzji: kontekst międzyczęściowy, wybór prompt-and-parse,
+storyboard jako intra-kompozycja, back-compat snapshot-authoritative, wyrównanie budżetu). Pełny
+kontrakt: `docs/backend/generator-sessions-api.md` (sekcje „Cross-part context" + „shot_list &
+storyboard") i `docs/backend/generator-api.md` (kształty autorowania + walidacja zapisu). In-app
+dokumentacja: `resources/js/next/docs/pages/GeneratorPage.vue` (nowe sekcje §18–§19).
+
+### Status R2 podetap 3 „Boty w generatorze" — UKOŃCZONY (branch, niezacommitowany)
+
+Zbudowane na `feat/r2-generator-templatki`, na wierzchu podetapu 2 (+rozszerzenia). Człowiek może
+DELEGOWAĆ edytowalną sesję botowi: bot (1) AUTONOMICZNIE wypełnia jej sloty i (2) staje się
+AUTOREM treści (generacja w jego głosie), podczas gdy człowiek zostaje WŁAŚCICIELEM (pełny
+refine/undo/delete) — odwracalna, migawkowana nakładka, NIE przepisanie `creator`.
+
+- **Nakładka autora, nie `creator`:** nowe kolumny `bot_author_id` (provenance, bez FK) +
+  `bot_delegation` (json: `{author, voice, snapshot_at, slot_values_before}`) na
+  `generation_sessions` — wszystko-albo-nic, migawkowe (edycja/usunięcie bota PO delegacji nigdy
+  nie zmienia głosu już delegowanej sesji).
+- **Opaque głos przez `AiVoiceContext`:** `Bot\Services\BotVoiceComposer` składa personę/styl/
+  słownik/frazy/zakazy bota w JEDEN nieprzezroczysty dyrektyw, migawkowany przy delegacji;
+  nowy ambient seam `Variables\Support\AiVoiceContext` (bliźniak `MeterContext`) niesie go przez
+  cały zakres renderu i ZASTĘPUJE (nie dokłada) linię `AiPersona` w `AiTextAgent` — dociera też
+  do `ShotListAgent` jako dodatkowa klauzula tonu (kontrakt JSON bez zmian); obraz storyboardu
+  BEZ zmian (tylko autorowany `style`).
+- **Autonomiczne wypełnianie slotów:** `Bot\Services\BotSlotFillService` + `BotSlotFillAgent` —
+  JEDNO metrykowane wywołanie `ai_text` (bramka-przed-wydatkiem, tagowane sesją), defensywny
+  parse `{slotName: value}`, każda wartość PONOWNIE walidowana przez `ConstantTypeValidator`
+  przed zapisem. Sloty PLIKOWE i głębokie kompozyty NIGDY nie są oferowane botowi (bot nie ma
+  dostępu do Dysku i nie może sfałszować referencji pliku) — wymagany slot plikowy trafia do
+  `unfilled_required` i sesja zostaje draftem.
+- **Odwracalny undo:** `DELETE …/delegate` czyści nakładkę I przywraca `slot_values` sprzed
+  delegacji z migawki `slot_values_before` (zero utraty danych); zablokowane tylko przy
+  `generating` (409) — delegowana sesja `failed` nadal odwracalna.
+- **Jedna nowa krawędź międzymodułowa, jednokierunkowa:** `Bot → Generator + Variables`
+  (`SessionDelegationController` w module Bot); `Generator`/`Variables` nie importują NIC z
+  `Bot` — przypięte testami granicznymi w obie strony.
+- **Domyślnie `auto_generate: false`** (gate-przed-wydatkiem) — delegacja wypełnia sloty i
+  zatrzymuje się na `ready` do przeglądu raportu wypełnienia; auto-uruchomienie generacji to
+  osobny, jawny opt-in.
+
+Patrz **ADR-0036** (pełny zapis decyzji: nakładka-nie-creator, seam opaque-voice, zakres
+autonomicznego wypełniania, krawędź Bot→Generator, odwracalny undo). Pełny kontrakt:
+`docs/backend/generator-sessions-api.md` (sekcja „Bot-author delegation overlay") +
+`docs/backend/bots-api.md` (endpointy delegate/undo). In-app dokumentacja:
+`resources/js/next/docs/pages/GeneratorPage.vue` (§20) i `resources/js/next/docs/pages/BotsPage.vue` (§11).
+
+**Świadomie POZA zakresem podetapu 3:** bot-fill slotów plikowych/głębokich kompozytów, autonomia
+bota poza jednorazowym wypełnieniem (regenerate/refine z inicjatywy bota), delegacja podpięta pod
+Akceptacje/Publishing.
+
+### Status R2 podetap 4 „Limity kosztów AI" — UKOŃCZONY (branch, niezacommitowany)
+
+Zbudowane na `feat/r2-generator-templatki`, na wierzchu podetapu 2 (+rozszerzenia) i podetapu 3.
+Domyka lukę zostawioną świadomie w podetapie 2: `AiUsageService` miał już `cap()`/`remaining()`/
+`warnRatio()`, ale gate liczył się w TOKENACH i nie było żadnego UI. Ten podetap przełącza bramkę
+na DOLARY per-workspace, dodaje przypisanie wydatku do AKTORA i dokłada front-end limitu.
+
+- **Zmiana bazy bramki: tokeny → dolary.** `estimated_cost` (dotąd zawsze `0.0`) staje się
+  OBCIĄŻAJĄCE — `LedgerMeteredAiCall` sumuje miesięczny `estimated_cost` per workspace i odmawia przy
+  `>= AiUsageService::cap()`. Nowa mapa cen per-kanał w konfiguracji (`ai.meter.pricing`):
+  `ai_text.per_1k_tokens`, `ai_image_edit.per_call`, `ai_image_generate.per_call` — każda
+  nadpisywalna przez env. Stary `monthly_token_cap`/`unit_cost` ZOSTAJĄ, ale już nie bramkują —
+  telemetria/drugorzędny odczyt tokenów. Każdy $ na ekranie to ESTYMACJA, nigdy prawdziwy rachunek.
+- **Limit per-workspace w dolarach (Opcja B).** `ai_monthly_cost_cap` DECIMAL(10,2) na CENTRALNEJ
+  tabeli `workspaces` (czyta się poprawnie w obu trybach bazy); `null` = dziedziczy domyślną z env
+  (`AI_MONTHLY_COST_CAP`, domyślnie `0.00` = WYŁĄCZONE), wartość dodatnia = limit tego workspace'u,
+  `0.00` = jawnie bez limitu. Ustawia właściciel, czyta każdy członek.
+- **Przypisanie do aktora.** Nowe polimorficzne `actor_type`/`actor_id` na `ai_usage_events`,
+  tagowane przez `MeterContext` + nowy `App\Support\Meter\MeterActorResolver` (mirror precedencji
+  `HasCreator`: jawny tag → aktywny bieg workflow → zalogowany user → brak). Żyje w `App\Support`
+  (NIE w module `Variables`) — SAME celowe obejście granicy co `HasCreator`, żeby `Variables` mogło
+  odwołać się do kontekstu biegu workflow bez naruszenia jednokierunkowej granicy modułu. Nazwy
+  rozwiązywane przy ODCZYCIE, nigdy nie zapisywane.
+- **Endpointy (moduł Workspaces):** `GET /workspaces/{id}/ai-usage` (dowolny członek) — pełne
+  podsumowanie ($, per-kanał, per-aktor, `blocked`/`warn_reached`); `PATCH /workspaces/{id}/ai-usage/cap`
+  (tylko właściciel) — ustawia/czyści limit.
+- **Bramka 429 PRZED uruchomieniem.** Cztery punkty startu sesji (`generate`, per-część
+  `regenerate`/`refine`, delegacja z `auto_generate:true`) teraz ODMAWIAJĄ z góry (HTTP 429,
+  `code: 'ai_budget_exceeded'`), ZANIM sesja zostanie zaklejmowana, gdy workspace jest JUŻ nad
+  limitem — odrębne od istniejącego fail-soft W TRAKCIE biegu (blok AI cicho rozwiązuje się do `''`,
+  bieg i tak kończy `ready`), które zostaje bez zmian dla biegu przekraczającego limit w locie.
+- **Front-end:** strona `settings/ai-usage` (wpis w menu użytkownika) z miernikiem (zielony/bursztyn/
+  czerwony + caveat „szacowane"), rozbiciem per-kanał + per-aktor, edytorem limitu tylko dla
+  właściciela (`can_manage` z serwera); w czacie sesji — plakietka budżetu + baner zablokowania,
+  akcje Generuj/kompozytor/regenerate/refine wyłączają się z góry gdy `summary.blocked`.
+
+Patrz **ADR-0037** (pełny zapis decyzji: przełączenie bramki na dolary, limit per-workspace opcja B,
+przypisanie do aktora + obejście granicy modułu, bramka 429 vs fail-soft w locie) — częściowo
+unieważnia **ADR-0033** (bramka nie liczy się już w tokenach; ADR-0033 oznaczony jako częściowo
+superseded). Pełny kontrakt: `docs/backend/workspace-ai-usage-api.md`; zaktualizowana integracja w
+`docs/backend/generator-sessions-api.md` (sekcje „Cost meter integration" + nowa „Pre-run 429 budget
+gate"). In-app dokumentacja: `resources/js/next/docs/pages/GeneratorPage.vue` (§15, przepisana).
+
+**Świadomie POZA zakresem podetapu 4:** historia/trend zużycia (tylko bieżący miesiąc), estymacja
+kosztu PRZED uruchomieniem konkretnej sesji (bramka 429 tylko odmawia gdy już nad limitem, nie
+prognozuje), osobny limit wydatku per sesja (nadal tylko limit workspace'u jest twardym budżetem $),
+rozszerzenie bramki 429 na Workflows/Disk (te dwa mają nadal tylko fail-soft w locie).
+
+### Status R2 — warstwa kierunku kreatywnego + kontrakty narracyjne (rework jakości nad podetapem 2, UKOŃCZONY, branch, niezacommitowany)
+
+Nie nowy podetap R2 — jakościowy rework nad już zbudowanym silnikiem sesji (podetap 2 + rozszerzenie
+Faza A/B), zdiagnozowany empirycznie: brief „film 1–2 minuty" niezmiennie produkował ~15-sekundowy
+skrypt (sztywna reguła agenta „3 to 5 SHOTS" nadpisywała deklarowany czas trwania), a każda generacja
+w biegu była NIEZALEŻNA — N wywołań AI, które nigdy się nie widziały (obraz posta i jego tekst mogły
+opisywać co innego; pięć klatek storyboardu mogło wyglądać jak pięć różnych produkcji).
+
+- **B1 — kontrakt narracyjny (zero kosztu AI).** `ShotListAgent` dostaje ADAPTACYJNĄ liczbę ujęć
+  („między 3 a efektywnym limitem" zamiast sztywnego „3 do 5") z jawną PRECEDENCJĄ: deklarowany czas
+  trwania i limit ujęć są WIĄŻĄCE, przedział 5–30s na ujęcie to tylko wskazówka (agent wydłuża ujęcia
+  ponad 30s zamiast skracać całość). Blok FABUŁY (wątek przewodni + eskalacja + payoff osadzony
+  wcześniej + ciągła narracja + spójność opisu bohatera) DEGRADUJE się w trzech wariantach zależnie od
+  efektywnego limitu (≥3 / ==2 / ==1) zamiast zostawiać niespełnialną regułę przy niskim limicie.
+- **B2 — warstwa kierunku kreatywnego.** Pełny bieg wykonuje JEDNO dodatkowe metrykowane wywołanie
+  `ai_text` (`CreativeDirectionService` → `CreativeDirectionAgent`), które zwraca mały ustrukturyzowany
+  obiekt (message/goal/audience/tone/through_line/arc_beats/subject/setting/visual_style/
+  duration_target_seconds/continuity_notes), zapisywany do nowej nullable kolumny `creative_direction`
+  na `generation_sessions` (migracje addytywne, central+tenant). Wywodzony z AUTOROWANEJ receptury
+  (no-op podgląd szablonu), NIE z rozwiązanego briefu — unika podwójnego billingu i cudzej parafrazy
+  autorskich ograniczeń. Wstrzykiwany WYŁĄCZNIE jako oznaczony blok DANYCH w wiadomości użytkownika
+  (nigdy jako instrukcja systemowa) — trzy projekcje per-konsument (`forText`/`forShotList`/`forImage`).
+  Derywowany RAZ na pełny bieg (ambient `CreativeDirectionContext`, bliźniak `AiVoiceContext`); izolowane
+  operacje częściowe (regenerate/refine) TYLKO odczytują zapisany kierunek. Głos bota (podetap 3) wygrywa
+  na tonie. Adaptacyjny limit ujęć (`storyboard_max_shots` 5→8, autorska `content.storyboard.max_shots`)
+  w LOCK-STEP z budżetem `image_generate_max_calls_per_session` (5→8).
+- **Uczciwe ograniczenie:** kotwica promptowa (`forImage()`) daje spójny świat/styl/paletę/kamerę, ale
+  NIE tę samą twarz bohatera w każdej klatce — nazwana ścieżka v2 to łańcuchowanie image-to-image
+  (tańsze per-wywołanie, ale sekwencyjne i nadmiernie zachowawcze kompozycyjnie).
+
+Patrz **ADR-0038** (pełny zapis decyzji + alternatywy rozważone: sam kontrakt bez kierunku, kotwica
+niesiona przez shot_list, łańcuchowanie image-to-image). Pełny kontrakt:
+`docs/backend/generator-sessions-api.md` (sekcje „Narrative contract upgrades" + „Creative direction
+layer") i `docs/backend/generator-api.md` (`content.storyboard.max_shots`). In-app dokumentacja:
+`resources/js/next/docs/pages/GeneratorPage.vue` (§21).
+
+### Status R2 podetap 5 „Workflow: `generate_content`" — UKOŃCZONY, KOMPLETUJE CAŁY ROZDZIAŁ R2 (branch, niezacommitowany)
+
+Zbudowane na `feat/r2-generator-templatki`, na wierzchu podetapu 2 (+rozszerzenia Faza A/B) i warstwy
+kierunku kreatywnego. **To jest ostatni podetap R2** — zamyka rozdział „Generator treści + Templatki"
+(Etap 7) w całości: workflow potrafi teraz produkować treść z szablonu bez człowieka w pętli.
+
+- **Silnik suspend/resume (ogólny, w module `Workflows`, nie specyficzny dla generatora).** Krok
+  sygnalizuje zawieszenie przez RZUCENIE `StepSuspended(kind, correlationKey, payload)` (sentinel
+  return odrzucony — zwrotka kroku jest scalana DOSŁOWNIE do `context.steps.<klucz>`, magiczny klucz
+  wyciekłby do widocznego dla użytkownika katalogu zmiennych). Trzy nowe nullable kolumny na
+  `workflow_runs`: `waiting_on` (json — kind/step_key/step_type/position/payload/**config JUŻ
+  ROZWIĄZANY**/definition_hash/ai_text_calls), `waiting_key` (indeksowany klucz korelacji),
+  `waiting_since` (re-stemplowany przy KAŻDYM zawieszeniu). `config` w `waiting_on` jest ODTWARZANY
+  dosłownie przy wznowieniu, NIGDY nie rozwiązywany ponownie — dyrektywa kosztowa (`@[ai-text]`) płaci
+  raz. Wznowienie = ŚWIEŻY job (`WorkflowRunResumeJob(runId, workspaceId, waitingKey)` — trzy skalary,
+  nigdy zserializowana kontynuacja, ten sam idiom co `BotTaskRunManager`), claim ATOMOWY i
+  SKORELOWANY na obserwowanym `waiting_key` (podwójne/spóźnione wznowienie = czyste no-op). Fingerprint
+  CAŁEJ definicji (SHA1) łapie edycję workflow w dowolnym miejscu podczas oczekiwania, nie tylko na
+  zawieszonym kroku. DWA wyzwalacze: listener osiedlenia (optymalizacja latencji, reaguje na zdarzenie
+  generatora) + sweep oczekujących biegów (`workflows:reap-stale-runs`, teraz zamiata OBA — stare
+  `running` i stare `waiting` — GWARANCJA POPRAWNOŚCI, bo własny reaper generatora osiedla sesję z
+  wyczyszczonym kontekstem tenant i CELOWO nie broadcastuje, więc samo zdarzenie by nigdy nie
+  wystarczyło). Niezmiennik kolejności timeoutów: job generacji 300s < lock 600s <
+  `workflows.run_timeout` 900s < `generator.session_stale_after` 1800s < `workflows.wait_timeout` 2700s
+  (ostatnia deska ratunku). `WorkflowRunJob::$timeout` jawnie ustawiony na 720s (wcześniej cicho
+  dziedziczył 60s workera).
+- **Krok `generate_content`.** Config: `template_id` (wymagany, uuid szablonu scoped do workspace'u),
+  `slots` (mapa nazwa slotu → literał lub unia wartość-lub-zmienna, typowana wg WŁASNEGO typu slotu),
+  `folder_id` (nullable, folder Dysku dla wyeksportowanych obrazów), `name` (nullable). Wyjścia:
+  `session_id`, `content` (TEKST, zmontowany przez nowy `SessionContentProjector` — serwerowy
+  bliźniak kompozycji `FinalPostBody.vue`), `image_file_ids` (FILE, konsumowalne przez
+  `create_task.attachments`), `status` (praktycznie zawsze `ready` — nieudana sesja twardo wywala
+  krok), `has_failed_parts`. Granularne 422 przy autorowaniu: nieodwzorowany wymagany slot, nieznana
+  nazwa slotu, pipeline niezgadzający się typem, ORAZ **odmowa slotu KOMPOZYTOWEGO** (dowolny `object`,
+  lub `array:true` + `file`) — SKALARNY `file` JEST wspierany (celowa rozbieżność od blankietowej
+  odmowy plikowej bota, ADR-0036/ADR-0039 D14). Limit **2** kroki `generate_content` na workflow. Flow:
+  rozwiąż szablon (tenant-scoped) → rozwiąż każdy slot → utwórz sesję PUSTĄ → wypełnij pod
+  `SlotScopePolicy::Automation` → sprawdź wymagane sloty → `claimAndDispatch` na PRAWDZIWYM połączeniu
+  kolejki (`RealQueueConnection` — ucieczka z wymuszonego `sync` drivera pętli biegu, który jest
+  NOŚNY, nie przypadkowy: to on utrzymuje `WorkflowRunContext` żywy, żeby `HasCreator` stemplował
+  wiersze autorowane przez krok biegiem) → `StepSuspended`. Przy wznowieniu: `null`/`failed` = TWARDA
+  porażka; `generating`/`draft` = PONOWNE zawieszenie na TYM SAMYM kluczu; `ready` = projekcja tekstu +
+  eksport KAŻDEGO wyprodukowanego obrazu na Dysk — W FAZIE WZNOWIENIA (nie w workerze generacji), żeby
+  `HasCreator` przypisał plik do biegu, nie do `null`.
+- **Atrybucja.** Sesja tworzona WEWNĄTRZ biegu, więc `HasCreator` stempluje `creator_type='workflow_run'`
+  — egzekutor czyta to jako jawnego aktora licznika, więc KAŻDE zdarzenie AI niesie
+  `actor_type='workflow_run'`, `actor_id=<id biegu>` BEZ potrzeby przeżycia `WorkflowRunContext` do
+  workera generacji (nie przeżywa — to inny job na prawdziwej kolejce).
+- **Poprawki błędnej dokumentacji złapane przez adwersarialny przegląd** (patrz też sekcja „Ops notes"
+  w `docs/backend/workflows-api.md`): `WorkflowRunState::WAITING` była opisana jako „zarezerwowana,
+  nieprodukowana przez silnik MVP" — TERAZ jest produkowana; `create_form_report` była opisana jako
+  „genuinely async pod prawdziwą kolejką" — W RZECZYWISTOŚCI zawsze biegła INLINE (wymuszony `sync`
+  driver pętli biegu jest NOŚNY, nie efekt uboczny) — to `generate_content` jest jedyną naprawdę
+  asynchroniczną furtką (`RealQueueConnection`).
+
+Świadomie POZA zakresem: anulowanie oczekującego biegu (`WorkflowRunState::CANCELLED` nadal
+zarezerwowany), żywy push na stronie szczegółów biegu (panel oczekiwania to uczciwy snapshot z
+momentu odczytu + jawny Refresh, bez websocketu — inaczej niż czat generatora), granularne wyjścia
+per-część (dziś jeden zmontowany `content` + jedna lista `image_file_ids`), bot delegujący generację
+uruchomioną przez workflow (`SlotScopePolicy::Bot` i `SlotScopePolicy::Automation` to siostrzane
+granice zaufania, nieskomponowane).
+
+Patrz **ADR-0039** (pełny zapis decyzji: wybór genuine suspend/resume nad synchronicznym inline'em
+i alternatywami, sygnał przez throw, replay configu, idiom świeżego joba, skorelowany claim,
+fingerprint definicji, event-jako-optymalizacja vs sweep-jako-poprawność, eksport w fazie wznowienia,
+odmowa kompozytów + rozbieżność skalarnego pliku od ADR-0036, limit 2 kroków, niezmiennik
+timeoutów) — amenduje **ADR-0036** (doprecyzowuje, że odmowa plikowa D-E dotyczy WYŁĄCZNIE granicy
+bota). Pełny kontrakt: `docs/backend/workflows-api.md` (sekcje „Steps: `generate_content`" +
+„Suspend/resume engine") i `docs/backend/generator-sessions-api.md` (sekcja „Automation seam (R2
+sub-stage 5)"). In-app dokumentacja: `resources/js/next/docs/pages/WorkflowsPage.vue` (§7/§12) i
+`resources/js/next/docs/pages/GeneratorPage.vue` (§11).
+
+**CAŁY ROZDZIAŁ R2 „Generator treści + Templatki" (Etap 7) JEST TERAZ UKOŃCZONY** — podetapy 1–6
+wszystkie ✅, na branchu `feat/r2-generator-templatki`, niezacommitowane. Świadomie odłożone na
+później (nie część R2): anulowanie/redo, granularne wyjścia per-część, kompozycja bot+workflow,
+usage history/trend + estymacja kosztu przed uruchomieniem, rozszerzenie bramki 429 na Workflows/Disk,
+typ treści tworzony przez użytkownika, nowy `PartKind`, native structured output dla `shot_list`,
+łańcuchowanie image-to-image dla spójności twarzy między klatkami — pełne listy w „Planned / deferred"
+odpowiednich dokumentów backendowych. Następny krok w roadmapie: commit stosu (właściciel decyduje
+kiedy), potem R3 Kalendarz.
 
 ---
 

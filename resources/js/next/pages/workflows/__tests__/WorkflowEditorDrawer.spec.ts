@@ -153,6 +153,36 @@ const StepsStub = {
           },
           'fill',
         ),
+        // R2 sub-stage 5: append a `generate_content` step (unconfigured), and a second
+        // button that gives every such step a chosen template — so a test can drive the
+        // drawer's client-side gate from either side.
+        h(
+          'button',
+          {
+            class: 'add-gc',
+            onClick: () => {
+              const existing = props.steps as StepDraft[];
+              emit('update:steps', [
+                ...existing,
+                makeStepDraft('generate_content', existing.map((s) => s.key)),
+              ]);
+            },
+          },
+          'addGc',
+        ),
+        h(
+          'button',
+          {
+            class: 'fill-gc',
+            onClick: () => {
+              const next = (props.steps as StepDraft[]).map((s) =>
+                s.type === 'generate_content' ? { ...s, config: { ...s.config, template_id: 'tpl-1' } } : s,
+              );
+              emit('update:steps', next);
+            },
+          },
+          'fillGc',
+        ),
       ]);
   },
 };
@@ -594,5 +624,67 @@ describe('WorkflowEditorDrawer', () => {
     expect(activeStep(wrapper)).toBe('steps');
     // The Save workflow button is available on the last step.
     expect(footerButton(wrapper, 'Save workflow')).toBeTruthy();
+  });
+
+  // --- generate_content client gates (R2 sub-stage 5) ------------------------
+  // The drawer owns the part it can decide from the DRAFT alone: a recipe must be chosen,
+  // and at most TWO generate_content steps per workflow (the backend budget guard). The
+  // per-SLOT rules need the chosen template's declarations and are evaluated by the step
+  // card, which bubbles its verdict through the same `type-error` gate.
+
+  it('blocks Save when a generate_content step has no template chosen', async () => {
+    const { wrapper } = mountDrawer();
+    await wrapper.get('input').setValue('My workflow');
+    await gotoSteps(wrapper);
+    await wrapper.get('.add-gc').trigger('click');
+    await nextTick();
+
+    await save(wrapper);
+
+    // No round-trip, and the error lands on the exact field the server would name.
+    expect(createWorkflow).not.toHaveBeenCalled();
+    expect(activeStep(wrapper)).toBe('steps');
+    expect(wrapper.findComponent(StepsStub).props('errors')).toHaveProperty(
+      'steps.0.config.template_id',
+    );
+  });
+
+  it('SAVE payload — generate_content emits ONLY template_id when nothing else is set', async () => {
+    const { wrapper } = mountDrawer();
+    await wrapper.get('input').setValue('My workflow');
+    await gotoSteps(wrapper);
+    await wrapper.get('.add-gc').trigger('click');
+    await nextTick();
+    await wrapper.get('.fill-gc').trigger('click');
+    await nextTick();
+
+    await save(wrapper);
+
+    expect(createWorkflow).toHaveBeenCalledTimes(1);
+    const payload = createWorkflow.mock.calls[0][0];
+    expect(payload.steps).toEqual([
+      { type: 'generate_content', key: 'content', config: { template_id: 'tpl-1' } },
+    ]);
+  });
+
+  it('rejects the THIRD generate_content step on its own row (max 2 per workflow)', async () => {
+    const { wrapper } = mountDrawer();
+    await wrapper.get('input').setValue('My workflow');
+    await gotoSteps(wrapper);
+    for (let i = 0; i < 3; i += 1) {
+      await wrapper.get('.add-gc').trigger('click');
+      await nextTick();
+    }
+    await wrapper.get('.fill-gc').trigger('click');
+    await nextTick();
+
+    await save(wrapper);
+
+    expect(createWorkflow).not.toHaveBeenCalled();
+    const errors = wrapper.findComponent(StepsStub).props('errors') as Record<string, string>;
+    // Only the OFFENDING (third) step is flagged — the first two are fine.
+    expect(errors['steps.2.type']).toBeTruthy();
+    expect(errors['steps.0.type']).toBeUndefined();
+    expect(errors['steps.1.type']).toBeUndefined();
   });
 });

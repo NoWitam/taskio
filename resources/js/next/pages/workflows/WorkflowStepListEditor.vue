@@ -30,10 +30,12 @@ import WorkflowStepCard from './WorkflowStepCard.vue';
 import { useI18n } from '../../app/i18n';
 import { STEP_TYPES, stepIcon, stepLabel } from './workflowMeta';
 import {
+  countStepsOfType,
   duplicateKeyUids,
   makeStepDraft,
   moveStep,
   removeStep,
+  MAX_GENERATE_CONTENT_STEPS,
   MAX_STEPS,
   type StepDraft,
 } from './workflowEditorModel';
@@ -95,6 +97,28 @@ const dupes = computed(() => duplicateKeyUids(props.steps));
 /** At the client ceiling — the add cards disable and explain why (§4.6). */
 const atMax = computed(() => props.steps.length >= MAX_STEPS);
 
+/**
+ * The PER-TYPE ceiling: `generate_content` is capped at two per workflow (mirrors the
+ * backend budget guard), so its add card disables on its own once the cap is reached while
+ * the other types stay available.
+ */
+function atTypeMax(type: WorkflowStepType): boolean {
+  return (
+    type === 'generate_content' &&
+    countStepsOfType(props.steps, 'generate_content') >= MAX_GENERATE_CONTENT_STEPS
+  );
+}
+function addDisabled(type: WorkflowStepType): boolean {
+  return atMax.value || atTypeMax(type);
+}
+/** Why an add card is disabled — the global ceiling, or this type's own cap. */
+function addDisabledReason(type: WorkflowStepType): string {
+  if (atTypeMax(type)) {
+    return t('workflows.step.generate_content.maxSteps', '', { max: MAX_GENERATE_CONTENT_STEPS });
+  }
+  return t('workflows.step.maxSteps');
+}
+
 function existingKeys(): string[] {
   return props.steps.map((s) => s.key);
 }
@@ -142,7 +166,7 @@ watch(typeErrorUids, expandErroredCards);
 
 // --- Add / remove / reorder -------------------------------------------------
 function addStep(type: WorkflowStepType): void {
-  if (atMax.value) return;
+  if (addDisabled(type)) return;
   const draft = makeStepDraft(type, existingKeys());
   // Open the new card, collapse the rest — a long stack never stays fully expanded.
   expandedUids.value = new Set([draft.uid]);
@@ -207,7 +231,8 @@ function cardErrors(index: number): Record<string, string> {
             v-for="type in STEP_TYPES"
             :key="type"
             type="button"
-            :disabled="atMax"
+            :disabled="addDisabled(type)"
+            :title="addDisabled(type) ? addDisabledReason(type) : undefined"
             :aria-label="t('workflows.step.addStepOfType', '', { type: stepLabel(type, t) })"
             class="flex items-start gap-next-2_5 rounded-next-lg border border-next-border bg-next-card px-next-3 py-next-2_5 text-left outline-none transition-colors duration-[var(--duration-next-fast)] focus-visible:ring-2 focus-visible:ring-next-ring hover:border-next-primary/50 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-next-border"
             @click="addStep(type)"
@@ -217,6 +242,11 @@ function cardErrors(index: number): Record<string, string> {
               <span class="text-next-sm font-next-medium text-next-fg">{{ stepLabel(type, t) }}</span>
               <span class="mt-next-0_5 text-next-xs text-next-muted-foreground">
                 {{ t(`workflows.step.${type}.description`) }}
+              </span>
+              <!-- A disabled action must stay UNDERSTANDABLE. The `title` tooltip alone is
+                   unreachable for keyboard and touch users, so the reason is rendered. -->
+              <span v-if="addDisabled(type)" class="mt-next-1 text-next-xs text-next-warning">
+                {{ addDisabledReason(type) }}
               </span>
             </span>
           </button>

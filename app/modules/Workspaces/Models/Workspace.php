@@ -28,6 +28,7 @@ class Workspace extends AbstractModel
         'db_database',
         'db_username',
         'db_password',
+        'ai_monthly_cost_cap',
     ];
 
     protected function casts(): array
@@ -36,6 +37,11 @@ class Workspace extends AbstractModel
             'db_mode' => WorkspaceDbMode::class,
             'status' => WorkspaceStatus::class,
             'db_password' => 'encrypted',
+            // The per-workspace monthly AI $ budget override (R2 sub-stage 4). NULL = inherit the env
+            // default; positive = this workspace's cap; 0.00 = explicit unlimited. Read purely (no query)
+            // by AiUsageService::cap() — own-database safe since this central row is loaded regardless of
+            // the active connection.
+            'ai_monthly_cost_cap' => 'decimal:2',
         ];
     }
 

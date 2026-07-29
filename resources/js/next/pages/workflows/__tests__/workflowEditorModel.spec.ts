@@ -1,6 +1,7 @@
 // Unit tests for the editor model helpers (B7c steps + B7d trigger rebuild). These
 // guard the DRIFT-CRITICAL step-config wire emission (§4.6) — the exact JSON
-// `buildStepConfig` sends for each of the two 5.1 step types — the type-agnostic list
+// `buildStepConfig` sends for each step type (the two 5.1 ones plus R2 sub-stage 5's
+// `generate_content` and its free-form slot map) — the type-agnostic list
 // invariants (unique key suggestion, add/remove(min-1)/reorder, duplicate-key
 // detection), and the typed condition sanitation (§4.8). If the backend allow-list or
 // union/condition contract changes, these tests break first. The removed legacy
@@ -340,5 +341,127 @@ describe('sanitizeConditions — drops incomplete rows, trims field paths', () =
 
   it('an all-incomplete list collapses to [] ("always runs")', () => {
     expect(sanitizeConditions([{ field: '', field_type: 'text', operator: 'equals', value: '' }])).toEqual([]);
+  });
+});
+
+// --- generate_content: the exact wire (R2 sub-stage 5) ----------------------
+//
+// The allow-list is {template_id, slots, folder_id, name} — ANY other top-level key is a
+// 422 — and the SLOT MAP is the one free-form map in a step config. Its emit discipline is
+// load-bearing rather than cosmetic: the backend's per-slot rules key on PRESENCE
+// (array_key_exists), so an empty entry MUST be dropped rather than sent as a blank
+// value, otherwise "unmapped" (a legitimate "generate with it empty" for a nullable slot)
+// would become "mapped to nothing".
+
+function gcStep(config: Record<string, unknown>): StepDraft {
+  return { uid: 'g', type: 'generate_content', key: 'content', config };
+}
+
+describe('emptyStepConfig — generate_content', () => {
+  it('seeds template_id/slots/folder_id/name and NOTHING else', () => {
+    expect(emptyStepConfig('generate_content')).toEqual({
+      template_id: null,
+      slots: {},
+      folder_id: null,
+      name: '',
+    });
+  });
+});
+
+describe('suggestStepKey — generate_content', () => {
+  it('suggests "content", then "content_2" when taken', () => {
+    expect(suggestStepKey('generate_content', [])).toBe('content');
+    expect(suggestStepKey('generate_content', ['content'])).toBe('content_2');
+  });
+});
+
+describe('buildStepConfig — generate_content wire', () => {
+  it('emits ONLY the allow-listed keys, omitting empty optionals', () => {
+    const out = buildStepConfig(gcStep({ template_id: 'tpl-1', slots: {}, folder_id: null, name: '   ' }));
+    expect(out).toEqual({ template_id: 'tpl-1' });
+    expect(Object.keys(out)).not.toContain('folder_id');
+    expect(Object.keys(out)).not.toContain('name');
+    expect(Object.keys(out)).not.toContain('slots');
+  });
+
+  it('emits folder_id + a trimmed name when set', () => {
+    expect(
+      buildStepConfig(gcStep({ template_id: 'tpl-1', slots: {}, folder_id: 'fld-9', name: '  Weekly post  ' })),
+    ).toEqual({ template_id: 'tpl-1', folder_id: 'fld-9', name: 'Weekly post' });
+  });
+
+  it('passes a slot value-or-variable union through UNTOUCHED', () => {
+    const ref: WorkflowFieldValue = {
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'fields.topic', type: 'text' },
+      pipeline: [{ op: 'text_uppercase', args: {} }],
+    };
+    const out = buildStepConfig(gcStep({ template_id: 'tpl-1', slots: { topic: ref } }));
+    expect(out.slots).toEqual({ topic: ref });
+  });
+
+  it('DROPS empty slot entries so "unmapped" stays unmapped on the wire', () => {
+    const out = buildStepConfig(
+      gcStep({
+        template_id: 'tpl-1',
+        slots: {
+          filled: { kind: 'literal', value: 'hello' },
+          cleared: { kind: 'literal', value: null },
+          blank: { kind: 'literal', value: '' },
+          nulled: null,
+        },
+      }),
+    );
+    expect(out.slots).toEqual({ filled: { kind: 'literal', value: 'hello' } });
+  });
+
+  it('keeps FALSY-but-real literals (false / 0 / [])', () => {
+    const out = buildStepConfig(
+      gcStep({
+        template_id: 'tpl-1',
+        slots: {
+          flag: { kind: 'literal', value: false },
+          count: { kind: 'literal', value: 0 },
+          list: { kind: 'literal', value: [] },
+        },
+      }),
+    );
+    expect(out.slots).toEqual({
+      flag: { kind: 'literal', value: false },
+      count: { kind: 'literal', value: 0 },
+      list: { kind: 'literal', value: [] },
+    });
+  });
+
+  it('keeps BARE falsy-but-real slot literals too (false / 0 / []), wrapped as literals', () => {
+    // The rows write a bare value for a plain literal side, so the union wrapper is not the
+    // only path a `false` / `0` / `[]` takes to the wire. Pinned because a future "tidy up
+    // empty values" pass would silently drop exactly these.
+    const out = buildStepConfig(
+      gcStep({ template_id: 'tpl-1', slots: { flag: false, count: 0, list: [] } }),
+    );
+    expect(out.slots).toEqual({
+      flag: { kind: 'literal', value: false },
+      count: { kind: 'literal', value: 0 },
+      list: { kind: 'literal', value: [] },
+    });
+  });
+
+  it('strips an EMPTY pipeline from a slot ref (an identity ref stays lean)', () => {
+    const out = buildStepConfig(
+      gcStep({
+        template_id: 'tpl-1',
+        slots: {
+          topic: { kind: 'variable', ref: { source: 'trigger', path: 'fields.t', type: 'text' }, pipeline: [] },
+        },
+      }),
+    );
+    expect(out.slots).toEqual({
+      topic: { kind: 'variable', ref: { source: 'trigger', path: 'fields.t', type: 'text' } },
+    });
+  });
+
+  it('emits an EMPTY template_id (never omits it) so the required 422 lands on the field', () => {
+    expect(buildStepConfig(gcStep({ template_id: null, slots: {} }))).toEqual({ template_id: '' });
   });
 });

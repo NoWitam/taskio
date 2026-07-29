@@ -74,6 +74,7 @@ import {
   emptyFormTriggerDraft,
   makeStepDraft,
   nextUid,
+  MAX_GENERATE_CONTENT_STEPS,
   MAX_STEPS,
   STEP_KEY_RE,
   type FormTriggerDraft,
@@ -466,6 +467,32 @@ function validateSteps(): boolean {
       if (blank('form_id')) errors[`steps.${i}.config.form_id`] = t('workflows.step.validation.configRequired');
       if (blank('name')) errors[`steps.${i}.config.name`] = t('workflows.step.validation.configRequired');
       if (blank('form_id') || blank('name')) ok = false;
+    }
+    // generate_content: the drawer owns the part it can decide from the DRAFT alone — a
+    // recipe must be chosen. The per-SLOT rules (every required non-composite slot mapped,
+    // no composite mapped, no template drift) need the chosen template's declarations,
+    // which only the card has fetched; the card evaluates them against that template and
+    // bubbles the verdict through the same `type-error` gate consulted below. The server
+    // stays authoritative for both halves and its granular
+    // `steps.<i>.config.slots.<name>` / `steps.<i>.type` errors land on the exact row.
+    if (s.type === 'generate_content' && blank('template_id')) {
+      errors[`steps.${i}.config.template_id`] = t('workflows.step.validation.configRequired');
+      ok = false;
+    }
+  });
+
+  // At most TWO generate_content steps (mirrors GENERATE_CONTENT_MAX): each one is a whole
+  // AI generation run that also PARKS the workflow while it settles, so the third is
+  // reported on its own row — exactly where the server reports it.
+  let generateContentSeen = 0;
+  form.steps.forEach((s, i) => {
+    if (s.type !== 'generate_content') return;
+    generateContentSeen += 1;
+    if (generateContentSeen > MAX_GENERATE_CONTENT_STEPS) {
+      errors[`steps.${i}.type`] = t('workflows.step.generate_content.maxSteps', '', {
+        max: MAX_GENERATE_CONTENT_STEPS,
+      });
+      ok = false;
     }
   });
 

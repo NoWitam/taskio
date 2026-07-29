@@ -1,5 +1,6 @@
 <?php
 
+use App\Modules\Workspaces\Http\Controllers\WorkspaceAiUsageController;
 use App\Modules\Workspaces\Http\Controllers\WorkspaceInvitationsController;
 use App\Modules\Workspaces\Http\Controllers\WorkspacesController;
 use Illuminate\Support\Facades\Route;
@@ -8,6 +9,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('workspaces', WorkspacesController::class)->only([
         'index', 'store', 'show', 'update',
     ]);
+
+    // AI cost usage (R2 sub-stage 4): the $-first summary (any member) + the monthly $ cap (owner only).
+    // Dedicated sub-resource routes so the PATCH /workspaces/{id} rename stays thin.
+    Route::get('workspaces/{workspace}/ai-usage', [WorkspaceAiUsageController::class, 'show']);
+    Route::patch('workspaces/{workspace}/ai-usage/cap', [WorkspaceAiUsageController::class, 'updateCap']);
 
     Route::get('workspaces/{workspace}/members', [WorkspacesController::class, 'members']);
     Route::post('workspaces/{workspace}/members', [WorkspacesController::class, 'addMember']);

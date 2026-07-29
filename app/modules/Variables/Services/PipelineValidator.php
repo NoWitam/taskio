@@ -43,7 +43,7 @@ use Illuminate\Contracts\Validation\Validator as ValidatorContract;
  *   - ARGUMENT VARIABLES: any op argument may itself be a value-or-variable union, validated against the
  *     reference index the caller threads in $refCtx. `$refCtx['sources']` carries the run-context roots a
  *     ref may name (trigger/steps/globals — supplied by the Workflows callers), so the type system needs
- *     NO back-dependency on WorkflowVariableResolver.
+ *     NO back-dependency on VariableResolver.
  *
  * The element-scope subfield descent an array<object>/array<file> element pipeline needs is inverted
  * through ElementScopeResolver (implemented by the Workflows catalog) so the dependency stays one-way:
@@ -54,13 +54,17 @@ class PipelineValidator
     /**
      * Fallback reference-source roots a variable arg may name, used ONLY when a caller does not thread
      * its own `$refCtx['sources']`. Production always threads them (StoreWorkflowRequest passes
-     * WorkflowVariableResolver::ROOTS — the single source), so this is exercised only by focused unit
-     * tests that drive a pipeline directly; it MUST mirror WorkflowVariableResolver::ROOTS. Kept as plain
-     * strings (not an import) so the type system carries no back-dependency on Workflows.
+     * VariableResolver::ROOTS — the single source), so this is exercised only by focused unit tests that
+     * drive a pipeline directly; it MUST mirror VariableResolver::ROOTS — the whitelist SUPERSET across
+     * the modules that share the resolver (`trigger`/`steps`/`globals` for workflows, `slots` for a
+     * template's declared slots; an unpopulated root is inert). Kept as plain strings pinned equal to
+     * that constant by the module boundary test (rather than importing it) so this validator stays
+     * independent of the resolver service. The R2 superset adds `parts` (a generation session's earlier
+     * rendered parts — inert for workflows, populated by the Generator executor), so both sides carry it.
      *
      * @var array<int, string>
      */
-    private const DEFAULT_REFERENCE_SOURCES = ['trigger', 'steps', 'globals'];
+    private const DEFAULT_REFERENCE_SOURCES = ['trigger', 'steps', 'globals', 'slots', 'parts'];
 
     public function __construct(
         private ElementScopeResolver $elementScope,
@@ -772,7 +776,7 @@ class PipelineValidator
 
         // FAIL-CLOSED validator/runtime SYMMETRY: inside a scope-rooted object/file element pipeline the
         // ONLY variable references the RUNTIME can resolve are the element.<subfield>/index SCOPE refs — the
-        // whole union is never pre-resolved (WorkflowVariableResolver::resolveDescriptorArg short-circuits on
+        // whole union is never pre-resolved (VariableResolver::resolveDescriptorArg short-circuits on
         // a scope variable, and OperationExecutor::resolveScopePipeline fails CLOSED on any non-scope
         // union), so a globals.*/trigger.*/steps.* arg-variable here would fail the entire element sub-run
         // closed. Reject it at WRITE by validating this union's inner arg-variables against a SCOPE-ONLY

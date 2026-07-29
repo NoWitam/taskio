@@ -16,6 +16,10 @@ class WorkspaceResource extends JsonResource
             'status' => $this->status->value,
             'is_owner' => $request->user() !== null && $this->owner_id === $request->user()->id,
             'can_manage_members' => $request->user()?->can('manageMembers', $this->resource) ?? false,
+            // AI budget (R2 sub-stage 4). ai_cap is the raw per-workspace override (null = inherit the env
+            // default; 0 = explicit unlimited); the effective cap + usage live on the ai-usage summary.
+            'ai_cap' => $this->ai_monthly_cost_cap !== null ? (float) $this->ai_monthly_cost_cap : null,
+            'can_manage_ai_budget' => $request->user()?->can('manageAiBudget', $this->resource) ?? false,
             // Uses the eager-loaded users_count when present (withCount), otherwise
             // falls back to a lightweight count query — never loads the collection.
             // Bypass the User member scope: this counts THIS workspace's members, but

@@ -7,7 +7,7 @@ use App\Modules\Variables\Enums\VariableType;
 /**
  * The per-arg-control policy for accepting a VARIABLE-supplied operation argument (phase-4b) — the
  * SINGLE source both the write-validator (WorkflowConditionTreeValidator::validateArgVariable) and the
- * runtime resolver (WorkflowVariableResolver::resolveArgVariable) read, so a variable argument is gated
+ * runtime resolver (VariableResolver::resolveArgVariable) read, so a variable argument is gated
  * at write time and coerced at run time identically and can never drift. Built by the ONE match in
  * OperationArgType::argVariablePolicy(); EVERY arg control now accepts a variable (phase-4b
  * widened the option/map/rules controls, which were literal-only in phase-4a).

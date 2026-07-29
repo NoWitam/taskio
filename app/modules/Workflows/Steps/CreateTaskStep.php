@@ -9,9 +9,9 @@ use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Tasks\Models\Task;
 use App\Modules\Tasks\Services\TaskService;
 use App\Modules\Variables\Enums\VariableType;
+use App\Modules\Variables\Services\VariableResolver;
 use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Models\WorkflowRun;
-use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
 use RuntimeException;
 use Throwable;
@@ -62,7 +62,7 @@ class CreateTaskStep implements WorkflowStep
 
     public function __construct(
         private TaskService $tasks,
-        private WorkflowVariableResolver $resolver,
+        private VariableResolver $resolver,
         private FileService $files,
     ) {}
 

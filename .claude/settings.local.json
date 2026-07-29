@@ -12,7 +12,15 @@
       "Bash(wsl.exe -d ubuntu bash -lc \\\\\"cd /home/postgres/taskio)",
       "Bash(echo '--- expanded empty body \\)\\\\\\\\n{\\\\\\\\n}:')",
       "Bash(grep -rPzoh '\\\\\\\\\\)\\\\\\\\s*\\\\\\\\n\\\\\\\\s*\\\\\\\\{\\\\\\\\s*\\\\\\\\n\\\\\\\\s*\\\\\\\\}' app --include='*.php')",
-      "Bash(grep -rEoh '\\\\\\\\\\)\\\\\\\\s*\\\\\\\\{\\\\\\\\s*\\\\\\\\}' app --include='*.php')"
+      "Bash(grep -rEoh '\\\\\\\\\\)\\\\\\\\s*\\\\\\\\{\\\\\\\\s*\\\\\\\\}' app --include='*.php')",
+      "Bash(wsl -d *)",
+      "Bash(wsl -d ubuntu -- bash -lc 'cd /home/postgres/taskio && for f in app/modules/Tasks/routes/api.php database/seeders/DatabaseSeeder.php database/seeders/LabelSeeder.php package-lock.json routes/web.php vite.config.js; do git show :2:$f > $f && git add $f && echo \"resolved $f\"; done')",
+      "Bash(wsl -d ubuntu -- bash -lc 'cd /home/postgres/taskio && git show \":2:app/modules/Tasks/routes/api.php\" > app/modules/Tasks/routes/api.php && git add app/modules/Tasks/routes/api.php && echo done1')",
+      "Bash(wsl -d ubuntu -- bash -lc 'cd /home/postgres/taskio && git show \":2:database/seeders/DatabaseSeeder.php\" > database/seeders/DatabaseSeeder.php && git add database/seeders/DatabaseSeeder.php && echo done2')",
+      "Bash(wsl -d ubuntu -- bash -lc 'cd /home/postgres/taskio && git show \":2:database/seeders/LabelSeeder.php\" > database/seeders/LabelSeeder.php && git add database/seeders/LabelSeeder.php && echo done3')",
+      "Bash(wsl -d ubuntu -- bash -lc 'cd /home/postgres/taskio && git show \":2:routes/web.php\" > routes/web.php && git add routes/web.php && echo done5')",
+      "Bash(wsl -d ubuntu -- bash -lc 'cd /home/postgres/taskio && git show \":2:vite.config.js\" > vite.config.js && git add vite.config.js && echo done6')",
+      "Bash(wsl -d ubuntu -- bash -lc 'cd /home/postgres/taskio && git show \":2:package-lock.json\" > package-lock.json && git add package-lock.json && echo done4')"
     ]
   }
 }

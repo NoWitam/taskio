@@ -102,7 +102,9 @@ export type IconName =
   | 'music'
   | 'archive'
   | 'copy'
-  | 'crop';
+  | 'crop'
+  // --- AI cost / budget (R2 sub-stage 4 usage meter) ---
+  | 'wallet';
 
 /** name -> array of inner SVG elements (paths/circles) as raw markup. */
 export const ICONS: Record<IconName, string> = {
@@ -338,6 +340,10 @@ export const ICONS: Record<IconName, string> = {
   crop:
     '<path d="M6 2v14a2 2 0 0 0 2 2h14" />' +
     '<path d="M18 22V8a2 2 0 0 0-2-2H2" />',
+  wallet:
+    '<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v3" />' +
+    '<path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-3" />' +
+    '<path d="M16 12a2 2 0 0 0 0 4h5a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1Z" />',
 };
 
 /** All available icon names — handy for the gallery icon grid. */

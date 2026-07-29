@@ -17,14 +17,18 @@ import type { VariablePipelineStep } from '../editor/extensions/types';
 
 /**
  * A variable's ROOT source: the trigger payload, an earlier step's outputs, the
- * workspace's user-authored `globals.<key>` literal constants, or a SCOPED synthetic
- * variable (`scope`) that exists ONLY inside an element pipeline (array-transform wave 2):
- * `Element` (path `element`) and `Indeks` (path `index`). A `scope` ref is contextual —
- * the element-pipeline editor injects it into that pipeline's browser feed alone; it is
- * NEVER a global variable and the backend resolver recognises it only under the per-element
- * overlay (fail-closed elsewhere).
+ * workspace's user-authored `globals.<key>` literal constants, a template's declared
+ * `slots.<name>` typed inputs (R2 Generator — inert in a workflow, offered only by a
+ * template's catalog), or a SCOPED synthetic variable (`scope`) that exists ONLY inside an
+ * element pipeline (array-transform wave 2): `Element` (path `element`) and `Indeks`
+ * (path `index`). A `scope` ref is contextual — the element-pipeline editor injects it into
+ * that pipeline's browser feed alone; it is NEVER a global variable and the backend resolver
+ * recognises it only under the per-element overlay (fail-closed elsewhere).
+ *
+ * `slots` mirrors the backend whitelist superset `['trigger','steps','globals','slots']`: a
+ * workflow catalog never offers `slots`, a template catalog never offers `trigger`/`steps`.
  */
-export type VariableSource = 'trigger' | 'steps' | 'globals' | 'scope';
+export type VariableSource = 'trigger' | 'steps' | 'globals' | 'slots' | 'scope';
 
 /**
  * The FLAT wire type a variable carries (mirrors `WorkflowVariableType`). The two

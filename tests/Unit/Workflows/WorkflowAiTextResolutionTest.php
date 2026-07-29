@@ -2,11 +2,16 @@
 
 namespace Tests\Unit\Workflows;
 
+use App\Modules\Variables\Agents\AiTextAgent;
+use App\Modules\Variables\Enums\AiPersona;
+use App\Modules\Variables\Services\AiTextGenerationService;
 use App\Modules\Variables\Services\OperationExecutor as WorkflowOperationExecutor;
-use App\Modules\Workflows\Agents\WorkflowAiTextAgent;
-use App\Modules\Workflows\Enums\WorkflowAiPersona;
+use App\Modules\Variables\Services\VariableResolver as WorkflowVariableResolver;
+use App\Modules\Variables\Support\AiVoiceContext;
+use App\Modules\Variables\Support\PassthroughMeteredAiCall;
 use App\Modules\Workflows\Services\WorkflowAiTextService;
-use App\Modules\Workflows\Services\WorkflowVariableResolver;
+use Laravel\Ai\Prompts\AgentPrompt;
+use ReflectionClass;
 use Tests\Support\ScriptedWorkflowAiTextService;
 use Tests\TestCase;
 
@@ -18,9 +23,10 @@ use Tests\TestCase;
  *      extracted (even with a NESTED variable in the prompt), the prompt is FULLY resolved before
  *      the AI sees it, the persona is passed, the AI output is inserted verbatim (never
  *      re-interpreted as a reference), and nested ai-text is depth-capped.
- *   2. The REAL WorkflowAiTextService + a FAKED WorkflowAiTextAgent (Promptable::fake, the same
- *      built-in seam ScheduleAssistAgent uses): proves the fail-closed contract, the per-run call
- *      budget, blank-prompt short-circuit, and truncation.
+ *   2. The REAL WorkflowAiTextService (over the shared AiTextGenerationService with a pass-through
+ *      meter) + a FAKED AiTextAgent (Promptable::fake, the same built-in seam ScheduleAssistAgent
+ *      uses): proves the fail-closed contract, the per-run call budget, blank-prompt short-circuit,
+ *      and truncation are preserved through the down-move + decorator split.
  */
 class WorkflowAiTextResolutionTest extends TestCase
 {
@@ -111,7 +117,7 @@ class WorkflowAiTextResolutionTest extends TestCase
         $ai = new ScriptedWorkflowAiTextService(['ok']);
         $this->resolverWith($ai)->resolve($this->aiText('x', 'formal'), $this->context());
 
-        $this->assertSame(WorkflowAiPersona::FORMAL, $ai->recorded[0]['persona']);
+        $this->assertSame(AiPersona::FORMAL, $ai->recorded[0]['persona']);
     }
 
     public function test_null_and_unknown_persona_default_to_neutral(): void
@@ -122,8 +128,8 @@ class WorkflowAiTextResolutionTest extends TestCase
         $resolver->resolve($this->aiText('x', null), $this->context());
         $resolver->resolve($this->aiText('y', 'does-not-exist'), $this->context());
 
-        $this->assertSame(WorkflowAiPersona::NEUTRAL, $ai->recorded[0]['persona']);
-        $this->assertSame(WorkflowAiPersona::NEUTRAL, $ai->recorded[1]['persona']);
+        $this->assertSame(AiPersona::NEUTRAL, $ai->recorded[0]['persona']);
+        $this->assertSame(AiPersona::NEUTRAL, $ai->recorded[1]['persona']);
     }
 
     public function test_ai_output_is_not_reinterpreted_as_a_reference(): void
@@ -202,16 +208,22 @@ class WorkflowAiTextResolutionTest extends TestCase
 
     // ---- Real service + faked agent -------------------------------------------
 
+    /** The REAL decorator over the shared generator with a pass-through meter (no metering in a unit). */
+    private function service(): WorkflowAiTextService
+    {
+        return new WorkflowAiTextService(new AiTextGenerationService(new PassthroughMeteredAiCall, new AiVoiceContext));
+    }
+
     public function test_service_returns_the_agents_text_and_passes_the_resolved_prompt(): void
     {
         $seen = null;
-        WorkflowAiTextAgent::fake(function (string $prompt) use (&$seen) {
+        AiTextAgent::fake(function (string $prompt) use (&$seen) {
             $seen = $prompt;
 
             return 'Hello world';
         });
 
-        $text = (new WorkflowAiTextService)->generate('write a greeting', WorkflowAiPersona::FRIENDLY);
+        $text = $this->service()->generate('write a greeting', AiPersona::FRIENDLY->value);
 
         $this->assertSame('Hello world', $text);
         $this->assertSame('write a greeting', $seen);
@@ -219,37 +231,37 @@ class WorkflowAiTextResolutionTest extends TestCase
 
     public function test_service_fails_closed_to_empty_on_agent_error(): void
     {
-        WorkflowAiTextAgent::fake(fn () => throw new \RuntimeException('provider down'));
+        AiTextAgent::fake(fn () => throw new \RuntimeException('provider down'));
 
-        $this->assertSame('', (new WorkflowAiTextService)->generate('anything', WorkflowAiPersona::NEUTRAL));
+        $this->assertSame('', $this->service()->generate('anything', AiPersona::NEUTRAL->value));
     }
 
     public function test_service_short_circuits_a_blank_prompt_without_calling_the_agent(): void
     {
-        WorkflowAiTextAgent::fake(fn () => 'SHOULD NOT BE USED');
+        AiTextAgent::fake(fn () => 'SHOULD NOT BE USED');
 
-        $this->assertSame('', (new WorkflowAiTextService)->generate('   ', WorkflowAiPersona::NEUTRAL));
+        $this->assertSame('', $this->service()->generate('   ', AiPersona::NEUTRAL->value));
     }
 
     public function test_service_enforces_the_per_run_call_budget(): void
     {
         config()->set('workflows.ai_text_max_calls_per_run', 2);
-        WorkflowAiTextAgent::fake(['one', 'two']);
+        AiTextAgent::fake(['one', 'two']);
 
-        $service = new WorkflowAiTextService;
+        $service = $this->service();
 
-        $this->assertSame('one', $service->generate('a', WorkflowAiPersona::NEUTRAL));
-        $this->assertSame('two', $service->generate('b', WorkflowAiPersona::NEUTRAL));
+        $this->assertSame('one', $service->generate('a', AiPersona::NEUTRAL->value));
+        $this->assertSame('two', $service->generate('b', AiPersona::NEUTRAL->value));
         // Third call is over budget → '' (the agent is not consulted).
-        $this->assertSame('', $service->generate('c', WorkflowAiPersona::NEUTRAL));
+        $this->assertSame('', $service->generate('c', AiPersona::NEUTRAL->value));
     }
 
     public function test_service_truncates_to_the_configured_maximum(): void
     {
         config()->set('workflows.ai_text_max_chars', 5);
-        WorkflowAiTextAgent::fake(['ABCDEFGHIJ']);
+        AiTextAgent::fake(['ABCDEFGHIJ']);
 
-        $this->assertSame('ABCDE', (new WorkflowAiTextService)->generate('x', WorkflowAiPersona::NEUTRAL));
+        $this->assertSame('ABCDE', $this->service()->generate('x', AiPersona::NEUTRAL->value));
     }
 
     // ---- Agent instructions ----------------------------------------------------
@@ -258,11 +270,49 @@ class WorkflowAiTextResolutionTest extends TestCase
     {
         $this->assertStringContainsString(
             'formal, precise',
-            (string) (new WorkflowAiTextAgent(WorkflowAiPersona::FORMAL))->instructions(),
+            (string) (new AiTextAgent(AiPersona::FORMAL))->instructions(),
         );
         $this->assertStringContainsString(
             'neutral, professional',
-            (string) (new WorkflowAiTextAgent(WorkflowAiPersona::NEUTRAL))->instructions(),
+            (string) (new AiTextAgent(AiPersona::NEUTRAL))->instructions(),
+        );
+    }
+
+    public function test_workflow_purpose_hint_produces_the_expected_instruction_lead(): void
+    {
+        // The 828 Workflow tests are byte-preserved only while WorkflowAiTextService::PURPOSE_HINT keeps
+        // framing the shared agent's instruction with this EXACT lead. Read the (private) constant so a
+        // future edit that drifts it fails HERE, loudly, instead of silently changing every generation.
+        $expectedLead = "a field of an automated workflow\n"
+            . '(for example a task title, a task description, a report name, or report guidelines)';
+
+        $purposeHint = (new ReflectionClass(WorkflowAiTextService::class))->getConstant('PURPOSE_HINT');
+
+        $instructions = (string) (new AiTextAgent(AiPersona::NEUTRAL, $purposeHint))->instructions();
+
+        $this->assertStringContainsString($expectedLead, $instructions);
+    }
+
+    /**
+     * NON-REGRESSION for the creative-direction work (B1.2): the shared agent's length clause became a
+     * ctor parameter so the Generator could ask for post-length depth. The WORKFLOWS path passes nothing,
+     * so the instruction it actually sends must still carry the original single-field clause — asserted on
+     * the agent the REAL service prompted, not on a hand-built one.
+     */
+    public function test_the_workflows_path_still_sends_the_single_field_length_clause(): void
+    {
+        AiTextAgent::fake(fn () => 'OUT');
+
+        $this->assertSame('OUT', $this->service()->generate('write a title', null));
+
+        AiTextAgent::assertPrompted(
+            fn (AgentPrompt $prompt): bool => str_contains(
+                (string) $prompt->agent->instructions(),
+                '- Keep it appropriate in length for a single field; do not pad.',
+            ),
+        );
+        AiTextAgent::assertNotPrompted(
+            fn (AgentPrompt $prompt): bool => str_contains((string) $prompt->agent->instructions(), 'social-media content'),
         );
     }
 }

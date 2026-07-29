@@ -35,3 +35,16 @@ The design system lives in `resources/js/components/ui/`. Reuse it before invent
 - Data-heavy mobile views should not simply shrink desktop tables.
 - Modals must have a clear title, purpose, primary action, safe cancel/close behavior, and
   focus management (`useFocusTrap`).
+
+## "next" frontend design system
+
+- The isolated `/next` frontend has its **own** design system and tokens; the
+  rules above describe the **legacy** system. For `next` work, use the namespaced
+  tokens in [`resources/css/next.css`](../../resources/css/next.css) (`bg-next-card`,
+  `text-next-muted-foreground`, `rounded-next-md`, …) — never the legacy `app.css`
+  tokens, and never raw hex/hsl.
+- Foundations and rationale: [`docs/next/design-foundations.md`](../../docs/next/design-foundations.md).
+  Per-component states/variants contract: [`docs/next/component-state-matrix.md`](../../docs/next/component-state-matrix.md).
+- The same interaction principles (clear goal/primary action; loading/error/empty/
+  success states; color never the only signal; focus-managed modals) apply to
+  `next` components and must be demonstrated in the interactive styleguide gallery.

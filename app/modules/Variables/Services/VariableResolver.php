@@ -1,17 +1,15 @@
 <?php
 
-namespace App\Modules\Workflows\Services;
+namespace App\Modules\Variables\Services;
 
+use App\Modules\Variables\Contracts\AiTextGenerator;
 use App\Modules\Variables\DTOs\OperationArg;
 use App\Modules\Variables\Enums\OperationArgType;
 use App\Modules\Variables\Enums\PipelineLimits;
 use App\Modules\Variables\Enums\VariableType;
-use App\Modules\Variables\Services\OperationExecutor;
-use App\Modules\Variables\Services\OperationResolver;
 use App\Modules\Variables\Support\FunctionScope;
 use App\Modules\Variables\Support\ScopeRef;
 use App\Modules\Variables\Support\ValueOrVariable;
-use App\Modules\Workflows\Enums\WorkflowAiPersona;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
@@ -22,7 +20,7 @@ use Throwable;
  * Resolves workflow variable references in a step's config against the run context, EXECUTES the
  * transformations those references carry (SB1: directive pipelines, if-block branches, and
  * value-or-variable pipelines) through the shared OperationExecutor, and — new in SB2 —
- * EXECUTES `@[ai-text]` directives (generating field text through WorkflowAiTextService). It
+ * EXECUTES `@[ai-text]` directives (generating field text through the AiTextGenerator seam). It
  * understands every serialization of the ONE canonical variable identity plus the legacy flat
  * `{{...}}` tokens.
  *
@@ -31,7 +29,7 @@ use Throwable;
  * contain nested `@[variable]` / if-block references (and even a nested `@[ai-text]`). The prompt
  * is resolved through THIS resolver FIRST (same context/typeMap), so form values land in it before
  * the resolved prompt is sent to the AI; the generated string replaces the directive span. Nested
- * ai-text is capped at depth 3 (beyond → ''). Every path is fail-closed to '' (WorkflowAiTextService
+ * ai-text is capped at depth 3 (beyond → ''). Every path is fail-closed to '' (the AiTextGenerator
  * never throws), so a blank REQUIRED title still hard-fails the run while a blank body is just empty.
  * The ai-text pass runs BEFORE the variable/flat passes and its OUTPUT is masked out of them, so a
  * generated string is inserted verbatim and never re-interpreted as a reference.
@@ -100,24 +98,39 @@ use Throwable;
  * (a directive's looked-up value) are masked before the flat pass, so an (untrusted) form value
  * that literally contains a `{{…}}` token can not be re-interpreted as a second-order reference.
  *
- * WHITELIST: only the roots `trigger`, `steps`, and `globals` (the {@see self::ROOTS} constant — the
- * single source) are readable in EVERY serialization; any other root (env, config, __proto__, …) is
- * not a reference, so no context/env exfiltration is possible.
+ * WHITELIST: only the roots in the {@see self::ROOTS} constant (the single source) are readable in
+ * EVERY serialization; any other root (env, config, __proto__, …) is not a reference, so no
+ * context/env exfiltration is possible.
  */
-class WorkflowVariableResolver
+class VariableResolver
 {
     /**
      * Roots a reference may read from — anything else is not a reference. THE single source of truth
-     * for the reference whitelist: the write-side validator ({@see \App\Modules\Workflows\Http\Requests\StoreWorkflowRequest})
-     * reads this too, so adding a root (a new catalog source) is a one-place change here (per ADR-0021).
+     * for the reference whitelist: the write-side validator (Workflows' StoreWorkflowRequest) reads
+     * this too, so adding a root (a new catalog source) is a one-place change here (per ADR-0021).
+     *
+     * A SUPERSET across the modules that share this resolver (R2): `trigger`/`steps`/`globals` are the
+     * workflow context tiers, `slots` is a template's declared typed slots, and `parts` is a generation
+     * session's already-rendered EARLIER parts (cross-part context). A root a given caller never populates
+     * is INERT — `slots`/`parts` never appear in a workflow context (resolve to nothing), and
+     * `trigger`/`steps` never appear in a template/session context — so the superset widens what is
+     * nominally a reference without changing any existing resolution (an unpopulated root reads as
+     * missing/null; a workflow run therefore stays byte-identical with `parts` inert).
      *
      * `globals` is the workspace's user-created LITERAL constants, injected into the run context as a
      * `{<key>: <value>}` map by the step runner. Because the values are stored literals, a global ref
      * is a plain whitelisted dotted lookup (no graph, no cycles) — and a global VALUE that contains
      * reference-/directive-like bytes rides the SAME NUL-mask path a resolved value does, so it is
      * never re-interpreted as a reference (see resolveReferences / applyDefault).
+     *
+     * `parts` is the SAME idea one layer up: the Generator executor injects a `{<partKey>: <rendered
+     * text>}` map of EARLIER parts' outputs, so a `parts.<key>` reference resolves EXACTLY like a
+     * `globals.<key>` one — a plain whitelisted dotted lookup over a stored, post-render STRING that
+     * rides the SAME NUL-mask, never re-interpreted as a directive/reference (cross-part refs are
+     * TEXT-ONLY, injection-safe). Variables stays content-agnostic: it only whitelists + types the root;
+     * the Generator executor POPULATES it (declared-order, acyclic by construction).
      */
-    public const ROOTS = ['trigger', 'steps', 'globals'];
+    public const ROOTS = ['trigger', 'steps', 'globals', 'slots', 'parts'];
 
     /** A whole string that is EXACTLY one flat token: {{ path }}. */
     private const FLAT_STANDALONE = '/^\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}$/';
@@ -170,7 +183,7 @@ class WorkflowVariableResolver
 
     public function __construct(
         private OperationExecutor $executor,
-        private WorkflowAiTextService $ai,
+        private AiTextGenerator $ai,
         ?OperationResolver $operations = null,
     ) {
         // Defaulted so the direct-`new` unit sites keep constructing with two args; the resolver is
@@ -182,7 +195,7 @@ class WorkflowVariableResolver
     /**
      * Resolve every reference in $value against $context. Scalars resolve directly, arrays
      * recursively. Non-string scalars (int/bool/null) pass through untouched. $typeMap is the
-     * run's path → VariableType map (from WorkflowVariableCatalogService::runtimeTypeMap),
+     * caller's path → VariableType map (the workflow catalog's runtime type map),
      * used to recover a directive/if-block variable's REAL base type; it is optional (an empty map
      * falls back to the pipeline's first-op input type).
      *
@@ -216,6 +229,34 @@ class WorkflowVariableResolver
     public function resolveString(string $value, array $context, array $typeMap = []): mixed
     {
         return $this->resolveStringAt($value, $context, $typeMap, 0);
+    }
+
+    /**
+     * Collect EVERY variable id a markdown string REFERENCES — the SAME references this resolver RESOLVES
+     * at runtime, gathered through the SAME parsing primitives, so a caller (the Generator's cross-part
+     * STALENESS scan and its WRITE-validation earlier-only gate) can NEVER drift from what actually resolves.
+     * A flat `@[variable]` regex is BLIND to references nested inside ai-text prompts and if-block markers,
+     * AND to the transitional flat `{{…}}` tokens the resolver ALSO resolves; this walk descends into all of
+     * them:
+     *   - top-level `@[variable]` directives (the reference id + any variable-shaped pipeline op ARGUMENTS),
+     *   - transitional flat `{{…}}` tokens (the SAME tokens the resolver's flat pass resolves, on the ai-text-
+     *     and directive-stripped text, gated by the SAME whitelisted-root {@see isReference} predicate),
+     *   - `@[ai-text]` payloads' nested `prompt` markdown (recursively, honoring the ai-text depth cap),
+     *   - if-block CONDITIONS (the `[[IF …]]` marker's `variableId` + its condition pipeline's arg refs) AND
+     *     if-block BODIES (recursively, honoring the if-block depth cap).
+     *
+     * Returns the DE-DUPLICATED referenced ids (order-stable); the CALLER filters by root (e.g. keeps only
+     * `parts.*`). A malformed directive / payload / marker contributes nothing — mirroring this resolver's own
+     * tolerance, so a byte the resolver renders inert is never reported as a reference (no false rejection).
+     *
+     * @return array<int, string>
+     */
+    public function collectReferenceIds(string $markdown): array
+    {
+        $ids = [];
+        $this->scanForReferenceIds($markdown, $ids, 0);
+
+        return array_values(array_unique($ids));
     }
 
     /**
@@ -928,8 +969,8 @@ class WorkflowVariableResolver
     /**
      * Generate the text for one ai-text directive: recursively resolve its `prompt` (SAME context /
      * typeMap, one ai-depth deeper — so nested variables/if-blocks/ai-text all resolve before the
-     * AI sees it), then hand the resolved prompt + persona to WorkflowAiTextService. Over the nesting
-     * cap → '' with NO AI call. The service is fail-closed, so this always returns a string.
+     * AI sees it), then hand the resolved prompt + persona id to the AiTextGenerator. Over the nesting
+     * cap → '' with NO AI call. The generator is fail-closed, so this always returns a string.
      *
      * @param  array<string, mixed>  $context
      * @param  array<string, VariableType|string>  $typeMap
@@ -951,7 +992,9 @@ class WorkflowVariableResolver
         $resolvedPrompt = $this->resolveStringAt($directive['prompt'], $context, $typeMap, $thisDepth);
         $resolvedPrompt = is_string($resolvedPrompt) ? $resolvedPrompt : $this->stringify($resolvedPrompt);
 
-        return $this->ai->generate($resolvedPrompt, WorkflowAiPersona::fromNullable($directive['personaId']));
+        // The persona id rides as a plain `?string` — the AiTextGenerator maps it to its own vocabulary,
+        // so this shared resolver names no upper-module enum (keeping the dependency one-way).
+        return $this->ai->generate($resolvedPrompt, $directive['personaId']);
     }
 
     /**
@@ -1258,6 +1301,276 @@ class WorkflowVariableResolver
         $resolved = $this->resolveInline($joined, $context, $typeMap, $aiDepth);
 
         return is_string($resolved) ? $resolved : $this->stringify($resolved);
+    }
+
+    // ---- reference scanning (staleness / write-validation) --------------------
+
+    /**
+     * The recursive reference-id walk MIRRORING {@see resolveStringAt}: if-blocks first (ALL branches'
+     * conditions + bodies — a scan must see references in branches that would not win), then the inline layer
+     * (ai-text prompts + variable directives). $aiDepth carries the ai-text nesting level exactly as
+     * resolution does, so the depth cap bites identically (a ref only the resolver would never reach beyond
+     * the cap is never collected).
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanForReferenceIds(string $value, array &$ids, int $aiDepth): void
+    {
+        if (str_contains($value, '```if-block')) {
+            $value = $this->scanIfBlocks($value, $ids, $aiDepth, 1);
+        }
+
+        $this->scanInline($value, $ids, $aiDepth);
+    }
+
+    /**
+     * Collect references from every top-level fenced if-block (ALL branches, not just a runtime winner),
+     * returning the text with those fenced blocks REMOVED so the inline pass scans only the surrounding text.
+     * Mirrors {@see resolveIfBlocks}' line/fence-depth scan (reusing {@see collectIfBlockBody}).
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanIfBlocks(string $value, array &$ids, int $aiDepth, int $depth): string
+    {
+        $lines = explode("\n", $value);
+        $out = [];
+        $i = 0;
+        $n = count($lines);
+
+        while ($i < $n) {
+            if (preg_match('/^\s*```if-block\b/', $lines[$i]) === 1) {
+                [$body, $next] = $this->collectIfBlockBody($lines, $i + 1, $n);
+                $this->scanOneIfBlock($body, $ids, $aiDepth, $depth);
+                $i = $next;
+
+                continue;
+            }
+
+            $out[] = $lines[$i];
+            $i++;
+        }
+
+        return implode("\n", $out);
+    }
+
+    /**
+     * Collect references from ONE if-block: EVERY branch's CONDITION (its `variableId` + its pipeline's arg
+     * refs) AND EVERY branch's BODY (recursively — nested if-blocks + inline directives). Over the recursion
+     * cap it stops, matching {@see resolveOneIfBlock}.
+     *
+     * @param  array<int, string>  $bodyLines
+     * @param  array<int, string>  $ids
+     */
+    private function scanOneIfBlock(array $bodyLines, array &$ids, int $aiDepth, int $depth): void
+    {
+        if ($depth > self::IF_BLOCK_MAX_DEPTH) {
+            return;
+        }
+
+        foreach ($this->splitIfBranches($bodyLines) as $branch) {
+            if ($branch['kind'] !== 'else' && is_array($branch['condition'])) {
+                $this->scanConditionRefs($branch['condition'], $ids);
+            }
+
+            $body = trim(implode("\n", $branch['body']));
+
+            if ($body === '') {
+                continue;
+            }
+
+            if (str_contains($body, '```if-block')) {
+                $body = $this->scanIfBlocks($body, $ids, $aiDepth, $depth + 1);
+            }
+
+            $this->scanInline($body, $ids, $aiDepth);
+        }
+    }
+
+    /**
+     * Collect an if-branch condition's references: its `variableId` plus every variable-shaped ARGUMENT of its
+     * condition pipeline's ops — the SAME refs {@see evaluateBranchCondition} reads at runtime.
+     *
+     * @param  array<string, mixed>  $condition
+     * @param  array<int, string>  $ids
+     */
+    private function scanConditionRefs(array $condition, array &$ids): void
+    {
+        $variableId = $condition['variableId'] ?? null;
+
+        if (is_string($variableId) && $variableId !== '') {
+            $ids[] = $variableId;
+        }
+
+        $this->scanPipelineArgRefs($condition['pipeline'] ?? null, $ids);
+    }
+
+    /**
+     * The inline reference scan MIRRORING {@see resolveInline}/{@see resolveReferences}: ai-text prompts FIRST
+     * (recursed, then their spans REMOVED so the directive scan can't see a raw payload's bytes), then the
+     * `@[variable]` directives (whose reference spans are REMOVED — exactly as resolveReferences NUL-masks a
+     * resolved directive value before its flat pass), then the FLAT `{{…}}` tokens on the directive-stripped
+     * remainder. The flat pass runs LAST and on the stripped text so a `{{…}}` byte the resolver CONSUMES
+     * inside a directive payload (e.g. a per-reference `default`) is never mis-collected as a flat reference,
+     * while a live flat token in the field's own text is collected exactly as the resolver resolves it.
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanInline(string $value, array &$ids, int $aiDepth): void
+    {
+        if (str_contains($value, self::AI_TEXT_OPEN)) {
+            $value = $this->scanAiText($value, $ids, $aiDepth);
+        }
+
+        $value = $this->scanDirectiveRefs($value, $ids);
+
+        $this->scanFlatRefs($value, $ids);
+    }
+
+    /**
+     * Collect references from every `@[ai-text]` payload's nested `prompt` (recursively), returning the text
+     * with those spans REMOVED. Mirrors {@see maskAiTextDirectives}' candidate-terminator scan (reusing
+     * {@see extractAiTextPayload}), so a nested directive inside a prompt cannot end the span early.
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanAiText(string $value, array &$ids, int $aiDepth): string
+    {
+        $out = '';
+        $cursor = 0;
+        $openLen = strlen(self::AI_TEXT_OPEN);
+
+        while (true) {
+            $start = strpos($value, self::AI_TEXT_OPEN, $cursor);
+
+            if ($start === false) {
+                return $out . substr($value, $cursor);
+            }
+
+            $extracted = $this->extractAiTextPayload($value, $start + $openLen - 1);
+
+            if ($extracted === null) {
+                $out .= substr($value, $cursor, $start - $cursor + 2);
+                $cursor = $start + 2;
+
+                continue;
+            }
+
+            $out .= substr($value, $cursor, $start - $cursor);
+            $this->scanAiTextPrompt($extracted['payload'], $ids, $aiDepth);
+            $cursor = $extracted['nextIndex'];
+        }
+    }
+
+    /**
+     * Collect references from one ai-text payload's `prompt`, one ai-depth deeper — honoring the SAME cap
+     * {@see resolveAiText} enforces (beyond it the prompt is never resolved, so its refs never matter).
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanAiTextPrompt(string $payload, array &$ids, int $aiDepth): void
+    {
+        $thisDepth = $aiDepth + 1;
+
+        if ($thisDepth > self::AI_TEXT_MAX_DEPTH) {
+            return;
+        }
+
+        $directive = $this->decodeAiTextDirective($payload);
+
+        if ($directive === null) {
+            return;
+        }
+
+        $this->scanForReferenceIds($directive['prompt'], $ids, $thisDepth);
+    }
+
+    /**
+     * Collect every `@[variable]` directive's reference id (and its pipeline's variable-shaped op ARGUMENT
+     * refs) from a string whose ai-text spans have already been removed, RETURNING the text with each
+     * RESOLVED-reference directive span replaced by an inert NUL placeholder (a malformed / non-reference
+     * directive keeps its literal bytes). This mirrors {@see resolveReferences}, which replaces a resolved
+     * directive value with a NUL-masked placeholder BEFORE its flat pass; the caller ({@see scanInline}) then
+     * runs the flat scan on this stripped remainder, so a `{{…}}` byte living INSIDE a directive payload — a
+     * byte the resolver consumes and never flat-resolves — is not mis-collected as a flat reference. Uses the
+     * SAME embedded-directive pattern + {@see decodeDirective} resolution uses, and the SAME whitelisted-root
+     * gate ({@see isReference}) a directive passes to resolve — so an id read here is exactly one the resolver
+     * would resolve.
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanDirectiveRefs(string $value, array &$ids): string
+    {
+        return preg_replace_callback(self::DIRECTIVE_EMBEDDED, function (array $m) use (&$ids): string {
+            $directive = $this->decodeDirective($m[1]);
+
+            if ($directive === null || !$this->isReference($directive['id'])) {
+                return $m[0]; // malformed / non-reference: keep literal (mirrors resolveEmbeddedDirective)
+            }
+
+            $ids[] = $directive['id'];
+            $this->scanPipelineArgRefs($directive['pipeline'], $ids);
+
+            // Remove the resolved-reference span (a NUL placeholder can never form a `{{…}}` token) so the
+            // flat scan sees only the field's own text, exactly as resolveReferences' NUL mask does.
+            return "\0";
+        }, $value) ?? $value;
+    }
+
+    /**
+     * Collect every LIVE flat `{{…}}` token's reference id from a string whose ai-text and directive spans
+     * have already been removed — the SAME {@see FLAT_EMBEDDED} tokens {@see resolveReferences}' flat pass
+     * resolves, gated by the SAME {@see isReference} predicate (a token whose root is not whitelisted is NOT
+     * a reference and the resolver leaves it literal, so it contributes nothing here either). FLAT_EMBEDDED
+     * also matches a whole-string standalone token, so the resolver's FLAT_STANDALONE branch needs no
+     * separate scan. Scanner and resolver therefore admit EXACTLY the same flat tokens and can never diverge.
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanFlatRefs(string $value, array &$ids): void
+    {
+        if (preg_match_all(self::FLAT_EMBEDDED, $value, $matches) === false || ($matches[1] ?? []) === []) {
+            return;
+        }
+
+        foreach ($matches[1] as $path) {
+            if ($this->isReference($path)) {
+                $ids[] = $path;
+            }
+        }
+    }
+
+    /**
+     * Collect the referenced ids of every variable-shaped ARGUMENT nested in a pipeline (the Phase-4 arg
+     * variables the resolver pre-resolves in {@see resolvePipelineArgs}). A deep walk over the pipeline
+     * structure: any {@see ValueOrVariable} union contributes its ref path (via the SAME {@see refPath}
+     * resolution uses) plus its OWN sub-pipeline's arg refs; every other array node is descended into (so a
+     * sourceMap value, a choiceRules `then`/`when`, or an element-pipeline op's arg is reached). A scalar /
+     * literal arg contributes nothing. It intentionally OVER-approximates (a union in any nested position is
+     * collected) so it can never UNDER-collect a runtime-resolved ref — fail-closed for the write gate.
+     *
+     * @param  array<int, string>  $ids
+     */
+    private function scanPipelineArgRefs(mixed $node, array &$ids): void
+    {
+        if (!is_array($node)) {
+            return;
+        }
+
+        if (ValueOrVariable::isVariable($node)) {
+            $path = $this->refPath($node['ref'] ?? null);
+
+            if ($path !== null) {
+                $ids[] = $path;
+            }
+
+            $this->scanPipelineArgRefs($node['pipeline'] ?? null, $ids);
+
+            return;
+        }
+
+        foreach ($node as $child) {
+            $this->scanPipelineArgRefs($child, $ids);
+        }
     }
 
     // ---- shared helpers -------------------------------------------------------

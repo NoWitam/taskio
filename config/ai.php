@@ -17,20 +17,42 @@ return [
 
     'model' => env('AI_MODEL', 'gpt-4o'),
 
-    // HTTP-client timeout (seconds) for the Disk preview's AI image edits. Image generation is a
-    // long synchronous call (tens of seconds); this bounds the provider request itself — the
-    // webserver/php-fpm execution limits must be at least as generous.
+    // HTTP-client timeout (seconds) for the Disk preview's AI image edits AND the generator's text→image
+    // base generation. Both are long synchronous calls (tens of seconds); this bounds the provider request
+    // itself — the webserver/php-fpm execution limits (and the generation job timeout) must be at least as
+    // generous.
     'image_timeout' => (int) env('AI_IMAGE_TIMEOUT', 120),
+
+    // The laravel/ai PROVIDER the generator's text→image BASE generation (ImageGenerateService) targets.
+    // Passed EXPLICITLY so the call never falls back to laravel/ai's own `default_for_images` — the package
+    // default there is 'gemini', which this app neither overrides nor holds a key for, so an implicit call
+    // would fail. Defaults to the app-wide AI provider (env AI_PROVIDER, itself 'openai') so image generation
+    // rides the SAME provider the rest of the app (bots/approvals/Disk edits) already uses; override with
+    // AI_IMAGE_GENERATE_PROVIDER only to split it out. gpt-image-1.5 (OpenAI's default image model) accepts
+    // the square 1:1 size + 'high' quality this service sends.
+    'image_generate_provider' => env('AI_IMAGE_GENERATE_PROVIDER', env('AI_PROVIDER', 'openai')),
+
+    // laravel/ai render `quality` ('low'|'medium'|'high') for the generator's text→image BASE generation
+    // (ImageGenerateService). A social post wants a detailed result, so 'high' is the default. Distinct from
+    // the Disk EDIT quality above (a different provider path — the custom masked OpenAI edit client).
+    'image_generate_quality' => env('AI_IMAGE_GENERATE_QUALITY', 'high'),
 
     // Provider timeout (seconds) for the Disk preview's SYNC AI text edits. A gpt-4o text edit is
     // fast and runs inline in the request (no queue, unlike the image edit), so this bounds the call
     // the user is waiting on.
     'text_timeout' => (int) env('AI_TEXT_TIMEOUT', 60),
 
+    // Provider timeout (seconds) for the generator's CREATIVE-DIRECTION derivation — the one small
+    // structured call a full generation run makes before it renders anything. Deliberately TIGHTER than
+    // text_timeout: it runs INSIDE RunGenerationSessionJob's fixed 300s SIGALRM window on top of the
+    // ai-text fan-out, so bounding it at 30s is what lets that window stay untouched
+    // (4 x 60 + 30 = 270s < 300s). A hung derivation fails closed and the run proceeds direction-less.
+    'direction_timeout' => (int) env('AI_DIRECTION_TIMEOUT', 30),
+
     // The OpenAI model for Disk preview image edits. gpt-image-1 supports MASKED images/edits
     // (inpainting / object removal / background replace) — verified against the account. Kept
     // separate from the chat 'model' above.
-    'disk_image_model' => env('AI_DISK_IMAGE_MODEL', 'gpt-image-2'),
+    'disk_image_model' => env('AI_DISK_IMAGE_MODEL', 'gpt-image-1'),
 
     // gpt-image-1 `input_fidelity` for edits: 'high' preserves the source (unmasked area + context)
     // for a cleaner, better-blended masked edit — worth the extra input tokens for object removal.
@@ -127,5 +149,56 @@ return [
 
     'generate_file_max_bytes' => (int) env('AI_GENERATE_FILE_MAX_BYTES', 1024 * 1024),
     'read_attachment_max_bytes' => (int) env('AI_READ_ATTACHMENT_MAX_BYTES', 1024 * 1024),
+
+    /*
+    |--------------------------------------------------------------------------
+    | AI Cost Meter (R2)
+    |--------------------------------------------------------------------------
+    |
+    | The LEDGER meter (LedgerMeteredAiCall) records every AI spend and gates BEFORE spend on a
+    | per-workspace rolling-month budget. Since R2 sub-stage 4 the gate is DOLLAR-based: it sums the
+    | month's `estimated_cost` and refuses at/over the effective $ cap. `estimated_cost` is therefore
+    | LOAD-BEARING now — surfaced to operators as an ESTIMATE (szacowany), never billed on. The
+    | operator maintains the prices below; every figure is env-overridable.
+    |
+    | monthly_cost_cap_default  Effective $ budget when a workspace sets NO override
+    |                      (workspaces.ai_monthly_cost_cap is null). 0 = DISABLED (the default), which
+    |                      keeps existing workflow/disk behavior byte-preserved until an operator opts in.
+    | pricing              Per-CHANNEL price model driving `estimated_cost`:
+    |                        - ai_text          per_1k_tokens: $ per 1k REAL provider tokens (total_tokens).
+    |                        - ai_image_edit     per_call: flat $ per image edit (images are priced per call,
+    |                                            not per token — the 4000-token unit_cost below is NOT a price).
+    |                        - ai_image_generate per_call: flat $ per generated image.
+    |                      Defaults are representative current-provider ESTIMATES (gpt-4o blended text,
+    |                      gpt-image-1 high-quality images); tune via env for the deployment's real prices.
+    | monthly_token_cap    LEGACY token figure — retained for reference/telemetry only; the gate no longer
+    |                      reads it (the $ cap above is the single source of truth). Kept env-overridable.
+    | warn_ratio           Fraction of the $ cap at which a UI should warn (~80%).
+    | unit_cost            SECONDARY token stand-in recorded for an OPAQUE result that carries no provider
+    |                      token count (e.g. an image edit), keyed by channel — for the token DISPLAY only,
+    |                      never the price basis (image $ come from pricing.<channel>.per_call).
+    |
+    */
+
+    'meter' => [
+        'monthly_cost_cap_default' => (float) env('AI_MONTHLY_COST_CAP', 0.0),
+        'monthly_token_cap' => (int) env('AI_MONTHLY_TOKEN_CAP', 0),
+        'warn_ratio' => (float) env('AI_METER_WARN_RATIO', 0.8),
+        'pricing' => [
+            'ai_text' => [
+                'per_1k_tokens' => (float) env('AI_PRICE_TEXT_PER_1K', 0.005),
+            ],
+            'ai_image_edit' => [
+                'per_call' => (float) env('AI_PRICE_IMAGE_EDIT_PER_CALL', 0.17),
+            ],
+            'ai_image_generate' => [
+                'per_call' => (float) env('AI_PRICE_IMAGE_GENERATE_PER_CALL', 0.19),
+            ],
+        ],
+        'unit_cost' => [
+            'ai_image_edit' => (int) env('AI_IMAGE_EDIT_UNIT', 4000),
+            'ai_image_generate' => (int) env('AI_IMAGE_GENERATE_UNIT', 4000),
+        ],
+    ],
 
 ];

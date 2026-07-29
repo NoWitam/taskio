@@ -7,7 +7,7 @@ namespace App\Modules\Variables\Support;
  * not resolve to an array. It is rejected by OperationExecutor::arrayArg so such an argument
  * fails its operation CLOSED instead of degrading to the "no rules / empty map" semantic.
  *
- * IT IS NO LONGER PRODUCED BY THE RESOLVER. WorkflowVariableResolver now pre-resolves a structural
+ * IT IS NO LONGER PRODUCED BY THE RESOLVER. VariableResolver now pre-resolves a structural
  * container PER ENTRY (resolveStructuralEntry): a sourceMap VALUE or a choiceRules `then` that cannot
  * resolve becomes a typed `null`, and the executor's READERS fail that entry closed on their own —
  * enumMap treats a null mapped value as unmapped → FAIL, and matchToChoice, when a rule's `when`

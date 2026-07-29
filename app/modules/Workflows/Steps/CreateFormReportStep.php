@@ -6,9 +6,9 @@ use App\Modules\Forms\DTOs\FormReportDTO;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Services\FormReportService;
 use App\Modules\Variables\Enums\VariableType;
+use App\Modules\Variables\Services\VariableResolver;
 use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Models\WorkflowRun;
-use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
 use RuntimeException;
 
@@ -16,9 +16,14 @@ use RuntimeException;
  * Creates a Form REPORT from the step's resolved config, THROUGH FormReportService::create()
  * — the SAME path the StoreFormReportRequest controller uses. Creating the FormReport fires
  * its `created` model event, which dispatches the CreateFormReport job. That job runs the AI
- * analysis and marks the report completed; it is FIRE-AND-FORGET from the step's view — the
- * step returns as soon as the row is created and NEVER waits for report completion (matching
- * the interactive-manual create-report behavior).
+ * analysis and marks the report completed; the step itself never inspects or awaits the result.
+ *
+ * NOT actually asynchronous DURING A RUN, despite the fire-and-forget shape: WorkflowRunJob forces
+ * the `sync` queue driver around the whole step loop (so WorkflowRunContext stays alive and
+ * HasCreator can attribute step-authored rows to the run — see ADR-0015), which means the dispatched
+ * analysis job executes IN-PROCESS before this step returns. It is genuinely queued only on the
+ * interactive-manual path. A step that needs REAL asynchrony must dispatch onto
+ * {@see \App\Modules\Workflows\Support\RealQueueConnection} and suspend the run.
  *
  * Config mirrors the REAL StoreFormReportRequest / FormReportDTO field set:
  *
@@ -50,7 +55,7 @@ class CreateFormReportStep implements WorkflowStep
 
     public function __construct(
         private FormReportService $reports,
-        private WorkflowVariableResolver $resolver,
+        private VariableResolver $resolver,
     ) {}
 
     public function type(): WorkflowStepType

@@ -8,6 +8,10 @@
 //   • Header       — state badge (6-state, icon + label) + a single SOURCE badge (the
 //                    relabelled origin; B3 collapsed origin + trigger_type) + duration;
 //                    a nested-run line when depth > 0 / origin_run_id set.
+//   • Waiting      — (R2 sub-stage 5) a run parked on a content generation gets an
+//                    expectation-setting panel: how long it usually takes, the elapsed
+//                    time AS OF THE LAST READ, an explicit REFRESH (there is no live push
+//                    here), and the honest "no cancel yet".
 //   • Trigger      — `trigger_payload` flattened to labelled key→value rows (mono
 //                    keys), NOT raw JSON.
 //   • Step timeline — the shared Timeline pattern, one item per audit step ordered
@@ -65,11 +69,19 @@ const run = ref<WorkflowRun | null>(null);
 const loading = ref(false);
 const loadError = ref(false);
 
+/**
+ * When the currently-shown run was last READ. There is NO live push on the run detail, so
+ * a `waiting` run's elapsed time is an honest snapshot taken at load — it advances only
+ * when the user refreshes, and the copy says exactly that.
+ */
+const loadedAt = ref(Date.now());
+
 async function load(): Promise<void> {
   loading.value = true;
   loadError.value = false;
   const result = await store.fetchRun(props.workflowId, props.runId);
   loading.value = false;
+  loadedAt.value = Date.now();
   if (result) {
     run.value = result;
   } else {
@@ -95,6 +107,30 @@ const stateLabel = computed(() =>
   run.value ? t(`workflows.runs.state.${run.value.state}`, run.value.state_label) : '',
 );
 const durationText = computed(() => (run.value ? formatDuration(run.value.duration_seconds) : null));
+
+// --- WAITING (R2 sub-stage 5 — the visible face of the async design) ---------
+// A run that reaches a SUSPENDING step (`generate_content`) parks in `waiting` until the
+// generation settles. The state badge already names it; this section sets EXPECTATIONS:
+// how long it usually takes, that there is no live push (hence the explicit Refresh), and
+// — honestly — that there is no cancel today.
+const isWaiting = computed(() => run.value?.state === 'waiting');
+
+/**
+ * How long the RUN has been going, as of the last read ('—' handled by the template).
+ *
+ * This is deliberately measured from `started_at` (the whole run), NOT from the moment the
+ * run parked: the run resource exposes no suspended-at / waiting-since instant, and a run
+ * with a step BEFORE the generation makes the two diverge. The copy therefore says "running
+ * for", not "waiting for" — the label has to name the interval it actually measures.
+ */
+const runElapsed = computed<string | null>(() => {
+  if (!isWaiting.value) return null;
+  const since = run.value?.started_at ?? run.value?.created_at;
+  if (!since) return null;
+  const ms = loadedAt.value - new Date(since).getTime();
+  if (Number.isNaN(ms)) return null;
+  return formatDuration(Math.max(0, Math.floor(ms / 1000)));
+});
 const startedText = computed(() => formatTimestamp(run.value?.started_at ?? run.value?.created_at));
 const finishedText = computed(() => formatTimestamp(run.value?.finished_at));
 
@@ -246,12 +282,15 @@ function stepStatusLabel(step: WorkflowRunStep): string {
 // --- Step OUTPUT → resource item (task / report) ----------------------------
 // A succeeded step publishes the resource it produced as its `payload` (the audit
 // output, WorkflowRunStepResource): create_task → {task_id, title}; create_form_report
-// → {report_id, report_name}. We render that as a thin EntityCard (mirroring the
+// → {report_id, report_name}; generate_content → {session_id, content, image_file_ids,
+// status, has_failed_parts} (its card deep-links to the produced generation SESSION and
+// deliberately replaces the raw dump — `content` can be a whole post).
+// We render that as a thin EntityCard (mirroring the
 // form/submission cards) instead of raw key→value rows. A step with no recognized
 // output (a FAILED step's null payload, or an unexpected shape) falls back to the
 // readable key→value summary + the error Alert — never a raw JSON dump.
 interface StepResource {
-  kind: 'task' | 'report';
+  kind: 'task' | 'report' | 'session';
   icon: IconName;
   title: string;
   /** Whole-card open target (a real deep-link) when one exists; absent → static card. */
@@ -305,6 +344,26 @@ function computeStepResource(step: WorkflowRunStep): StepResource | null {
       actionLabel: href
         ? t('workflows.runs.detail.stepResult.openReport', '', { name: title })
         : undefined,
+    };
+  }
+
+  // generate_content publishes its outputs as the step payload; `session_id` is the
+  // provenance handle, so the card deep-links straight to the generation SESSION that
+  // produced the content (a real route — `next.generator.sessions.detail`), opened in a NEW
+  // TAB like the task/report/form cards so the run drawer stays put. There is no title on
+  // the wire (the outputs are session_id / content / image_file_ids / status /
+  // has_failed_parts), so the card is labelled by the step, never by a raw uuid.
+  if (step.type === 'generate_content' && p.session_id != null) {
+    const title = t('workflows.runs.detail.stepResult.sessionTitle');
+    return {
+      kind: 'session',
+      icon: 'sparkles',
+      title,
+      href: router.resolve({
+        name: 'next.generator.sessions.detail',
+        params: { id: String(p.session_id) },
+      }).href,
+      actionLabel: t('workflows.runs.detail.stepResult.openSession'),
     };
   }
 
@@ -428,6 +487,35 @@ async function onRetry(): Promise<void> {
 
       <template v-else-if="run">
         <div class="flex flex-col gap-next-6">
+          <!-- WAITING: the run is parked on a content generation. Sets expectations
+               honestly (a minute or two; no cancel yet) and offers the REFRESH affordance,
+               because there is no live push on this screen. -->
+          <Alert
+            v-if="isWaiting"
+            variant="info"
+            size="sm"
+            icon="clock"
+            :title="t('workflows.runs.detail.waiting.title')"
+          >
+            <span class="block">{{ t('workflows.runs.detail.waiting.body') }}</span>
+            <span v-if="runElapsed" class="mt-next-1 block">
+              {{ t('workflows.runs.detail.waiting.elapsed', '', { value: runElapsed }) }}
+            </span>
+            <span class="mt-next-1 block">{{ t('workflows.runs.detail.waiting.noCancel') }}</span>
+            <template #actions>
+              <Button
+                variant="outline"
+                size="sm"
+                leading-icon="rotate-ccw"
+                :loading="loading"
+                :disabled="loading"
+                @click="load"
+              >
+                {{ t('workflows.runs.detail.waiting.refresh') }}
+              </Button>
+            </template>
+          </Alert>
+
           <!-- Trigger context. Schedule runs → a semantic "reason"; form_submitted
                runs → form + submission cards; anything else → the raw payload rows. -->
           <section v-if="isScheduleRun && scheduleReason" class="flex flex-col gap-next-2">

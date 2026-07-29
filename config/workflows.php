@@ -45,6 +45,39 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Stale-WAIT reaper (suspend/resume engine)
+    |--------------------------------------------------------------------------
+    |
+    | Seconds a run may sit in `waiting` — parked by a step that handed work to
+    | something outside this process — before it is failed as timed out. This is
+    | the LAST RESORT, not the normal way a wait ends: normally the external work
+    | settles, its own machinery reports that through the kind-keyed WaitResolver
+    | registry, and `workflows:reap-stale-runs` resumes the run with a REAL
+    | outcome. This timeout only fires when that work vanished without a trace or
+    | never settled at all.
+    |
+    | TIMEOUT ORDERING INVARIANT (each window must be strictly wider than the one
+    | it backstops, so the most informative recovery always gets the first chance):
+    |
+    |   external work's own job timeout
+    |     < that job's overlap/lock expiry
+    |     < workflows.run_timeout (900s — stale RUNNING; NEVER matches `waiting`)
+    |     < the external work's OWN stale reaper
+    |     < workflows.wait_timeout (2700s — stale WAITING, last resort)
+    |
+    | Read it bottom-up: this value must exceed the reaper of whatever the run is
+    | waiting on, because that reaper is what turns an abandoned piece of work into
+    | a SETTLED (failed) outcome the run can resume on and record properly. Fire
+    | first and the run dies with a generic "timed out" instead of the real reason.
+    | With the current defaults the concrete chain is 300 < 600 < 900 < 1800 < 2700.
+    | Raise this whenever any window below it grows.
+    |
+    */
+
+    'wait_timeout' => (int) env('WORKFLOWS_WAIT_TIMEOUT', 2700),
+
+    /*
+    |--------------------------------------------------------------------------
     | Re-trigger depth guard
     |--------------------------------------------------------------------------
     |

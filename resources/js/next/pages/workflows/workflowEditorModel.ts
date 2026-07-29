@@ -6,11 +6,12 @@
 // — is unit-testable WITHOUT mounting the drawer.
 //
 // ── 5.1 rebuild (B7c steps + B7d trigger) ─────────────────────────────────────
-// The step side is the typed 5.1 world: TWO step types (`create_task`,
-// `create_form_report`) with their full field sets. `emptyStepConfig` seeds each
-// type's editable draft shape and `buildStepConfig` projects a draft onto the EXACT
-// backend `config` wire (empty-string optionals STRIPPED; value-or-variable unions
-// passed through untouched; assignee emitted both-or-neither).
+// The step side is the typed 5.1 world: `create_task`, `create_form_report` and — since
+// R2 sub-stage 5 — `generate_content`, each with its full field set. `emptyStepConfig`
+// seeds each type's editable draft shape and `buildStepConfig` projects a draft onto the
+// EXACT backend `config` wire (empty-string optionals STRIPPED; value-or-variable unions
+// passed through untouched; assignee emitted both-or-neither; the generate_content SLOT
+// MAP emitted entry-by-entry with empty entries dropped so "unmapped" stays unmapped).
 //
 // The trigger side is now the typed 5.1 world too (B7d): a `FormTriggerDraft`
 // ({form_id, source, anonymous}) + the schedule builder's `ScheduleDraft`
@@ -30,6 +31,20 @@ import type {
  * affordance disables at this count so the user never trips a 422 (§4.6).
  */
 export const MAX_STEPS = 50;
+
+/**
+ * The client-side ceiling on `generate_content` steps in ONE workflow (mirrors the backend
+ * `StoreWorkflowRequest::GENERATE_CONTENT_MAX`). Each one is a whole AI generation run —
+ * by far the most expensive thing a workflow can do — AND it parks the run while it
+ * settles, so chaining several multiplies both the spend and the wall clock of a single
+ * trigger. The add affordance disables at this count so the author never trips the 422.
+ */
+export const MAX_GENERATE_CONTENT_STEPS = 2;
+
+/** How many steps of `type` the draft list already holds (drives the per-type add gate). */
+export function countStepsOfType(steps: StepDraft[], type: WorkflowStepType): number {
+  return steps.filter((step) => step.type === type).length;
+}
 
 /** The step key charset — path-safe (a dot/space would break `steps.<key>.<name>` refs). */
 export const STEP_KEY_RE = /^[A-Za-z0-9_]+$/;
@@ -97,6 +112,17 @@ export function emptyStepConfig(type: WorkflowStepType): Record<string, unknown>
         submissions_from: null,
         submissions_to: null,
       };
+    case 'generate_content':
+      // `slots` starts EMPTY (a map of the chosen template's declared slot names →
+      // value-or-variable). It is only ever populated once a template is picked, and it
+      // is NEVER auto-reset from under the author on hydration (template drift is WARNED
+      // about, not silently overwritten).
+      return {
+        template_id: null,
+        slots: {},
+        folder_id: null,
+        name: '',
+      };
     default:
       return {};
   }
@@ -108,6 +134,7 @@ export function emptyStepConfig(type: WorkflowStepType): Record<string, unknown>
 const STEP_KEY_BASE: Record<WorkflowStepType, string> = {
   create_task: 'task',
   create_form_report: 'report',
+  generate_content: 'content',
 };
 
 /**
@@ -248,6 +275,32 @@ function put(out: Record<string, unknown>, key: string, value: unknown): void {
 }
 
 /**
+ * Project the `generate_content` SLOT MAP onto the wire (R2 sub-stage 5): `<slot name>`
+ * → the same value-or-variable union every other structured field emits, with EMPTY
+ * entries DROPPED (`unionOrOmit`).
+ *
+ * Dropping an empty entry is load-bearing, not cosmetic: the backend's per-slot rules
+ * key on PRESENCE (`array_key_exists`). An unmapped required slot is reported as
+ * "must be mapped" on its own `steps.<i>.config.slots.<name>` row, and an unmapped
+ * NULLABLE slot is the legitimate "generate with it empty" — which an emitted
+ * `{kind:'literal', value:''}` would turn into a mapped-but-blank value instead.
+ *
+ * `false` / `0` / `[]` are REAL values and survive (only null / '' collapse).
+ *
+ * Returns undefined when nothing is mapped, so `slots` itself is OMITTED (the backend
+ * treats an absent map exactly like an empty one).
+ */
+function slotMapOrOmit(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+    const emitted = unionOrOmit(raw);
+    if (emitted !== undefined) out[name] = emitted;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
  * Project one step draft onto its EXACT wire `config` (§4.6). The required fields
  * (`create_task.title`, `create_form_report.form_id`/`name`) are always present
  * (trimmed for strings); every OPTIONAL is STRIPPED when empty; value-or-variable
@@ -291,6 +344,18 @@ export function buildStepConfig(step: StepDraft): Record<string, unknown> {
       put(out, 'sources', arrayOrOmit(c.sources));
       put(out, 'submissions_from', unionOrOmit(c.submissions_from));
       put(out, 'submissions_to', unionOrOmit(c.submissions_to));
+      return out;
+    }
+    case 'generate_content': {
+      // template_id is required — always emitted (the client pre-validation + the server
+      // both reject an empty one, so an empty string surfaces as the granular
+      // `steps.<i>.config.template_id` error rather than a silently absent key).
+      out.template_id = idOrOmit(c.template_id) ?? '';
+      put(out, 'slots', slotMapOrOmit(c.slots));
+      // Both optionals are emit-or-OMIT: never `""`, never `null` — an absent folder_id
+      // means the Disk root, an absent name means "use the template's".
+      put(out, 'folder_id', idOrOmit(c.folder_id));
+      put(out, 'name', trimmedOrOmit(c.name));
       return out;
     }
     default:

@@ -92,7 +92,11 @@ function isUserAuthoredPath(path: string): boolean {
   return (
     path.startsWith('trigger.fields.') ||
     path.startsWith('fields.') ||
-    path.startsWith('globals.')
+    path.startsWith('globals.') ||
+    // TEMPLATE SLOTS (R2 Generator): `slots.<name>` is a user-named typed input, exactly like a
+    // form field or a global — a slot someone named `order_id` / `id` must stay offered, never
+    // hidden by the system-identifier suffix test.
+    path.startsWith('slots.')
   );
 }
 

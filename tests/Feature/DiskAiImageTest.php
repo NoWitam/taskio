@@ -7,6 +7,7 @@ use App\Modules\Disk\Enums\DiskAiEditStatus;
 use App\Modules\Disk\Jobs\EditDiskImageJob;
 use App\Modules\Disk\Models\DiskAiEdit;
 use App\Modules\Disk\Services\ImageAiService;
+use App\Modules\Variables\Models\AiUsageEvent;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Tenancy\TenantContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -217,6 +218,39 @@ class DiskAiImageTest extends TestCase
         $this->assertSame(__('disk.ai.failed'), $edit->error);
         $this->assertNull($edit->input_image_path);
         Storage::assertMissing($imagePath);
+    }
+
+    public function test_an_over_cap_edit_fails_fast_in_the_worker_without_retrying(): void
+    {
+        // Contrast with the test ABOVE: a provider/transport error propagates so the queue RETRIES.
+        // An over-cap token budget can never clear within the retry window, so the worker fails the
+        // edit FAST — handle() does NOT rethrow (no burned retries) and the provider is never called.
+        // The over-cap gate lives in the shared Variables cost meter.
+        config()->set('ai.meter.monthly_cost_cap_default', 1.00);
+        AiUsageEvent::create([
+            'channel' => 'ai_image_edit',
+            'prompt_tokens' => 0,
+            'completion_tokens' => 0,
+            'total_tokens' => 150,
+            'estimated_cost' => 1.50, // already over the $ cap for this calendar month
+        ]);
+        Http::fake(); // prove the provider transport is never touched
+
+        $edit = DiskAiEdit::create([
+            'status' => DiskAiEditStatus::Queued,
+            'prompt' => 'Remove the background',
+            'input_image_path' => 'disk-ai/' . $this->workspace->id . '/over-cap/image.png',
+        ]);
+        Storage::put($edit->input_image_path, 'PNGBYTES');
+
+        // handle() returns normally (no thrown exception) — so the queue does NOT retry this edit.
+        (new EditDiskImageJob($edit->id, $this->workspace->id))->handle(app(ImageAiService::class));
+
+        $edit->refresh();
+        $this->assertSame(DiskAiEditStatus::Failed, $edit->status);
+        $this->assertSame(__('disk.ai.budget'), $edit->error);
+        $this->assertNull($edit->input_image_path); // inputs cleaned up by the fail() path
+        Http::assertNothingSent();
     }
 
     // ---- Poll ------------------------------------------------------------------------

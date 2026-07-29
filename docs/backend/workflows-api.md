@@ -217,6 +217,50 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > corrupted row ever bypasses the write check. See **ADR-0029-custom-functions.md**, and "Custom
 > functions" (under "The typed variable system") / the "Functions" endpoints below for the full
 > contract.
+>
+> **R2 PR-1a — the interpolation engine + the form-independent catalog move one layer further
+> down, into Variables (this revision) — a PURE refactor, NO wire change to anything documented
+> above this point.** `WorkflowVariableResolver` relocates wholesale to
+> `App\Modules\Variables\Services\VariableResolver` (import paths change; every resolution path —
+> directives, flat tokens, if-blocks, the structured union, per-reference defaults, argument
+> variables, `@[ai-text]` — is unchanged), and the FORM-INDEPENDENT half of
+> `WorkflowVariableCatalogService` (the type list, the operation catalog, workspace globals,
+> workspace functions) extracts into a new `App\Modules\Variables\Services\VariableCatalog`, which
+> `WorkflowVariableCatalogService` now delegates to rather than owns — verified byte-identical by a
+> new characterization test (`tests/Unit/Variables/VariableResolverCharacterizationTest.php`) and
+> the full pre-existing suite. A new `App\Modules\Variables\Contracts\AiTextGenerator` interface
+> replaces the resolver's direct dependency on `WorkflowAiTextService`; Workflows binds its real,
+> budgeted implementation in its own provider, unchanged for every existing caller. The reference
+> whitelist `ROOTS` widens from `['trigger','steps','globals']` to the superset
+> `['trigger','steps','globals','slots']` — `slots` is a NEW root (see below) that stays inert
+> (resolves to nothing) in every workflow context. Note: several PHASE-NARRATIVE mentions of
+> `WorkflowVariableResolver` further down in this document (the Phase 3/4/array-ops revision notes,
+> and the sections under "The typed variable system") describe the class under the name it carried
+> AT THAT TIME and are left as historical narrative, not rewritten — the class itself now lives at
+> the path above. See **ADR-0030-variable-engine-down-move.md**.
+>
+> **R2 PR-1b — a new `App\Modules\Generator` module lands, owning generation Templates (this
+> revision) — additive; nothing in this document changed by its arrival.** `Generator` depends on
+> `Variables` (the engine PR-1a just relocated) and imports NOTHING from `Workflows` — the two are
+> SIBLING modules sharing only the lower Variables layer, so a `generate_content` WORKFLOW STEP can
+> depend on `Generator` without creating a cycle. A `Template`
+> is a reusable, workspace-scoped prompt whose `prompt_body` carries the SAME `@[variable]`
+> directive serialization documented in this file, resolved by the SAME `VariableResolver`, over
+> its own `slots.<name>` root (the `slots` addition to `ROOTS`, above) instead of `trigger`/`steps`.
+> See `docs/backend/generator-api.md` for the full Generator/Templates contract and
+> **ADR-0031-generator-module-templates.md** for the design record.
+>
+> **R2 sub-stage 5 — `generate_content` SHIPPED, along with a generic suspend/resume engine for the
+> whole run loop.** The `Workflows → Generator` edge anticipated above is now real: a third step type,
+> `generate_content` (`App\Modules\Workflows\Steps\GenerateContentStep`), runs a Generator Template and
+> publishes its output. It is the run loop's FIRST — and, per the current design, only —
+> **suspending** step: it starts the generation, throws `StepSuspended`, and the run parks in a new
+> `WorkflowRunState::WAITING` state until a fresh job resumes it once the generation settles. This
+> also means the state-machine table and the "Reserved, not produced" language further down this
+> document, and the Ops-notes claim that `create_form_report` is the module's only genuinely-async
+> step, are now HISTORICAL and corrected in place — see "Steps: `generate_content`" and "Suspend/
+> resume engine" below, and **ADR-0039-workflow-suspend-resume-and-generate-content.md** for the full
+> design record.
 
 ---
 
@@ -231,13 +275,18 @@ queued job. Each step's outcome is recorded as a **WorkflowRunStep** audit row.
 Workflow (definition)
   └─ trigger_type + trigger_config   (what starts it: form_submitted | schedule)
   └─ conditions[]                    (form_submitted only: typed {field,field_type,operator,value}, AND-combined)
-  └─ steps[]                         (ordered actions: create_task, create_form_report)
+  └─ steps[]                         (ordered actions: create_task, create_form_report, generate_content)
 
 WorkflowRun (one execution)
-  └─ state machine: pending → running → completed | failed   (waiting, cancelled reserved, unused)
+  └─ state machine: pending → running → completed | failed
+                                 │  ▲
+                       suspend() │  │ claimResume()      (generate_content only — R2 sub-stage 5)
+                                 ▼  │
+                                waiting                   (cancelled still reserved, unused)
   └─ origin: event | schedule | manual
   └─ context: { trigger: {...}, steps: { <key>: {...output} } }
-  └─ WorkflowRunStep[]  (one audit row per executed step, in order)
+  └─ waiting_on / waiting_key / waiting_since   (only while state = waiting — see "Suspend/resume engine")
+  └─ WorkflowRunStep[]  (one audit row per executed step, in order — a suspended step writes NO row until it resolves)
 ```
 
 A workflow is always created **INACTIVE** (`status` is never accepted on create/update — the
@@ -267,16 +316,20 @@ definition or code path referencing them is stale.
 
 ```
 pending ──claim──▶ running ──release(completed|failed)──▶ terminal
+                     │  ▲
+           suspend() │  │ claimResume()
+                     ▼  │
+                    waiting
 ```
 
 | Value       | Meaning                                                                 |
 |-------------|--------------------------------------------------------------------------|
 | `pending`   | Run row created; job not yet claimed it.                                |
 | `running`   | Claimed; steps executing.                                                |
-| `waiting`   | **Reserved, not produced by the MVP engine.** Anticipates a future step that suspends a run to await an external event. See ADR-0008 #11. |
+| `waiting`   | **Produced by the engine (R2 sub-stage 5).** A step ({@see `generate_content`, currently the only one) threw `StepSuspended` — it handed work to something outside this process (a real generation running on the queue) and cannot publish its output yet. NOT terminal; bounded by `workflows.wait_timeout`, not `run_timeout`. See "Suspend/resume engine" below and ADR-0039. (Superseded: this row previously read "Reserved, not produced by the MVP engine" per ADR-0008 #11 — that is no longer accurate.) |
 | `completed` | Every step succeeded.                                                    |
 | `failed`    | A step failed (or the job/worker failed) — the run stopped at that step. |
-| `cancelled` | **Reserved, not produced by the MVP engine.** Anticipates a future manual-cancel action. |
+| `cancelled` | **Still reserved, not produced.** Anticipates a future manual-cancel action — unaffected by the suspend/resume engine; a `waiting` run cannot be cancelled today either (see "Planned / deferred"). |
 
 `WorkflowRunState::isTerminal()` is `true` for `completed`, `failed`, `cancelled`.
 
@@ -331,7 +384,7 @@ carry `status` at all, and `WorkflowService::create()` hardcodes `WorkflowStatus
 | `conditions.*.operator`       | required-if-present      | one of `WorkflowConditionOperator`, MUST belong to `field_type`'s allow-list |
 | `conditions.*.value`          | required-if-present (unless value-less) | shape depends on the operator — see the Conditions section |
 | `steps`                        | yes                      | array, min 1, max 50                                               |
-| `steps.*.type`                  | yes                      | `create_task` \| `create_form_report`                             |
+| `steps.*.type`                  | yes                      | `create_task` \| `create_form_report` \| `generate_content` (at most 2 `generate_content` steps per workflow — see the Steps section) |
 | `steps.*.key`                    | yes                      | string, max 100, **distinct across the whole array**, `[A-Za-z0-9_]+` only (letters/digits/underscore — see below) — used for `{{steps.<key>.*}}` |
 | `steps.*.config`                 | no                       | object; shape depends on `steps.*.type` (see the Steps section)   |
 
@@ -2512,10 +2565,13 @@ but NOT consumed by the runtime (an editor-only concern). At RUN time:
    so form values, step outputs, and conditional branches land in the prompt BEFORE it reaches the
    model. Nested `@[ai-text]` is depth-capped at **3** (`AI_TEXT_MAX_DEPTH`) — beyond the cap
    resolves to `''` with NO further AI call spent.
-2. The resolved prompt + `WorkflowAiPersona::fromNullable(personaId)` (defaults to `neutral` for
-   a null/unknown id) are handed to `WorkflowAiTextService::generate()`, which runs the tool-less
-   `WorkflowAiTextAgent` (provider/model from `config('ai')`; NO tools, NO structured-output
-   schema — plain text only, read from `$response->text`) and trims + length-caps the result.
+2. The resolved prompt + `App\Modules\Variables\Enums\AiPersona::fromNullable(personaId)` (defaults
+   to `neutral` for a null/unknown id) are handed to `WorkflowAiTextService::generate()` — now a THIN
+   DECORATOR that keeps the per-run call-count budget and delegates to the shared
+   `App\Modules\Variables\Services\AiTextGenerationService`, which runs the tool-less
+   `App\Modules\Variables\Agents\AiTextAgent` (provider/model from `config('ai')`; NO tools, NO
+   structured-output schema — plain text only, read from `$response->text`) and trims + length-caps
+   the result.
 3. The generated string REPLACES the directive span verbatim — it is never re-interpreted as a
    reference/directive itself (every `@[ai-text]` span is masked to an inert placeholder before
    the variable/flat-token passes run, then restored with the generated text afterward).
@@ -2527,6 +2583,7 @@ but NOT consumed by the runtime (an editor-only concern). At RUN time:
 | Blank prompt after resolution | `''` — no AI call spent. |
 | Per-run call budget exhausted (`config('workflows.ai_text_max_calls_per_run')`, default 10) | `''` — logged, no call. |
 | Provider/transport failure (missing key, timeout, any exception) | `''` — logged, never thrown. |
+| Over the workspace's AI token cap (`config('ai.meter.monthly_token_cap')`, 0 = disabled) | `''` — the shared Variables cost meter gates BEFORE spend; full meter docs land in R2 sub-phase 2e. |
 | Generated text longer than `config('workflows.ai_text_max_chars')` (default 2000) | truncated (multibyte-safe) to the cap. |
 
 The call BUDGET is scoped to ONE run — `WorkflowAiTextService` is resolved fresh alongside the
@@ -2535,15 +2592,15 @@ naturally resets every run; it bounds how much a SINGLE run can fan out into AI 
 independent of the run-budget cost caps below (`max_runs_per_month` etc.), which meter the NUMBER
 of runs, not AI calls within one.
 
-**Personas — a closed set of TONES, not the bot system.** `WorkflowAiPersona`: `neutral`
-(default) | `friendly` | `formal` | `concise` — each folds a short English style instruction into
+**Personas — a closed set of TONES, not the bot system.** `App\Modules\Variables\Enums\AiPersona`:
+`neutral` (default) | `friendly` | `formal` | `concise` — each folds a short English style instruction into
 the agent's system prompt (steering TONE only; the agent is always told to write in the language
 of the resolved prompt, so the English tone line never forces English output). This is
 DELIBERATELY NOT the Bot/Character system — see ADR-0013 for the alternatives considered and why
 a bot-as-persona idea was left for a possible future, not built now.
 
 **Prompt-injection posture (accepted, bounded risk).** The resolved prompt embeds values taken
-from user-submitted forms (untrusted input). `WorkflowAiTextAgent`'s instructions frame
+from user-submitted forms (untrusted input). `App\Modules\Variables\Agents\AiTextAgent`'s instructions frame
 EVERYTHING in the prompt as DATA to write about, never as commands, and explicitly tell the model
 to ignore any embedded command/role-play/rule-change attempt. The blast radius stays narrow even
 if that framing is defeated: the agent has NO tools, its output lands only in a task/report text
@@ -2914,7 +2971,7 @@ bot on a `TO_DO` task starts a bot run.
 
 Creates a Form REPORT through `FormReportService::create()` — the SAME path
 `StoreFormReportRequest`'s controller uses. Creating the report fires its `created` model event,
-which dispatches `CreateFormReportJob` (`implements ShouldQueue`). The step is
+which dispatches `App\Modules\Forms\Jobs\CreateFormReport` (`implements ShouldQueue`). The step is
 **FIRE-AND-FORGET**: it returns as soon as the row is created and NEVER waits for the AI
 analysis/report completion (matching the interactive manual create-report behavior).
 
@@ -2951,6 +3008,286 @@ This SUPERSEDES the previous text on this page, which described `FormReport` inh
 `auth()->id()` (null for a schedule run) — that was the actual crash `HasCreator`'s polymorphic
 stamping was built to fix (a `NOT NULL creator_id` column, `auth()->id()` always null inside a
 queued job). See `docs/backend/creator-attribution.md` for the full stamping-precedence contract.
+
+### `generate_content` (R2 sub-stage 5)
+
+Runs a Generator **Template** (`docs/backend/generator-api.md`) and publishes the produced content —
+the ONLY step type in this module that **suspends**: it starts a real, budgeted generation on the
+Generator's own queue and does not resolve `context.steps.<key>` until much later, when a fresh job
+resumes the run. See "Suspend/resume engine" below for the mechanism; this section covers the step's
+own config/output/error contract. Full design record: **ADR-0039**.
+
+`App\Modules\Workflows\Steps\GenerateContentStep implements SuspendableWorkflowStep`. The
+`Workflows → Generator` edge is crossed in exactly this one class, and strictly one-way — it calls
+only the Generator's HTTP-free automation seams (`SessionAutomationService`, `SessionDelegationService`
+under `SlotScopePolicy::Automation`, `GenerationSessionRunManager::claimAndDispatch`,
+`SessionContentProjector`, `GeneratedImageExporter`) and the Generator names no Workflows class
+anywhere (pinned by `GeneratorModuleBoundaryTest` + `WorkflowsGeneratorBoundaryTest`).
+
+| Config field   | Required | Type                                    | Notes |
+|-----------------|----------|--------------------------------------------|----------------------------------------------------------------------|
+| `template_id`      | **yes**  | literal uuid                                  | Workspace-scoped `Template`. Missing/foreign/unknown → `422` on `template_id`. |
+| `slots`               | no       | map of the template's DECLARED slot name → a literal or a `{kind}` value-or-variable union, typed at the SLOT's own type | Only declared slot names are accepted (an unknown name → `422`); a value's pipeline is type-flowed to the slot's own type. |
+| `folder_id`               | no       | literal uuid (workspace-scoped Disk `Folder`) | Where the produced images are exported. `null`/omitted = the Disk root. A folder deleted mid-wait DEGRADES to the Disk root at resume time (see "Operational notes" below) rather than losing the already-paid-for content. |
+| `name`                        | no       | literal string                                | The session's display name. Defaults to the template's own name when omitted/blank. |
+
+**Config allow-list is exactly these four keys** (`StoreWorkflowRequest::allowedStepKeys()`) — `slots`
+is the one FREE-FORM map (its keys are the chosen template's own slot names, not a fixed vocabulary),
+so it is allowed wholesale at the top level and checked against the template's own declarations
+(`validateTemplateSlotMapping()`) instead.
+
+**Outputs** (flow automatically into the variable catalog via the step class's static
+`outputDescriptors()`, exactly like `create_task`/`create_form_report`):
+
+| Output              | Type     | Notes |
+|-----------------------|----------|-----------------------------------------------------------------------------|
+| `session_id`             | TEXT     | The generation session's uuid — provenance, and what the FE deep-links into the Generator with. |
+| `content`                    | TEXT     | The ASSEMBLED text of the finished piece (`Generator\Services\SessionContentProjector` — the server-side sibling of the FE's `FinalPostBody.vue` composition, not a second implementation). `''` for an image-only recipe, or when the session produced nothing. |
+| `image_file_ids`                | FILE     | The ids of the Disk files this step exported — a following `create_task.attachments` can reference these straight through. |
+| `status`                            | TEXT     | The session's settled status — **effectively always `ready`** in practice: a `failed` session HARD-FAILS the step instead (the run stops), so this value is published only on the ready path. Emitted verbatim rather than hard-coded so the descriptor stays honest if a softer settlement is ever introduced. |
+| `has_failed_parts`                     | BOOLEAN  | `true` when the run finished `ready` but some part (or a per-shot/per-scene image) failed — the Generator's own per-part fail-soft. Lets a later step gate a publish on completeness. |
+
+**Author-time `422`s** (`StoreWorkflowRequest::validateGenerateContentConfig()` /
+`validateTemplateSlotMapping()` / `validateGenerateContentBudget()`), all granular so the FE step editor
+can highlight the exact row:
+
+| Code | Field | Meaning |
+|------|--------------------------------------|----------------------------------------------------------------------------|
+| 422  | `steps.<i>.config.template_id`          | Missing, not a uuid, or not a template in this workspace. |
+| 422  | `steps.<i>.config.folder_id`                | Not a uuid, or not a Disk folder in this workspace. |
+| 422  | `steps.<i>.config.name`                         | Present but not a string. |
+| 422  | `steps.<i>.config.slots.<name>`                    | A REQUIRED slot left unmapped, OR mapped to `null`/`''` (`descriptor.nullable !== true` — a descriptor has no separate `required` key). |
+| 422  | `steps.<i>.config.slots.<name>`                       | A mapped name the template does NOT declare (almost always a typo — reported alongside the unmapped-required error the SAME typo usually also causes). |
+| 422  | `steps.<i>.config.slots.<name>`                          | A mapped value's `{kind:'variable'}` pipeline does not type-flow to the slot's own accepted terminal(s) — its own type, or, for an ARRAYED slot, its own type OR the plain element type (see "Arrayed-slot pipeline terminals" below). |
+| 422  | `steps.<i>.config.slots.<name>`                             | **The composite-slot refusal** — a REQUIRED `object`-base slot (any shape), or a REQUIRED `array:true` + base `file` slot, is refused outright (the template "cannot be driven by a workflow at all"); the SAME shapes are refused when a NULLABLE slot is explicitly mapped (leaving it unmapped to generate empty is fine). A SCALAR `file` slot is **not** refused — see "The composite-slot refusal" below. |
+| 422  | `steps.<i>.type`                                               | A 3rd (or later) `generate_content` step in the same workflow — the cap is **2** (`validateGenerateContentBudget()`). |
+
+**The composite-slot refusal, and the scalar-`file` divergence from the Bot module's blanket
+refusal.** `StoreWorkflowRequest::isUnsuppliableSlot()` refuses two shapes at AUTHORING time, before any
+run could ever discover the problem itself — `GenerateContentStep` itself performs NO author-time
+validation of its own; the write-side gate is entirely on the request:
+
+- an `object`-base slot, ANY shape — the shared resolver has no object COERCION, so an object literal
+  (bare or `{kind:'literal'}`-wrapped) the author writes into `slots.<name>` would resolve to `null` and
+  the value could never reach the session;
+- an `array:true` + base `file` slot (a list of files) — a deferred composite
+  `Generator\Enums\SlotScopePolicy::accepts()` refuses outright regardless of caller, so the fill would
+  drop it as out-of-scope.
+
+Before this authoring-time gate existed both failure modes were silent until a real run: a REQUIRED
+composite slot saved cleanly and then HARD-FAILED EVERY SINGLE RUN (leaving an orphan `draft` session
+behind each time — see "Operational notes"), and a NULLABLE one silently generated with an empty slot,
+quietly discarding the author's mapping. A **scalar** `file` slot (not a list) is deliberately **not**
+refused — `Generator\Enums\SlotScopePolicy::Automation` allows it (D4/D14 of ADR-0036/ADR-0039): the
+value is resolved through the value-or-variable union to a single file id, then re-validated through the
+tenant-scoped `Disk\Models\File` model before it is persisted, so a foreign/deleted/made-up id simply
+does not resolve and is dropped like any other invalid value. This is a deliberate divergence from the
+Bot module's own delegation (`SlotScopePolicy::Bot`, ADR-0036), which refuses EVERY file slot
+unconditionally — there a model is proposing values it was never given and could fabricate a Disk
+reference, whereas here a trusted workspace human authored the mapping and the tenant scope is the
+actual boundary. See ADR-0039 D14 for the full reasoning.
+
+**Arrayed-slot pipeline terminals.** `StoreWorkflowRequest::slotPipelineTerminals()` computes the
+type(s) a mapped `{kind:'variable'}` pipeline may end in for a given slot. A SCALAR slot accepts exactly
+its own type. An ARRAYED slot (`{base:<scalar|enum>, array:true}`, which maps to `VariableType::MULTI`)
+accepts EITHER its own `MULTI` type OR its plain ELEMENT type — e.g. an `array<text>` slot accepts a
+pipeline ending in `MULTI` or one ending in plain `TEXT`. Demanding `MULTI` alone was an unreachable
+dead end: no pipeline operation produces a `multi` from a scalar source (only `array_map`/`array_filter`/
+`array_sort` do, and those need an array INPUT), so a text variable mapped onto an `array<text>` slot
+with any non-identity pipeline was an unavoidable `422` with no way to satisfy it. The runtime already
+tolerates this: `VariableResolver::coerce()`'s `MULTI => is_array($value) ? array_values($value) : [$value]`
+wraps a resolved scalar into a one-element list, so admitting the element terminal at write time only
+accepts what the resolver could already deliver at run time — no runtime behavior changed, only what the
+author-time validator accepts. `object`/`array<file>` descriptors never reach this check — the
+composite-slot refusal above rejects them first.
+
+**Run-time flow.**
+
+1. `run()` resolves `template_id` through the tenant-scoped `Template` model (a workspace boundary
+   check the automation seam itself does not perform); a missing/foreign/deleted id hard-fails the step
+   (`RuntimeException`, run stops).
+2. Each declared slot the config maps is resolved through the SAME value-or-variable union
+   `create_task`'s fields use, at the slot's OWN type (recovered from its stored descriptor).
+3. An EMPTY session is created (`SessionAutomationService::createFromTemplate`, snapshot-authoritative
+   per ADR-0034 D1), then FILLED under `SlotScopePolicy::Automation`
+   (`SessionDelegationService::applySlotValues`), which re-validates every value against its descriptor
+   and reports what it filled/skipped/left unfilled.
+4. A required slot the fill report still lists as unfilled HARD-FAILS the step BEFORE any spend,
+   naming the offending slot(s) — see "Operational notes" for what happens to the session it already
+   created.
+5. The session is claimed and dispatched on the REAL queue connection
+   (`GenerationSessionRunManager::claimAndDispatch`, through `RealQueueConnection`) — the SAME
+   budget-gated, atomically-claimed choke point a manual "Generuj" click or a bot `auto_generate` uses,
+   so the pre-run `429 ai_budget_exceeded` gate (`docs/backend/workspace-ai-usage-api.md`) applies
+   unchanged; an over-cap workspace is refused BEFORE the session is claimed and nothing is billed.
+6. The step throws `StepSuspended` and the run parks `waiting`.
+7. On resume, `terminalStatusFor(sessionId)`: `null` (session gone/purged) and `failed` are TERMINAL
+   failures (a vanished or failed session can never settle, so the step fails the run with the real
+   cause rather than waiting out the timeout and reporting a misleading one); `generating`/`draft`
+   RE-SUSPEND on the SAME correlation key (idempotent — the next settle event or sweep resumes it);
+   only `ready` collects: `SessionContentProjector::project()` assembles `content`, and
+   `GeneratedImageExporter::saveToDiskIfPresent()` exports EVERY produced image to Disk — done in the
+   RESUME phase, inside the run, so `HasCreator` stamps every exported file `uploader_type='workflow_run'`
+   (exporting inside the generation worker instead would run with no run context and usually no
+   authenticated user, leaving a NULL uploader — see ADR-0039 D7).
+
+**The run lifecycle, author-visible.** A workflow with a `generate_content` step visits
+`running → waiting → running → completed | failed` — the middle `waiting` hop being the whole point of
+this feature. See "Suspend/resume engine" below for the columns/mechanics, and
+`docs/next/…`/`resources/js/next/docs/pages/WorkflowsPage.vue` for how the Runs UI surfaces it.
+
+**Operational notes.**
+
+- **A `folder_id` deleted while the run waits DEGRADES to the Disk root**, with a logged warning
+  (ids only, never content) — the content is already paid for by the time resume runs, so losing it to a
+  404 on a now-missing folder would be strictly worse than filing it at the root instead.
+- **A required-slot failure leaves an ORPHAN `draft` session behind.** The step deliberately does NOT
+  delete the session it just created before hard-failing (step 4 above) — it shows the workflow author
+  exactly what the automation managed to fill, for debugging. The Generator's own idle/stale-draft
+  lifecycle reaper (`generator:reap-sessions`, `docs/backend/generator-sessions-api.md`) eventually
+  cleans it up like any other abandoned draft.
+- **Attribution.** The session is created INSIDE the run, so `HasCreator` stamps it
+  `creator_type='workflow_run', creator_id=<run id>` — the executor then reads that back as the explicit
+  METER ACTOR, so every AI event the generation makes carries `actor_type='workflow_run'`,
+  `actor_id=<run id>`, and the session id — WITHOUT needing `WorkflowRunContext` to survive into the
+  generation worker (it does not; the worker is a different job on the real queue).
+
+---
+
+## Suspend/resume engine (R2 sub-stage 5)
+
+The generic mechanism `generate_content` (above) is the first — and, today, only — consumer of. A step
+that has handed work to something outside this process parks its run in `waiting` instead of publishing
+an output; a later, FRESH job resumes the run from exactly where it left off. Full design record:
+**ADR-0039-workflow-suspend-resume-and-generate-content.md**.
+
+### The signal — `StepSuspended`, a throw, not a sentinel return
+
+`App\Modules\Workflows\Exceptions\StepSuspended($kind, $correlationKey, $payload)`. A step's `run()`
+throws it instead of returning; `App\Modules\Workflows\Steps\SuspendableWorkflowStep` (which
+`GenerateContentStep` implements) additionally declares `resume($config, $run, $context, $wait): array`,
+called at the EXACT position the wait targets once it is time to collect the outcome. A plain
+`WorkflowStep` knows nothing about suspension — the base contract is untouched.
+
+A sentinel return value was rejected: a step's return is merged VERBATIM into `context.steps.<key>`, so
+a magic marker key would leak into the user-visible variable catalog and could collide with a real
+output name. A throw reuses the runner's EXISTING "a step that cannot proceed must throw" contract,
+symmetrically, as the non-terminal sibling of an ordinary step failure. `WorkflowStepRunner`'s
+`catch (StepSuspended)` is ordered BEFORE its `catch (Throwable)` — PHP takes the first matching catch,
+so the ordering is load-bearing: reversed, every suspension would record as a step failure.
+
+### The three new `workflow_runs` columns
+
+Additive, nullable, central + tenant mirrors — `database/migrations/2026_08_04_000000_add_waiting_columns_to_workflow_runs_table.php`
+/ `database/migrations/tenant/0001_01_01_000055_add_waiting_columns_to_workflow_runs_table.php`. A
+workflow WITHOUT a suspending step never writes them; they stay `NULL` for the whole run — the
+byte-identical-behavior guarantee.
+
+| Column | Type | Meaning |
+|---|---|---|
+| `waiting_on` | json | `{kind, step_key, step_type, position, payload, config, definition_hash, ai_text_calls}` — see below. |
+| `waiting_key` | string, INDEXED | An opaque correlation key (`<kind>:<uuid>` — for `generate_content`, `generation_session:<session uuid>`). What a settle listener/the sweep/a resume job's atomic claim look a run up by. |
+| `waiting_since` | timestamp | When the wait started — RE-STAMPED on every park, including a re-park of the SAME step onto the SAME leg. `workflows.wait_timeout` therefore bounds time since the LAST park, not the run's total wait time (see "Timeout ordering" below for why this cannot loop). |
+
+`waiting_on.config` is the step's config **as already resolved at the moment it suspended** — replayed
+verbatim on resume, never re-resolved a second time. This is what makes a spend-incurring directive
+(`@[ai-text]`) in a suspendable step's config pay exactly once, and it is what makes `folder_id` on
+resume the same folder the run started with even if the step's config was edited (definition drift is
+its own hard failure — see below) or the workflow's constants changed while it waited.
+`waiting_on.definition_hash` is the whole-definition fingerprint (see "Definition drift" below).
+`waiting_on.ai_text_calls` re-seeds the run's per-run `@[ai-text]` budget on resume, since a fresh job
+means a fresh `WorkflowAiTextService` instance.
+
+**PRIVACY.** `waiting_on` carries the RESOLVED config, which may hold form-submitted personal data (a
+`{{trigger.fields.*}}` reference resolves to whatever the submitter typed) and AI-generated content. It
+is **never** serialized into `WorkflowRunResource`, never logged. Keep it that way when touching this
+code.
+
+### The resume — a fresh job, never a serialized continuation, atomically and CORRELATED-claimed
+
+`WorkflowRunResumeJob(runId, workspaceId, waitingKey)` — three scalars, the SAME idiom
+`BotTaskRunManager`/`BotTaskExecutionJob` already use for the Bot module's own claim/resume cycle. It
+never carries the model or any resolved state; `handle()` re-reads the `WorkflowRun` row, re-establishes
+tenancy explicitly, and calls `WorkflowStepRunner::resume($run)`, which rebuilds `context` FROM THE
+DATABASE: `context.steps` from what the suspension persisted, `globals`/custom functions/the runtime
+type map RE-READ LIVE (a constant edited while the run waited affects steps that run AFTER the resume,
+exactly as it would for any run started after the edit — the deliberate "fresh job, not a continuation"
+semantic).
+
+`WorkflowRunManager::claimResume($run, $waitingKey)` mirrors `claim()` exactly — a guarded
+`UPDATE workflow_runs SET state='running', started_at=now() WHERE id=? AND state='waiting' [AND
+waiting_key=?]` — but the CORRELATED predicate matters specifically because a resumed step may
+`StepSuspended` AGAIN (a multi-leg wait; `generate_content`'s own `resume()` does exactly this while the
+session is still `generating`/`draft`). Two independent triggers can learn a wait settled (below), and
+either can be redelivered at-least-once — without the key predicate, a stale/duplicate job for one LEG
+could win the claim and resume a DIFFERENT leg the step has since re-suspended onto. A lost claim
+(already resumed, re-suspended, reaped, or the run released) is a clean, silent no-op — never a second
+execution of the suspended step.
+
+### Definition drift — a whole-definition fingerprint, not just a per-position check
+
+The workflow may have been edited (or deleted) while the run waited. `WorkflowStepRunner::definitionHash()`
+SHA1-hashes the whole ordered step definition at BOTH suspend and resume time;
+`hasDefinitionDrift()` checks it FIRST. The per-position checks alone (same key, same type, still a
+`SuspendableWorkflowStep`) only see the ONE position the wait targets — an edit ANYWHERE else in the
+definition (a step appended after the suspended one, a LATER step's config rewritten, or even the
+suspended step's own config edited without touching its key/type) used to pass silently and could alter
+a run already in flight. Either check failing releases the run `failed` with `workflows.runs.definition_changed`
+rather than silently skipping or corrupting work. A wait persisted before this fingerprint existed
+carries no hash and falls back to the old per-position-only guard.
+
+### Two triggers, one correctness guarantee
+
+**The settle LISTENER (`ResumeWaitingRunOnSessionTerminal`) is a latency optimization.** It listens to
+the Generator's own `GenerationSessionUpdated` event (the SAME broadcast the chat's own settle push
+already uses, ADR-0034 D10) and dispatches a correlated `WorkflowRunResumeJob` the moment a session it
+is watching turns `ready`/`failed`. Workflows reacts to a Generator-owned signal — the Generator needs
+zero knowledge Workflows exists. It never throws (wrapped + reported; a failure here must not fail the
+GENERATION job it runs inside).
+
+**The waiting-run SWEEP (`WorkflowRunManager::reapWaitingRuns()`, driven by
+`workflows:reap-stale-runs`, already scheduled `everyFiveMinutes()`, per-tenant like its stale-RUNNING
+sibling) is the CORRECTNESS guarantee, and must stay one.** `GenerationSessionRunManager::broadcastTerminal()`
+deliberately SKIPS the broadcast when no workspace is active — precisely the case when the Generator's
+OWN lifecycle reaper (`generator:reap-sessions`, sweeping with tenant context cleared) settles a
+stranded session to `failed`. An event-only design would therefore strand exactly the runs that most
+need recovering. The sweep asks through the kind-keyed `WaitResolverRegistry` (Workflows' own contract —
+a feature module registers its `WaitResolver` from its own provider, mirroring the
+`Variables\Contracts\AiTextGenerator` inversion) → `GenerationSessionWaitResolver` (lives in Workflows,
+not Generator, because the FEATURE here is the STEP, a Workflows class, and the Generator must never
+name Workflows) → `SessionAutomationService::terminalStatusFor()` (a plain status string, no Generator
+model reached) — a direct DB read, independent of any broadcast ever having fired.
+
+The sweep queries the `waiting` rows in TWO partitions (fresh / stale, split on `waiting_since` vs. the
+cutoff), each `chunkById(SWEEP_CHUNK)` — `WorkflowRunManager::SWEEP_CHUNK = 20` — so its memory stays
+bounded no matter how many runs are parked, and so a row released mid-sweep cannot shift a page and skip
+a run.
+
+Per parked run, in order: SETTLED → dispatch the correlated resume job (even a long-overdue wait is
+RESUMED, never failed, once it settled); GONE → fail the run now; past `workflows.wait_timeout` → fail
+as timed out; otherwise leave it waiting. An unregistered kind or a throwing resolver downgrades to
+PENDING, never GONE — a transient/deploy fault can never wrongly time out a healthy wait.
+
+### `wait_timeout` and the timeout ordering invariant
+
+`config('workflows.wait_timeout')` (env `WORKFLOWS_WAIT_TIMEOUT`, default **2700s**) is the LAST-RESORT
+release for a run parked `waiting` — the normal way a wait ends is the resolver reporting SETTLED, not
+this timeout. Each window in the chain below must be strictly wider than the one it backstops, so the
+most informative recovery always gets the first chance to turn an abandoned piece of work into a real,
+SETTLED outcome instead of a generic timeout:
+
+```
+RunGenerationSessionJob timeout      300s   (the generation's own SIGALRM window)
+  < WithoutOverlapping lock expiry   600s   (releaseAfter 30s / expireAfter 600s)
+  < workflows.run_timeout            900s   (stale-RUNNING reaper — NEVER matches `waiting`)
+  < generator.session_stale_after   1800s   (the Generator's own stale-session reaper)
+  < workflows.wait_timeout          2700s   (stale-WAITING reaper — last resort)
+```
+
+`WorkflowRunJob::$timeout` is now explicitly declared (**720s**) rather than silently inheriting the
+worker's `--timeout` (Laravel's 60s default) — a pre-existing gap (SB2's `@[ai-text]` could already need
+up to 600s worst-case) fixed alongside this feature because `WorkflowRunResumeJob` needs the identical
+budget for its own SIGALRM window, the two jobs now being conceptually one pass split across a park.
 
 ---
 
@@ -3127,6 +3464,7 @@ in as the cost proxy.
 | `max_runs_per_month`       | `WORKFLOWS_MAX_RUNS_PER_MONTH`       | 100     | SOFT per-workflow monthly budget. `WorkflowRunManager::runsThisMonth($workflow)`. |
 | `max_runs_hard_cap`         | `WORKFLOWS_MAX_RUNS_HARD_CAP`         | 500     | ABSOLUTE **workspace-wide** monthly ceiling across ALL workflows, **including manual runs**. `runsThisMonthAcrossWorkspace()`. |
 | `run_timeout`               | `WORKFLOWS_RUN_TIMEOUT`               | 900 (s) | Stale-claim reaper threshold — see Run lifecycle below.                 |
+| `wait_timeout`                | `WORKFLOWS_WAIT_TIMEOUT`                | 2700 (s) | Stale-WAIT reaper threshold (R2 sub-stage 5) — the LAST-RESORT release for a run parked `waiting` past this window. See "Suspend/resume engine" above for the full timeout-ordering invariant. |
 | `max_depth`                  | `WORKFLOWS_MAX_DEPTH`                 | 3       | Re-trigger depth guard — see above.                                     |
 | `assist_rate_per_minute`       | `WORKFLOWS_ASSIST_RATE_PER_MINUTE`      | 5       | AI schedule-assist per-user throttle — a SEPARATE meter, not counted against the run budget. |
 | `ai_text_max_calls_per_run`      | `WORKFLOWS_AI_TEXT_MAX_CALLS_PER_RUN`     | 10      | `@[ai-text]` calls allowed within ONE run (SB2) — a PER-RUN budget, not per-workflow/month. Occurrences beyond the cap resolve to `''`, no call spent. |
@@ -3414,15 +3752,20 @@ only matches `pending`, so nothing else can recover it). That is what the reaper
 
 ### `workflows:reap-stale-runs`
 
-Scheduled `everyFiveMinutes()` + `withoutOverlapping()`. Releases runs stuck in `running` past
-`config('workflows.run_timeout')` (default 900s) to `failed` with a timeout error. Also reaps
-**NULL-started orphans** (rows claimed before the `started_at` column/mechanism existed — a
-defensive catch-all, not expected in steady state post-deploy). Must exceed the longest
-plausible real run duration, or a slow-but-alive run would be reaped prematurely.
+Scheduled `everyFiveMinutes()` + `withoutOverlapping()`. Runs BOTH sweeps every invocation:
+
+1. **`WorkflowRunManager::reapStaleRuns()`** — releases runs stuck in `running` past
+   `config('workflows.run_timeout')` (default 900s) to `failed` with a timeout error. Also reaps
+   **NULL-started orphans** (rows claimed before the `started_at` column/mechanism existed — a
+   defensive catch-all, not expected in steady state post-deploy). Must exceed the longest
+   plausible real run duration, or a slow-but-alive run would be reaped prematurely.
+2. **`WorkflowRunManager::reapWaitingRuns()`** (R2 sub-stage 5, additive) — the stale-WAIT sweep;
+   see "Suspend/resume engine" above for the full settled/gone/timed-out decision order and the
+   timeout-ordering invariant it depends on.
 
 **Per-tenant sweep**: `workflow_runs` lives in the shared database (shared-mode workspaces) AND
-in each own-database workspace, so both this command and `workflows:run-scheduled` run once
-unscoped on the default connection, then once per own-DB workspace (activating `TenantContext`
+in each own-database workspace, so both this command and `workflows:run-scheduled` run BOTH sweeps
+once unscoped on the default connection, then once per own-DB workspace (activating `TenantContext`
 + `TenantManager` for each) — mirrors `ReapStaleBotRunsCommand`.
 
 ---
@@ -3471,14 +3814,30 @@ never the name — see "Custom functions" under "The typed variable system" abov
 
 ## Ops notes
 
-- **`QUEUE_CONNECTION=sync` runs the report job inline on the sweep/request worker.**
-  `create_form_report` fires `CreateFormReportJob` (`ShouldQueue`) fire-and-forget. Under a real
-  queue this is genuinely async — the workflow step returns immediately, the AI analysis runs
-  later on a queue worker. **Under `QUEUE_CONNECTION=sync` (unsupported in production — see the
-  general Taskio ops guidance) the job runs INLINE**, meaning a schedule-sweep or event-dispatch
-  worker processing a `create_form_report` step would synchronously perform the full AI report
-  analysis before the sweep/dispatch call returns — a real queue is required for this step type
-  to behave as documented (fire-and-forget) in production.
+- **CORRECTED — `create_form_report` is NOT genuinely async even under a real queue; the whole run
+  loop deliberately forces the `sync` driver.** The previous text on this page claimed
+  `App\Modules\Forms\Jobs\CreateFormReport` runs "later on a queue worker" whenever `QUEUE_CONNECTION` is a real driver.
+  That is wrong. `WorkflowRunJob`/`WorkflowRunResumeJob` both call `Queue::setDefaultDriver('sync')`
+  around the ENTIRE step loop (save/restore around the pass, not merely for one step) — **load-bearing,
+  not incidental**: it is what keeps `WorkflowRunContext` published for anything a step "fires and
+  forgets", so `HasCreator` can stamp the resulting row with the RUN (ADR-0015; see the
+  "Creator attribution" note above — a schedule/event run's `FormReport` would otherwise have no
+  authenticated user to attribute to). The practical consequence: `create_form_report`'s
+  `App\Modules\Forms\Jobs\CreateFormReport` runs **INLINE, in-process, before the step returns**, REGARDLESS of
+  `QUEUE_CONNECTION` — a schedule-sweep or event-dispatch worker processing this step synchronously
+  performs the full AI report analysis before the step (and therefore the run) moves on. This has
+  always been true; it went undocumented until R2 sub-stage 5 needed to escape it deliberately (see
+  below).
+- **`generate_content` (R2 sub-stage 5) is the ONE escape hatch out of the forced `sync` driver, and
+  it is the genuinely-async step this module actually has.** `App\Modules\Workflows\Support\
+  RealQueueConnection` is a small container singleton both run jobs publish the PRE-OVERRIDE queue
+  connection into (before forcing `sync`); `GenerateContentStep::run()` reads it explicitly when
+  dispatching the generation session's claim, so that ONE dispatch reaches the real queue while
+  everything else in the same step loop still runs inline under the sync override. A step that
+  dispatches without reading `RealQueueConnection` gets the forced `sync` value like everything
+  else — this is deliberate: only a step that actually SUSPENDS the run (implements
+  `SuspendableWorkflowStep`) has a reason to escape. See "Suspend/resume engine" above and
+  ADR-0039 D1/D8.
 - **The schedule-assist throttle (`assist_rate_per_minute`) needs a PERSISTENT cache store.**
   `RateLimiter` reads/writes the DEFAULT cache store. The production default (`database`) is
   fine; the `array` driver resets every process — correct for tests exercising the throttle
@@ -3647,7 +4006,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Workflows/Services/WorkflowStepFactory.php` — step-type → implementation
 - `app/modules/Workflows/Services/WorkflowConditionEvaluator.php` — typed condition matrix
 - `app/modules/Workflows/Services/WorkflowTriggerPayloadFactory.php` — the whitelisted `{{trigger.*}}` payload builder
-- `app/modules/Workflows/Services/WorkflowVariableResolver.php` — the directive + `{kind}` union resolver (replaces the Etap-5 flat `ReferenceResolver`)
+- `app/modules/Variables/Services/VariableResolver.php` — the directive + `{kind}` union resolver (replaces the Etap-5 flat `ReferenceResolver`); relocated from `app/modules/Workflows/Services/WorkflowVariableResolver.php` in the R2 PR-1a down-move (ADR-0030)
 - `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — the typed variable/condition catalog
 - `app/modules/Workflows/Enums/ScheduleTimeMode.php`, `ScheduleDayMode.php`, `ScheduleMonthMode.php`, `ScheduleDaySpecial.php` — the v2 axis/mode enums
 - `app/modules/Workflows/Enums/ScheduleLimits.php` — the ONE place every numeric bound lives (the FE mirrors it verbatim)
@@ -3756,7 +4115,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Variables/Enums/PipelineLimits.php` — `MAX_ARG_VARIABLE_DEPTH`, the one shared arg-variable nesting cap (Phase 4; split out of Workflows' `ConditionTreeLimits` in the Variables module extraction, ADR-0027)
 - `app/modules/Variables/Enums/OperationArgType.php` — `argVariablePolicy()`, the per-category gate (Phase 4; renamed from the value-typed-only `variableValueType()` in the Phase 4b widening)
 - `app/modules/Variables/DTOs/ArgVariablePolicy.php` — the two-facet (`refTypes`/`coerceTo`) per-arg-control policy DTO `argVariablePolicy()` returns; `null`/`null` = STRUCTURAL (Phase 4b)
-- `app/modules/Workflows/Services/WorkflowVariableResolver.php` — `resolvePipelineArgs()`/`resolveStepArgs()`/`resolveArgVariable()`/`resolveStructuralArgVariable()`/`isVariableArg()`, the `argDepth`-threaded pre-resolution ahead of the executor (Phase 4; `resolveStructuralArgVariable()` added in Phase 4b)
+- `app/modules/Variables/Services/VariableResolver.php` — `resolvePipelineArgs()`/`resolveStepArgs()`/`resolveArgVariable()`/`resolveStructuralArgVariable()`/`isVariableArg()`, the `argDepth`-threaded pre-resolution ahead of the executor (Phase 4; `resolveStructuralArgVariable()` added in Phase 4b; relocated from Workflows in the R2 PR-1a down-move, ADR-0030)
 - `app/modules/Variables/Services/PipelineValidator.php` — `validateArgVariable()`/`validateArgVariableRef()`/`refFullPath()`, the `refCtx`/`argDepth`-threaded write validation, incl. the STRUCTURAL loose-gate branch (Phase 4 / 4b)
 - `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — `descriptorSubfieldTypeMap()`/`objectSubfieldTypeMap()`, indexing a non-array OBJECT descriptor's own fields recursively into the reference index + runtime type map (structural-referenceability follow-up, shipped alongside Phase 4b)
 - `app/modules/Workflows/Http/Requests/StoreWorkflowRequest.php` — `validateVariablePipeline()` now passes its `$refCtx` + `argDepth: 0` into the value-pipeline walk (Phase 4)
@@ -3782,7 +4141,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Variables/Support/ScopeRef.php` — the single source-aware `element`/`index`(`.subfield`) scope-ref predicate shared by the validator/resolver/executor (array-ops, ADR-0026 — fixes the Wave-2 Finding B name-collision bug)
 - `app/modules/Variables/Services/PipelineValidator.php` — `walkPipelineDescriptor()`/`opAcceptsDescriptor()`/`validateCollectionArgs()`/`validateElementPipeline()`/`validateScopeRootedElementPipeline()`/`validateReduceSeed()`, the descriptor-tracking walker + terminal-by-construction gate (array-ops, ADR-0026)
 - `app/modules/Variables/Services/OperationExecutor.php` — `applyCollection()`/`arrayMap()`/`arrayFilter()`/`arraySort()`/`arrayReduce()`/`arrayAt()`/`elementRunner()`/`runElement()`/`runReducer()`/`scopeOverlay()`/`resolveScopePipeline()`/`stepOutputType()`, the per-element re-entry + fail-closed matrix + the descriptor-derived `array_at` runtime type (array-ops, ADR-0026)
-- `app/modules/Workflows/Services/WorkflowVariableResolver.php` — scope-aware pre-resolution (`ScopeRef`-gated, keeps a scope ref OUT of global pre-resolution) (array-ops, ADR-0026)
+- `app/modules/Variables/Services/VariableResolver.php` — scope-aware pre-resolution (`ScopeRef`-gated, keeps a scope ref OUT of global pre-resolution) (array-ops, ADR-0026; relocated from Workflows in the R2 PR-1a down-move, ADR-0030)
 - `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — `elementScopeSubfields()`, the ONE place a repeater/file array is descended for element-scope access (array-ops, ADR-0026)
 - `app/modules/Variables/Enums/PipelineLimits.php` — `MAX_ARRAY_ITERATIONS` (1000), `MAX_ELEMENT_PIPELINE_DEPTH` (3), the two array-op caps shared by the validator and executor (array-ops, ADR-0026; split out of Workflows' `ConditionTreeLimits` in the Variables module extraction, ADR-0027) — also now `MAX_FUNCTION_EXPANSION_DEPTH` (5), the custom-function expansion depth cap (ADR-0029)
 - `tests/Unit/Workflows/OperationExecutorTest.php`, `tests/Feature/WorkflowConditionTreeValidationTest.php`, `tests/Feature/WorkflowStepValuePipelineValidationTest.php`, `tests/Unit/Workflows/WorkflowElementScopeValidationTest.php` — array-op runtime + write-validation coverage, incl. the fail-closed matrix, the caps, the terminal-by-construction gate, and the scope name-collision fix (array-ops, ADR-0026)
@@ -3793,15 +4152,39 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `resources/js/next/ui/editor/__tests__/arrayOperations.spec.ts`, `arrayObjectOps.spec.ts`, `arrayTransformOps.spec.ts`, `elementPipeline.dom.spec.ts`, `elementObjectPipeline.dom.spec.ts` — array-op catalog, element-pipeline editor, and scope-rooted object/file coverage (array-ops, ADR-0026, frontend)
 - `docs/decisions/ADR-0026-workflows-array-transform-operations.md` — this feature's design record (the six ops, the descriptor-tracking walker, scoped `element`/`index`, terminal-by-construction, the fail-closed matrix/caps, and the accepted `map |> array_at` runtime-typing limitation)
 - `docs/decisions/ADR-0025-workflows-variable-typesystem-phase4-arg-variables.md` — this phase's design record (the write-split/resolver-pre-resolves split, the cycle-free depth cap, the `refCtx` write split, the deferred trigger-gate wiring and parent-Save-gate UX follow-ups) plus its Phase 4b addendum (the per-category `ArgVariablePolicy` gate replacing the value-typed-only rule) — completes the four-phase variable-typesystem rework
+- `app/modules/Variables/Services/VariableCatalog.php` — the form-independent catalog composition (`variableTypes()`/`operations()`/`globalVariables()`/`globalValues()`/`customFunctionOperations()`/`flatType()`/`descriptorOptionKeys()`) extracted from `WorkflowVariableCatalogService`, which now delegates to it (R2 PR-1a, ADR-0030)
+- `app/modules/Variables/Contracts/AiTextGenerator.php` — the ai-text generation seam the relocated `VariableResolver` depends on instead of naming `WorkflowAiTextService` directly; `WorkflowAiTextService implements` it (bound in `WorkflowsModuleServiceProvider`), a template preview binds a no-op instead (R2 PR-1a, ADR-0030)
+- `tests/Unit/Variables/VariableResolverCharacterizationTest.php` — the byte-identical-resolution pin for the R2 PR-1a down-move (directives, pipelines incl. a `fn:<uuid>` custom function, flat tokens, if-blocks, the structured union, and `@[ai-text]` via a fake `AiTextGenerator`), plus the `slots`-root-is-inert-for-a-workflow pin (ADR-0030)
+- `docs/decisions/ADR-0030-variable-engine-down-move.md` — the R2 PR-1a design record: why `VariableResolver`/`VariableCatalog` relocate into Variables, the `AiTextGenerator` inversion, and the `ROOTS` superset
+- `app/modules/Generator/` — the new module (R2 PR-1b, sub-stage 1 "Templatki") that consumes this document's engine over its own `slots.<name>` root; depends on `Variables` only, never `Workflows` — see `docs/backend/generator-api.md` for its full endpoint contract and `docs/decisions/ADR-0031-generator-module-templates.md` for its design record
+- `app/modules/Workflows/Exceptions/StepSuspended.php`, `Steps/SuspendableWorkflowStep.php`, `Steps/GenerateContentStep.php`, `Jobs/WorkflowRunResumeJob.php`, `Contracts/WaitResolver.php`, `Services/WaitResolverRegistry.php`, `Services/GenerationSessionWaitResolver.php`, `Listeners/ResumeWaitingRunOnSessionTerminal.php`, `Support/RealQueueConnection.php`, three new `workflow_runs` columns (central `2026_08_04_000000_add_waiting_columns_to_workflow_runs_table.php` + tenant mirror) — R2 sub-stage 5: the generic suspend/resume engine (produces `WorkflowRunState::WAITING` for the first time) + the `generate_content` step consuming it; `app/modules/Generator/Services/SessionAutomationService.php`, `SessionContentProjector.php`, `GeneratedImageExporter.php`, `Enums/SlotScopePolicy.php` on the Generator side. See "Steps: `generate_content`" and "Suspend/resume engine" above and **ADR-0039-workflow-suspend-resume-and-generate-content.md**
 
 ## Planned / deferred (not implemented)
 
-- **Wait-for-approval resume**: `WorkflowRunState::WAITING` is declared but never produced by
-  the MVP engine. There is no longer a `start_approval` step in the 5.1 step set at all, so this
-  is even further from being built than at Etap-5 time. See ADR-0008 #11 (superseded context;
-  the mechanism note still holds).
-- **Manual run cancellation**: `WorkflowRunState::CANCELLED` is declared but no cancel action
-  exists yet.
+- ~~**Wait-for-approval resume**: `WorkflowRunState::WAITING` is declared but never produced.~~ —
+  **DONE (R2 sub-stage 5, ADR-0039), no longer deferred.** The engine that produces `WAITING` is
+  generic (not approval-specific) — see "Suspend/resume engine" above. Its first and only consumer
+  today is `generate_content`, not an approval step; a future `start_approval`-style suspending step
+  would reuse the same mechanism (register one `WaitResolver`, implement `resume()`) rather than need
+  new engine work. Kept struck through so a reader of an older snapshot understands the change.
+- **Manual cancellation of a `waiting` run**: `WorkflowRunState::CANCELLED` is declared but no cancel
+  action exists yet — a `generate_content` step that has parked a run cannot be cancelled from the UI
+  (the run detail's waiting panel says so explicitly). Unaffected by R2 sub-stage 5.
+- **Live push on the run detail page for a `waiting` run.** Unlike the Generator chat's own
+  `useSessionSettle()` websocket subscription, the workflow run detail's waiting panel is an HONEST
+  SNAPSHOT taken at load — elapsed time is "as of the last read", advanced only by an explicit Refresh
+  button. Not built as a deliberate scope cut, not an oversight.
+- **Per-part granular `generate_content` outputs.** The step publishes ONE assembled `content` string
+  and one `image_file_ids` list — a later step cannot address one specific part's text/image
+  individually the way a session's own chat UI can. Would need a richer output shape.
+- **A bot delegating a workflow-driven generation.** ADR-0036's bot-delegation overlay
+  (`SlotScopePolicy::Bot`) and this feature's automation seam (`SlotScopePolicy::Automation`) are
+  sibling trust boundaries today, not composed — a `generate_content` step cannot hand its session to a
+  bot mid-run.
+- **More than 2 `generate_content` steps per workflow.** A deliberate cap
+  (`StoreWorkflowRequest::GENERATE_CONTENT_MAX`) bounding a single run's worst-case AI fan-out and total
+  wait time, not a technical ceiling of the engine — an author who needs more splits the work across
+  multiple workflows.
 - **Bot-authored submission tracking**: `source` cannot express "a bot filled this form in" —
   see the Accepted residual risks section. Needs a new column, not just morph-derived logic.
 - **Descriptor-aware runtime typing for a `map`-produced array** (array-ops, ADR-0026): recovering

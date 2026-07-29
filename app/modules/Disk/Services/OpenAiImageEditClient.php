@@ -3,6 +3,7 @@
 namespace App\Modules\Disk\Services;
 
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
@@ -59,6 +60,15 @@ class OpenAiImageEditClient
         ], fn ($value) => $value !== ''));
 
         if (!$response->successful()) {
+            // Log the provider's OWN error (status + body) so a swallowed edit failure is diagnosable — the
+            // body carries the REAL reason (an unknown/no-access model, an oversized/invalid image, a bad
+            // param). It is OpenAI's error text, never the API key, so it is safe to log server-side.
+            Log::warning('OpenAI images/edits failed', [
+                'status' => $response->status(),
+                'model' => (string) config('ai.disk_image_model', 'gpt-image-1'),
+                'body' => $response->body(),
+            ]);
+
             // Terse, non-secret message — the caller collapses this to a localized 502 and never
             // surfaces the raw provider body to the client.
             throw new RuntimeException('OpenAI images/edits failed with status ' . $response->status() . '.');

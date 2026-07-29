@@ -13,8 +13,8 @@ import type {
   AiLabelOption,
   AiPersona,
   AiTextNodeAttrs,
-  VariableDefinition,
-  VariableOperationDefinition,
+  VariableFeatureConfig,
+  VariableStorage,
 } from './types';
 
 const props = defineProps<{
@@ -41,22 +41,25 @@ const personas = computed(() => aiStorage.value.personas ?? []);
 const labelsEnabled = computed(() => aiStorage.value.labelsEnabled ?? false);
 const labelsCatalog = computed(() => aiStorage.value.labelsCatalog ?? []);
 
-// Nested prompt editor feature config (re-enable variables / if-blocks inside).
+// Nested prompt editor feature config (re-enable variables / if-blocks inside). Forward the variable
+// extension's LIVE getters (getSource/getDefinitions/getCatalog) — NOT the FROZEN `definitions` array —
+// so the nested prompt's `{` suggestion sees the host's CURRENT feed (e.g. template SLOTS that arrive
+// async from the catalog), exactly like the parent body editor. Reading the frozen array left the prompt
+// showing only the variables that existed at editor-creation time (the workspace globals).
 const variableStorage = computed(
-  () =>
-    (props.editor.storage?.variable as {
-      definitions?: VariableDefinition[];
-      catalog?: VariableOperationDefinition[];
-    }) ?? {},
+  () => props.editor.storage?.variable as VariableStorage | undefined,
 );
-const nestedVariables = computed(() =>
-  variableStorage.value.definitions
-    ? {
-        variables: variableStorage.value.definitions,
-        operationsCatalog: variableStorage.value.catalog ?? [],
-      }
-    : undefined,
-);
+const nestedVariables = computed<VariableFeatureConfig | undefined>(() => {
+  const s = variableStorage.value;
+  if (!s) return undefined;
+  return {
+    variables: s.getDefinitions?.() ?? s.definitions ?? [],
+    operationsCatalog: s.getCatalog?.() ?? s.catalog ?? [],
+    source: s.getSource,
+    catalog: s.getCatalog,
+    argVariableField: s.argVariableField,
+  };
+});
 const nestedIfBlocks = computed(() => Boolean(props.editor.storage?.ifBlock));
 
 const summary = computed(() => {

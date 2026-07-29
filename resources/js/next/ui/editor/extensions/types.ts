@@ -171,12 +171,12 @@ export interface ChoiceRule {
  */
 export interface ArgVariableRef {
   /**
-   * The ref's ROOT source. `'scope'` (array-transform wave) is the synthetic per-element scope an
-   * element pipeline exposes — a reduce reducer op references an `element.<field>` subfield as a
-   * scope arg-variable (`{source:'scope', path:'element.<field>'}`); it is contextual, valid only
-   * inside that pipeline.
+   * The ref's ROOT source. `'globals'`/`'slots'` are the workspace-const / template-slot roots;
+   * `'scope'` (array-transform wave) is the synthetic per-element scope an element pipeline
+   * exposes — a reduce reducer op references an `element.<field>` subfield as a scope arg-variable
+   * (`{source:'scope', path:'element.<field>'}`); it is contextual, valid only inside that pipeline.
    */
-  source: 'trigger' | 'steps' | 'globals' | 'scope';
+  source: 'trigger' | 'steps' | 'globals' | 'slots' | 'scope';
   path: string;
   type: VariablePrimitive;
 }

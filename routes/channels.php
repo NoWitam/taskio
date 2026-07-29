@@ -24,3 +24,13 @@ use Illuminate\Support\Facades\Broadcast;
 Broadcast::channel('disk-ai.workspace.{workspaceId}', function (?User $user, string $workspaceId): bool {
     return $user !== null && (Workspace::find($workspaceId)?->hasMember($user) ?? false);
 });
+
+/**
+ * Private channel carrying async generation-SESSION terminal-status pushes for ONE workspace
+ * (see {@see \App\Modules\Generator\Events\GenerationSessionUpdated}) — so the chat waits on an event
+ * instead of polling. Per-workspace, not per-session: every open chat subscribes once and filters by id.
+ * Authorized by CENTRAL workspace membership, identical posture to the Disk AI channel above.
+ */
+Broadcast::channel('generator.workspace.{workspaceId}', function (?User $user, string $workspaceId): bool {
+    return $user !== null && (Workspace::find($workspaceId)?->hasMember($user) ?? false);
+});

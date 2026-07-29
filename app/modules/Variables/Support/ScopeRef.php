@@ -7,7 +7,7 @@ namespace App\Modules\Variables\Support;
  * (array-ops wave 2). Like ValueOrVariable, it exists because THREE layers must agree BYTE-for-BYTE, and
  * each had grown its own private copy — which had DRIFTED:
  *   - WorkflowConditionTreeValidator  gates a scope ref at WRITE time (source-aware — CORRECT),
- *   - WorkflowVariableResolver        keeps a scope ref OUT of global pre-resolution (was LEAF-ONLY),
+ *   - VariableResolver        keeps a scope ref OUT of global pre-resolution (was LEAF-ONLY),
  *   - OperationExecutor       resolves a scope ref per iteration against the overlay (was LEAF-ONLY).
  *
  * The two LEAF-ONLY copies flagged ANY ref whose PATH leaf was literally `element` / `index` as scope,

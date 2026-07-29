@@ -4,10 +4,10 @@ namespace Tests\Unit\Workflows;
 
 use App\Modules\Variables\Enums\VariableType as WorkflowVariableType;
 use App\Modules\Variables\Services\OperationExecutor as WorkflowOperationExecutor;
+use App\Modules\Variables\Services\VariableResolver as WorkflowVariableResolver;
 use App\Modules\Workflows\Services\WorkflowConditionEngine;
 use App\Modules\Workflows\Services\WorkflowConditionEvaluator;
 use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
-use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
 use Mockery;
 use Tests\Support\ScriptedWorkflowAiTextService;

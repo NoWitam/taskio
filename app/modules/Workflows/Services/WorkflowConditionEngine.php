@@ -6,6 +6,7 @@ use App\Modules\Variables\Enums\PipelineLimits;
 use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Variables\Services\FunctionDefinitionValidator;
 use App\Modules\Variables\Services\OperationExecutor;
+use App\Modules\Variables\Services\VariableResolver;
 use App\Modules\Variables\Support\FunctionScope;
 use App\Modules\Variables\Support\ValueOrVariable;
 use App\Modules\Workflows\Enums\ConditionTreeLimits;
@@ -53,7 +54,7 @@ use Throwable;
  *
  * ARGUMENT VARIABLES (B6): an operation ARGUMENT inside a condition pipeline may itself be a value-or-
  * variable union, so a condition can compare a field against ANOTHER field / a global. Those are
- * pre-resolved to literals by WorkflowVariableResolver::resolveArgsForPipeline BEFORE the (pure)
+ * pre-resolved to literals by VariableResolver::resolveArgsForPipeline BEFORE the (pure)
  * executor runs — the SAME machinery the step runtime uses, so the two can never drift. An argument
  * ref uses the module-wide FULL path (`trigger.fields.<id>`, `globals.<key>`), NOT the source's short
  * vocabulary, because it is resolved against a real run context.
@@ -136,7 +137,7 @@ class WorkflowConditionEngine
     public function __construct(
         private OperationExecutor $executor,
         private WorkflowConditionEvaluator $legacy,
-        private WorkflowVariableResolver $resolver,
+        private VariableResolver $resolver,
         private WorkflowVariableCatalogService $catalog,
     ) {}
 
@@ -543,7 +544,7 @@ class WorkflowConditionEngine
      * Without the key the value passes through untouched, so a missing path stays the plain false the
      * module has always answered — the substitution can only ever be asked for, never inherited.
      *
-     * Mirrors WorkflowVariableResolver::applyDefault (a scalar literal, empty-or-missing trigger) so a
+     * Mirrors VariableResolver::applyDefault (a scalar literal, empty-or-missing trigger) so a
      * reference's default and a condition's default mean the same thing; a non-scalar default is
      * ignored rather than trusted (the write-validator rejects one, so it can only be a legacy row).
      *

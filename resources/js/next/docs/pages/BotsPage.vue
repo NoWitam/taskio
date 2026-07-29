@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Gallery: Bot (AI Character) module — module overview, API surfaces, polymorphic
 // actor contract, interactive task-execution flow, tool registry, knowledge module,
-// and bot-as-approver pattern. Documents the IMPLEMENTED behavior of app/modules/Bot/
-// (covers B1–B6) — not planned behavior.
+// bot-as-approver pattern, and generation-session delegation. Documents the
+// IMPLEMENTED behavior of app/modules/Bot/ (covers B1–B6 + R2 sub-stage 3) — not
+// planned behavior.
 //
 // Sections:
 //   1. Module overview & concepts (5 modules)
@@ -15,8 +16,9 @@
 //   8. Knowledge module (B6)
 //   9. Test seams (structured-output fake vs scripted multi-step double)
 //   10. Bot as named AI approver
-//   11. Editor UI (5-module drawer)
-//   12. Refactor lesson: null-guarding shared resource fields
+//   11. Bot as generation-session author (R2 sub-stage 3 — Generator delegation)
+//   12. Editor UI (5-module drawer)
+//   13. Refactor lesson: null-guarding shared resource fields
 import StoryPage from '../StoryPage.vue';
 import StorySection from '../StorySection.vue';
 import ApiTable, { type ApiRow } from '../ApiTable.vue';
@@ -779,7 +781,31 @@ const approverTypeRows: ApiRow[] = [
       </div>
     </StorySection>
 
-    <!-- 11. Editor UI (5-module drawer) -->
+    <!-- 11. Bot as generation-session author (R2 sub-stage 3) -->
+    <StorySection title="Bot as generation-session author (R2 sub-stage 3)">
+      <div class="flex flex-col gap-next-4 text-next-sm">
+        <p class="text-next-muted-foreground">
+          A workspace bot can be DELEGATED an editable Generator
+          <code class="font-next-mono">GenerationSession</code>: it autonomously fills the session's
+          in-scope inputs and becomes the content's AUTHOR, rendering every text part (and a
+          <code class="font-next-mono">shot_list</code>'s voiceover) in the SAME persona/style/dictionary/
+          phrases/prohibitions this page's Module overview describes — the human session owner is unchanged
+          and keeps full edit/refine/undo/delete rights. This is the ONE new cross-module edge in the app,
+          <code class="font-next-mono">Bot → Generator + Variables</code>, strictly one-way (the Generator
+          never imports Bot).
+        </p>
+        <Alert variant="info" size="sm">
+          Full contract (delegate/undo endpoints, the overlay + fill-report shapes, the
+          <code class="font-next-mono">can_delegate</code>/<code class="font-next-mono">can_undo_delegation</code>
+          resource flags) lives in <code class="font-next-mono">docs/backend/generator-sessions-api.md</code>
+          ("Bot-author delegation overlay") and the Generator module's own gallery page (§20 of
+          <code class="font-next-mono">GeneratorPage.vue</code>). Design record:
+          <code class="font-next-mono">docs/decisions/ADR-0036-bot-delegation-generation-sessions.md</code>.
+        </Alert>
+      </div>
+    </StorySection>
+
+    <!-- 12. Editor UI (5-module drawer) -->
     <StorySection title="Editor UI — 5-module drawer">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <p class="text-next-muted-foreground">
@@ -840,7 +866,7 @@ const approverTypeRows: ApiRow[] = [
       </div>
     </StorySection>
 
-    <!-- 12. Refactor lesson -->
+    <!-- 13. Refactor lesson -->
     <StorySection title="Refactor lesson: null-guarding shared resource fields">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">

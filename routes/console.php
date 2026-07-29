@@ -38,3 +38,10 @@ Schedule::command('disk:reap-stale-ai-edits')->everyFiveMinutes()->withoutOverla
 // minutes — the retention window is measured in hours, so this only has to run often enough to keep
 // nothing piling up.
 Schedule::command('disk:reap-stale-drafts')->everyTenMinutes()->withoutOverlapping();
+
+// Lifecycle reaper for generation SESSIONS: recover sessions stranded in `generating` by a dead worker
+// (a SIGKILL/OOM bypasses the job's failed() hook), trash non-archived idle sessions, and purge old
+// trashed ones (force-delete + produced-image blob GC). Every five minutes matches the other reapers so
+// a stale run recovers quickly; the day/week/month retention windows make the trash/purge passes cheap
+// no-ops most of the time. Archived sessions are exempt. Harmless under a sync queue.
+Schedule::command('generator:reap-sessions')->everyFiveMinutes()->withoutOverlapping();

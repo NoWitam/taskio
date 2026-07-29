@@ -236,6 +236,46 @@ class FileService
         return $file;
     }
 
+    /**
+     * Store raw BYTES as a DISK-native file (the Generator "Zapisz na Dysk" path — a produced image the
+     * caller has in memory, not an UploadedFile). Mirrors {@see store()} exactly — the workspace blob prefix,
+     * the folder placement via `fileable` (fileable_type 'folder', or root when null), and the folder label
+     * enforcement — so a saved generation is indistinguishable from an uploaded disk file. The uploader is
+     * stamped by HasCreator (the request's user), so no explicit uploader is needed. Reused instead of
+     * hand-rolling storage in the Generator module.
+     *
+     * The target folder is passed as an OPTIONAL id and resolved HERE through the tenant-scoped model
+     * ({@see resolveFolder}): a foreign/unknown id 404s at `findOrFail` (never a cross-tenant write), a null
+     * lands the file at the workspace root — so the Disk module owns folder resolution, keeping the caller
+     * (a thin controller) out of the persistence layer.
+     */
+    public function storeDiskContent(string $content, string $name, string $mimeType, ?string $folderId = null): File
+    {
+        $folder = $this->resolveFolder($folderId);
+
+        $extension = pathinfo($name, PATHINFO_EXTENSION);
+        $storedName = Str::uuid() . ($extension !== '' ? '.' . $extension : '');
+        $path = $this->uploadDirectory() . '/' . $storedName;
+
+        Storage::put($path, $content);
+
+        $file = File::create([
+            'name' => $name,
+            'path' => $path,
+            'type' => FileType::fromMimeType($mimeType),
+            'mime_type' => $mimeType,
+            'size' => strlen($content),
+        ] + $this->folderPlacement($folder));
+
+        // A new disk file inherits the enforced labels of its folder and every ancestor, and starts with the
+        // folder's recommended labels — identical to store().
+        $enforcer = app(FolderLabelEnforcer::class);
+        $enforcer->syncFile($file);
+        $enforcer->seedRecommended($file, $folder);
+
+        return $file->load(['labels', 'folder']);
+    }
+
     /** The fileable attributes that place a file in $folder (null = the workspace root). */
     private function folderPlacement(?Folder $folder): array
     {

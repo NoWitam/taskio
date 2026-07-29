@@ -377,10 +377,19 @@ function expandVariables(variables: CatalogVariable[]): CatalogVariable[] {
     }
 
     // OBJECT container: a REPEATER (array) → one list entry; a SECTION (non-array) → the
-    // expand-only container entry that groups its own flat leaves.
+    // expand-only container entry that groups its own flat leaves. A `slots` OBJECT (R2 template
+    // slot) is the EXCEPTION: exactly like an object GLOBAL above, the backend emits it as ONE
+    // variable carrying its subfields in `descriptor.fields` with NO flat `slots.<name>.<field>`
+    // leaves — so it must ride AS ITSELF, fields RETAINED, for `buildVariableTree` to expand
+    // `slots.<name>.<field>` into pickable nodes. Routing it through `sectionContainerVariable`
+    // (correct for a FORM SECTION, whose leaves DO arrive flat) would DROP those fields, leaving a
+    // childless container that `pruneDeadNodes` strips — the declared slot could then never be
+    // referenced. This mirrors the object-global retention path (same shape: push the variable
+    // unchanged) rather than adding a parallel one.
     if (base === 'object') {
       if (isIdVariable(variable.path)) continue;
       if (descriptor?.array) out.push(repeaterListVariable(variable));
+      else if (variable.source === 'slots') out.push(variable);
       else out.push(sectionContainerVariable(variable));
       continue;
     }

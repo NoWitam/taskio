@@ -82,6 +82,7 @@ const primaryNav: NavLink[] = [
   { key: 'approvals', labelKey: 'nav.approvals', icon: 'git-branch', to: '/approvals' },
   { key: 'workflows', labelKey: 'nav.workflows', icon: 'workflow', to: '/workflows' },
   { key: 'variables', labelKey: 'nav.variables', icon: 'braces', to: '/variables' },
+  { key: 'generator', labelKey: 'nav.generator', icon: 'palette', to: '/generator' },
   { key: 'bots', labelKey: 'nav.bots', icon: 'sparkles', to: '/bots' },
 ];
 
@@ -123,6 +124,17 @@ const canManageMembers = computed(() => {
 
 function goToMembers(): void {
   void router.push({ name: 'next.settings.members' });
+}
+
+/**
+ * AI-usage meter (R2 sub-stage 4): visible to ANY member of a current workspace — but the page is
+ * workspace-scoped, so gate the entry on HAVING one (with no current workspace the page renders blank),
+ * mirroring how `canManageMembers` reads `auth.currentWorkspace`.
+ */
+const canViewAiUsage = computed(() => !!auth.currentWorkspace);
+
+function goToAiUsage(): void {
+  void router.push({ name: 'next.settings.aiUsage' });
 }
 
 /** A workspace whose own-DB is still being provisioned can't be switched into. */
@@ -313,6 +325,17 @@ async function onLogout(): Promise<void> {
               @select="goToMembers"
             >
               {{ t('userMenu.manageMembers', 'Manage members') }}
+            </DropdownMenuItem>
+
+            <!-- AI usage: any member (the meter is read-only for members; the cap editor is owner-gated in-page).
+                 Gated on a current workspace — the page is workspace-scoped and renders blank without one. -->
+            <DropdownMenuItem
+              v-if="canViewAiUsage"
+              icon="wallet"
+              :label="t('userMenu.aiUsage', 'AI usage')"
+              @select="goToAiUsage"
+            >
+              {{ t('userMenu.aiUsage', 'AI usage') }}
             </DropdownMenuItem>
 
             <DropdownMenuItem

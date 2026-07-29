@@ -47,11 +47,15 @@ export type WorkflowStatus = 'active' | 'inactive';
 export type WorkflowTriggerType = 'form_submitted' | 'schedule';
 
 /**
- * The TWO step types (ordered actions). `assign_bot`/`attach_form`/`start_approval`
+ * The step types (ordered actions). `assign_bot`/`attach_form`/`start_approval`
  * are GONE — form + pipeline attach live INSIDE `create_task`; assignment is a
  * first-class `create_task` field (§4.6).
+ *
+ * R2 sub-stage 5 adds the THIRD: `generate_content`, which runs a Generator TEMPLATE
+ * and publishes the produced text + Disk image files. It is the first SUSPENDING step
+ * — it parks the run in the `waiting` state while the generation settles.
  */
-export type WorkflowStepType = 'create_task' | 'create_form_report';
+export type WorkflowStepType = 'create_task' | 'create_form_report' | 'generate_content';
 
 /**
  * The canonical TYPE of a workflow variable / condition field (mirrors
@@ -152,8 +156,12 @@ export type SubmissionSource = 'manual' | 'task';
 export type FormReportSource = 'task' | 'form';
 
 /**
- * A run's lifecycle state. `waiting` + `cancelled` are RESERVED (not produced by
- * the MVP engine) but declared so the frontend badge map is exhaustive.
+ * A run's lifecycle state. `waiting` is now genuinely PRODUCED (R2 sub-stage 5): a run
+ * that reaches a SUSPENDING step (`generate_content`) parks in `waiting` until the
+ * generation settles — typically a minute or two, bounded by the engine's wait timeout.
+ * There is NO live push on the run detail and NO cancel affordance today.
+ * `cancelled` remains RESERVED (not produced by the engine) but is declared so the
+ * frontend badge map stays exhaustive.
  */
 export type WorkflowRunState =
   | 'pending'
@@ -165,8 +173,8 @@ export type WorkflowRunState =
 
 /**
  * The six run states in a stable order (used by the Runs filter SegmentedControl,
- * §5.2). `waiting` + `cancelled` are RESERVED (may show zero rows) but rendered so
- * the IA is visible.
+ * §5.2). `waiting` is a REAL, selectable state (a run parked on a generation);
+ * `cancelled` is RESERVED (may show zero rows) but rendered so the IA is visible.
  */
 export const RUN_STATES = [
   'pending',
@@ -426,6 +434,31 @@ export interface CreateFormReportStepConfig {
   submissions_to?: WorkflowFieldValue<string> | string | null;
 }
 
+/**
+ * `generate_content` config (R2 sub-stage 5) — the EXACT allow-list
+ * (`StoreWorkflowRequest::allowedStepKeys`): ANY other top-level key is a 422.
+ *
+ * Outputs (published automatically into the variable catalog as `steps.<key>.*`):
+ * `session_id` TEXT · `content` TEXT · `image_file_ids` FILE · `status` TEXT ·
+ * `has_failed_parts` BOOLEAN. NOTE: `status` is effectively ALWAYS `'ready'` today —
+ * a failed session HARD-FAILS the step — so it is never advertised as a branch variable.
+ */
+export interface GenerateContentStepConfig {
+  /** REQUIRED — a workspace-scoped Generator Template uuid. */
+  template_id: string | null;
+  /**
+   * A map `<declared slot name> => value-or-variable`. EVERY non-nullable slot of the
+   * chosen template MUST be mapped (required ⇔ `descriptor.nullable !== true` — there is
+   * no `required` key). A COMPOSITE slot (descriptor base `object`, or `array:true` with
+   * base `file`) can NEVER be supplied by a workflow and must stay unmapped.
+   */
+  slots: Record<string, unknown>;
+  /** Nullable — a workspace-scoped Disk Folder uuid (null / omitted = the Disk root). */
+  folder_id?: string | null;
+  /** Nullable — the generated session's display name (defaults to the template's). */
+  name?: string | null;
+}
+
 // The REV3 schedule-descriptor types (`ScheduleParamType`, `ScheduleParamDescriptor`,
 // `ScheduleFamilyDescriptor`, `ScheduleFamiliesResponse`) were REMOVED in Phase 4a —
 // v2 has NO `GET /workflows/meta/schedule-families` endpoint. The FE owns every label
@@ -533,8 +566,11 @@ export interface CatalogVariable {
    * The variable's ROOT source. `globals` (Phase 3) joins `trigger` / `steps`: the
    * workspace's user-authored `globals.<key>` literal constants flow through the SAME
    * catalog as a normal typed variable (form-independent — present for every trigger).
+   * `slots` (R2 Generator) is the fourth root the whitelist superset adds — a TEMPLATE's
+   * declared `slots.<name>` typed inputs; it never appears in a workflow catalog (inert
+   * there), only in a template catalog fed to the SAME shared editor.
    */
-  source: 'trigger' | 'steps' | 'globals';
+  source: 'trigger' | 'steps' | 'globals' | 'slots';
   path: string;
   name: string;
   type: WorkflowVariableType;

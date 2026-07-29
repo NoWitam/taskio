@@ -5,6 +5,7 @@ namespace App\Modules\Workflows\Services;
 use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Steps\CreateFormReportStep;
 use App\Modules\Workflows\Steps\CreateTaskStep;
+use App\Modules\Workflows\Steps\GenerateContentStep;
 use App\Modules\Workflows\Steps\WorkflowStep;
 use RuntimeException;
 
@@ -32,6 +33,7 @@ class WorkflowStepFactory
         return match ($type) {
             WorkflowStepType::CREATE_TASK => CreateTaskStep::class,
             WorkflowStepType::CREATE_FORM_REPORT => CreateFormReportStep::class,
+            WorkflowStepType::GENERATE_CONTENT => GenerateContentStep::class,
         };
     }
 

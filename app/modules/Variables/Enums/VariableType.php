@@ -206,7 +206,7 @@ enum VariableType: string
      *
      * BOTH the file descriptor (fileFields, below) and the write-validation reference index / runtime
      * type map (WorkflowVariableCatalogService) enumerate from here, so the three can never disagree on
-     * the subfield set or its types. WorkflowVariableResolver::FILE_SUBFIELDS owns the ORTHOGONAL runtime
+     * the subfield set or its types. VariableResolver::FILE_SUBFIELDS owns the ORTHOGONAL runtime
      * snapshot-KEY mapping (`type`→`mime_type`) over this SAME key set — a value-access concern, not a
      * type, so it stays a separate map (cross-referenced there).
      *

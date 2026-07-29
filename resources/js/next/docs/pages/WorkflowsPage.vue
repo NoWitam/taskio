@@ -15,6 +15,13 @@
 // 66→68 ops) — not planned behavior. Deferred/planned items are called out
 // explicitly (see the last section).
 //
+// R2 sub-stage 5 (2026-07-29, ADR-0039) adds a THIRD step type, `generate_content` — a Generator
+// Template run from inside a workflow — and the GENERIC suspend/resume engine it is the first
+// consumer of: `WorkflowRunState.WAITING` is now genuinely PRODUCED (it sat reserved, unproduced,
+// since Etap-5) when a step hands work to something outside this process. See "Steps" (§7) and
+// "Run lifecycle" (§12) below for the full contract, and
+// docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md for the design record.
+//
 // Sections:
 //   1. Module overview & concepts (the 5.1 re-scope)
 //   2. Workflow API endpoints
@@ -22,12 +29,12 @@
 //   4. Trigger types: form_submitted + schedule
 //   5. Typed conditions (form_submitted only)
 //   6. The typed variable system (directive + {kind} union)
-//   7. Steps: create_task + create_form_report
+//   7. Steps: create_task + create_form_report + generate_content (R2 sub-stage 5)
 //   8. Schedule: the time/day/month descriptor + exclusions + live preview
 //   9. AI schedule-assist
 //   10. Trigger dispatch pipeline + loop protection
 //   11. Cost limits
-//   12. Run lifecycle + monitoring (Runs view)
+//   12. Run lifecycle + monitoring (Runs view) — incl. the suspend/resume engine (R2 sub-stage 5)
 //   13. Manual runs / test runs
 //   14. Frontend module
 //   15. Planned / deferred
@@ -121,15 +128,25 @@ const conditionMatrixRows: ApiRow[] = [
 
 // ── Step types ───────────────────────────────────────────────────────────────
 const stepTypeRows: ApiRow[] = [
-  { name: 'create_task',        type: '{ title (req), description?, priority?, deadline?, labels?, assignee_type?+assignee_id?, form_id?, approval_pipeline_id? }', description: 'Via TaskService::create(). Output: { task_id, title }. Assignment/form/pipeline are NOW fields on this step (folded in from the removed assign_bot/attach_form/start_approval).' },
-  { name: 'create_form_report', type: '{ form_id (req), name (req), guidelines?, sources?, submissions_from?, submissions_to? }', description: 'Via FormReportService::create() — fire-and-forget queued AI report. Output: { report_id, report_name }.' },
+  { name: 'create_task',        type: '{ title (req), description?, priority?, deadline?, labels?, assignee_type?+assignee_id?, form_id?, approval_pipeline_id?, attachments? }', description: 'Via TaskService::create(). Output: { task_id, title }. Assignment/form/pipeline are NOW fields on this step (folded in from the removed assign_bot/attach_form/start_approval). attachments accepts a file id (or a list of them) or a FILE-typed variable — e.g. a generate_content step\'s image_file_ids.' },
+  { name: 'create_form_report', type: '{ form_id (req), name (req), guidelines?, sources?, submissions_from?, submissions_to? }', description: 'Via FormReportService::create() — fire-and-forget, but runs INLINE under the run loop\'s forced sync driver (see Ops notes in the backend doc), NOT genuinely async. Output: { report_id, report_name }.' },
+  { name: 'generate_content',   type: '{ template_id (req), slots?, folder_id?, name? }', description: 'R2 sub-stage 5. Runs a Generator Template — the ONE step that SUSPENDS the run (parks it in `waiting`) while the generation runs on the real queue. Output: { session_id, content, image_file_ids, status, has_failed_parts }. Max 2 per workflow.' },
+];
+
+// ── generate_content granular 422s ───────────────────────────────────────────
+const generateContent422Rows: ApiRow[] = [
+  { name: 'steps.<i>.config.template_id',   type: '422', description: 'Missing, not a uuid, or not a template in this workspace.' },
+  { name: 'steps.<i>.config.folder_id',     type: '422', description: 'Not a uuid, or not a Disk folder in this workspace.' },
+  { name: 'steps.<i>.config.slots.<name>',  type: '422', description: 'An unmapped REQUIRED slot; an unknown slot name (not declared by the template); a mapped value whose pipeline does not type-flow to the slot\'s own type; a REQUIRED composite slot (object, or a list of files) the step cannot supply at all; a NULLABLE composite slot that was explicitly mapped anyway.' },
+  { name: 'steps.<i>.type',                 type: '422', description: 'A 3rd (or later) generate_content step in the same workflow — the cap is 2.' },
 ];
 
 // ── config/workflows.php ────────────────────────────────────────────────────
 const configRows: ApiRow[] = [
   { name: 'workflows.max_runs_per_month',     type: 'WORKFLOWS_MAX_RUNS_PER_MONTH',     description: 'Default 100. SOFT per-workflow monthly budget.' },
   { name: 'workflows.max_runs_hard_cap',      type: 'WORKFLOWS_MAX_RUNS_HARD_CAP',      description: 'Default 500. ABSOLUTE workspace-wide monthly ceiling, INCLUDING manual runs.' },
-  { name: 'workflows.run_timeout',            type: 'WORKFLOWS_RUN_TIMEOUT',            description: 'Default 900s. Stale-claim reaper threshold.' },
+  { name: 'workflows.run_timeout',            type: 'WORKFLOWS_RUN_TIMEOUT',            description: 'Default 900s. Stale-claim (running) reaper threshold.' },
+  { name: 'workflows.wait_timeout',           type: 'WORKFLOWS_WAIT_TIMEOUT',           description: 'Default 2700s (R2 sub-stage 5). Stale-WAIT reaper threshold — the LAST-RESORT release for a run parked `waiting`. See "Run lifecycle" for the full timeout-ordering chain.' },
   { name: 'workflows.max_depth',              type: 'WORKFLOWS_MAX_DEPTH',              description: 'Default 3. Re-trigger chain depth guard.' },
   { name: 'workflows.assist_rate_per_minute', type: 'WORKFLOWS_ASSIST_RATE_PER_MINUTE', description: 'Default 5. AI schedule-assist per-user throttle — a SEPARATE meter from the run budget.' },
   { name: 'workflows.ai_text_max_calls_per_run', type: 'WORKFLOWS_AI_TEXT_MAX_CALLS_PER_RUN', description: 'Default 10. @[ai-text] calls allowed within ONE run — a PER-RUN budget (SB2). Beyond it: resolves to \'\', no call spent.' },
@@ -279,17 +296,31 @@ const argVariableControlRows: ApiRow[] = [
           for the full rationale.
         </Alert>
 
+        <Alert variant="info" size="sm">
+          <strong>R2 sub-stage 5 (2026-07-29) added a THIRD step type on top of the 5.1 re-scope:
+          <code class="font-next-mono">generate_content</code></strong> — a Generator Template run from
+          inside a workflow. It is also the run loop's first and only SUSPENDING step: the run genuinely
+          parks in a new <code class="font-next-mono">waiting</code> state while the generation runs on
+          the real queue, then a fresh job resumes it. See "Steps" and "Run lifecycle" below and
+          <code class="font-next-mono">docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md</code>.
+        </Alert>
+
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-2 font-next-semibold text-next-fg">Shape</p>
           <pre class="overflow-x-auto rounded-next-md bg-next-muted p-next-3 font-next-mono text-next-xs text-next-fg">Workflow (definition)
   trigger_type + trigger_config   (form_submitted | schedule — what starts it)
   conditions[]                    (form_submitted only: typed field/field_type/operator/value, AND-combined)
-  steps[]                         (ordered actions: create_task, create_form_report)
+  steps[]                         (ordered actions: create_task, create_form_report, generate_content)
 
 WorkflowRun (one execution)
-  state machine: pending -&gt; running -&gt; completed | failed   (waiting, cancelled reserved, unused)
+  state machine: pending -&gt; running -&gt; completed | failed
+                    | ^
+          suspend() | | claimResume()   (generate_content only — R2 sub-stage 5)
+                    v |
+                  waiting                (cancelled still reserved, unused)
   origin: event | schedule | manual
   context: { trigger: {...}, steps: { &lt;key&gt;: {...output} } }
+  waiting_on / waiting_key / waiting_since   (only while state = waiting)
   WorkflowRunStep[]  (one audit row per executed step, in order)</pre>
         </div>
 
@@ -316,9 +347,12 @@ WorkflowRun (one execution)
               <li>app/modules/Workflows/Services/WorkflowScheduleService.php (+Compiler, +RulesValidator)</li>
               <li>app/modules/Workflows/Services/WorkflowScheduleAssistService.php</li>
               <li>app/modules/Workflows/Agents/ScheduleAssistAgent.php</li>
-              <li>app/modules/Workflows/Steps/ (2 step implementations)</li>
-              <li>app/modules/Workflows/Jobs/WorkflowRunJob.php</li>
-              <li>app/modules/Workflows/Console/ (schedule sweep + stale-run reaper)</li>
+              <li>app/modules/Workflows/Steps/ (3 step implementations, incl. GenerateContentStep)</li>
+              <li>app/modules/Workflows/Exceptions/StepSuspended.php, Steps/SuspendableWorkflowStep.php</li>
+              <li>app/modules/Workflows/Jobs/WorkflowRunJob.php, Jobs/WorkflowRunResumeJob.php</li>
+              <li>app/modules/Workflows/Contracts/WaitResolver.php, Services/WaitResolverRegistry.php, Services/GenerationSessionWaitResolver.php</li>
+              <li>app/modules/Workflows/Listeners/ResumeWaitingRunOnSessionTerminal.php, Support/RealQueueConnection.php</li>
+              <li>app/modules/Workflows/Console/ (schedule sweep + stale-run/stale-wait reaper)</li>
               <li>app/modules/Workflows/Policies/WorkflowPolicy.php</li>
             </ul>
           </div>
@@ -515,7 +549,7 @@ WorkflowRun (one execution)
             <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">@[ai-text] — AI-generated text (SB2)</p>
             <p class="text-next-xs text-next-muted-foreground">
               The (already resolved) prompt + a persona are sent to a TOOL-LESS agent
-              (<code class="font-next-mono">WorkflowAiTextAgent</code>, provider/model from
+              (<code class="font-next-mono">AiTextAgent</code>, provider/model from
               <code class="font-next-mono">config('ai')</code>). Budgeted PER RUN
               (<code class="font-next-mono">ai_text_max_calls_per_run</code>, default 10 —
               beyond it: <code class="font-next-mono">''</code>, no call spent) and length-capped
@@ -822,7 +856,7 @@ WorkflowRun (one execution)
     </StorySection>
 
     <!-- 7. Steps -->
-    <StorySection title="Steps: create_task + create_form_report">
+    <StorySection title="Steps: create_task + create_form_report + generate_content">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <p class="text-next-muted-foreground">
           Steps run <strong>in the order they are stored</strong>, each acting ONLY through an
@@ -856,10 +890,17 @@ WorkflowRun (one execution)
             </ul>
           </div>
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
-            <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">create_form_report — fire-and-forget</p>
+            <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">create_form_report — fire-and-forget, but NOT genuinely async</p>
             <p class="text-next-xs text-next-muted-foreground">
               Creating the report fires <code class="font-next-mono">CreateFormReportJob</code>
-              (queued) — the step returns immediately, never waiting for the AI analysis.
+              (<code class="font-next-mono">ShouldQueue</code>) — the step "returns immediately" from
+              the run loop's point of view, but <strong>the run loop forces the queue's
+              <code class="font-next-mono">sync</code> driver around the WHOLE step loop</strong>
+              (load-bearing: it is what keeps the executing run published so
+              <code class="font-next-mono">HasCreator</code> stamps step-authored rows with it), so this
+              job actually runs <strong>INLINE</strong>, before the step returns — REGARDLESS of the
+              real <code class="font-next-mono">QUEUE_CONNECTION</code>. See "Run lifecycle" below for
+              the one step that genuinely escapes this.
               <code class="font-next-mono">submissions_from</code>/<code class="font-next-mono">submissions_to</code>
               default from the STEP itself (form's <code class="font-next-mono">enabled_at</code>
               → today), not copied from a request.
@@ -875,6 +916,61 @@ WorkflowRun (one execution)
           <code class="font-next-mono">source.in</code> (<code class="font-next-mono">['manual','task']</code>,
           the SUBMITTABLE-morph vocabulary). Similar-looking, different questions — do not conflate.
         </Alert>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">generate_content (R2 sub-stage 5) — the one SUSPENDING step</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            Runs a Generator <strong>Template</strong> (<code class="font-next-mono">docs/backend/generator-api.md</code>)
+            and publishes the produced content. The <code class="font-next-mono">Workflows → Generator</code>
+            edge is crossed in exactly this ONE class, strictly one-way (pinned by two module-boundary
+            tests) — it calls only the Generator's HTTP-free automation seam
+            (<code class="font-next-mono">SessionAutomationService</code>), never a Generator model or
+            HTTP route.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <code class="font-next-mono">template_id</code> (required, a workspace-scoped Template) and
+            <code class="font-next-mono">slots</code> (a map of the template's DECLARED slot name → a
+            literal or a value-or-variable union, typed at the slot's OWN type) drive what gets
+            generated; <code class="font-next-mono">folder_id</code> (optional Disk folder — defaults to
+            the Disk root) and <code class="font-next-mono">name</code> (optional session display name)
+            control where the output lands.
+          </p>
+          <ApiTable title="Author-time 422s (granular, per config key)" type-header="Status" :rows="generateContent422Rows" class="mt-next-2" />
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>The composite-slot refusal.</strong> A REQUIRED
+            <code class="font-next-mono">object</code>-base slot (any shape), or a REQUIRED list-of-files
+            slot, is refused at AUTHORING time — the template "cannot be driven by a workflow at all" —
+            because the resolver has no object coercion and a file LIST is a deferred composite; the same
+            shapes are refused when a NULLABLE slot is explicitly mapped (leave it unmapped instead, to
+            generate with it empty). A <strong>single, scalar</strong> <code class="font-next-mono">file</code>
+            slot is <strong>NOT</strong> refused — a deliberate divergence from the Bot module's own
+            delegation (<code class="font-next-mono">SlotScopePolicy::Bot</code>, ADR-0036), which refuses
+            EVERY file slot unconditionally because a bot's values come from a model that could forge a
+            reference. Here the mapping is authored by a trusted workspace human and the file id is
+            re-resolved through the tenant-scoped <code class="font-next-mono">File</code> model before
+            anything is persisted. See ADR-0039 D14.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Outputs:</strong> <code class="font-next-mono">session_id</code> (TEXT, provenance/deep-link),
+            <code class="font-next-mono">content</code> (TEXT, the assembled finished text — <code class="font-next-mono">''</code>
+            for an image-only recipe), <code class="font-next-mono">image_file_ids</code> (FILE, so a
+            following <code class="font-next-mono">create_task.attachments</code> can reference them
+            straight through), <code class="font-next-mono">status</code> (TEXT — effectively always
+            <code class="font-next-mono">ready</code>: a <code class="font-next-mono">failed</code>
+            session HARD-FAILS the step instead, so the run stops rather than publishing a failed
+            status), <code class="font-next-mono">has_failed_parts</code> (BOOLEAN — the Generator's own
+            per-part fail-soft; lets a later step gate a publish on completeness).
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Operational notes.</strong> A required slot the automation could not fill HARD-FAILS
+            the step before any spend, but the draft session it already created is deliberately left
+            behind (for debugging) — the Generator's own idle-draft reaper eventually cleans it up. A
+            <code class="font-next-mono">folder_id</code> deleted while the run waits DEGRADES to the
+            Disk root at resume time (logged, ids only) rather than losing already-paid-for content. At
+            most <strong>2</strong> <code class="font-next-mono">generate_content</code> steps per
+            workflow — each is a whole, separately-budgeted AI generation.
+          </p>
+        </div>
       </div>
     </StorySection>
 
@@ -1172,11 +1268,20 @@ WorkflowRun (one execution)
         <ul class="flex flex-col gap-next-2 text-next-xs">
           <li class="flex items-center gap-next-2"><Badge variant="neutral" size="sm">pending</Badge><span class="text-next-muted-foreground">Run row created; job not yet claimed it.</span></li>
           <li class="flex items-center gap-next-2"><Badge variant="info" size="sm">running</Badge><span class="text-next-muted-foreground">Claimed; steps executing.</span></li>
-          <li class="flex items-center gap-next-2"><Badge variant="warning" size="sm">waiting</Badge><span class="text-next-muted-foreground">RESERVED — not produced by the MVP engine (see ADR-0008 #11).</span></li>
+          <li class="flex items-center gap-next-2"><Badge variant="warning" size="sm">waiting</Badge><span class="text-next-muted-foreground">PRODUCED by the engine (R2 sub-stage 5) — a `generate_content` step suspended, handing work to the real queue. NOT terminal; bounded by `wait_timeout`, not `run_timeout`. See "Suspend/resume engine" below.</span></li>
           <li class="flex items-center gap-next-2"><Badge variant="success" size="sm">completed</Badge><span class="text-next-muted-foreground">Every step succeeded.</span></li>
           <li class="flex items-center gap-next-2"><Badge variant="danger" size="sm">failed</Badge><span class="text-next-muted-foreground">A step (or the job/worker) failed — the run stopped there.</span></li>
-          <li class="flex items-center gap-next-2"><Badge variant="neutral" size="sm">cancelled</Badge><span class="text-next-muted-foreground">RESERVED — no cancel action exists yet.</span></li>
+          <li class="flex items-center gap-next-2"><Badge variant="neutral" size="sm">cancelled</Badge><span class="text-next-muted-foreground">Still RESERVED — no cancel action exists yet, including for a `waiting` run.</span></li>
         </ul>
+
+        <Alert variant="warning" size="sm">
+          <strong>Corrected — <code class="font-next-mono">waiting</code> used to read "RESERVED, not
+          produced by the MVP engine" on this page (ADR-0008 #11).</strong> That is no longer accurate:
+          R2 sub-stage 5 (ADR-0039) shipped a GENERIC suspend/resume engine, and
+          <code class="font-next-mono">generate_content</code> is its first real consumer. A workflow
+          without a suspending step is byte-identical to before this feature — the columns below stay
+          <code class="font-next-mono">null</code> for its whole run.
+        </Alert>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-2 font-next-semibold text-next-fg">Atomic claim</p>
@@ -1202,6 +1307,57 @@ WHERE id = ? AND state = 'pending'</pre>
         </Alert>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-2 font-next-semibold text-next-fg">Suspend/resume engine (R2 sub-stage 5) — how `waiting` actually works</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            A step signals suspension by THROWING <code class="font-next-mono">StepSuspended($kind,
+            $correlationKey, $payload)</code> instead of returning — never a sentinel return value (a
+            step's return is merged verbatim into <code class="font-next-mono">context.steps.&lt;key&gt;</code>,
+            so a magic marker key would leak into the catalog). The run PARKS with three new columns:
+            <code class="font-next-mono">waiting_on</code> (json — kind/step_key/step_type/position/
+            payload/config/definition_hash/ai_text_calls), <code class="font-next-mono">waiting_key</code>
+            (an indexed correlation key, e.g. <code class="font-next-mono">generation_session:&lt;session
+            uuid&gt;</code>), <code class="font-next-mono">waiting_since</code> (re-stamped on every park,
+            so <code class="font-next-mono">wait_timeout</code> bounds time since the LAST park, not the
+            total wait).
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>The config a step suspended with is REPLAYED verbatim on resume, never re-resolved</strong>
+            — so a spend-incurring directive pays exactly once, and the step collects its outcome under
+            the very config the external work was started with. <strong>Resume is a FRESH job</strong>
+            (<code class="font-next-mono">WorkflowRunResumeJob(runId, workspaceId, waitingKey)</code> —
+            three scalars, never a serialized continuation, the same idiom the Bot module's own run
+            manager uses) that rebuilds <code class="font-next-mono">context</code> from the DATABASE;
+            the claim is ATOMIC and CORRELATED on the observed <code class="font-next-mono">waiting_key</code>
+            (<code class="font-next-mono">WHERE state='waiting' AND waiting_key=?</code>), so a
+            duplicate or stale resume — including one racing a step that re-suspended onto a SECOND leg
+            — is a clean no-op, never a double execution. A whole-DEFINITION fingerprint (SHA1 over the
+            ordered step list) is checked on top of the per-position checks, so a mid-wait edit anywhere
+            in the workflow — not just the suspended step itself — fails the resumed run loudly instead
+            of silently altering it.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Two triggers, one correctness guarantee.</strong> A settle LISTENER
+            (<code class="font-next-mono">ResumeWaitingRunOnSessionTerminal</code>, reacting to the
+            Generator's own terminal broadcast) is a LATENCY optimization only. The WAITING-RUN SWEEP
+            (<code class="font-next-mono">workflows:reap-stale-runs</code>, already scheduled
+            everyFiveMinutes, now runs BOTH the stale-running AND the stale-waiting sweep) is the
+            correctness guarantee — the Generator's own lifecycle reaper settles a stranded session with
+            tenant context CLEARED and deliberately does NOT broadcast in that case, so an event-only
+            design would strand exactly the runs that most need recovering.
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Timeout ordering invariant</strong> (each window strictly wider than the one it
+            backstops): the generation job's own 300s timeout &lt; its 600s lock expiry &lt;
+            <code class="font-next-mono">workflows.run_timeout</code> 900s (stale-RUNNING; never matches
+            <code class="font-next-mono">waiting</code>) &lt; the Generator's own 1800s stale-session
+            reaper &lt; <code class="font-next-mono">workflows.wait_timeout</code> 2700s (stale-WAITING,
+            the LAST resort). <code class="font-next-mono">WorkflowRunJob</code>'s own job timeout is now
+            explicitly 720s (previously silently inherited the worker's 60s default). Full design record:
+            <code class="font-next-mono">docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md</code>.
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-2 font-next-semibold text-next-fg">Monitoring — the Runs view</p>
           <p class="text-next-xs text-next-muted-foreground">
             <code class="font-next-mono">GET /workflows/{id}/runs</code> is a cursor-paginated,
@@ -1212,6 +1368,24 @@ WHERE id = ? AND state = 'pending'</pre>
             returns the full detail: the trigger payload and the ordered step timeline, each row
             carrying its own <code class="font-next-mono">status</code> (succeeded/failed) and
             output/error — so a failed run's timeline shows EXACTLY which step stopped it and why.
+          </p>
+        </div>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-2 font-next-semibold text-next-fg">The waiting run — FE surfaces (R2 sub-stage 5)</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            <code class="font-next-mono">waiting</code> is a SELECTABLE filter option in both the
+            per-workflow and the global runs feeds, and renders its own badge on every run row. The run
+            DETAIL page shows an expectation-setting panel while parked: how long a generation usually
+            takes, the elapsed time <strong>AS OF THE LAST READ</strong> (there is NO live push on this
+            page, unlike the Generator chat's own websocket-driven settle), an explicit
+            <strong>Refresh</strong> button, and an honest "can't be cancelled yet" note. A FINISHED
+            <code class="font-next-mono">generate_content</code> step's result card deep-links straight
+            to the produced generation session (opens in a new tab) — its outputs
+            (<code class="font-next-mono">session_id</code>/<code class="font-next-mono">content</code>/
+            <code class="font-next-mono">image_file_ids</code>/<code class="font-next-mono">status</code>/
+            <code class="font-next-mono">has_failed_parts</code>) are otherwise displayed like any other
+            step's output payload.
           </p>
         </div>
 
@@ -1636,6 +1810,25 @@ WHERE id = ? AND state = 'pending'</pre>
           </p>
         </div>
 
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg">generate_content step editor (R2 sub-stage 5)</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            A TEMPLATE PICKER drives everything else: picking a template AUTO-REVEALS one row per
+            declared slot, typed per its descriptor, with required slots marked-required by DEFAULT (no
+            separate toggle to miss). A composite slot the step cannot supply
+            (<code class="font-next-mono">object</code>, or a list of files) is marked UNSUPPORTED
+            in the editor BEFORE Save, mirroring the backend's authoring-time refusal rather than
+            letting the author discover it as a 422 after submitting. A DRIFT warning fires when the
+            chosen template's declared slots no longer match the step's saved mapping (a slot removed
+            or added since the step was configured) — it lists what changed but NEVER auto-resets the
+            author's existing mapping out from under them. Also on the card: a Disk folder picker, a
+            session-name field, a per-content-type SCALE HINT (a rough sense of how much this recipe
+            costs/produces), and an outputs box stating the <code class="font-next-mono">status</code>
+            output's honesty (effectively always <code class="font-next-mono">ready</code>, since a
+            failed generation hard-fails the step instead).
+          </p>
+        </div>
+
         <p class="text-next-xs text-next-muted-foreground">
           See <code class="font-next-mono">docs/decisions/ADR-0009-workflows-rescope-typed-variables.md</code>
           for the full 5.1 reasoning, <code class="font-next-mono">docs/decisions/ADR-0012-workflows-schedule-descriptor-v2.md</code>
@@ -1661,8 +1854,12 @@ WHERE id = ? AND state = 'pending'</pre>
       <div class="flex flex-col gap-next-4 text-next-sm">
         <ul class="flex list-disc flex-col gap-next-2 pl-next-5 text-next-xs text-next-muted-foreground">
           <li><strong>Bot-authored submission tracking</strong> — <code class="font-next-mono">source</code> cannot express "a bot filled this form in" (it only derives manual/task from the submittable morph). Would need a new column, not just morph-derived logic.</li>
-          <li><strong>Wait-for-approval resume</strong> — <code class="font-next-mono">WorkflowRunState.WAITING</code> is declared but never produced. There is no longer a <code class="font-next-mono">start_approval</code> step at all in the 5.1 step set.</li>
-          <li><strong>Manual run cancellation</strong> — <code class="font-next-mono">WorkflowRunState.CANCELLED</code> is declared but no cancel action exists.</li>
+          <li><strong>~~Wait-for-approval resume~~ — <code class="font-next-mono">WorkflowRunState.WAITING</code> was declared but never produced.</strong> DONE (R2 sub-stage 5, ADR-0039), no longer deferred — see "Suspend/resume engine" above. The engine that produces <code class="font-next-mono">waiting</code> is GENERIC, not approval-specific; its first consumer is <code class="font-next-mono">generate_content</code>, not an approval step. A future suspending step (e.g. wait-for-approval) would reuse the same mechanism.</li>
+          <li><strong>Manual cancellation of a `waiting` run</strong> — <code class="font-next-mono">WorkflowRunState.CANCELLED</code> is still declared but no cancel action exists; a run parked on a generation cannot be cancelled from the UI (the run detail says so explicitly).</li>
+          <li><strong>Live push on the run detail page for a `waiting` run</strong> — unlike the Generator chat's own websocket-driven settle, the waiting panel is an honest snapshot taken at load, advanced only by an explicit Refresh. A deliberate scope cut, not an oversight.</li>
+          <li><strong>Per-part granular <code class="font-next-mono">generate_content</code> outputs</strong> — the step publishes one assembled <code class="font-next-mono">content</code> string and one <code class="font-next-mono">image_file_ids</code> list; a later step cannot address one specific part individually.</li>
+          <li><strong>A bot delegating a workflow-driven generation</strong> — ADR-0036's bot delegation and this feature's automation seam are sibling trust boundaries today, not composed.</li>
+          <li><strong>More than 2 <code class="font-next-mono">generate_content</code> steps per workflow</strong> — a deliberate cap on worst-case AI fan-out per run, not a technical ceiling.</li>
           <li><strong>~~An operations pipeline for the typed variable system~~ — DONE (SB1, ADR-0013), no longer deferred.</strong> A directive/value-or-variable reference now transforms its value through the shared 68-operation executor at run time (66 at SB1 time, +2 with the choice-coercion batch — ADR-0014); ADR-0009 §2's "deferred" consequence is explicitly reversed by ADR-0013.</li>
           <li><strong>~~Mapping a value into a fixed destination option set (a task priority)~~ — DONE (ADR-0014), no longer deferred.</strong> <code class="font-next-mono">enum_to_choice</code> / <code class="font-next-mono">match_to_choice</code> let a <code class="font-next-mono">priority</code> value-or-variable pipeline map an arbitrary source into <code class="font-next-mono">TaskPriority::ids()</code>; the write validator now REQUIRES this for a choice field (a bare ref or a non-choice terminal like <code class="font-next-mono">enum_to_text</code> is rejected) — a validator-only tightening, runtime coercion is unchanged.</li>
           <li><strong>Bot/Character as an AI-text persona</strong> — <code class="font-next-mono">@[ai-text]</code>'s personas are a small, fixed set of TONES (neutral/friendly/formal/concise), deliberately NOT the Bot/Character system. Letting an author pick "write like Bot X" is a plausible future extension, not built now (see ADR-0013 §4).</li>

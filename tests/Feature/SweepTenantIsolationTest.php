@@ -106,8 +106,12 @@ class SweepTenantIsolationTest extends TestCase
             ->with(Mockery::on(fn (Workspace $ws) => $ws->is($healthy)))
             ->once();
 
-        $this->mock(WorkflowRunManager::class)
-            ->shouldReceive('reapStaleRuns')->twice()->andReturn(0);
+        // BOTH sweeps run in BOTH passes (shared + the healthy tenant), and the broken tenant costs
+        // exactly one pass of each — the waiting sweep is per-tenant isolated just like the stale one.
+        $this->mock(WorkflowRunManager::class, function ($mock) {
+            $mock->shouldReceive('reapStaleRuns')->twice()->andReturn(0);
+            $mock->shouldReceive('reapWaitingRuns')->twice()->andReturn(0);
+        });
 
         $this->artisan('workflows:reap-stale-runs')->assertSuccessful();
 

@@ -6,18 +6,24 @@ namespace App\Modules\Workflows\Enums;
  * The lifecycle state of a single workflow RUN (one execution of a workflow's steps).
  *
  *   pending ──claim──▶ running ──release(completed|failed)──▶ terminal
+ *                        │  ▲
+ *              suspend() │  │ claimResume()
+ *                        ▼  │
+ *                       waiting
  *
- * `waiting` and `cancelled` are designed-in but UNUSED in the MVP engine: `waiting`
- * anticipates a future step that suspends a run to await an external event (e.g. a human
- * decision) — the MVP runs every step to completion in one pass. `cancelled` anticipates
- * a manual-cancel seam (Batch 3+). They are declared now so the column vocabulary and the
- * frontend badge map are stable before those features land.
+ * `waiting` is now PRODUCED by the engine: a step that hands work to something outside this process
+ * throws StepSuspended, and WorkflowRunManager::suspend() parks the run there until a fresh resume
+ * job (or the stale-wait sweep) moves it on. It is NOT terminal and NOT matched by the stale-RUNNING
+ * reaper — `workflows.wait_timeout` is what bounds it.
+ *
+ * `cancelled` is still designed-in but UNUSED: it anticipates a manual-cancel seam. It stays declared
+ * so the column vocabulary and the frontend badge map remain stable until that lands.
  */
 enum WorkflowRunState: string
 {
     case PENDING = 'pending';
     case RUNNING = 'running';
-    case WAITING = 'waiting'; // reserved — not produced by the MVP engine.
+    case WAITING = 'waiting'; // parked by suspend(); NOT terminal — bounded by workflows.wait_timeout.
     case COMPLETED = 'completed';
     case FAILED = 'failed';
     case CANCELLED = 'cancelled'; // reserved — not produced by the MVP engine.

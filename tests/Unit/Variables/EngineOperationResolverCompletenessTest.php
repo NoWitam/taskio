@@ -23,7 +23,7 @@ class EngineOperationResolverCompletenessTest extends TestCase
         return [
             'app/modules/Variables/Services/OperationExecutor.php',
             'app/modules/Variables/Services/PipelineValidator.php',
-            'app/modules/Workflows/Services/WorkflowVariableResolver.php',
+            'app/modules/Variables/Services/VariableResolver.php',
         ];
     }
 

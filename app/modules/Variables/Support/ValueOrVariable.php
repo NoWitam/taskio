@@ -10,7 +10,7 @@ namespace App\Modules\Variables\Support;
  * It exists because three layers must agree BYTE-for-BYTE on "is this array a union, or is it data",
  * and each had (or was about to grow) its own private copy of the check:
  *   - WorkflowConditionTreeValidator  gates a union at WRITE time (validateArgVariable),
- *   - WorkflowVariableResolver        pre-resolves a union into a LITERAL before the executor runs,
+ *   - VariableResolver        pre-resolves a union into a LITERAL before the executor runs,
  *   - OperationExecutor       REJECTS one defensively: it is a PURE transformer with no
  *     resolver/context handle, so a union that still reaches it (a legacy / hand-written / imported
  *     row that bypassed pre-resolution) is a MALFORMED argument. Its ARRAY-shaped arg readers only

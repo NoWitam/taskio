@@ -4,7 +4,7 @@ namespace Tests\Unit\Workflows;
 
 use App\Modules\Variables\Enums\VariableType as WorkflowVariableType;
 use App\Modules\Variables\Services\OperationExecutor as WorkflowOperationExecutor;
-use App\Modules\Workflows\Services\WorkflowVariableResolver;
+use App\Modules\Variables\Services\VariableResolver as WorkflowVariableResolver;
 use Illuminate\Support\Carbon;
 use RuntimeException;
 use Tests\Support\ScriptedWorkflowAiTextService;

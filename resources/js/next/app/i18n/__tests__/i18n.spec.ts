@@ -108,6 +108,301 @@ describe('next i18n', () => {
     });
   });
 
+  describe('video_script rework keys (shot_list + storyboard) exist in both catalogs', () => {
+    // The new part kinds' editor + result strings must be present + non-empty in BOTH locales (a targeted
+    // guard on top of the whole-catalog parity above — so a half-added key set fails loudly here).
+    const NEW_KEYS = [
+      'generator.templates.editor.partLabel.shot_list',
+      'generator.templates.editor.partLabel.storyboard',
+      'generator.templates.editor.shotList.briefLabel',
+      'generator.templates.editor.shotList.briefHelp',
+      'generator.templates.editor.shotList.briefPlaceholder',
+      'generator.templates.editor.shotList.previewNote',
+      'generator.templates.editor.storyboard.help',
+      'generator.templates.editor.storyboard.styleLabel',
+      'generator.templates.editor.storyboard.stylePlaceholder',
+      'generator.templates.editor.storyboard.previewNote',
+      'generator.sessions.result.hook',
+      'generator.sessions.result.cta',
+      'generator.sessions.result.shot',
+      'generator.sessions.result.visual',
+      'generator.sessions.result.voiceover',
+      'generator.sessions.result.seconds',
+      'generator.sessions.result.shotImageAlt',
+      'generator.sessions.result.parseFallback',
+      'generator.sessions.result.storyboardEmpty',
+      'generator.sessions.result.regenerateStoryboard',
+      'generator.sessions.result.stale',
+      'generator.sessions.result.staleHint',
+    ];
+
+    it.each(NEW_KEYS)('%s resolves to a non-empty string in en and pl', (key) => {
+      setLocale('en');
+      const enValue = translate(key);
+      expect(enValue, `en.${key} missing`).not.toBe(key);
+      expect(enValue.length).toBeGreaterThan(0);
+      setLocale('pl');
+      const plValue = translate(key);
+      expect(plValue, `pl.${key} missing`).not.toBe(key);
+      expect(plValue.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('bot delegation keys (R2 sub-stage 3) exist in both catalogs', () => {
+    // The delegate/undo + fill-report + author-chip strings must be present + non-empty in BOTH locales.
+    const NEW_KEYS = [
+      'generator.sessions.delegate.button',
+      'generator.sessions.delegate.buttonDisabled',
+      'generator.sessions.delegate.dialogTitle',
+      'generator.sessions.delegate.dialogSubtitle',
+      'generator.sessions.delegate.autoGenerate',
+      'generator.sessions.delegate.autoGenerateHelp',
+      'generator.sessions.delegate.confirm',
+      'generator.sessions.delegate.emptyTitle',
+      'generator.sessions.delegate.emptyDescription',
+      'generator.sessions.delegate.emptyAction',
+      'generator.sessions.delegate.authoredBy',
+      'generator.sessions.delegate.undo',
+      'generator.sessions.delegate.undoConfirmTitle',
+      'generator.sessions.delegate.undoConfirmMessage',
+      'generator.sessions.delegate.report.title',
+      'generator.sessions.delegate.report.filledSummary',
+      'generator.sessions.delegate.report.skipped',
+      'generator.sessions.delegate.report.noneFilled',
+      'generator.sessions.delegate.report.unfilled',
+      'generator.sessions.delegate.report.needsYourFile',
+      'generator.sessions.delegate.report.completeInputs',
+      'generator.sessions.delegate.report.reason.unknown_slot',
+      'generator.sessions.delegate.report.reason.out_of_scope',
+      'generator.sessions.delegate.report.reason.invalid',
+      'generator.sessions.delegate.toasts.ok',
+      'generator.sessions.delegate.toasts.autoOk',
+      'generator.sessions.delegate.toasts.busy',
+      'generator.sessions.delegate.toasts.notEditable',
+      'generator.sessions.delegate.toasts.error',
+      'generator.sessions.delegate.toasts.undone',
+      'generator.sessions.delegate.toasts.undoError',
+    ];
+
+    it.each(NEW_KEYS)('%s resolves to a non-empty string in en and pl', (key) => {
+      setLocale('en');
+      const enValue = translate(key);
+      expect(enValue, `en.${key} missing`).not.toBe(key);
+      expect(enValue.length).toBeGreaterThan(0);
+      setLocale('pl');
+      const plValue = translate(key);
+      expect(plValue, `pl.${key} missing`).not.toBe(key);
+      expect(plValue.length).toBeGreaterThan(0);
+    });
+
+    // Click-time FILL MODE (gaps vs fresh) + the honest "nothing to fill" report state.
+    const FILL_MODE_KEYS = [
+      'generator.sessions.delegate.fillMode.legend',
+      'generator.sessions.delegate.fillMode.gaps',
+      'generator.sessions.delegate.fillMode.gapsHelp',
+      'generator.sessions.delegate.fillMode.fresh',
+      'generator.sessions.delegate.fillMode.freshHelp',
+      'generator.sessions.delegate.report.nothingTitle',
+      'generator.sessions.delegate.report.modeLine',
+      'generator.sessions.delegate.report.mode.gaps',
+      'generator.sessions.delegate.report.mode.fresh',
+      'generator.sessions.delegate.report.nothingToFill',
+      'generator.sessions.delegate.report.nothingToFillNoSpend',
+      'generator.sessions.delegate.report.nothingToFillHint',
+      'generator.sessions.delegate.toasts.nothingToFill',
+    ];
+
+    it.each(FILL_MODE_KEYS)('fill-mode key %s resolves in en and pl', (key) => {
+      setLocale('en');
+      const enValue = translate(key);
+      expect(enValue, `en.${key} missing`).not.toBe(key);
+      expect(enValue.length).toBeGreaterThan(0);
+      setLocale('pl');
+      const plValue = translate(key);
+      expect(plValue, `pl.${key} missing`).not.toBe(key);
+      expect(plValue.length).toBeGreaterThan(0);
+    });
+
+    it('the fresh-mode helper promises undo restores the human values in both locales', () => {
+      setLocale('en');
+      expect(translate('generator.sessions.delegate.fillMode.freshHelp')).toContain('Undo');
+      setLocale('pl');
+      expect(translate('generator.sessions.delegate.fillMode.freshHelp')).toContain('Cofnięcie');
+    });
+
+    it('the authoredBy string interpolates the bot {name} in both locales', () => {
+      setLocale('en');
+      expect(translate('generator.sessions.delegate.authoredBy', undefined, { name: 'Copy Bot' })).toBe(
+        'Authored by Copy Bot',
+      );
+      setLocale('pl');
+      expect(translate('generator.sessions.delegate.authoredBy', undefined, { name: 'Copy Bot' })).toBe(
+        'Autor: Copy Bot',
+      );
+    });
+  });
+
+  describe('AI cost limits keys (R2 sub-stage 4) exist in both catalogs', () => {
+    // The usage-page + owner-editor + inline generator budget strings must be present + non-empty in BOTH
+    // locales (a targeted guard on top of the whole-catalog parity above).
+    const NEW_KEYS = [
+      'userMenu.aiUsage',
+      'workspaces.aiUsage.title',
+      'workspaces.aiUsage.used',
+      'workspaces.aiUsage.cap',
+      'workspaces.aiUsage.remaining',
+      'workspaces.aiUsage.noLimit',
+      'workspaces.aiUsage.estimatedCaveat',
+      'workspaces.aiUsage.resetsOn',
+      'workspaces.aiUsage.state.ok',
+      'workspaces.aiUsage.state.warn',
+      'workspaces.aiUsage.state.blocked',
+      'workspaces.aiUsage.state.unlimited',
+      'workspaces.aiUsage.capSource.workspace',
+      'workspaces.aiUsage.capSource.default',
+      'workspaces.aiUsage.capSource.unlimited',
+      'workspaces.aiUsage.channel.ai_text',
+      'workspaces.aiUsage.channel.ai_image_edit',
+      'workspaces.aiUsage.channel.ai_image_generate',
+      'workspaces.aiUsage.actor.user',
+      'workspaces.aiUsage.actor.bot',
+      'workspaces.aiUsage.actor.workflow_run',
+      'workspaces.aiUsage.actor.others',
+      'workspaces.aiUsage.editor.limitOption',
+      'workspaces.aiUsage.editor.unlimitedOption',
+      'workspaces.aiUsage.editor.defaultOption',
+      'workspaces.aiUsage.editor.amountLabel',
+      'workspaces.aiUsage.editor.save',
+      'generator.sessions.budget.chipWarn',
+      'generator.sessions.budget.chipBlocked',
+      'generator.sessions.budget.blockedTitle',
+      'generator.sessions.budget.blockedMessage',
+      'generator.sessions.budget.raiseLimit',
+      'generator.sessions.budget.contactOwner',
+    ];
+
+    it.each(NEW_KEYS)('%s resolves to a non-empty string in en and pl', (key) => {
+      setLocale('en');
+      const enValue = translate(key);
+      expect(enValue, `en.${key} missing`).not.toBe(key);
+      expect(enValue.length).toBeGreaterThan(0);
+      setLocale('pl');
+      const plValue = translate(key);
+      expect(plValue, `pl.${key} missing`).not.toBe(key);
+      expect(plValue.length).toBeGreaterThan(0);
+    });
+
+    it('the warn chip interpolates the {percent} in both locales', () => {
+      setLocale('en');
+      expect(translate('generator.sessions.budget.chipWarn', undefined, { percent: 80 })).toBe('80% of budget');
+      setLocale('pl');
+      expect(translate('generator.sessions.budget.chipWarn', undefined, { percent: 80 })).toBe('80% budżetu');
+    });
+  });
+
+  describe('generate_content step + waiting run keys (R2 sub-stage 5) exist in both catalogs', () => {
+    // The step editor's copy (template picker, slot markers, the COMPOSITE refusal, the
+    // template-DRIFT warning, the scale note and the honest outputs note) plus the `waiting`
+    // run surfaces and the new session step-result card must be present + non-empty in BOTH
+    // locales — a targeted guard on top of the whole-catalog parity above.
+    const NEW_KEYS = [
+      'templateSelect.placeholder',
+      'templateSelect.search',
+      'templateSelect.ariaLabel',
+      'workflows.step.generate_content.label',
+      'workflows.step.generate_content.description',
+      'workflows.step.generate_content.maxSteps',
+      'workflows.step.generate_content.templateLabel',
+      'workflows.step.generate_content.templateHint',
+      'workflows.step.generate_content.templatePlaceholder',
+      'workflows.step.generate_content.templateLoading',
+      'workflows.step.generate_content.templateLoadError',
+      'workflows.step.generate_content.templateRetry',
+      'workflows.step.generate_content.slotsTitle',
+      'workflows.step.generate_content.slotsHint',
+      'workflows.step.generate_content.noSlots',
+      'workflows.step.generate_content.requiredMarker',
+      'workflows.step.generate_content.optionalMarker',
+      'workflows.step.generate_content.missingRequired',
+      'workflows.step.generate_content.addItem',
+      'workflows.step.generate_content.removeItem',
+      'workflows.step.generate_content.composite.placeholder',
+      'workflows.step.generate_content.composite.requiredNote',
+      'workflows.step.generate_content.composite.optionalNote',
+      'workflows.step.generate_content.composite.mappedNote',
+      'workflows.step.generate_content.composite.unmap',
+      'workflows.step.generate_content.composite.requiredWarningTitle',
+      'workflows.step.generate_content.composite.requiredWarning',
+      'workflows.step.generate_content.drift.title',
+      'workflows.step.generate_content.drift.removed',
+      'workflows.step.generate_content.drift.added',
+      'workflows.step.generate_content.drift.removeUnknown',
+      'workflows.step.generate_content.nameLabel',
+      'workflows.step.generate_content.nameHint',
+      'workflows.step.generate_content.namePlaceholder',
+      'workflows.step.generate_content.folderLabel',
+      'workflows.step.generate_content.folderHint',
+      'workflows.step.generate_content.folderRoot',
+      'workflows.step.generate_content.folderChosen',
+      'workflows.step.generate_content.scale.post',
+      'workflows.step.generate_content.scale.post_with_image',
+      'workflows.step.generate_content.scale.video_script',
+      'workflows.step.generate_content.scale.other',
+      'workflows.step.generate_content.outputs.title',
+      'workflows.step.generate_content.outputs.hint',
+      'workflows.step.generate_content.outputs.statusNote',
+      'workflows.step.generate_content.summary',
+      'workflows.step.summary.generateContentFallback',
+      'workflows.step.summary.generateContentInputs',
+      'workflows.runs.state.waiting',
+      'workflows.runs.detail.waiting.title',
+      'workflows.runs.detail.waiting.body',
+      'workflows.runs.detail.waiting.elapsed',
+      'workflows.runs.detail.waiting.refresh',
+      'workflows.runs.detail.waiting.noCancel',
+      'workflows.runs.detail.stepResult.sessionTitle',
+      'workflows.runs.detail.stepResult.openSession',
+    ];
+
+    it.each(NEW_KEYS)('%s resolves to a non-empty string in en and pl', (key) => {
+      setLocale('en');
+      const enValue = translate(key);
+      expect(enValue, `en.${key} missing`).not.toBe(key);
+      expect(enValue.length).toBeGreaterThan(0);
+      setLocale('pl');
+      const plValue = translate(key);
+      expect(plValue, `pl.${key} missing`).not.toBe(key);
+      expect(plValue.length).toBeGreaterThan(0);
+    });
+
+    it('the outputs hint substitutes the step KEY into every reference in both locales', () => {
+      for (const locale of ['en', 'pl'] as const) {
+        setLocale(locale);
+        const hint = translate('workflows.step.generate_content.outputs.hint', undefined, { key: 'content' });
+        expect(hint, `${locale} outputs.hint`).toContain('{{steps.content.content}}');
+        expect(hint, `${locale} outputs.hint`).toContain('{{steps.content.image_file_ids}}');
+        expect(hint, `${locale} outputs.hint`).not.toContain('{key}');
+      }
+    });
+
+    it('the status note stays HONEST about `status` always being "ready" in both locales', () => {
+      setLocale('en');
+      expect(translate('workflows.step.generate_content.outputs.statusNote')).toContain('ready');
+      setLocale('pl');
+      expect(translate('workflows.step.generate_content.outputs.statusNote')).toContain('ready');
+    });
+
+    it('the video_script scale note names the image ceiling in both locales', () => {
+      for (const locale of ['en', 'pl'] as const) {
+        setLocale(locale);
+        expect(
+          translate('workflows.step.generate_content.scale.video_script', undefined, { max: 8 }),
+          `${locale} scale.video_script`,
+        ).toContain('8');
+      }
+    });
+  });
+
   describe('boolean type is always named Condition / Warunek (§refinement 2)', () => {
     const get = (cat: Record<string, unknown>, path: string): string =>
       path

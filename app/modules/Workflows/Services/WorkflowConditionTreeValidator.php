@@ -52,7 +52,7 @@ class WorkflowConditionTreeValidator
      * $refCtx is the reference index an operation ARGUMENT may reference (B6). The caller
      * (StoreWorkflowRequest) builds it with NO prior steps, so a gate can reference the trigger's
      * variables and the workspace globals but never a `steps.*` output — nothing has run yet. Its
-     * `sources` list is the roots a ref may name (WorkflowVariableResolver::ROOTS), which the caller
+     * `sources` list is the roots a ref may name (VariableResolver::ROOTS), which the caller
      * supplies so the Variables pipeline validator needs no back-dependency on the resolver. Null keeps
      * the pre-B6 behaviour (arguments are literal-only).
      *

@@ -8,9 +8,9 @@
 //
 // 5.1 rebuild: TWO trigger types (form_submitted, schedule) + TWO step types
 // (create_task, create_form_report). B7e retired the last legacy consumers
-// (TargetPickerModal + WorkflowDetailView), so these maps are now narrowed to the
-// strict 2+2 unions; the authoritative ordered arrays `TRIGGER_TYPES`/`STEP_TYPES`
-// carry the same two surviving values.
+// (TargetPickerModal + WorkflowDetailView), so these maps are narrowed to the strict
+// typed unions; the authoritative ordered arrays `TRIGGER_TYPES`/`STEP_TYPES` carry the
+// same values. R2 sub-stage 5 adds the THIRD step type, `generate_content`.
 import type { IconName } from '../../ui/primitives/icons';
 import type {
   WorkflowRunOrigin,
@@ -48,13 +48,18 @@ export function triggerShort(type: WorkflowTriggerType, t: Translate): string {
 
 // --- Step types (§7.4 — two only) ------------------------------------------
 
-/** The TWO step types in a stable order (used by the add-step type picker). */
-export const STEP_TYPES: WorkflowStepType[] = ['create_task', 'create_form_report'];
+/** The step types in a stable order (used by the add-step type picker). */
+export const STEP_TYPES: WorkflowStepType[] = ['create_task', 'create_form_report', 'generate_content'];
 
-/** Step-type → icon (§7.4): create_task → plus, create_form_report → file-text. */
+/**
+ * Step-type → icon (§7.4): create_task → plus, create_form_report → file-text,
+ * generate_content → sparkles (the Generator module's own glyph, so the step reads
+ * as "this runs the content generator").
+ */
 const STEP_ICONS: Record<WorkflowStepType, IconName> = {
   create_task: 'plus',
   create_form_report: 'file-text',
+  generate_content: 'sparkles',
 };
 
 export function stepIcon(type: WorkflowStepType): IconName {

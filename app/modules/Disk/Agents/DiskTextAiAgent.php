@@ -11,7 +11,7 @@ use Stringable;
  * instruction are sent as the USER prompt (composed by {@see \App\Modules\Disk\Services\TextAiService});
  * this agent's system instruction carries only the OUTPUT CONTRACT — return ONLY the edited text.
  *
- * NO TOOLS and NO structured-output schema, exactly like WorkflowAiTextAgent: the agent emits PLAIN
+ * NO TOOLS and NO structured-output schema, exactly like the shared AiTextAgent: the agent emits PLAIN
  * TEXT which TextAiService reads from `$response->text`. Provider / model / timeout are passed at the
  * call site from config('ai').
  *

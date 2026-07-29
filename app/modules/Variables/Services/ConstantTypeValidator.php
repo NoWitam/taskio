@@ -22,6 +22,12 @@ use Throwable;
  * `nullable`, enum `options`, object `fields`). file (a copy-on-attach composite) and time (no
  * literal runtime semantics this slice) are intentionally NOT authorable — a constant holds a plain
  * typed literal. `multi` is not a base (a multi-select is base=enum + array=true).
+ *
+ * TEMPLATE SLOTS reuse this descriptor authority through validateSlotDescriptorShape (R2), which widens the
+ * accepted bases with `file` — a file is a legit REUSABLE template input (its composite {id,name,type,size,
+ * url} subfields interpolate into a prompt), unlike a constant's plain literal. Every other rule (the
+ * object/enum field shape, the SAFE_KEY, the recursion) is shared unchanged, so a slot's type can never
+ * accept a shape the resolver/catalog cannot; a constant's own bases are untouched (file stays rejected).
  */
 class ConstantTypeValidator
 {
@@ -77,8 +83,39 @@ class ConstantTypeValidator
 
     // ---- descriptor -----------------------------------------------------------
 
-    /** Whether $descriptor is a well-formed authorable type (errors appended under $key). */
-    private function validateDescriptor(Validator $validator, mixed $descriptor, string $key): bool
+    /**
+     * Validate a DESCRIPTOR alone (no value) — the reusable descriptor-shape authority a caller with no
+     * literal to type-check reuses: a template SLOT (Generator) declares a typed placeholder exactly like
+     * a constant's type, so it shares this ONE definition of "a well-formed authorable type" rather than
+     * forking it. Returns whether the descriptor is well-formed; errors append under $key.
+     */
+    public function validateDescriptorShape(Validator $validator, mixed $descriptor, string $key = 'descriptor'): bool
+    {
+        return $this->validateDescriptor($validator, $descriptor, $key);
+    }
+
+    /**
+     * Validate a template SLOT descriptor (R2) — the same authority a constant's type uses, but with `file`
+     * ADDED to the accepted bases (recursively, so an object slot may nest a file field). A file descriptor
+     * is a COMPOSITE: base=file with the fixed {id,name,type,size,url} `fields`, validated exactly like an
+     * object's fields (each a well-formed scalar leaf), so a malformed file (no/garbage fields) is rejected
+     * while the canonical composite is accepted. A constant NEVER reaches here (file stays non-authorable
+     * there). Returns whether the descriptor is well-formed; errors append under $key.
+     */
+    public function validateSlotDescriptorShape(Validator $validator, mixed $descriptor, string $key = 'descriptor'): bool
+    {
+        return $this->validateDescriptor($validator, $descriptor, $key, [VariableType::FILE->value]);
+    }
+
+    /**
+     * Whether $descriptor is a well-formed authorable type (errors appended under $key). $extraBases widens
+     * the accepted base set for a caller with a broader surface than a constant — a template slot passes
+     * `['file']` (validateSlotDescriptorShape); a constant passes none (its bases are untouched). The extra
+     * bases propagate through the recursion so a nested field of an accepted composite is checked the same.
+     *
+     * @param  array<int, string>  $extraBases
+     */
+    private function validateDescriptor(Validator $validator, mixed $descriptor, string $key, array $extraBases = []): bool
     {
         if (!is_array($descriptor)) {
             $validator->errors()->add($key, 'The type descriptor must be an object.');
@@ -87,11 +124,12 @@ class ConstantTypeValidator
         }
 
         $base = $descriptor['base'] ?? null;
+        $allowedBases = array_merge(self::AUTHORABLE_BASES, $extraBases);
 
-        if (!in_array($base, self::AUTHORABLE_BASES, true)) {
+        if (!in_array($base, $allowedBases, true)) {
             $validator->errors()->add(
                 $key . '.base',
-                'The descriptor base must be one of: ' . implode(', ', self::AUTHORABLE_BASES) . '.',
+                'The descriptor base must be one of: ' . implode(', ', $allowedBases) . '.',
             );
 
             return false;
@@ -110,8 +148,11 @@ class ConstantTypeValidator
             $ok = $this->validateEnumOptions($validator, $descriptor['options'] ?? null, $key . '.options') && $ok;
         }
 
-        if ($base === VariableType::OBJECT->value) {
-            $ok = $this->validateObjectFields($validator, $descriptor['fields'] ?? null, $key . '.fields') && $ok;
+        // An OBJECT or (slot-only) FILE composite carries a `fields` list — validated identically (each a
+        // well-formed leaf), so a file's fixed {id,name,type,size,url} subfields are checked like an
+        // object's declared fields and a malformed composite is rejected.
+        if ($base === VariableType::OBJECT->value || $base === VariableType::FILE->value) {
+            $ok = $this->validateObjectFields($validator, $descriptor['fields'] ?? null, $key . '.fields', $extraBases) && $ok;
         }
 
         return $ok;
@@ -153,10 +194,13 @@ class ConstantTypeValidator
     }
 
     /**
-     * An object descriptor's `fields`: a non-empty list of `{key, label?, descriptor}` with safe,
-     * distinct keys and each child descriptor recursively well-formed.
+     * An object (or slot-only file) descriptor's `fields`: a non-empty list of `{key, label?, descriptor}`
+     * with safe, distinct keys and each child descriptor recursively well-formed. $extraBases threads the
+     * caller's widened base set (a template slot's `file`) into the child recursion.
+     *
+     * @param  array<int, string>  $extraBases
      */
-    private function validateObjectFields(Validator $validator, mixed $fields, string $key): bool
+    private function validateObjectFields(Validator $validator, mixed $fields, string $key, array $extraBases = []): bool
     {
         if (!is_array($fields) || $fields === [] || !array_is_list($fields)) {
             $validator->errors()->add($key, 'An object type requires a non-empty list of fields.');
@@ -180,7 +224,7 @@ class ConstantTypeValidator
                 $seen[] = $fieldKey;
             }
 
-            $ok = $this->validateDescriptor($validator, $field['descriptor'] ?? null, $key . '.' . $i . '.descriptor') && $ok;
+            $ok = $this->validateDescriptor($validator, $field['descriptor'] ?? null, $key . '.' . $i . '.descriptor', $extraBases) && $ok;
         }
 
         return $ok;

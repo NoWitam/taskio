@@ -10,12 +10,7 @@ import Button from '../../primitives/Button.vue';
 import Select from '../../forms/Select.vue';
 import { generateId, type AiTextNodeAttrs } from './types';
 import { useI18n } from '../../../app/i18n';
-import type {
-  AiLabelOption,
-  AiPersona,
-  VariableDefinition,
-  VariableOperationDefinition,
-} from './types';
+import type { AiLabelOption, AiPersona, VariableFeatureConfig } from './types';
 
 // Async import avoids a circular dependency (MarkdownEditor → aiText → panel).
 const MarkdownEditor = defineAsyncComponent(() => import('../MarkdownEditor.vue'));
@@ -25,8 +20,12 @@ const props = defineProps<{
   personas: AiPersona[];
   labelsEnabled: boolean;
   labelsCatalog: AiLabelOption[];
-  /** Feature config to re-enable inside the nested prompt editor. */
-  variables?: { variables: VariableDefinition[]; operationsCatalog: VariableOperationDefinition[] };
+  /**
+   * Feature config to re-enable inside the nested prompt editor. A full {@link VariableFeatureConfig}
+   * so the LIVE `source()`/`catalog()` getters (not just the frozen arrays) reach the nested editor —
+   * that is what lets the prompt's `{` suggestion offer the host's current feed, e.g. template SLOTS.
+   */
+  variables?: VariableFeatureConfig;
   ifBlocks?: boolean | { maxElseIf?: number; maxDepth?: number };
 }>();
 

@@ -2,42 +2,53 @@
 
 namespace App\Modules\Workflows\Services;
 
-use App\Modules\Workflows\Agents\WorkflowAiTextAgent;
-use App\Modules\Workflows\Enums\WorkflowAiPersona;
+use App\Modules\Variables\Contracts\AiTextGenerator;
+use App\Modules\Variables\Services\AiTextGenerationService;
 use Illuminate\Support\Facades\Log;
-use Throwable;
 
 /**
- * Runs the AI-TEXT generation for an `@[ai-text]` directive (SB2) — the fail-closed, budgeted seam
- * between WorkflowVariableResolver and WorkflowAiTextAgent. It:
+ * The Workflows-side implementation of the Variables {@see AiTextGenerator} contract (bound in the
+ * Workflows provider) for an `@[ai-text]` directive (SB2). It is now a THIN DECORATOR: it keeps the
+ * PER-RUN call-count budget that is unique to a workflow run and delegates the actual generation
+ * (agent call + trim/truncate + fail-closed + cost metering) to the shared
+ * {@see AiTextGenerationService} promoted down into the Variables layer.
  *
- *   - refuses a blank prompt (no wasted call),
+ * It:
+ *   - refuses a blank prompt (no wasted call, no budget spent),
  *   - enforces a PER-RUN call budget so one run can't fan out into unbounded AI spend,
- *   - runs the tool-less agent with provider/model from config('ai'),
- *   - trims and length-caps the result,
- *   - and NEVER throws: any provider/transport failure (missing key, timeout, exception) resolves
- *     to '' — the exact fail-closed contract the resolver's other directives already follow, so a
- *     blank REQUIRED title still hard-fails the run honestly while a blank description is just empty.
+ *   - then delegates to the shared service with the workflow-field length cap + purpose hint.
  *
- * BUDGET SCOPE: the call counter is INSTANCE state. The service is resolved fresh together with the
- * resolver for each WorkflowRunJob (neither is a container singleton), so the counter naturally
- * scopes to one run — do NOT bind this as a singleton. Nothing about the prompt (which may carry
- * form values) is ever logged; only the fact of a failure / budget hit.
+ * BUDGET SCOPE: the call counter is INSTANCE state, and the instance is SCOPED (one per job/request,
+ * flushed at every queue-job boundary) so the step runner and the resolver share exactly one counter
+ * for a pass. Instance freshness alone is NOT the scoping rule any more: {@see WorkflowStepRunner}
+ * SETS the counter at the start of every pass — 0 for a first pass, and the count persisted at
+ * suspend for a resumed one — and restores the outer value afterwards, so a run that suspends does
+ * not get the cap twice over and a nested child run cannot spend its parent's budget.
+ * Nothing about the prompt (which may carry form values) is ever logged; only the fact of a budget hit.
  */
-class WorkflowAiTextService
+class WorkflowAiTextService implements AiTextGenerator
 {
+    /**
+     * The lead instruction wording for a workflow field — passed verbatim as the shared agent's
+     * purpose hint so the instruction this run produces is byte-identical to the pre-down-move agent.
+     */
+    private const PURPOSE_HINT = "a field of an automated workflow\n(for example a task title, a task description, a report name, or report guidelines)";
+
     /** AI calls made so far in this run (see BUDGET SCOPE above). */
     private int $calls = 0;
 
-    /**
-     * Generate the text for one resolved ai-text prompt, or '' (fail-closed) on a blank prompt, an
-     * exhausted per-run budget, or any agent failure. $persona colors the tone only.
-     */
-    public function generate(string $prompt, WorkflowAiPersona $persona): string
-    {
-        $prompt = trim($prompt);
+    public function __construct(
+        private AiTextGenerationService $generator,
+    ) {}
 
-        if ($prompt === '') {
+    /**
+     * Generate the text for one resolved ai-text prompt, or '' (fail-closed) on a blank prompt or an
+     * exhausted per-run budget. Anything past the budget guard is delegated to the shared service,
+     * which itself trims, meters, length-caps, and fails closed on any provider error.
+     */
+    public function generate(string $prompt, ?string $personaId): string
+    {
+        if (trim($prompt) === '') {
             return '';
         }
 
@@ -49,37 +60,36 @@ class WorkflowAiTextService
 
         $this->calls++;
 
-        try {
-            $response = (new WorkflowAiTextAgent($persona))->prompt(
-                prompt: $prompt,
-                provider: config('ai.provider'),
-                model: config('ai.model'),
-            );
+        return $this->generator->generate(
+            $prompt,
+            $personaId,
+            (int) config('workflows.ai_text_max_chars', 2000),
+            self::PURPOSE_HINT,
+        );
+    }
 
-            $text = trim((string) ($response->text ?? ''));
-        } catch (Throwable $e) {
-            Log::warning('Workflow ai-text generation failed: ' . $e->getMessage());
+    /**
+     * Calls made so far under the current counter — read by the step runner when a step suspends, so
+     * the count can ride on the run and the per-RUN cap survives into the resumed pass.
+     */
+    public function callsMade(): int
+    {
+        return $this->calls;
+    }
 
-            return '';
-        }
-
-        return $this->truncate($text);
+    /**
+     * SET the counter (the suspend/resume + nesting seam; see BUDGET SCOPE). Called only by the step
+     * runner: with the count persisted at suspend when re-entering a parked run, with 0 when a pass
+     * starts fresh, and with the saved outer value when an in-process nested run finishes.
+     */
+    public function restoreCalls(int $calls): void
+    {
+        $this->calls = max(0, $calls);
     }
 
     /** The per-run ai-text call ceiling (cost guard); config-driven. */
     private function maxCalls(): int
     {
         return (int) config('workflows.ai_text_max_calls_per_run', 10);
-    }
-
-    /**
-     * Length-cap the generated text to the configured maximum (multibyte-safe). Field-specific DB
-     * limits still apply on top of this (e.g. a task title column) — keep title prompts concise.
-     */
-    private function truncate(string $text): string
-    {
-        $max = (int) config('workflows.ai_text_max_chars', 2000);
-
-        return $max > 0 && mb_strlen($text) > $max ? mb_substr($text, 0, $max) : $text;
     }
 }

@@ -21,7 +21,7 @@ use Throwable;
  * every consumer shares identical semantics and can never drift:
  *
  *   - WorkflowConditionEngine feeds a condition's pipeline and reads the boolean terminal.
- *   - WorkflowVariableResolver feeds a directive / if-block / value-or-variable pipeline and reads
+ *   - VariableResolver feeds a directive / if-block / value-or-variable pipeline and reads
  *     the transformed value (typed for structured fields, stringified for text fields).
  *
  * INPUT SHAPE: a pipeline is a list of steps `{op, args}`. For portability with the next editor's
@@ -99,7 +99,7 @@ class OperationExecutor
     /**
      * The file-element SUBFIELD aliases whose snapshot key differs from the subfield name (array-ops
      * wave 3). Only `type` aliases (→ `mime_type`); id/name/size/url are identity and resolve by a plain
-     * read. Mirrors WorkflowVariableResolver::FILE_SUBFIELDS (the single value-access mapping) over the
+     * read. Mirrors VariableResolver::FILE_SUBFIELDS (the single value-access mapping) over the
      * SAME key set — kept here too because the executor resolves an element pipeline's `element.<sub>`
      * scope refs off the raw snapshot itself, without a resolver/context handle.
      */

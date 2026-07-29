@@ -6,7 +6,9 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 
 Covers B1–B6: CRUD + persona (B1–B2), polymorphic actor + one-shot execution (B2, superseded —
 see below), interactive multi-turn execution (B4), the optional tool registry (B5), and the
-5-module structure + knowledge module (B6).
+5-module structure + knowledge module (B6). Also covers R2 sub-stage 3 ("Boty w generatorze") —
+the `Bot → Generator` session-DELEGATION edge, letting a bot author a Generator `GenerationSession`
+in its own voice; see the delegate/undo endpoints below.
 
 ---
 
@@ -392,6 +394,33 @@ Auth: workspace membership (no ownership check — any member can view).
 
 ---
 
+### POST /api/bots/{bot}/sessions/{session}/delegate
+
+### DELETE /api/bots/{bot}/sessions/{session}/delegate
+
+(R2 sub-stage 3, "Boty w generatorze") DELEGATE a Generator `GenerationSession` to this bot — the bot
+composes its persona/style/dictionary/phrases/prohibitions into ONE opaque voice directive, autonomously
+fills the session's in-scope slots (AT MOST one metered `ai_text` call), and becomes the session's snapshotted
+content author, while the human stays the session's owner. `DELETE` undoes it (restores the pre-delegation
+inputs). This is the ONE new cross-module edge in the app: `Bot → Generator + Variables`, one-way — the
+Generator/Variables seams these endpoints call take primitives/opaque strings only, never a `Bot` model.
+
+The body's optional `fill_mode` (`'gaps' | 'fresh'`, DEFAULT `gaps` — `App\Modules\Bot\Enums\SlotFillMode`) is
+the human's click-time choice: `gaps` fills only the EMPTY inputs and never touches a value the human typed
+(with no gap at all there is no provider call and nothing is billed — `fill_report.nothing_to_fill`), `fresh`
+proposes a deliberately DIFFERENT take on everything in scope (safe because undo restores
+`slot_values_before`). An unknown value is a `422`.
+
+Both `{bot}` and `{session}` are workspace-scoped bindings (a foreign id 404s at bind). Authorization is the
+SESSION's `update` ability (the human session owner, not "any bot manager") — delegating changes a session's
+inputs/authorship, an owner action on the session, not an action on the bot.
+
+Full request/response contract, the overlay + `fill_report` wire shapes, and the voice/slot-fill mechanics
+live in `docs/backend/generator-sessions-api.md` ("Bot-author delegation overlay"); the design record is
+`docs/decisions/ADR-0036-bot-delegation-generation-sessions.md`.
+
+---
+
 ## Authorization
 
 `BotPolicy` gates, all mutating checks routed through the shared
@@ -774,6 +803,19 @@ The `'user'` alias (`'user'` → `App\Models\User`) is registered in `AuthModule
 - `tests/Feature/BotApproverTest.php`
 - `tests/Feature/BotToolRegistryTest.php`
 - `tests/Feature/BotModulesTest.php`
+
+**R2 sub-stage 3 — Generator session delegation** (see `docs/backend/generator-sessions-api.md` §
+"Bot-author delegation overlay" for the full contract, `docs/decisions/
+ADR-0036-bot-delegation-generation-sessions.md` for the design record):
+
+- `app/modules/Bot/Http/Controllers/BotSessionDelegationController.php` — the `store`/`destroy` endpoints
+- `app/modules/Bot/Http/Requests/DelegateBotSessionRequest.php` — `auto_generate` (opt-in) + `fill_mode` (`gaps`/`fresh`, default `gaps`), authorizes via the session's `update` ability
+- `app/modules/Bot/Enums/SlotFillMode.php` — the click-time fill choice (which slots the autonomous fill offers, and what it asks of the model)
+- `app/modules/Bot/Services/BotVoiceComposer.php` — composes persona/style/dictionary/phrases/prohibitions into ONE opaque voice directive (mirrors, does not share, `BotTaskExecutionAgent::instructions()`)
+- `app/modules/Bot/Services/BotSlotFillService.php`, `Agents/BotSlotFillAgent.php` — the autonomous, metered, defensively-parsed slot-fill call
+- `app/modules/Generator/Services/SessionDelegationService.php` — the bot-agnostic Generator-side seams this controller calls
+- `app/modules/Variables/Support/AiVoiceContext.php` — the ambient voice-directive holder (mirrors `MeterContext`)
+- `tests/Feature/BotSessionDelegationTest.php`, `tests/Feature/BotModuleBoundaryTest.php`, `tests/Feature/ShotListVoiceTest.php`
 
 ---
 

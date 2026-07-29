@@ -68,6 +68,28 @@ class WorkflowRunFactory extends Factory
         ]);
     }
 
+    /**
+     * A run parked in `waiting` by a suspending step. The wait descriptors are generic placeholders
+     * (the engine is kind-agnostic) — override them per test.
+     */
+    public function waiting(): static
+    {
+        return $this->state(fn () => [
+            'state' => WorkflowRunState::WAITING,
+            'started_at' => now(),
+            'finished_at' => null,
+            'waiting_on' => [
+                'kind' => 'test_wait',
+                'step_key' => 'wait',
+                'step_type' => 'test_step',
+                'position' => 0,
+                'payload' => [],
+            ],
+            'waiting_key' => 'test_wait:' . fake()->uuid(),
+            'waiting_since' => now(),
+        ]);
+    }
+
     /** A run stuck in `running` with a stale started_at (reaper target). */
     public function stale(): static
     {

@@ -17,6 +17,11 @@ use Throwable;
  * killed mid-run (SIGKILL/OOM) never fires the job's failed() hook, and the atomic claim
  * only matches `pending`, so nothing else can recover them.
  *
+ * It ALSO drives the WAITING sweep (runs a step parked to await external work): resume the ones
+ * whose work settled, fail the ones whose work is gone or whose wait timed out. Deliberately the
+ * SAME command and the SAME schedule entry — both sweeps need exactly the same shared-DB + per-tenant
+ * traversal, and a second command would double that machinery for nothing.
+ *
  * `workflow_runs` lives in the shared database (shared-mode workspaces) AND in each
  * own-database workspace, so the sweep runs once on the default connection and once per
  * own-DB tenant — reusing the same tenancy primitives the queue boundary uses (mirrors
@@ -26,17 +31,19 @@ class ReapStaleWorkflowRunsCommand extends Command
 {
     protected $signature = 'workflows:reap-stale-runs';
 
-    protected $description = 'Release workflow runs stuck in "running" past the timeout, across the shared DB and every own-database workspace.';
+    protected $description = 'Release workflow runs stuck in "running" past the timeout and settle runs stuck in "waiting", across the shared DB and every own-database workspace.';
 
     public function handle(WorkflowRunManager $runManager, TenantContext $context, TenantManager $tenants): int
     {
         $total = 0;
+        $waiting = 0;
 
         // Shared-mode workspaces all live in the default connection: one unscoped pass
         // covers every shared run at once.
         $context->clear();
         $tenants->forget();
         $total += $runManager->reapStaleRuns();
+        $waiting += $runManager->reapWaitingRuns();
 
         // Each own-database workspace has its own workflow_runs table: activate its context
         // so the tenant-aware models route to the dedicated connection, then reap there. Only
@@ -54,6 +61,7 @@ class ReapStaleWorkflowRunsCommand extends Command
                 $context->set($workspace);
                 $tenants->configure($workspace);
                 $total += $runManager->reapStaleRuns();
+                $waiting += $runManager->reapWaitingRuns();
             } catch (Throwable $e) {
                 Log::error('Stale workflow run reaper failed for workspace; continuing with remaining workspaces.', [
                     'workspace_id' => $workspace->id,
@@ -65,7 +73,10 @@ class ReapStaleWorkflowRunsCommand extends Command
         $context->clear();
         $tenants->forget();
 
+        // Two separate lines on purpose: a resumed run is NOT a reaped one, and folding them into one
+        // number would misreport healthy resumptions as failures.
         $this->info("Reaped {$total} stale workflow run(s).");
+        $this->info("Handled {$waiting} waiting workflow run(s).");
 
         return self::SUCCESS;
     }

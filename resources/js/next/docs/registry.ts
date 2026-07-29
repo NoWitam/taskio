@@ -405,6 +405,11 @@ export const stories: StyleguideStory[] = [
   },
   {
     section: 'Modules',
+    name: 'Generator',
+    component: () => import('./pages/GeneratorPage.vue'),
+  },
+  {
+    section: 'Modules',
     name: 'Workflows',
     component: () => import('./pages/WorkflowsPage.vue'),
   },

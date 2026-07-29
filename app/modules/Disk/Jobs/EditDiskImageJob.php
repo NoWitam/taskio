@@ -47,6 +47,7 @@ class EditDiskImageJob implements ShouldQueue
     public function __construct(
         public string $editId,
         public string $workspaceId,
+        public ?string $userId = null,
     ) {}
 
     /**
@@ -67,7 +68,7 @@ class EditDiskImageJob implements ShouldQueue
         $this->activateTenant();
 
         try {
-            $service->process($this->editId);
+            $service->process($this->editId, $this->userId);
         } catch (Throwable $e) {
             // Log the real cause (kept OUT of the row, which only ever shows a localized message),
             // then rethrow so the queue retries and eventually routes to failed().

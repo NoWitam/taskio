@@ -39,6 +39,11 @@ class WorkflowRun extends AbstractModel
         'trigger_type',
         'trigger_payload',
         'context',
+        // Suspend/resume: what the run is parked on, its opaque correlation key, and when the
+        // wait started. NULL for the whole life of a run without a suspending step.
+        'waiting_on',
+        'waiting_key',
+        'waiting_since',
         'depth',
         'origin_run_id',
         'creator_id',
@@ -53,6 +58,8 @@ class WorkflowRun extends AbstractModel
         'origin' => WorkflowRunOrigin::class,
         'trigger_payload' => 'array',
         'context' => 'array',
+        'waiting_on' => 'array',
+        'waiting_since' => 'datetime',
         'depth' => 'integer',
         'started_at' => 'datetime',
         'finished_at' => 'datetime',

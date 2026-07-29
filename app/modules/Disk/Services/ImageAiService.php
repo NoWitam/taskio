@@ -6,6 +6,9 @@ use App\Modules\Disk\Enums\DiskAiEditStatus;
 use App\Modules\Disk\Events\DiskAiEditUpdated;
 use App\Modules\Disk\Jobs\EditDiskImageJob;
 use App\Modules\Disk\Models\DiskAiEdit;
+use App\Modules\Variables\Contracts\MeteredAiCall;
+use App\Modules\Variables\Exceptions\AiBudgetExceededException;
+use App\Modules\Variables\Support\MeterContext;
 use App\Tenancy\TenantContext;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
@@ -23,6 +26,14 @@ use RuntimeException;
  * browser polls the row until done/failed. A soft per-workspace DAILY cap bounds spend and is
  * enforced+counted at DISPATCH so a pending edit already consumes it.
  *
+ * On top of that day-count cap, every provider spend routes through the shared Variables cost METER
+ * ({@see MeteredAiCall}) — the correct one-way edge (Disk depends on the lower Variables layer, never
+ * the reverse). The meter GATES BEFORE spend on the workspace's calendar-month $ (cost) budget: dispatch
+ * pre-flights it so an over-cap workspace gets a clean 429 before a job is queued, and the worker's
+ * client call is wrapped so the spend is recorded. An over-cap throw in the worker is caught and fails
+ * the edit FAST — no burned retries, since the budget cannot clear within the job's retry window — while
+ * a real provider/transport error STILL retries as before.
+ *
  * Rides the custom {@see OpenAiImageEditClient} (OpenAI images/edits with a mask — laravel/ai
  * cannot send one).
  */
@@ -31,6 +42,8 @@ class ImageAiService
     public function __construct(
         private OpenAiImageEditClient $client,
         private TenantContext $tenant,
+        private MeteredAiCall $meter,
+        private MeterContext $meterContext,
     ) {}
 
     // ---- Dispatch (request path) -----------------------------------------------------
@@ -45,6 +58,15 @@ class ImageAiService
     public function dispatch(UploadedFile $image, string $prompt, ?UploadedFile $mask = null): DiskAiEdit
     {
         $this->enforceDailyBudget();
+
+        // Pre-flight the shared token meter's gate BEFORE queuing so an over-cap workspace is refused
+        // up front (a 429), not left to fail a worker later. The day-count cap above is the secondary
+        // backstop; a cap of 0 (the default) makes this a no-op.
+        try {
+            $this->meter->assertWithinBudget('ai_image_edit');
+        } catch (AiBudgetExceededException) {
+            abort(429, __('disk.ai.budget'));
+        }
 
         $edit = DiskAiEdit::create([
             'status' => DiskAiEditStatus::Queued,
@@ -72,8 +94,11 @@ class ImageAiService
         $this->recordUsage();
 
         // Pass scalars, never the model: the worker reloads a FRESH row (avoids a stale snapshot)
-        // and the workspace id lets it re-establish tenancy outside the request (see the job).
-        EditDiskImageJob::dispatch($edit->id, (string) $this->tenant->id());
+        // and the workspace id lets it re-establish tenancy outside the request (see the job). The
+        // acting user id rides along so the worker (which has NO auth() of its own) can attribute the
+        // metered spend to the user — the meter's DEFAULT resolution would otherwise record it as
+        // unattributed (R2 sub-stage 4 actor attribution; captured here where auth() is present).
+        EditDiskImageJob::dispatch($edit->id, (string) $this->tenant->id(), auth()->id());
 
         return $edit;
     }
@@ -85,9 +110,16 @@ class ImageAiService
      * the client, store the result, mark it done, and delete the inputs. Idempotent — a missing or
      * already-terminal row is a no-op (a retry that lands after the reaper gave up, or a duplicate
      * delivery, must never resurrect or double-run an edit). A provider/transport failure
-     * propagates: the job's failed() hook records it (see {@see EditDiskImageJob}).
+     * propagates: the job's failed() hook records it (see {@see EditDiskImageJob}). An over-cap
+     * {@see AiBudgetExceededException} is the ONE exception caught here — the budget can never clear
+     * within the job's retry window, so the edit is failed FAST (via {@see fail()}) and NOT rethrown,
+     * sparing the retries. fail() is terminal-safe, so idempotency/overlap semantics are unaffected.
+     *
+     * $userId is the acting user captured at dispatch (the worker has no auth()): it is tagged on the
+     * ambient MeterContext so the metered spend attributes to that user (R2 sub-stage 4). null → the
+     * meter's default resolution (unattributed here, since a worker has no auth/run).
      */
-    public function process(string $editId): void
+    public function process(string $editId, ?string $userId = null): void
     {
         $edit = DiskAiEdit::find($editId);
 
@@ -104,7 +136,22 @@ class ImageAiService
 
         $mask = $edit->input_mask_path !== null ? Storage::get($edit->input_mask_path) : null;
 
-        $result = $this->edit($image, $edit->prompt, $mask);
+        // Tag the spend with the dispatching user (null type → the resolver defaults to the user alias);
+        // cleared in the finally so a shared worker never leaks the actor into the next job.
+        $this->meterContext->setActor(null, $userId);
+
+        try {
+            $result = $this->edit($image, $edit->prompt, $mask);
+        } catch (AiBudgetExceededException) {
+            // Over-cap: fail FAST rather than burn the job's retries — the calendar-month budget
+            // cannot clear before they run out. Reuse the terminal fail() path (localized message +
+            // input cleanup + poll/broadcast) and do NOT rethrow, so the queue does not retry.
+            $this->fail($edit->id, __('disk.ai.budget'));
+
+            return;
+        } finally {
+            $this->meterContext->clearActor();
+        }
 
         $edit->update([
             'status' => DiskAiEditStatus::Done,
@@ -125,7 +172,10 @@ class ImageAiService
      */
     public function edit(string $image, string $prompt, ?string $mask = null): array
     {
-        return $this->client->edit($image, $prompt, $mask);
+        // Route the spend through the shared meter: it re-checks the gate (an over-cap throw here is
+        // caught by process(), which fails the edit FAST without retrying) and RECORDS the spend as the
+        // configured ai_image_edit unit (the client result carries no provider token count).
+        return $this->meter->meter('ai_image_edit', fn () => $this->client->edit($image, $prompt, $mask));
     }
 
     /**

@@ -3,11 +3,14 @@
 namespace App\Modules\Workflows\Http\Requests;
 
 use App\Modules\Approvals\Models\ApprovalPipeline;
+use App\Modules\Disk\Models\Folder;
 use App\Modules\Forms\Models\Form;
+use App\Modules\Generator\Models\Template;
 use App\Modules\Labels\Models\Label;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Variables\Services\PipelineValidator;
+use App\Modules\Variables\Services\VariableResolver;
 use App\Modules\Workflows\Enums\WorkflowConditionOperator;
 use App\Modules\Workflows\Enums\WorkflowStepType;
 use App\Modules\Workflows\Enums\WorkflowTriggerType;
@@ -15,7 +18,6 @@ use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workflows\Services\WorkflowConditionTreeValidator;
 use App\Modules\Workflows\Services\WorkflowScheduleRulesValidator;
 use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
-use App\Modules\Workflows\Services\WorkflowVariableResolver;
 use App\Rules\ScopedExists;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
@@ -49,6 +51,9 @@ use Illuminate\Validation\Rule;
  */
 class StoreWorkflowRequest extends FormRequest
 {
+    /** How many `generate_content` steps one workflow may contain — see validateGenerateContentBudget(). */
+    private const GENERATE_CONTENT_MAX = 2;
+
     public function authorize(): bool
     {
         return $this->user()->can('create', Workflow::class);
@@ -285,8 +290,8 @@ class StoreWorkflowRequest extends FormRequest
             'index' => $catalog->referenceIndex(WorkflowTriggerType::FORM_SUBMITTED, $form, priorSteps: []),
             'fields_available' => $form !== null,
             // The reference-source roots a variable arg may name — supplied to the Variables pipeline
-            // validator so it needs no back-dependency on WorkflowVariableResolver (see ADR-0021).
-            'sources' => WorkflowVariableResolver::ROOTS,
+            // validator so it needs no back-dependency on VariableResolver (see ADR-0021).
+            'sources' => VariableResolver::ROOTS,
             // The workspace's custom functions, so a condition pipeline referencing a `fn:<uuid>` op
             // type-checks (the pipeline validator resolves it) — a type-incompatible function is a 422.
             'functions' => $catalog->customFunctionOperations(),
@@ -482,16 +487,49 @@ class StoreWorkflowRequest extends FormRequest
 
             // The references THIS step may target: trigger vars, form fields, and PRIOR steps' outputs.
             $refCtx = $catalog !== null
-                ? ['index' => $catalog->referenceIndex($triggerType, $form, $priorSteps), 'fields_available' => $form !== null, 'sources' => WorkflowVariableResolver::ROOTS, 'functions' => $functions]
+                ? ['index' => $catalog->referenceIndex($triggerType, $form, $priorSteps), 'fields_available' => $form !== null, 'sources' => VariableResolver::ROOTS, 'functions' => $functions]
                 : null;
 
             match ($type) {
                 WorkflowStepType::CREATE_TASK => $this->validateCreateTaskConfig($validator, $prefix, $config, $refCtx),
                 WorkflowStepType::CREATE_FORM_REPORT => $this->validateCreateFormReportConfig($validator, $prefix, $config, $refCtx),
+                WorkflowStepType::GENERATE_CONTENT => $this->validateGenerateContentConfig($validator, $prefix, $config, $refCtx),
             };
 
             $this->rejectForeignStepKeys($validator, $prefix, $config, $this->allowedStepKeys($type));
             $priorSteps[] = $step;
+        }
+
+        $this->validateGenerateContentBudget($validator, $steps);
+    }
+
+    /**
+     * At most {@see GENERATE_CONTENT_MAX} generate_content steps per workflow. Each one is a WHOLE AI
+     * generation run (text + images), by far the most expensive thing a workflow can do, and it PARKS the
+     * run while it settles — so a definition that chains several multiplies both the spend and the wall
+     * clock of a single trigger. The cap is a definition-time budget guard, deliberately in the same spirit
+     * as `workflows.max_runs_per_month`; the third and later step is reported individually so the author
+     * sees which one to remove.
+     *
+     * @param  array<int, mixed>  $steps
+     */
+    private function validateGenerateContentBudget(Validator $validator, array $steps): void
+    {
+        $seen = 0;
+
+        foreach ($steps as $index => $step) {
+            $step = is_array($step) ? $step : [];
+
+            if (($step['type'] ?? null) !== WorkflowStepType::GENERATE_CONTENT->value) {
+                continue;
+            }
+
+            if (++$seen > self::GENERATE_CONTENT_MAX) {
+                $validator->errors()->add(
+                    'steps.' . $index . '.type',
+                    'A workflow may contain at most ' . self::GENERATE_CONTENT_MAX . ' generate_content steps.',
+                );
+            }
         }
     }
 
@@ -535,15 +573,27 @@ class StoreWorkflowRequest extends FormRequest
             }
 
             foreach (['priority', 'deadline', 'submissions_from', 'submissions_to'] as $field) {
-                $value = $config[$field] ?? null;
+                if ($this->isVariablePipeline($config[$field] ?? null)) {
+                    return true;
+                }
+            }
 
-                if (is_array($value) && ($value['kind'] ?? null) === 'variable' && !empty($value['pipeline'])) {
+            // generate_content's slot map is a FREE-FORM set of unions (one per template slot), so it is
+            // scanned by value rather than by a fixed key list.
+            foreach (is_array($config['slots'] ?? null) ? $config['slots'] : [] as $value) {
+                if ($this->isVariablePipeline($value)) {
                     return true;
                 }
             }
         }
 
         return false;
+    }
+
+    /** Whether a structured field is a variable union carrying a non-empty pipeline. */
+    private function isVariablePipeline(mixed $value): bool
+    {
+        return is_array($value) && ($value['kind'] ?? null) === 'variable' && !empty($value['pipeline']);
     }
 
     /**
@@ -669,6 +719,219 @@ class StoreWorkflowRequest extends FormRequest
     }
 
     /**
+     * generate_content config: template_id (required, workspace-scoped Template uuid), slots (a map of the
+     * template's DECLARED slot names to a literal or a variable union), folder_id (nullable, workspace-
+     * scoped Disk Folder uuid — where the produced images are exported), name (nullable string, the
+     * session's display name; defaults to the template's).
+     *
+     * The template is RESOLVED here so the slot map can be checked against the recipe the author actually
+     * picked. Two granular, per-slot rules:
+     *   - every NON-NULLABLE declared slot must be mapped (a descriptor has no `required` key — required is
+     *     `nullable !== true`), because generating from a half-filled recipe spends AI money on content
+     *     nobody asked for, and the step hard-fails at run time anyway. Better a 422 at authoring time.
+     *   - a mapped name the template does NOT declare is rejected — almost always a typo, and the same typo
+     *     is what leaves the intended slot unmapped, so reporting both points straight at the mistake.
+     *   - a COMPOSITE slot a workflow cannot supply is rejected outright ({@see isUnsuppliableSlot}), because
+     *     the mapped value would be silently discarded at run time.
+     * All three land under `steps.<i>.config.slots.<name>` so the editor can highlight the exact row.
+     *
+     * A slot's VALUE is only shape-checked ({@see validateSlotValue}): its literal is re-validated against
+     * the slot DESCRIPTOR at run time by the shared ConstantTypeValidator (the same authority a human fill
+     * uses), so duplicating per-descriptor literal rules here would be a second, driftable implementation.
+     *
+     * @param  array<string, mixed>  $config
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     */
+    private function validateGenerateContentConfig(Validator $validator, string $prefix, array $config, ?array $refCtx = null): void
+    {
+        $templateId = $config['template_id'] ?? null;
+        $template = null;
+
+        if (!is_string($templateId) || $templateId === '') {
+            $validator->errors()->add($prefix . '.template_id', 'The generate_content step requires a template_id.');
+        } else {
+            $this->validateScopedUuid($validator, $prefix . '.template_id', $templateId, Template::class);
+            // Tenant-scoped, so a foreign id resolves to null here exactly as ScopedExists rejects it.
+            $template = $this->isUuid($templateId) ? Template::find($templateId) : null;
+        }
+
+        if (($config['name'] ?? null) !== null && !is_string($config['name'])) {
+            $validator->errors()->add($prefix . '.name', 'The name must be a string.');
+        }
+
+        $this->validateScopedUuid($validator, $prefix . '.folder_id', $config['folder_id'] ?? null, Folder::class);
+
+        $slots = $config['slots'] ?? null;
+
+        if ($slots !== null && !is_array($slots)) {
+            $validator->errors()->add($prefix . '.slots', 'The slots must be a map of slot name to value.');
+
+            return;
+        }
+
+        if ($template === null) {
+            return; // the template error is already reported, and the per-slot rules need its declarations
+        }
+
+        $this->validateTemplateSlotMapping($validator, $prefix, $template, is_array($slots) ? $slots : [], $refCtx);
+    }
+
+    /**
+     * The per-slot half of generate_content validation (see validateGenerateContentConfig for the rules).
+     *
+     * @param  array<string, mixed>  $mapped
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     */
+    private function validateTemplateSlotMapping(Validator $validator, string $prefix, Template $template, array $mapped, ?array $refCtx): void
+    {
+        $declared = [];
+
+        foreach (is_array($template->slots) ? $template->slots : [] as $slot) {
+            if (is_array($slot) && is_string($slot['name'] ?? null) && is_array($slot['descriptor'] ?? null)) {
+                $declared[$slot['name']] = $slot['descriptor'];
+            }
+        }
+
+        foreach (array_keys($mapped) as $name) {
+            if (!array_key_exists((string) $name, $declared)) {
+                $validator->errors()->add(
+                    $prefix . '.slots.' . $name,
+                    'The ' . $name . ' slot is not declared by the chosen template.',
+                );
+            }
+        }
+
+        foreach ($declared as $name => $descriptor) {
+            $key = $prefix . '.slots.' . $name;
+            $isMapped = array_key_exists($name, $mapped);
+            $value = $isMapped ? $mapped[$name] : null;
+            $isRequired = ($descriptor['nullable'] ?? false) !== true;
+
+            if ($this->isUnsuppliableSlot($descriptor)) {
+                // A REQUIRED one is an error whether it is mapped or not — the recipe cannot be driven by a
+                // workflow at all, so say so instead of accepting a step that would fail every single run.
+                // A NULLABLE one is only an error when the author actually mapped it: leaving it out is a
+                // legitimate "generate with this slot empty".
+                if ($isRequired) {
+                    $validator->errors()->add(
+                        $key,
+                        'The required ' . $name . ' slot of the chosen template is a composite value (an object, a list of objects, or a list of files) that a workflow step cannot supply yet, so this template cannot be driven by a workflow.',
+                    );
+                } elseif ($isMapped) {
+                    $validator->errors()->add(
+                        $key,
+                        'The ' . $name . ' slot of the chosen template is a composite value (an object, a list of objects, or a list of files) that a workflow step cannot supply yet, so it cannot be mapped. Leave it unmapped to generate with it empty.',
+                    );
+                }
+
+                continue;
+            }
+
+            if ($isRequired && (!$isMapped || $value === null || $value === '')) {
+                $validator->errors()->add($key, 'The required ' . $name . ' slot of the chosen template must be mapped.');
+
+                continue;
+            }
+
+            if ($isMapped) {
+                $this->validateSlotValue($validator, $key, $value, $descriptor, $refCtx);
+            }
+        }
+    }
+
+    /**
+     * Whether a DECLARED slot is a composite the `generate_content` step cannot supply — refused at
+     * AUTHORING time rather than discovered at run time.
+     *
+     * THREE shapes, two distinct reasons, one outcome:
+     *   - `object` (any shape). The step resolves every mapped value through the shared resolver at the
+     *     slot's own type, and that resolver has NO object coercion — an object literal, bare or wrapped in
+     *     a `{kind:'literal'}` union, resolves to NULL. The value the author wrote can therefore never reach
+     *     the session.
+     *   - `array<object>` and `array<file>`. Deferred composites that
+     *     {@see \App\Modules\Generator\Enums\SlotScopePolicy::accepts} refuses outright, so the fill drops
+     *     them as out-of-scope.
+     * Either way the mapped value is discarded, and the two ways that surfaced were both bad: a REQUIRED
+     * slot saved cleanly and then hard-failed EVERY run (leaving an orphan draft each time), and a NULLABLE
+     * one silently generated with an empty slot — the author's mapping quietly thrown away.
+     *
+     * A plain SCALAR `file` slot is deliberately NOT here: it is the owner-approved D4 automation path, it
+     * resolves, and it works. Same for every scalar and its `array` form.
+     *
+     * @param  array<string, mixed>  $descriptor
+     */
+    private function isUnsuppliableSlot(array $descriptor): bool
+    {
+        $base = $descriptor['base'] ?? null;
+
+        if ($base === VariableType::OBJECT->value) {
+            return true;
+        }
+
+        return $base === VariableType::FILE->value && ($descriptor['array'] ?? false) === true;
+    }
+
+    /**
+     * ONE mapped slot value. A `{kind:'variable'}` union gets the shared reference + pipeline checks, typed
+     * by the SLOT's own accepted terminals ({@see slotPipelineTerminals}), so a pipeline that cannot end in
+     * one of them is a 422. A literal (bare or `{kind:'literal'}`) is intentionally NOT type-checked here —
+     * see validateGenerateContentConfig.
+     *
+     * @param  array<string, mixed>  $descriptor
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     */
+    private function validateSlotValue(Validator $validator, string $key, mixed $value, array $descriptor, ?array $refCtx): void
+    {
+        if (!is_array($value) || !isset($value['kind'])) {
+            return; // a bare literal (a scalar, or a list for an array slot)
+        }
+
+        if ($value['kind'] === 'variable') {
+            $this->validateVariableRef($validator, $key, $value['ref'] ?? null);
+            $this->validateVariablePipeline($validator, $key, $value, $refCtx, $this->slotPipelineTerminals($descriptor));
+
+            return;
+        }
+
+        if ($value['kind'] !== 'literal') {
+            $validator->errors()->add($key, 'The ' . $key . ' kind must be literal or variable.');
+        }
+    }
+
+    /**
+     * The pipeline TERMINALS a slot accepts, recovered from its stored descriptor.
+     *
+     * A SCALAR slot accepts exactly its own type — unchanged, and safe, because a cast operation always
+     * exists to reach it (the same precedent as `create_task.deadline`).
+     *
+     * An ARRAYED slot (`{base:<scalar|enum>, array:true}` → MULTI) accepts its own MULTI **or** its plain
+     * ELEMENT type, because demanding MULTI alone was an unreachable dead end: NO operation produces a
+     * `multi` from a scalar (only `array_map` / `array_filter` / `array_sort` do, and those need an array
+     * INPUT), so every non-identity pipeline over a scalar source 422'd with no way out — the author picked
+     * a text variable for an `array<text>` slot, added `text_uppercase`, and could never save. An EMPTY
+     * pipeline was already accepted (validateVariablePipeline returns early), so the scalar terminal was
+     * the only thing missing. The runtime already WRAPS it — {@see \App\Modules\Variables\Services\VariableResolver::coerce}
+     * does `MULTI => is_array($value) ? array_values($value) : [$value]` — so what this admits is exactly
+     * what the resolver can already deliver. `WorkflowStepCard.vue`'s `slotResultTypes` mirrors this pair;
+     * the two must not drift.
+     *
+     * `object` / `array<file>` descriptors never reach here — {@see isUnsuppliableSlot} refuses them first.
+     *
+     * @param  array<string, mixed>  $descriptor
+     * @return array<int, VariableType>
+     */
+    private function slotPipelineTerminals(array $descriptor): array
+    {
+        $slotType = VariableType::fromDescriptor($descriptor);
+
+        if ($slotType !== VariableType::MULTI) {
+            return [$slotType];
+        }
+
+        return [$slotType, VariableType::fromDescriptor(['base' => $descriptor['base'] ?? null, 'array' => false])];
+    }
+
+    /**
      * A structured field that is EITHER a bare literal OR the {kind: literal|variable, …}
      * union. A null/absent value is fine (optional). A literal value (bare or {kind:literal})
      * is checked by $literalValid. A {kind:variable} value must carry a well-formed ref
@@ -738,10 +1001,12 @@ class StoreWorkflowRequest extends FormRequest
         }
 
         // Single source of truth for the reference whitelist (see ADR-0021): a new root added to
-        // WorkflowVariableResolver::ROOTS is automatically accepted by this write-side validator too.
+        // VariableResolver::ROOTS is automatically accepted by this write-side validator too. The
+        // superset carries `slots` (a template root, inert here — no workflow context populates it, so a
+        // `slots` ref resolves to nothing at runtime), so it is nominally accepted but never produced.
         $source = $ref['source'] ?? null;
-        if (!in_array($source, WorkflowVariableResolver::ROOTS, true)) {
-            $validator->errors()->add($key . '.ref.source', 'The reference source must be one of: ' . implode(', ', WorkflowVariableResolver::ROOTS) . '.');
+        if (!in_array($source, VariableResolver::ROOTS, true)) {
+            $validator->errors()->add($key . '.ref.source', 'The reference source must be one of: ' . implode(', ', VariableResolver::ROOTS) . '.');
         }
 
         $path = $ref['path'] ?? null;
@@ -1008,6 +1273,12 @@ class StoreWorkflowRequest extends FormRequest
             ],
             WorkflowStepType::CREATE_FORM_REPORT => [
                 'form_id', 'name', 'guidelines', 'sources', 'submissions_from', 'submissions_to',
+            ],
+            // `slots` is the ONE free-form map in a step config (its keys are the chosen template's slot
+            // names, not a fixed vocabulary) — the shallowest-key guard therefore allows it wholesale, and
+            // its keys are checked against the template's declarations instead (validateTemplateSlotMapping).
+            WorkflowStepType::GENERATE_CONTENT => [
+                'template_id', 'slots', 'folder_id', 'name',
             ],
         };
     }

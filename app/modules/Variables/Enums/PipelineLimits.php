@@ -8,8 +8,8 @@ namespace App\Modules\Variables\Enums;
  * type system + engine moved to the Variables module. The write-validator (PipelineValidator) enforces
  * these and the runtime engine (OperationExecutor) re-checks them DEFENSIVELY (fail-closed), so a bound
  * can never drift between validation and evaluation and a persisted-then-corrupted pipeline can never
- * blow the stack. Workflows' engine consumers (WorkflowConditionEngine, WorkflowVariableResolver) read
- * them too — one source, both sides.
+ * blow the stack. The engine consumers (the shared VariableResolver, and Workflows' WorkflowConditionEngine)
+ * read them too — one source, both sides.
  */
 final class PipelineLimits
 {
@@ -26,7 +26,7 @@ final class PipelineLimits
      * (trigger/steps/globals — a plain Arr::get), NEVER another argument DEFINITION, so resolving one
      * can never re-enter its own definition. This bound is purely a safety belt against a hostile/huge
      * stored config's nesting depth (a finite tree), not a loop guard. Both the write-validator
-     * (PipelineValidator) and the runtime resolver (WorkflowVariableResolver) read it, so the accepted
+     * (PipelineValidator) and the runtime resolver (VariableResolver) read it, so the accepted
      * depth can never drift between validation and evaluation.
      */
     public const MAX_ARG_VARIABLE_DEPTH = 3;
