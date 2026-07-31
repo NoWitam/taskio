@@ -217,6 +217,9 @@ function pickSuggestion(value: string): void {
 }
 
 // --- Keyboard --------------------------------------------------------------
+// DELIBERATELY NOT in `useOverlayStack`: this is bound to the text input, so Escape only arrives
+// while the input itself has DOM focus — and the suggestion list it closes is an inline dropdown of
+// this very input, never a sibling of another overlay competing for the same press.
 function onKeydown(e: KeyboardEvent): void {
   if (inert.value) return;
   switch (e.key) {

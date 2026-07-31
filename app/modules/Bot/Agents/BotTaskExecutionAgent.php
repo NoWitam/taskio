@@ -70,7 +70,7 @@ class BotTaskExecutionAgent implements Agent, HasTools
         - post_comment: publikuj komentarze (wyjaśnienia, postęp, podsumowania) dowolnie.
         - fill_form: wypełnij formularz (jeśli jest). {$formRule}
         - ask_and_wait: gdy potrzebujesz odpowiedzi CZŁOWIEKA — zadaj pytanie i zakończ turę.
-        - finish: gdy praca jest gotowa — prześlij zadanie do testów.{$registrySection}
+        - finish: gdy praca jest gotowa — zamknij zadanie (trafi do testów, jeśli ma akceptację, w przeciwnym razie zostanie oznaczone jako zrobione).{$registrySection}
         - Przestrzegaj zakazów i preferowanego słownictwa.
         INSTRUCTIONS;
     }

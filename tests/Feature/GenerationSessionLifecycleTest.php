@@ -7,6 +7,7 @@ use App\Modules\Generator\Enums\GenerationSessionStatus;
 use App\Modules\Generator\Models\GenerationSession;
 use App\Modules\Generator\Services\GeneratedImageStore;
 use App\Modules\Generator\Services\GenerationSessionLifecycleService;
+use App\Modules\Generator\Services\SessionIdentityImageStore;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Modules\Workspaces\Services\TenantManager;
 use App\Tenancy\TenantContext;
@@ -187,6 +188,41 @@ class GenerationSessionLifecycleTest extends TestCase
         $this->assertSame(1, GenerationSession::withTrashed()->whereKey($session->id)->count());
     }
 
+    public function test_an_archived_then_trashed_session_still_gives_up_its_frozen_likeness(): void
+    {
+        // The one thing the archive freeze must NOT hold on to forever: a delegated session froze a COPY of
+        // a real person's face. Once the row has been in the trash past the purge window it is unreachable
+        // (there is no restore), so every further day of keeping that copy is retention nobody asked for.
+        // The row itself still stays — archive means archive.
+        $session = $this->trashedSince(now()->subMonths(2), ['archived_at' => now()]);
+
+        $identity = app(SessionIdentityImageStore::class);
+        $identity->put($session->id, 'bot-1', 'FROZEN-FACE');
+        $likeness = $identity->path($session->id, 'bot-1');
+        Storage::assertExists($likeness);
+
+        // The REAL scheduled command: the shared-DB pass runs with the tenant context cleared, so the prefix
+        // has to be derived from the ROW, exactly like the produced-image GC beside it.
+        $this->artisan('generator:reap-sessions')->assertSuccessful();
+
+        Storage::assertMissing($likeness);
+        $this->assertSame(1, GenerationSession::withTrashed()->whereKey($session->id)->count(), 'the archived row itself is still exempt');
+    }
+
+    public function test_a_recently_trashed_archived_session_keeps_its_frozen_likeness(): void
+    {
+        $session = $this->trashedSince(now()->subDays(3), ['archived_at' => now()]);
+
+        $identity = app(SessionIdentityImageStore::class);
+        $identity->put($session->id, 'bot-1', 'FROZEN-FACE');
+        // Resolved while the tenant is still active — the sweep clears the context.
+        $likeness = $identity->path($session->id, 'bot-1');
+
+        $this->artisan('generator:reap-sessions')->assertSuccessful();
+
+        Storage::assertExists($likeness);
+    }
+
     // ---- archive / unarchive endpoints -----------------------------------------
 
     public function test_creator_can_archive_and_unarchive_a_session(): void
@@ -261,12 +297,14 @@ class GenerationSessionLifecycleTest extends TestCase
             ->with(Mockery::on(fn (Workspace $ws) => $ws->is($healthy)))
             ->once();
 
-        // Shared pass + the healthy tenant each run all three steps; the broken tenant throws at configure
+        // Shared pass + the healthy tenant each run every step; the broken tenant throws at configure
         // before any step, so each is called exactly twice.
         $lifecycle = $this->mock(GenerationSessionLifecycleService::class);
+        $lifecycle->shouldReceive('reapStaleFrames')->twice()->andReturn(0);
         $lifecycle->shouldReceive('reapStale')->twice()->andReturn(0);
         $lifecycle->shouldReceive('trashStale')->twice()->andReturn(0);
         $lifecycle->shouldReceive('purgeTrashed')->twice()->andReturn(0);
+        $lifecycle->shouldReceive('purgeArchivedIdentityImages')->twice()->andReturn(0);
 
         $this->artisan('generator:reap-sessions')->assertSuccessful();
 

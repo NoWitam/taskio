@@ -4,7 +4,8 @@
 // descriptor shape so the status renders consistently — and NEVER color-only —
 // across the card, the detail header, and the aside. Tones mirror the contract
 // (success / neutral); each pairs an icon with a localized label. Mirrors
-// `botStatus.ts`.
+// `ui/data/botStatus.ts` (which lives in `ui/` because the design system's BotSelect
+// renders bot statuses; nothing in `ui/` needs workflow statuses, so this one stays here).
 import type { StatusMap } from '../../ui/data/StatusBadge.vue';
 import type { WorkflowStatus } from './types';
 

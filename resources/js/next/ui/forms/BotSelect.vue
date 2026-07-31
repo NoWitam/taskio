@@ -18,6 +18,12 @@
 // Mirrors UserSelect / FormSelect 1:1 for a11y/loading/empty (the combobox ARIA,
 // cursor pagination + skeletons come from Select). No legacy imports; namespaced
 // tokens only; i18n via t() with safe fallbacks.
+//
+// OPT-IN extras (all default to today's rendering, so existing consumers are untouched):
+//   • `statusBadge` — option rows show a StatusBadge instead of the muted status line.
+//   • `#empty`      — forwarded to Select's empty state ({ query, setQuery, refetch }),
+//                     so a consumer can distinguish "no bots at all" from "no matches".
+//   • `#value`      — override the selected-value display on the trigger.
 import { computed, ref, watch } from 'vue';
 import Select, {
   type SelectFetchArgs,
@@ -27,10 +33,14 @@ import Select, {
 } from './Select.vue';
 import Icon from '../primitives/Icon.vue';
 import { type IconName } from '../primitives/icons';
+import StatusBadge from '../data/StatusBadge.vue';
 import { api } from '../../app/lib/api';
 import { useI18n } from '../../app/i18n';
 import { type ControlSize } from './fieldShell';
-import type { BotStatus } from '../../pages/bots/types';
+// The SHARED bot status enum + presentation (icon + tone + localized label) — the same
+// module the Bots card/detail render from, so a bot's status never looks different here.
+// It lives in `ui/data/` precisely so this picker needs no import from `pages/**`.
+import { botStatusMap, type BotStatus } from '../data/botStatus';
 
 const { t } = useI18n();
 
@@ -55,6 +65,20 @@ const props = withDefaults(
     size?: ControlSize;
     /** Leading icon (defaults to `sparkles`; pass `null` to drop it). */
     leadingIcon?: IconName | null;
+    /**
+     * Render each option's status as a `StatusBadge` (icon + tone + label) instead of
+     * the quiet muted text line. OFF by default, so every existing consumer keeps the
+     * exact rendering it has today. Turn it on where the status CHANGES the meaning of
+     * the pick (e.g. the ai-text author, which may be an inactive bot).
+     */
+    statusBadge?: boolean;
+    /**
+     * Offer ONLY bots that can execute tasks (active + the task-execution module on) by
+     * sending `can_execute_tasks=1` to `/bots`. OFF by default — turn it on wherever the
+     * pick makes a bot RUN something (a task assignee), because assigning any other bot
+     * is a silent no-op server-side. Ignored when a custom `fetchOptions` is injected.
+     */
+    executableOnly?: boolean;
     disabled?: boolean;
     readonly?: boolean;
     placeholder?: string;
@@ -79,6 +103,8 @@ const props = withDefaults(
     summary: false,
     disabled: false,
     readonly: false,
+    statusBadge: false,
+    executableOnly: false,
   },
 );
 
@@ -153,6 +179,9 @@ function statusLabel(status: BotStatus | null): string {
   return t(`bots.statuses.${status}`, status);
 }
 
+// Reactive to the active locale, like every other consumer of the shared map.
+const statusMap = computed(() => botStatusMap(t));
+
 // GET /bots?search=&cursor= → { data, meta: { next_cursor } }.
 async function fetchBots(args: SelectFetchArgs): Promise<SelectFetchResult> {
   if (props.fetchOptions) {
@@ -169,6 +198,7 @@ async function fetchBots(args: SelectFetchArgs): Promise<SelectFetchResult> {
   const params = new URLSearchParams();
   if (cursor) params.set('cursor', cursor);
   if (query) params.set('search', query);
+  if (props.executableOnly) params.set('can_execute_tasks', '1');
   const qs = params.toString();
   const res = await api.get<{ data: ApiBot[]; meta: { next_cursor: string | null } }>(
     `/bots${qs ? `?${qs}` : ''}`,
@@ -223,13 +253,33 @@ defineExpose({ fetchBots });
       <Icon name="sparkles" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
       <span class="flex min-w-0 flex-1 flex-col">
         <span class="truncate text-next-sm">{{ option.label }}</span>
+        <StatusBadge
+          v-if="statusBadge && (option as any).status"
+          class="mt-next-0_5 self-start"
+          :status="(option as any).status"
+          :status-map="statusMap"
+          size="sm"
+        />
         <span
-          v-if="statusLabel((option as any).status)"
+          v-else-if="statusLabel((option as any).status)"
           class="truncate text-next-xs text-next-muted-foreground"
         >
           {{ statusLabel((option as any).status) }}
         </span>
       </span>
+    </template>
+
+    <!-- Empty state. Under `executableOnly` with NO search query the list is empty for a
+         REASON the user can act on (no bot has the task-execution module on), so say it
+         instead of a bare "no results". A consumer #empty slot still wins, and every
+         other case renders exactly Select's default text. -->
+    <template #empty="scope">
+      <slot name="empty" v-bind="scope">
+        <span v-if="executableOnly && !scope.query">
+          {{ t('botSelect.emptyExecutable', 'No bot can execute tasks yet') }}
+        </span>
+        <span v-else>{{ t('select.empty', 'No results') }}</span>
+      </slot>
     </template>
 
     <template #chip="{ option, remove }">
@@ -271,8 +321,15 @@ defineExpose({ fetchBots });
       <Icon name="sparkles" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
       <span class="flex min-w-0 flex-1 flex-col">
         <span class="truncate text-next-sm">{{ option.label }}</span>
+        <StatusBadge
+          v-if="statusBadge && (option as any).status"
+          class="mt-next-0_5 self-start"
+          :status="(option as any).status"
+          :status-map="statusMap"
+          size="sm"
+        />
         <span
-          v-if="statusLabel((option as any).status)"
+          v-else-if="statusLabel((option as any).status)"
           class="truncate text-next-xs text-next-muted-foreground"
         >
           {{ statusLabel((option as any).status) }}
@@ -280,9 +337,27 @@ defineExpose({ fetchBots });
       </span>
     </template>
 
+    <!-- Empty state. Under `executableOnly` with NO search query the list is empty for a
+         REASON the user can act on (no bot has the task-execution module on), so say it
+         instead of a bare "no results". A consumer #empty slot still wins, and every
+         other case renders exactly Select's default text. -->
+    <template #empty="scope">
+      <slot name="empty" v-bind="scope">
+        <span v-if="executableOnly && !scope.query">
+          {{ t('botSelect.emptyExecutable', 'No bot can execute tasks yet') }}
+        </span>
+        <span v-else>{{ t('select.empty', 'No results') }}</span>
+      </slot>
+    </template>
+
+    <!-- The selected-value display. A consumer may replace it (e.g. to mark an author
+         that no longer resolves); with no slot the default glyph + name renders exactly
+         as before. -->
     <template #value="{ option }">
-      <Icon name="sparkles" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
-      <span class="truncate">{{ option.label }}</span>
+      <slot name="value" :option="option">
+        <Icon name="sparkles" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
+        <span class="truncate">{{ option.label }}</span>
+      </slot>
     </template>
   </Select>
 </template>

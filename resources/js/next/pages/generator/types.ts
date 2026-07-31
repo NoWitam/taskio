@@ -130,10 +130,22 @@ export interface AiEditFilter {
 /** One step in the ordered filter chain — a deterministic pixel op OR an AI edit. */
 export type ImageFilterStep = PixelFilter | AiEditFilter;
 
+/**
+ * Whether a DELEGATED session's frozen creator may appear in THIS image (mirrors
+ * `ImagePlanValidator::CHARACTER_MODES`):
+ *   auto   the default — the character rides the image whenever the session has one,
+ *   never  this image is never drawn from the character (product shots, logos, charts).
+ * `auto` is the ABSENCE of the key on the wire (the same convention as a storyboard's `max_shots`): an
+ * unauthored plan means "whatever the run has", so only the deliberate `never` is written.
+ */
+export type ImageCharacterMode = 'auto' | 'never';
+
 /** An image_plan part = a base + an ordered filter CHAIN (mirrors the variable pipeline). */
 export interface ImagePlanContent {
   base: ImageBase | null;
   filters: ImageFilterStep[];
+  /** Absent = `auto` (see {@link ImageCharacterMode}); only `'never'` is ever written. */
+  character?: ImageCharacterMode;
 }
 
 /** One scene of a scene_plan — a narration body + an OPTIONAL nested image plan (D4). */

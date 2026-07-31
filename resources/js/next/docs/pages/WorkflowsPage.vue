@@ -130,13 +130,14 @@ const conditionMatrixRows: ApiRow[] = [
 const stepTypeRows: ApiRow[] = [
   { name: 'create_task',        type: '{ title (req), description?, priority?, deadline?, labels?, assignee_type?+assignee_id?, form_id?, approval_pipeline_id?, attachments? }', description: 'Via TaskService::create(). Output: { task_id, title }. Assignment/form/pipeline are NOW fields on this step (folded in from the removed assign_bot/attach_form/start_approval). attachments accepts a file id (or a list of them) or a FILE-typed variable — e.g. a generate_content step\'s image_file_ids.' },
   { name: 'create_form_report', type: '{ form_id (req), name (req), guidelines?, sources?, submissions_from?, submissions_to? }', description: 'Via FormReportService::create() — fire-and-forget, but runs INLINE under the run loop\'s forced sync driver (see Ops notes in the backend doc), NOT genuinely async. Output: { report_id, report_name }.' },
-  { name: 'generate_content',   type: '{ template_id (req), slots?, folder_id?, name? }', description: 'R2 sub-stage 5. Runs a Generator Template — the ONE step that SUSPENDS the run (parks it in `waiting`) while the generation runs on the real queue. Output: { session_id, content, image_file_ids, status, has_failed_parts }. Max 2 per workflow.' },
+  { name: 'generate_content',   type: '{ template_id (req), slots?, folder_id?, name?, bot_id? }', description: 'R2 sub-stage 5. Runs a Generator Template — the ONE step that SUSPENDS the run (parks it in `waiting`) while the generation runs on the real queue. Output: { session_id, content, image_file_ids, status, has_failed_parts }. `bot_id` optionally delegates the session to a bot (voice + likeness — slots still come from the workflow). Max 2 per workflow.' },
 ];
 
 // ── generate_content granular 422s ───────────────────────────────────────────
 const generateContent422Rows: ApiRow[] = [
   { name: 'steps.<i>.config.template_id',   type: '422', description: 'Missing, not a uuid, or not a template in this workspace.' },
   { name: 'steps.<i>.config.folder_id',     type: '422', description: 'Not a uuid, or not a Disk folder in this workspace.' },
+  { name: 'steps.<i>.config.bot_id',        type: '422', description: 'Not a uuid, or not resolvable as a bot in this workspace — the SAME check the run itself performs, so a save can never accept an id the run would refuse.' },
   { name: 'steps.<i>.config.slots.<name>',  type: '422', description: 'An unmapped REQUIRED slot; an unknown slot name (not declared by the template); a mapped value whose pipeline does not type-flow to the slot\'s own type; a REQUIRED composite slot (object, or a list of files) the step cannot supply at all; a NULLABLE composite slot that was explicitly mapped anyway.' },
   { name: 'steps.<i>.type',                 type: '422', description: 'A 3rd (or later) generate_content step in the same workflow — the cap is 2.' },
 ];
@@ -548,15 +549,16 @@ WorkflowRun (one execution)
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
             <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">@[ai-text] — AI-generated text (SB2)</p>
             <p class="text-next-xs text-next-muted-foreground">
-              The (already resolved) prompt + a persona are sent to a TOOL-LESS agent
+              The (already resolved) prompt + a resolved VOICE (a per-block Bot author, falling back to a
+              legacy persona tone — see below) are sent to a TOOL-LESS agent
               (<code class="font-next-mono">AiTextAgent</code>, provider/model from
               <code class="font-next-mono">config('ai')</code>). Budgeted PER RUN
               (<code class="font-next-mono">ai_text_max_calls_per_run</code>, default 10 —
               beyond it: <code class="font-next-mono">''</code>, no call spent) and length-capped
               (<code class="font-next-mono">ai_text_max_chars</code>, default 2000). Nested
-              <code class="font-next-mono">@[ai-text]</code> is depth-capped at 3. Personas are a
-              CLOSED set of TONES — deliberately NOT the Bot/Character system (see ADR-0013 for
-              why a bot-as-persona idea was left for a possible future, not built now).
+              <code class="font-next-mono">@[ai-text]</code> is depth-capped at 3. The original closed
+              persona-tone set still exists at runtime (legacy, read-only) — see "Per-block AUTHOR" below
+              for the Bot picker that REPLACED it in the editor (ADR-0040, amends ADR-0013 §4).
             </p>
           </div>
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
@@ -572,7 +574,41 @@ WorkflowRun (one execution)
           </div>
         </div>
 
-        <ApiTable title="AI-text personas (label-less on the wire — GET .../workflow-catalog ai_personas)" :rows="aiPersonaRows" />
+        <ApiTable title="AI-text personas (label-less on the wire — GET .../workflow-catalog ai_personas) — legacy, read-only in the editor" :rows="aiPersonaRows" />
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">Per-block AUTHOR (R2, ADR-0040) — replaces the persona picker</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            The persona picker above no longer appears in the editor. An <code class="font-next-mono">@[ai-text]</code>
+            block instead names one of the workspace's Bots as its <strong>author</strong> — the SAME
+            <code class="font-next-mono">BotSelect</code> control the Generator side uses (see
+            <code class="font-next-mono">resources/js/next/docs/pages/GeneratorPage.vue</code>). The bot
+            brings its VOICE (persona/style/dictionary/phrases/prohibitions, composed by
+            <code class="font-next-mono">Bot\Services\BotVoiceComposer</code>) — never its knowledge or its
+            tools; no task-execution happens. Wire keys: optional <code class="font-next-mono">authorId</code>
+            + a display-only <code class="font-next-mono">authorName</code> snapshot, EMIT-OR-OMIT (an
+            author-less block keeps producing byte-identical directive bytes). A block already carrying a
+            legacy <code class="font-next-mono">personaId</code> renders a READ-ONLY "legacy tone" bar with a
+            Clear action — it can no longer be hand-picked, but keeps working. <strong>Precedence (lowest to
+            highest): neutral default → legacy persona tone → the WHOLE RUN's voice (a workflow run itself
+            never sets one) → this block's OWN author.</strong> An author that no longer resolves (deleted
+            bot, foreign workspace) degrades SILENTLY to the next tone in that chain — it never blanks or
+            breaks the block. See <code class="font-next-mono">docs/decisions/
+            ADR-0040-per-block-ai-text-author.md</code>.
+          </p>
+        </div>
+
+        <Alert variant="warning" size="sm">
+          <strong>Author voices resolve LIVE, once per pass — never frozen.</strong> Unlike a Generator
+          session (which freezes its authors' voices at creation), a workflow run has no snapshot to freeze
+          into: <code class="font-next-mono">WorkflowStepRunner</code> resolves every author named anywhere in
+          the definition in ONE batch lookup at the start of each pass, pinned to the run's own
+          <code class="font-next-mono">workspace_id</code> (a queued run has no ambient workspace). Editing a
+          bot's voice therefore changes what an in-flight run produces from that point on: a step already
+          executed keeps what it already generated, but a <strong>suspended, later-resumed run</strong>
+          (ADR-0039) re-resolves LIVE on resume — an edit made while a run is parked reaches every step still
+          ahead of it, not just future runs.
+        </Alert>
 
         <Alert variant="warning" size="sm">
           <strong>Runtime-only vs. write-validated.</strong> There is NO PHP markdown parser in
@@ -933,9 +969,25 @@ WorkflowRun (one execution)
             literal or a value-or-variable union, typed at the slot's OWN type) drive what gets
             generated; <code class="font-next-mono">folder_id</code> (optional Disk folder — defaults to
             the Disk root) and <code class="font-next-mono">name</code> (optional session display name)
-            control where the output lands.
+            control where the output lands; <code class="font-next-mono">bot_id</code> (optional,
+            workspace-scoped Bot) delegates the produced session to a bot — see "Author delegation"
+            below.
           </p>
           <ApiTable title="Author-time 422s (granular, per config key)" type-header="Status" :rows="generateContent422Rows" class="mt-next-2" />
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Author delegation (<code class="font-next-mono">bot_id</code>).</strong> Naming a bot
+            delegates the created session to it EXACTLY as an interactive delegation would — the same
+            voice, and (when the bot's "Wygląd" module is on with an approved likeness) the same frozen
+            look, stamped once at creation, before anything fills the session. The workflow's own
+            <code class="font-next-mono">slots</code> mapping stays the ONLY source of the session's
+            inputs — the bot never fills a <code class="font-next-mono">generate_content</code> session's
+            slots itself. Bot STATUS is not a filter (a paused bot is still a legal author). An
+            unresolvable author HARD-FAILS the step (<code class="font-next-mono">bot_unavailable</code>)
+            BEFORE the session is created, so — unlike the required-slot failure below — it leaves no
+            orphan draft behind. A resume never re-resolves the author. See
+            <code class="font-next-mono">docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md</code>'s
+            2026-07-31 addendum for the full design record.
+          </p>
           <p class="mt-next-2 text-next-xs text-next-muted-foreground">
             <strong>The composite-slot refusal.</strong> A REQUIRED
             <code class="font-next-mono">object</code>-base slot (any shape), or a REQUIRED list-of-files
@@ -1825,7 +1877,19 @@ WHERE id = ? AND state = 'pending'</pre>
             session-name field, a per-content-type SCALE HINT (a rough sense of how much this recipe
             costs/produces), and an outputs box stating the <code class="font-next-mono">status</code>
             output's honesty (effectively always <code class="font-next-mono">ready</code>, since a
-            failed generation hard-fails the step instead).
+            failed generation hard-fails the step instead). An optional AUTHOR field
+            (<code class="font-next-mono">BotSelect</code> deliberately NOT restricted to
+            execution-capable bots — an inactive bot stays offered, with its status badge shown, exactly
+            as the run-time resolver treats it) delegates the session to a bot; once one is picked, the
+            same "brings a voice" / "brings a likeness" chips the interactive delegation dialog shows are
+            echoed here, so the promise reads identically in both places. The picked author renders in
+            one of THREE states: <strong>resolved</strong> (name + status + the brings chips);
+            <strong>missing</strong> (the bot was deleted or is no longer reachable — the chips are
+            REPLACED by a danger alert, because this is not a soft fallback: saving 422s on
+            <code class="font-next-mono">bot_id</code> and every run hard-fails until the author is
+            re-picked or cleared); and <strong>unresolved</strong> (the lookup itself failed — the name is
+            never faked, a "couldn't check" line with a Retry appears, and only the always-true voice chip
+            stays).
           </p>
         </div>
 
@@ -1858,11 +1922,11 @@ WHERE id = ? AND state = 'pending'</pre>
           <li><strong>Manual cancellation of a `waiting` run</strong> — <code class="font-next-mono">WorkflowRunState.CANCELLED</code> is still declared but no cancel action exists; a run parked on a generation cannot be cancelled from the UI (the run detail says so explicitly).</li>
           <li><strong>Live push on the run detail page for a `waiting` run</strong> — unlike the Generator chat's own websocket-driven settle, the waiting panel is an honest snapshot taken at load, advanced only by an explicit Refresh. A deliberate scope cut, not an oversight.</li>
           <li><strong>Per-part granular <code class="font-next-mono">generate_content</code> outputs</strong> — the step publishes one assembled <code class="font-next-mono">content</code> string and one <code class="font-next-mono">image_file_ids</code> list; a later step cannot address one specific part individually.</li>
-          <li><strong>A bot delegating a workflow-driven generation</strong> — ADR-0036's bot delegation and this feature's automation seam are sibling trust boundaries today, not composed.</li>
+          <li><strong>~~A bot delegating a workflow-driven generation~~ — ADR-0036's bot delegation and this feature's automation seam are sibling trust boundaries today, not composed.</strong> DONE, no longer deferred — see "generate_content step editor" above and <code class="font-next-mono">docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md</code>'s 2026-07-31 addendum. The step's optional <code class="font-next-mono">bot_id</code> delegates the session to a bot AT CREATION, through the same overlay an interactive delegation stamps; the workflow's own <code class="font-next-mono">slots</code> mapping still supplies every input.</li>
           <li><strong>More than 2 <code class="font-next-mono">generate_content</code> steps per workflow</strong> — a deliberate cap on worst-case AI fan-out per run, not a technical ceiling.</li>
           <li><strong>~~An operations pipeline for the typed variable system~~ — DONE (SB1, ADR-0013), no longer deferred.</strong> A directive/value-or-variable reference now transforms its value through the shared 68-operation executor at run time (66 at SB1 time, +2 with the choice-coercion batch — ADR-0014); ADR-0009 §2's "deferred" consequence is explicitly reversed by ADR-0013.</li>
           <li><strong>~~Mapping a value into a fixed destination option set (a task priority)~~ — DONE (ADR-0014), no longer deferred.</strong> <code class="font-next-mono">enum_to_choice</code> / <code class="font-next-mono">match_to_choice</code> let a <code class="font-next-mono">priority</code> value-or-variable pipeline map an arbitrary source into <code class="font-next-mono">TaskPriority::ids()</code>; the write validator now REQUIRES this for a choice field (a bare ref or a non-choice terminal like <code class="font-next-mono">enum_to_text</code> is rejected) — a validator-only tightening, runtime coercion is unchanged.</li>
-          <li><strong>Bot/Character as an AI-text persona</strong> — <code class="font-next-mono">@[ai-text]</code>'s personas are a small, fixed set of TONES (neutral/friendly/formal/concise), deliberately NOT the Bot/Character system. Letting an author pick "write like Bot X" is a plausible future extension, not built now (see ADR-0013 §4).</li>
+          <li><strong>~~Bot/Character as an AI-text persona~~ — DONE (ADR-0040), no longer deferred.</strong> An <code class="font-next-mono">@[ai-text]</code> block now names one of the workspace's Bots as its per-block AUTHOR (a picker replacing the old closed persona-tone Select, see "Per-block AUTHOR" above) — the bot brings its voice, never its knowledge or tools. The original fixed tone set (neutral/friendly/formal/concise) still works at runtime for any block saved before this change, read-only.</li>
           <li><strong>Step-output stems are still a hand-written FE mirror</strong> — <code class="font-next-mono">workflowVariables.ts</code>'s <code class="font-next-mono">STEP_OUTPUTS</code> constant duplicates the backend's per-step-type output descriptors rather than reading them from the live catalog (the catalog's own <code class="font-next-mono">source:'steps'</code> entries are explicitly dropped). A backend output rename would silently desync from this mirror. Tracked, not fixed by this doc pass — see <code class="font-next-mono">docs/next/workflows-uxui-spec.md</code> §4.7.3.</li>
           <li><strong>The condition TREE builder (groups of AND/OR + typed pipelines)</strong> — a separately-developed rebuild of the Conditions section (<code class="font-next-mono">WorkflowConditionEngine</code>, <code class="font-next-mono">WorkflowConditionModal.vue</code>/<code class="font-next-mono">WorkflowConditionGroup.vue</code>) shares the SAME operations executor this page's typed-variable-system section describes, but its own API/UX documentation (this page's "Typed conditions" section, still describing the legacy flat clause list) has not yet been updated to match — a known documentation gap, not part of this pass's scope.</li>
           <li><strong>TaskSelect extraction</strong> — largely MOOT after the re-scope (the standalone <code class="font-next-mono">task_id</code> fields it would have served, on the removed <code class="font-next-mono">assign_bot</code>/<code class="font-next-mono">attach_form</code>/<code class="font-next-mono">start_approval</code> steps, no longer exist). <strong>~~The manual-run FormSubmission target picker had a raw-TextInput gap~~ — DONE.</strong> Replaced by a Pick (<code class="font-next-mono">SubmissionPickerDrawer</code>) / Create (<code class="font-next-mono">FormFillView</code> in a drawer) pair — see "Global runs feed + monitoring" above and ADR-0016.</li>

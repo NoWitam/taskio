@@ -17,6 +17,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import Modal from '../../../ui/overlay/Modal.vue';
+import Badge from '../../../ui/primitives/Badge.vue';
 import Button from '../../../ui/primitives/Button.vue';
 import Icon from '../../../ui/primitives/Icon.vue';
 import Switch from '../../../ui/forms/Switch.vue';
@@ -67,6 +68,31 @@ const initialLoading = computed(() => store.loading && items.value.length === 0)
 const isEmpty = computed(() => !store.loading && !store.errored && items.value.length === 0);
 const canConfirm = computed(() => !!selectedBotId.value && !props.submitting);
 const skeletonKeys = Array.from({ length: 4 }, (_, i) => i);
+
+// --- What the bot BRINGS to a session --------------------------------------
+// Delegating hands over two different things, and a user who only knows about the VOICE is surprised
+// when the pictures change too. Every row therefore states what this bot contributes: the voice always,
+// the likeness only when the module is on AND an image is approved.
+//
+// The two HALF states (module on but no image / an image with the module off) are NOT put in the row —
+// six bots × a caveat each is noise. They belong to the ONE bot the user actually picked, so they live
+// in a single line under the list.
+const selectedBot = computed<BotListItem | null>(
+  () => items.value.find((bot) => bot.id === selectedBotId.value) ?? null,
+);
+
+function bringsLikeness(bot: BotListItem): boolean {
+  return bot.visual_enabled && bot.visual_has_image;
+}
+
+/** The caveat for the SELECTED bot, or null when there is nothing to warn about. */
+const likenessCaveat = computed<string | null>(() => {
+  const bot = selectedBot.value;
+  if (!bot || bringsLikeness(bot)) return null;
+  if (bot.visual_enabled) return t('generator.sessions.delegate.brings.noLikeness');
+  if (bot.visual_has_image) return t('generator.sessions.delegate.brings.likenessOff');
+  return t('generator.sessions.delegate.brings.noLikeness');
+});
 
 function statusLabel(status: BotListItem['status']): string {
   return t(`bots.statuses.${status}`, status);
@@ -184,6 +210,23 @@ function goToBots(): void {
                 <span v-if="bot.description" class="truncate text-next-xs text-next-muted-foreground">
                   {{ bot.description }}
                 </span>
+                <!-- What this bot brings. Fixed height so the rows stay aligned whether or not the
+                     likeness badge is there. -->
+                <span class="flex min-h-5 items-center gap-next-1">
+                  <Badge variant="primary" tone="subtle" size="sm" icon="file-text" class="text-next-2xs">
+                    {{ t('generator.sessions.delegate.brings.voice') }}
+                  </Badge>
+                  <Badge
+                    v-if="bringsLikeness(bot)"
+                    variant="success"
+                    tone="subtle"
+                    size="sm"
+                    icon="palette"
+                    class="text-next-2xs"
+                  >
+                    {{ t('generator.sessions.delegate.brings.likeness') }}
+                  </Badge>
+                </span>
               </span>
               <Icon
                 v-if="selectedBotId === bot.id"
@@ -194,6 +237,16 @@ function goToBots(): void {
             </button>
           </li>
         </ul>
+
+        <!-- The picked bot's likeness caveat — one line, about ONE bot, instead of a per-row footnote. -->
+        <p
+          v-if="likenessCaveat"
+          class="flex items-start gap-next-1_5 text-next-xs text-next-muted-foreground"
+          role="status"
+        >
+          <Icon name="info" class="mt-px shrink-0" aria-hidden="true" />
+          <span>{{ likenessCaveat }}</span>
+        </p>
 
         <!-- Fill mode (DEFAULT 'gaps' = non-destructive): what should the bot actually change? -->
         <div class="rounded-next-lg border border-next-border bg-next-muted/20 p-next-3">

@@ -274,7 +274,8 @@ class BotInboxTest extends TestCase
         // A fresh run started (task_started with trigger=retry) and it executed.
         $started = BotAction::where('task_id', $task->id)->where('type', BotActionType::TaskStarted->value)->get();
         $this->assertTrue($started->contains(fn ($a) => ($a->payload['trigger'] ?? null) === 'retry'));
-        $this->assertEquals(TaskStatus::IN_TEST, $task->fresh()->status);
+        // DONE (not IN_TEST): the task carries no approval pipeline, so finish completes it.
+        $this->assertEquals(TaskStatus::DONE, $task->fresh()->status);
     }
 
     public function test_retry_is_cap_exempt(): void
@@ -295,7 +296,7 @@ class BotInboxTest extends TestCase
 
         // The run counter still incremented past the cap (cost proxy stays honest).
         $this->assertSame(3, $task->fresh()->bot_runs_used);
-        $this->assertEquals(TaskStatus::IN_TEST, $task->fresh()->status);
+        $this->assertEquals(TaskStatus::DONE, $task->fresh()->status);
     }
 
     public function test_retry_rejected_on_non_failed_task(): void

@@ -24,6 +24,8 @@ use Illuminate\Contracts\Validation\Validator;
  *     - pixel    a deterministic pixel/geometry op from the {@see self::PIXEL_OPS} set (the imageOps.ts
  *                op vocabulary) with valid params.
  *     - ai_edit  { prompt: <md>, mask? } a provider image-edit prompt (+ optional mask ref).
+ *   character = 'auto' | 'never'  (optional, defaults to auto) whether a DELEGATED session's frozen creator
+ *                                 may appear in this image — see {@see validateCharacter}.
  *
  * Every PROMPT string (ai_generate, ai_edit) is markdown carrying the SAME `@[variable]` / `slots.*`
  * directives a body does, so each is run through {@see TemplateSlotValidator::validateBody} — the ONE
@@ -36,6 +38,9 @@ class ImagePlanValidator
 
     /** A filter is either a deterministic pixel op or an AI edit prompt. */
     private const FILTER_KINDS = ['pixel', 'ai_edit'];
+
+    /** Whether a DELEGATED session's frozen creator may appear in this image (see {@see validateCharacter}). */
+    private const CHARACTER_MODES = ['auto', 'never'];
 
     /**
      * The deterministic pixel/geometry ops — the imageOps.ts vocabulary (the editor's pure functions).
@@ -80,6 +85,27 @@ class ImagePlanValidator
 
         $this->validateBase($validator, $config['base'] ?? null, $slots, $declaredNames, $earlierPartKeys, $key . '.base');
         $this->validateFilters($validator, $config['filters'] ?? null, $slots, $declaredNames, $earlierPartKeys, $key . '.filters');
+        $this->validateCharacter($validator, $config['character'] ?? null, $key . '.character');
+    }
+
+    /**
+     * The CHARACTER policy for this image (the visual-identity phase): whether the frozen creator of a
+     * DELEGATED session may appear in it.
+     *
+     *   auto   (the default, and what an ABSENT key means) — draw the creator when the session has one. That
+     *          is what handing a whole session to a persona means, so it must not need opting into.
+     *   never  — this image never shows the creator, whoever the session belongs to. The product shot, the
+     *           logo, the chart: images where inserting a person is both wrong and billed.
+     *
+     * There is deliberately no `always`: `auto` already means yes, and an `always` on a session with no
+     * character would be an unkeepable promise. Unknown values are REFUSED rather than defaulted, so a typo
+     * (`'none'`) fails at write instead of quietly putting a face in every product shot.
+     */
+    private function validateCharacter(Validator $validator, mixed $character, string $key): void
+    {
+        if ($character !== null && !in_array($character, self::CHARACTER_MODES, true)) {
+            $validator->errors()->add($key, 'The character mode must be one of: ' . implode(', ', self::CHARACTER_MODES) . '.');
+        }
     }
 
     /**

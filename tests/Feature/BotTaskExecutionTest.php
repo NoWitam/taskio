@@ -10,6 +10,7 @@ use App\Modules\Bot\Enums\BotActionType;
 use App\Modules\Bot\Models\Bot;
 use App\Modules\Bot\Models\BotAction;
 use App\Modules\Forms\Models\Form;
+use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Models\Task;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -56,7 +57,9 @@ class BotTaskExecutionTest extends TestCase
         $taskId = $this->createBotTask($bot, ['form_id' => $form->id]);
         $task = Task::find($taskId);
 
-        $this->assertEquals(TaskStatus::IN_TEST, $task->status);
+        // No approval pipeline on this task, so finish lands in DONE (nothing would ever
+        // review an in_test task here) — see test_finish_with_an_approval_pipeline_*.
+        $this->assertEquals(TaskStatus::DONE, $task->status);
         $this->assertDatabaseHas('comments', ['commentable_id' => $taskId, 'author_type' => 'bot']);
         $this->assertDatabaseHas('form_submissions', ['submittable_id' => $taskId, 'form_id' => $form->id]);
 
@@ -66,7 +69,7 @@ class BotTaskExecutionTest extends TestCase
             BotActionType::TaskStarted,
             BotActionType::Commented,
             BotActionType::FormFilled,
-            BotActionType::SubmittedToTest,
+            BotActionType::MarkedDone,
         ], $types);
     }
 
@@ -84,12 +87,12 @@ class BotTaskExecutionTest extends TestCase
         $taskId = $this->createBotTask($bot);
         $task = Task::find($taskId);
 
-        $this->assertEquals(TaskStatus::IN_TEST, $task->status);
+        $this->assertEquals(TaskStatus::DONE, $task->status);
         $this->assertDatabaseHas('comments', ['commentable_id' => $taskId, 'author_type' => 'bot']);
 
         $types = BotAction::where('task_id', $taskId)->pluck('type')->all();
         $this->assertContains(BotActionType::Commented, $types);
-        $this->assertContains(BotActionType::SubmittedToTest, $types);
+        $this->assertContains(BotActionType::MarkedDone, $types);
         $this->assertNotContains(BotActionType::FormFilled, $types);
     }
 
@@ -101,7 +104,7 @@ class BotTaskExecutionTest extends TestCase
         $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
 
         // The agent tries to finish before filling the form — finish fails (tool-error),
-        // so the task does NOT advance to in_test.
+        // so the task does NOT advance at all (neither in_test nor done).
         $this->scriptBotRun([
             ['post_comment', ['text' => 'skipping the form']],
             ['finish'],
@@ -110,10 +113,11 @@ class BotTaskExecutionTest extends TestCase
         $taskId = $this->createBotTask($bot, ['form_id' => $form->id]);
 
         $this->assertEquals(TaskStatus::IN_PROGRESS, Task::find($taskId)->status);
-        $this->assertDatabaseMissing('bot_actions', [
-            'task_id' => $taskId,
-            'type' => BotActionType::SubmittedToTest->value,
-        ]);
+        $this->assertEmpty(
+            BotAction::where('task_id', $taskId)
+                ->whereIn('type', [BotActionType::SubmittedToTest, BotActionType::MarkedDone])
+                ->get()
+        );
     }
 
     public function test_ask_and_wait_ends_run_and_waits_for_human(): void
@@ -139,11 +143,12 @@ class BotTaskExecutionTest extends TestCase
             'task_id' => $taskId,
             'type' => BotActionType::QuestionAsked->value,
         ]);
-        // finish did not fire.
-        $this->assertDatabaseMissing('bot_actions', [
-            'task_id' => $taskId,
-            'type' => BotActionType::SubmittedToTest->value,
-        ]);
+        // finish did not fire (neither terminal outcome was recorded).
+        $this->assertEmpty(
+            BotAction::where('task_id', $taskId)
+                ->whereIn('type', [BotActionType::SubmittedToTest, BotActionType::MarkedDone])
+                ->get()
+        );
 
         $this->assertJsonPathWaiting($taskId, true);
     }
@@ -178,7 +183,8 @@ class BotTaskExecutionTest extends TestCase
             ->assertCreated();
 
         $task = Task::find($taskId);
-        $this->assertEquals(TaskStatus::IN_TEST, $task->status);
+        // DONE, not IN_TEST: this task carries no approval pipeline.
+        $this->assertEquals(TaskStatus::DONE, $task->status);
         $this->assertFalse($task->isBotWaiting());
         $this->assertDatabaseHas('bot_actions', [
             'task_id' => $taskId,
@@ -293,17 +299,31 @@ class BotTaskExecutionTest extends TestCase
         $this->assertEquals(TaskStatus::TO_DO, $task->fresh()->status);
     }
 
+    /**
+     * The RUNTIME guard, independent of the write-time validation: a task that somehow
+     * ends up on a non-executing bot (assigned before the module was switched off, or
+     * created outside the HTTP request path) never starts a run. The HTTP layer refuses
+     * such an assignment outright — see
+     * test_task_cannot_be_assigned_to_a_bot_that_cannot_execute.
+     */
     public function test_non_executing_bot_does_not_dispatch(): void
     {
         $owner = User::factory()->create();
         $this->actingAs($owner);
         $bot = Bot::factory()->active()->create(['creator_id' => $owner->id]); // task_execution disabled
 
+        $task = Task::factory()->create([
+            'creator_id' => $owner->id,
+            'assignee_type' => 'bot',
+            'assignee_id' => $bot->id,
+            'status' => TaskStatus::TO_DO,
+        ]);
+
         $this->scriptBotRun([['post_comment', ['text' => 'nope']], ['finish']]);
 
-        $taskId = $this->createBotTask($bot);
+        app(\App\Modules\Bot\Services\BotTaskExecutionService::class)->maybeDispatch($task);
 
-        $this->assertEquals(TaskStatus::TO_DO, Task::find($taskId)->status);
+        $this->assertEquals(TaskStatus::TO_DO, $task->fresh()->status);
         $this->assertDatabaseCount('bot_actions', 0);
     }
 
@@ -374,6 +394,177 @@ class BotTaskExecutionTest extends TestCase
             BotActionType::SubmittedToTest,
             BotAction::where('task_id', $taskId)->pluck('type')->all()
         );
+    }
+
+    /**
+     * The PROVIDER-facing shape of fill_form: `answers` arrives as a JSON object STRING
+     * (a free-form object cannot be declared under OpenAI strict mode — see
+     * FillFormTool::schema()), and must land as the decoded answer map. Malformed JSON
+     * raises an instructive tool-error instead of persisting garbage.
+     */
+    public function test_fill_form_accepts_answers_as_a_json_string(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $bot = $this->executingBot($owner);
+        $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
+
+        $this->scriptBotRun([
+            ['fill_form', ['answers' => '{"q1":"z JSON-a","q2":["a","b"]}']],
+            ['finish'],
+        ]);
+
+        $taskId = $this->createBotTask($bot, ['form_id' => $form->id]);
+
+        $submission = FormSubmission::where('submittable_id', $taskId)->firstOrFail();
+
+        $this->assertSame('z JSON-a', $submission->data['q1'] ?? null);
+        $this->assertSame(['a', 'b'], $submission->data['q2'] ?? null);
+        $this->assertEquals(TaskStatus::DONE, Task::find($taskId)->status);
+    }
+
+    /**
+     * Where finish LANDS depends on whether anything will review the work. With no approval
+     * pipeline attached, in_test would mean waiting for a review nobody performs, so the
+     * task goes straight to done and the run records `marked_done`.
+     */
+    public function test_finish_without_an_approval_pipeline_marks_the_task_done(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $bot = $this->executingBot($owner);
+
+        $this->scriptBotRun([['finish', ['summary' => 'Gotowe.']]]);
+
+        $taskId = $this->createBotTask($bot);
+
+        $this->assertEquals(TaskStatus::DONE, Task::find($taskId)->status);
+
+        $done = BotAction::where('task_id', $taskId)
+            ->where('type', BotActionType::MarkedDone)
+            ->firstOrFail();
+
+        // The optional finish summary rides along on the action (visible in the timeline).
+        $this->assertSame('Gotowe.', $done->payload['summary'] ?? null);
+
+        $this->assertDatabaseMissing('bot_actions', [
+            'task_id' => $taskId,
+            'type' => BotActionType::SubmittedToTest->value,
+        ]);
+        // Nothing to review means no approval process was invented either.
+        $this->assertDatabaseCount('approval_processes', 0);
+    }
+
+    /**
+     * The counterpart: an attached pipeline is exactly what makes in_test meaningful, so
+     * finish stops there, starts the process and hands the task to the first approver.
+     */
+    public function test_finish_with_an_approval_pipeline_stops_at_in_test(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $approver = User::factory()->create();
+        $bot = $this->executingBot($owner);
+
+        $pipeline = ApprovalPipeline::factory()->create(['creator_id' => $owner->id]);
+        $pipeline->stages()->create([
+            'name' => 'Review',
+            'approver_type' => ApproverType::User,
+            'approver_id' => $approver->id,
+            'order' => 1,
+        ]);
+
+        $this->scriptBotRun([['finish']]);
+
+        $taskId = $this->createBotTask($bot, ['approval_pipeline_id' => $pipeline->id]);
+        $task = Task::find($taskId);
+
+        $this->assertEquals(TaskStatus::IN_TEST, $task->status);
+        $this->assertSame('user', $task->assignee_type);
+        $this->assertSame($approver->id, $task->assignee_id);
+        $this->assertDatabaseHas('approval_processes', ['approvable_id' => $taskId]);
+
+        $types = BotAction::where('task_id', $taskId)->pluck('type')->all();
+        $this->assertContains(BotActionType::SubmittedToTest, $types);
+        $this->assertNotContains(BotActionType::MarkedDone, $types);
+    }
+
+    /**
+     * A bot that cannot execute tasks is REFUSED as an assignee (422) instead of being
+     * accepted into a task that would never run: dispatch() would silently decline the
+     * claim and the task would sit in to_do with nothing recorded to explain it.
+     */
+    public function test_task_cannot_be_assigned_to_a_bot_that_cannot_execute(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        // Active, but the task-execution module was never enabled.
+        $bot = Bot::factory()->active()->create(['creator_id' => $owner->id]);
+
+        $this->postJson('/api/tasks', [
+            'title' => 'Bot task',
+            'priority' => 'medium',
+            'assignee_type' => 'bot',
+            'assignee_id' => $bot->id,
+        ])->assertStatus(422)->assertJsonValidationErrors('assignee_id');
+
+        $this->assertDatabaseCount('tasks', 0);
+    }
+
+    public function test_inactive_bot_is_refused_even_with_the_module_enabled(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $bot = Bot::factory()->create([
+            'creator_id' => $owner->id,
+            'task_execution' => ['enabled' => true, 'tools' => []],
+        ]); // factory default status = inactive
+
+        $this->postJson('/api/tasks', [
+            'title' => 'Bot task',
+            'priority' => 'medium',
+            'assignee_type' => 'bot',
+            'assignee_id' => $bot->id,
+        ])->assertStatus(422)->assertJsonValidationErrors('assignee_id');
+    }
+
+    /**
+     * The guard fires on a CHANGE of assignee only. A task already held by a bot whose
+     * module is switched off later must stay editable — otherwise deactivating one bot
+     * would freeze every task assigned to it.
+     */
+    public function test_existing_bot_assignment_stays_editable_after_the_bot_is_disabled(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+        $bot = $this->executingBot($owner);
+
+        $this->scriptBotRun([['finish']]);
+        $taskId = $this->createBotTask($bot);
+
+        // The bot loses its task-execution module afterwards.
+        $bot->update(['task_execution' => ['enabled' => false, 'tools' => []]]);
+
+        $this->putJson("/api/tasks/{$taskId}", [
+            'title' => 'Renamed, same assignee',
+            'priority' => 'high',
+            'assignee_type' => 'bot',
+            'assignee_id' => $bot->id,
+        ])->assertOk();
+
+        $this->assertSame('Renamed, same assignee', Task::find($taskId)->title);
+
+        // Moving the task onto ANOTHER disabled bot is still refused.
+        $other = Bot::factory()->active()->create(['creator_id' => $owner->id]);
+
+        $this->putJson("/api/tasks/{$taskId}", [
+            'title' => 'Renamed, same assignee',
+            'priority' => 'high',
+            'assignee_type' => 'bot',
+            'assignee_id' => $other->id,
+        ])->assertStatus(422)->assertJsonValidationErrors('assignee_id');
     }
 
     private function assertJsonPathWaiting(string $taskId, bool $expected): void

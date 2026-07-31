@@ -15,9 +15,13 @@
 //              the Navbar `#leading`) and calls `openDrawer`. This keeps the
 //              shell in charge of drawer state without owning the navbar layout.
 //   default  — main page content (scrolls independently under the navbar).
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import Icon from '../primitives/Icon.vue';
 import { useFocusTrap } from '../../app/composables/useFocusTrap';
+import {
+  useOverlayStack,
+  type OverlayHandle,
+} from '../../app/composables/useOverlayStack';
 
 withDefaults(
   defineProps<{
@@ -39,6 +43,31 @@ function closeDrawer(): void {
   drawerOpen.value = false;
 }
 
+// The open drawer joins the shared overlay stack, exactly like Modal / Drawer (same `kind`, since
+// this IS a modal off-canvas dialog: scrim + aria-modal + focus trap + scroll lock).
+//
+// WHY IT MATTERS: the stack's Escape listener runs on `document` in the CAPTURE phase, so it decides
+// dismissal for whatever is topmost and stops the event there. The local `@keydown` below only ever
+// saw Escape raised INSIDE the drawer's subtree — never from a body-teleported popover opened by a
+// control in the drawer — and it took no part in the dismissal order against overlays that ARE
+// registered (Modal, Drawer, Popover, and now every open `Select` list). Registering gives it both:
+// Escape reaches it from anywhere, and an open list still wins the first press.
+let overlay: OverlayHandle | null = null;
+watch(drawerOpen, (open) => {
+  if (open) {
+    overlay = useOverlayStack({ kind: 'modal', close: closeDrawer });
+  } else {
+    overlay?.release();
+    overlay = null;
+  }
+});
+onBeforeUnmount(() => {
+  overlay?.release();
+  overlay = null;
+});
+
+// Kept as the local fallback for an Escape that never reaches the stack listener (e.g. one
+// `stopPropagation()`-ed in the capture phase by a handler above us). Idempotent with the stack.
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && drawerOpen.value) {
     event.stopPropagation();

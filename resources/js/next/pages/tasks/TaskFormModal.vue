@@ -399,6 +399,7 @@ function onFormCreated(created: FormDetail): void {
               v-else
               v-model="form.assignee_id"
               :seed="botSeed"
+              executable-only
               :aria-invalid="!!fieldErrors.assignee_id"
               :placeholder="t('tasks.form.botAssigneePlaceholder')"
               :aria-label="t('tasks.form.botAssignee')"

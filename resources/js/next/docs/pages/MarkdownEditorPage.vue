@@ -122,18 +122,16 @@ const opsReference = computed(() =>
       })),
   })),
 );
+// `personas` is now ONLY the label source for a LEGACY tone (a block saved before the
+// per-block author existed); the panel never offers it for selection. Labels are retired
+// (both real hosts pass `labelsEnabled: false`), so the demo mirrors production.
 const DEMO_AI_CONFIG: AiTextFeatureConfig = {
   personas: [
     { id: 'friendly', label: 'Friendly' },
     { id: 'formal', label: 'Formal' },
     { id: 'concise', label: 'Concise' },
   ],
-  labelsEnabled: true,
-  labelsCatalog: [
-    { id: 'intro', name: 'Intro' },
-    { id: 'summary', name: 'Summary' },
-    { id: 'cta', name: 'Call to action' },
-  ],
+  labelsEnabled: false,
 };
 
 const mentionDoc = ref('Ping @[mention]("{\\"v\\":1,\\"data\\":{\\"id\\":\\"u_1\\",\\"name\\":\\"Alice Johnson\\",\\"avatar\\":\\"\\"}}") for review. Type @ to add another.');
@@ -197,7 +195,7 @@ const propRows: ApiRow[] = [
   { name: 'mentions', type: '{ fetch: (q) => Promise<MentionItem[]> }', default: '—', description: 'PART 2: enable @-mentions with an async source. Triggered by typing @.' },
   { name: 'variables', type: '{ variables: VariableDefinition[]; operationsCatalog: VariableOperationDefinition[]; trigger? }', default: '—', description: 'PART 2: enable template variables. Inserted via a trigger (default {); click a chip to build its operations pipeline in a Modal. Six value types (text/number/boolean/date/enum/multi); enum/multi definitions carry options, consumed by sourceOption/sourceOptions operation args.' },
   { name: 'ifBlocks', type: 'boolean | { maxElseIf?; maxDepth? }', default: 'false', description: 'PART 2: enable conditional if-blocks (inline-editable branches + boolean conditions). maxDepth defaults to 3.' },
-  { name: 'aiText', type: 'boolean | { personas?; labelsEnabled?; labelsCatalog? }', default: 'false', description: 'PART 2: enable AI-text chips + the sparkles toolbar button (persona + nested-editor prompt + labels).' },
+  { name: 'aiText', type: 'boolean | { personas?; labelsEnabled?; labelsCatalog? }', default: 'false', description: 'PART 2: enable AI-text chips + the sparkles toolbar button. The panel edits the block AUTHOR (a bot, picked with BotSelect — it contributes a VOICE, not knowledge or tools) and the nested-editor prompt. `personas` is now only the LABEL SOURCE for a legacy tone a block was saved with (read-only, clearable); `labelsEnabled` / `labelsCatalog` are retired — the labels field is no longer rendered, though existing `labels` data is carried through untouched.' },
   { name: 'id / describedById / ariaLabel', type: 'string', default: '—', description: 'Standalone wiring; provided automatically inside a FormField.' },
 ];
 

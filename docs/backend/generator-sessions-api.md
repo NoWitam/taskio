@@ -42,7 +42,8 @@ GenerationSession
   template_id       (provenance only — nullable, NO FK; the session outlives a deleted/edited template)
   name
   content_type       (snapshotted from the template)
-  recipe_snapshot     ({content_type, slots, content} — captured at creation, NEVER re-read from the template)
+  recipe_snapshot     ({content_type, slots, content, author_voices} — captured at creation, NEVER re-read
+                       from the template; author_voices is SERVER-ONLY — see "Per-block AI-text authors" below)
   slot_values             (the user's filled inputs, {<slot name>: <value>})
   results                    (the per-part outcome map — see "The `results` map" below)
   status                        (draft → generating → ready | failed — see "Status machine")
@@ -131,9 +132,18 @@ produced-image blobs, so a re-run starts clean and every part restarts at versio
 
 `RunGenerationSessionJob` (queued, `tries=1`, `timeout=300`, `WithoutOverlapping($sessionId)` with a 30s
 release / 600s expiry) runs the claimed unit of work off the request. Its `failed()` hook marks the
-session `failed` (terminal-safe — never overwrites an already-finished session). A worker SIGKILL/OOM that
-never reaches `failed()` leaves a session stranded in `generating`; the lifecycle reaper's stale window
-(below) is what recovers it — nothing else does.
+session `failed` (terminal-safe — never overwrites an already-finished session, and — since the distributed
+storyboard frame engine — delivery-guarded: it acts only for the delivery that actually ran, never a
+redelivered duplicate racing a still-live run; see "Distributed storyboard frames" below). A worker
+SIGKILL/OOM that never reaches `failed()` leaves a session stranded in `generating`; the lifecycle reaper's
+stale window (below) is what recovers it — nothing else does.
+
+**`generating` may now outlive the session job itself.** When a run's `storyboard` part announces frames (see
+"Distributed storyboard frames" below), `RunGenerationSessionJob` persists the text/announcement results and
+returns while the session STAYS `generating` — each frame then renders in its OWN queue job. The FE contract
+this is built to preserve is unchanged: the client still waits for exactly ONE `GenerationSessionUpdated`
+broadcast on a terminal transition, pushed by whichever frame job (or the reaper) happens to settle the LAST
+outstanding frame. A run with no storyboard settles inside the session job exactly as it always did.
 
 ---
 
@@ -233,6 +243,12 @@ authorized by workspace membership in `routes/channels.php`). The FE's `useSessi
 filters by session id, and on the push re-fetches `GET /generator/sessions/{id}` for the authoritative results.
 A single post-subscribe fetch covers the event-before-listener race and a safety timeout covers a missed push —
 neither is a poll loop. See `docs/decisions/ADR-0034-generation-sessions.md` (D10).
+
+**A `video_script` run's images render in SEPARATE queue jobs, one per storyboard shot** (the distributed
+storyboard frame engine, ADR-0041) — the session STAYS `generating` after this call returns, sometimes for
+minutes, while its frames render (in parallel across workers; sequentially on one). The broadcast contract
+above is unchanged: still exactly one push, on whichever frame settles last. See "Distributed storyboard
+frames" below.
 
 ---
 
@@ -451,6 +467,7 @@ The recipe snapshot is **deliberately never emitted** — it is a large immutabl
 | `can_archive` | `bool` | `can update` — gates the archive/unarchive toggle |
 | `bot_author` | `{id,name,icon} \| null` | the SNAPSHOTTED bot-author overlay (R2 sub-stage 3) — read off `bot_delegation.author`, never the live bot; `null` when undelegated |
 | `is_delegated` | `bool` | whether the delegation overlay is present |
+| `has_character_image` | `bool` | (the character visual-identity phase) whether this session froze a CHARACTER LIKENESS with its delegation — i.e. whether its images are drawn from the author's approved likeness rather than from a description alone. A FLAG only, never the identity itself (the descriptor/aesthetic/wardrobe/prohibitions are prompt material and are deliberately never emitted). `false` when undelegated, delegated to a bot with the Visual module off, or delegated to one with no approved likeness. See "Frozen character visual identity" below. |
 | `can_delegate` | `bool` | `can update` AND `status.isEditable()` — gates the delegate affordance (delegating mutates inputs) |
 | `can_undo_delegation` | `bool` | `can update` AND `is_delegated` AND `status !== 'generating'` — the UNDO gate; deliberately NOT the same as `can_delegate` (a delegated `failed` session stays revertible even though it is not "editable") |
 | `unfilled_required_slots` | `string[]` | the SOFT delegation signal — required slots still without a usable value (incl. a required FILE slot, which can never be bot-filled); NOT a hard generate-gate |
@@ -539,6 +556,187 @@ reverts to THAT snapshot, which is correct for the CURRENT delegation.
 
 **Never logged.** `SessionDelegationService`/`BotSlotFillService` surface only structured facts (the fill
 report's names + reasons) — never the voice directive, the slot values, or any bot-generated content.
+
+### Frozen character visual identity (the bot-look phase)
+
+A delegation whose bot has its Visual module ("Wygląd," `docs/backend/bots-api.md`) on and an APPROVED
+likeness ALSO freezes the bot's LOOK onto the session, exactly as it already freezes the VOICE above — the
+image-side twin of the same snapshot contract. Full design record: `docs/decisions/
+ADR-0042-character-visual-identity.md`.
+
+```
+GenerationSession (bot-delegation overlay, extended)
+  bot_delegation.visual  (json, ADDITIVE key — absent when the bot had no enabled likeness at delegation) = {
+    enabled:              true                      // frozen WITH the rest — never re-read from the live bot
+    descriptor, aesthetic, wardrobe:  string | null  // the identity's written fields, copied verbatim
+    prohibitions:          string[]                  // the identity's visual "never draw this" list
+    has_character_image:   bool                      // whether a likeness's BYTES were actually frozen (below)
+    source_file_id:        string | null             // PROVENANCE only — never re-read at render time
+    snapshot_at:            "<ISO 8601>"
+  }
+```
+
+**The bytes are a COPY, in a store of their own — never a live reference.** The controller resolves the
+bot's CURRENT approved likeness at delegation time (`BotVisualIdentityService::canonicalImageBytes()`) and
+`SessionDelegationService::applyDelegation()` writes the raw bytes into
+`Services\SessionIdentityImageStore` (`generation-identity/<workspaceId>/<sessionId>/<characterId>.png`) in
+the SAME save that stamps the overlay. This mirrors the voice's snapshot contract for the identical reason:
+the human may re-approve a DIFFERENT likeness, or delete the file, between delegating and generating, and a
+run that silently starts drawing someone else — or fails mid-storyboard because the reference vanished — is
+worse than one that keeps drawing exactly who it was told to. **The store is keyed PER CHARACTER (the bot's
+own id), not per session** — v1 freezes exactly one, but a frame showing TWO characters is the obvious next
+ask, and this keying needs no reshape to allow it later. It is deliberately a SEPARATE root from the
+session's produced-image prefix (`generator-sessions/…`), which a full `generate` claim wipes wholesale —
+sharing a root would mean a re-run destroys its own character reference and then renders the rest of the run
+without it.
+
+**A delegation with NO approved likeness still freezes the TEXT.** `has_character_image` records which of the
+two the session actually got; a bot whose Visual module is on but has nothing approved yet still hands over
+its descriptor/aesthetic/wardrobe/prohibitions (they still ride EVERY image's guardrails — see below), just
+with nothing to draw the person FROM.
+
+**Undo, re-delegation and the lifecycle purge all handle the frozen bytes the same way the overlay itself
+is handled:**
+
+| Event | What happens to the frozen likeness |
+|---|---|
+| `DELETE …/delegate` (undo) | The character stops authoring, so its bytes are deleted — undo means the likeness must stop being drawable AND must not linger as orphaned bytes the purge would only reach weeks later. |
+| Re-delegation (to the SAME or a DIFFERENT bot) | The new overlay (+ its bytes, if any) is written FIRST; only AFTER that save commits are the PREVIOUS author's bytes reclaimed — so a failure between the two never leaves the session naming bytes that are gone. |
+| A full re-run (`POST …/generate`) | The produced-image prefix is wiped (as always); the character reference is NOT — it lives under a separate root precisely so this cannot happen. |
+| The lifecycle purge (a soft-deleted, non-archived session past `generator.session_purge_after`) | Both stores are garbage-collected together with the row — see "Lifecycle" below. |
+| An ARCHIVED session, trashed, past the purge window | The ONE exception to "archive freezes everything" — see "Lifecycle" below. |
+
+**Render-time consumption — gated in ONE place, three conditions.**
+`GenerationSessionExecutor::visualIdentityFor()` returns a usable identity only when ALL three hold: (1) the
+KILL SWITCH `generator.visual_identity.enabled` (default `true`) is on; (2) the overlay's OWN frozen `enabled`
+is `true` (never the live bot's current toggle — flipping it after delegation must not change an
+already-delegated, possibly already half-rendered, session); (3) a likeness IMAGE was actually frozen — text
+alone is not enough to draw FROM, so an identity with no image behaves exactly like an undelegated run.
+Failing any one of the three makes every composed prompt and provider call BYTE-IDENTICAL to a run with no
+character — pinned by tests.
+
+**WHO decides a frame draws the character differs by part kind — never authored per storyboard shot.** The
+`shot_list` renderer is told the character's description (`SessionVisualIdentity::subjectDescription()`, the
+descriptor plus "Wearing: …") and returns a per-shot `features_character: bool` — a MODEL decision, defaulting
+FALSE on any absent/ambiguous value (see the storyboard shot entry shape above). A single authored
+`image_plan` has no shot list to ask, so ITS author gets an explicit switch instead:
+
+```
+content.<imagePlanKey>.character:  'auto' | 'never'   (optional, default — and what an ABSENT key means — 'auto')
+```
+
+`auto` draws the creator when the session has one — handing a whole session to a persona means its face
+appears by default. `never` is the escape hatch for a product shot / logo / chart, where a person would be
+both wrong and billed. There is no `always`: `auto` already means yes, and forcing a face onto a session with
+no character would be a promise the system cannot keep. An unrecognized value is REFUSED at write (`422`),
+never silently defaulted.
+
+**When a frame draws the character, its `ai_generate` base becomes a REFERENCE EDIT instead of a plain
+generation** — `ImageAiService::edit()` on the frozen likeness, prompted with the same composed string a
+plain generate would have used. This is what makes the SAME person appear across a session's images; the
+trade-off is the call is materially slower (a measured **57.8s median** vs. ~33s for a plain generate — the
+direct trigger for the distributed frame engine above) and metered on a DIFFERENT channel than it reserves
+against:
+
+- **Reserves** against the per-run `ai_generate` ledger — it is still, conceptually, the shot's BASE.
+- **Meters** (records the real cost of) an `ai_image_edit` call — that is the call actually made.
+
+Charging the EDIT ledger instead would let a storyboard's per-shot bases compete with the SAME budget an
+authored `ai_edit` FILTER needs on every shot (the three-way `storyboard_max_shots`/generate-budget/edit-budget
+lock-step `config/generator.php` documents), silently losing the author's authored look on the tail of a long
+storyboard — precisely the failure that coupling exists to prevent.
+
+**The character's SUBJECT REPLACES the direction's derived one; its aesthetic + prohibitions ride EVERY
+image, flagged or not.** A picture has exactly one recurring subject, so when a frame draws the character its
+description SUBSTITUTES (never appends to) the creative-direction layer's own derived `subject` line
+(ADR-0038) — the human-approved character outranks a model's inferred guess — and the substitution states its
+own precedence explicitly in the composed prompt text, because the base string is a stack of notes (a
+continuity clause, the direction anchor, the authored style, the shot's own `visual`) that were each written
+without knowing a specific character would be drawn and can legitimately disagree about who is in frame. The
+character's `aesthetic` + `prohibitions` (`SessionVisualIdentity::guardrails()`) compose into EVERY
+`ai_generate` base of the session regardless of whether that particular frame shows the person — a set of
+images made for one creator has to look like one set, and a prohibition is a constraint on the picture, not
+on who is standing in it.
+
+**Wardrobe matters more than it looks like it should.** The provider's OUTPUT-side moderation is
+wardrobe-sensitive for an otherwise-identical character (a swimsuit is refused, a dress passes) — this is why
+`wardrobe` is composed as its own guardrail line rather than folded into `aesthetic`, and why a moderation
+refusal's fix ("change the wardrobe") is worth surfacing as its own error code (below) rather than a generic
+failure.
+
+**Prompts stay UNFENCED prose — a text→image call has no system channel.** Unlike the direction/text/
+shot-list projections (labeled `--- BEGIN/END CREATIVE DIRECTION ---` DATA blocks), `SessionVisualIdentity`'s
+image-facing text is plain prose, because a fence label would simply be DRAWN into the picture. Its free-text
+fields still run through the SAME fence-marker scrub `CreativeDirection` uses (shared, not restated), so a
+human-authored descriptor/wardrobe/prohibition can never forge the OTHER fenced block riding the same
+composed base string.
+
+**Moderation is a MACHINE-READABLE, additive reason, never a new wire status.** A frame — or a plain authored
+image — refused by the provider's safety system settles `failed` with `error_code`/`image_error_code:
+'image_safety'` alongside its localized message (mirrors the Disk edit's `error_code: 'safety_rejected'`;
+see "The `results` map" above). Deterministic — never retried automatically — and the ONE image failure
+worth its own action in the UI: "check the character's wardrobe/description," not "try again."
+
+**Cost.** The layer adds NO calls of its own — a character frame is one provider call either way, just a
+DIFFERENT (slower, edit-channel) one instead of a plain generate. The GENERATE ledger still bounds the
+per-run fan-out exactly as before, so a full storyboard cannot spend more CALLS than it could without a
+character; it merely spends more TIME per call that draws one.
+
+**Never logged.** The identity's text fields, the composed prompt, and the frozen bytes are never written to
+a log line — mirrors the voice overlay's posture above.
+
+### Per-block AI-text authors (R2, ADR-0040) — generalizes the overlay above to block granularity
+
+The delegation overlay above answers "who authors the WHOLE session" — this generalizes the SAME mechanism
+one level down: an individual `@[ai-text]` block within a template's `content` may name its own author,
+independent of whether the session as a whole is delegated. See
+`docs/decisions/ADR-0040-per-block-ai-text-author.md` for the full design record; this section covers the
+Generator-specific wire/persistence contract.
+
+**Wire (editor payload, inside `content.<key>.markdown`).** An `@[ai-text]` directive's JSON payload gains
+two optional keys, EMIT-OR-OMIT: `authorId` (a bot id) and `authorName` (a display-only snapshot, never
+authoritative). A block with no author serializes byte-identically to a pre-feature block. The backend reads
+`authorId` only — there is no alias, unlike the legacy `persona` key some parsers still accept for
+`personaId`.
+
+**`recipe_snapshot.author_voices` — frozen at session creation, SERVER-ONLY.**
+`GenerationSessionService::create()` scans the incoming `recipe_snapshot.content` for every distinct
+`authorId` any `@[ai-text]` block names (`RecipeAuthorVoiceSnapshotter`, using the SAME
+`VariableResolver::collectAiTextAuthorIds()` scanner the runtime execution walk uses — nested prompts and
+if-block branches included), resolves them in ONE batch lookup pinned to the creating workspace
+(`AuthorVoiceResolver::voicesFor()`), and writes the result into `recipe_snapshot.author_voices` BEFORE the
+session's single insert. **This key is NEVER emitted on `GenerationSessionResource` or any other response** —
+it is opaque, trusted, agent-instruction material with the same "never logged, never on the wire" posture as
+`bot_delegation.voice`. A recipe with no authored block (every recipe before this feature) gets an empty map
+and costs no lookup.
+
+**Frozen means frozen: editing or deleting a bot never changes an existing session.** Because the map is
+captured once at creation and the executor (`GenerationSessionExecutor`) reads ONLY `GenerationSession::
+authorVoices()` (a pure accessor over the snapshot) at every render entry point (whole-run, per-part
+regenerate, per-part refine), a bot edited or deleted AFTER a session exists can never change what that
+session renders — the identical invariant `recipe_snapshot` itself already has (ADR-0034 D1). A session
+created BEFORE this feature has no `author_voices` key at all, which decodes to an empty map — every block in
+it renders exactly as it always did (the persona-tone fallback path).
+
+**Precedence — the block's own author wins over the session's delegated voice.**
+`Variables\Support\AiVoiceContext::effectiveDirective(?string $authorId)` is the one place this is decided:
+a block's own author (if it resolves) wins; otherwise the session's delegated voice (previous section)
+applies; with neither, the legacy `personaId` tone applies, defaulting to neutral. "A delegated bot writes
+everything that has no author of its own" — delegation is the fallback a block can locally override, never
+the other way around.
+
+**A refine takes the part's FIRST declared author.** `GenerationSessionExecutor::partAuthorId()` scans a
+`text_body`/`script` part's content for its `@[ai-text]` authors and uses the first one found when refining
+that part — a refine revises ONE piece of text, so it needs one voice, not a re-derivation per sub-block.
+
+**`shot_list` has no part-level author.** The brief itself is not an `@[ai-text]` block, so the editor offers
+no author picker at that level; its NESTED shot blocks (if any) carry their own authors independently.
+
+**Cost attribution is UNCHANGED.** A block naming a different bot as its author does NOT re-attribute that
+block's `ai_text` spend — the session's own actor (creator, or `workflow_run` under the automation seam)
+still pays. Re-attributing spend per block-level author would let a template route AI cost onto another
+actor's monthly $ cap purely by naming it in a text field; the $-first cost meter (ADR-0037) exists
+specifically to close that vector.
 
 ### Automation seam (R2 sub-stage 5) — a Workflow consuming a Template IS modeled
 
@@ -661,9 +859,12 @@ Keyed by the content type's part keys (`Support\ContentTypePart::key`). Shape de
     "text": "Stop scrolling…\nShot 1: A cluttered desk, top-down. / This is chaos. (3s)\nFollow for more." },
   "storyboard": { "kind": "storyboard", "status": "ok", "stale": true, "shots": [
     { "index": 0, "visual": "A cluttered desk, top-down.", "voiceover": "This is chaos.", "seconds": 3,
+      "features_character": false,
       "image_status": "ok",
       "image": { "mime": "image/png", "width": 1024, "height": 1024, "version": 1 },
-      "part_key": "storyboard.0" }
+      "part_key": "storyboard.0" },
+    { "index": 1, "visual": "Close on the desk owner, smiling.", "voiceover": "Then I found this.",
+      "seconds": 3, "features_character": true, "image_status": "pending", "part_key": "storyboard.1" }
   ] }
 }
 ```
@@ -671,28 +872,50 @@ Keyed by the content type's part keys (`Support\ContentTypePart::key`). Shape de
 | Kind | `ok` shape | `failed` shape |
 |---|---|---|
 | `text_body` / `script` | `{ kind, status:'ok', text: string, version: int }` | `{ kind, status:'failed', error: string }` — no `text` key at all |
-| `image_plan` | `{ kind, status:'ok', image: {mime,width,height,version}, version: int }` — NO bytes; fetch via the serve endpoint | `{ kind, status:'failed', error: string }` |
+| `image_plan` | `{ kind, status:'ok', image: {mime,width,height,version}, version: int }` — NO bytes; fetch via the serve endpoint | `{ kind, status:'failed', error: string, error_code? }` — `error_code` only for a moderation refusal (`image_safety`, additive — see "Frozen character visual identity" below) |
 | `scene_plan` | `{ kind, status:'ok', scenes: SceneResult[] }` — the part itself is never `failed`; each scene fails independently | (not applicable — see per-scene below) |
 | `shot_list` | `{ kind, status:'ok', version, hook, shots: ShotListShot[], cta, text, parse_ok }` — see "shot_list — the structured JSON contract" below | `{ kind, status:'failed', error: string }` — a blank model reply |
 | `storyboard` | `{ kind, status:'ok', shots: StoryboardShot[] }` — the part itself is never `failed`; each shot fails independently | (not applicable — see per-shot below) |
 
-A scene entry: `{ narration: string, image_status: 'ok'|'failed'|'none', image?, part_key?, image_error? }`
-— `part_key` (e.g. `scene_plan.1`, 0-indexed) is present only on `image_status:'ok'` and is what the serve
-endpoint + `part_history` key on for that scene's image.
+A scene entry: `{ narration: string, image_status: 'ok'|'failed'|'none', image?, part_key?, image_error?,
+image_error_code? }` — `part_key` (e.g. `scene_plan.1`, 0-indexed) is present only on `image_status:'ok'` and
+is what the serve endpoint + `part_history` key on for that scene's image.
 
-A storyboard shot entry: `{ index: int, visual: string, voiceover: string, seconds: int, image_status:
-'ok'|'failed', image?, part_key?, image_error? }` — mirrors a scene entry, but EVERY shot attempts an image
-(no `'none'` arm: `image_status` is only `ok`/`failed`), and the descriptive fields (`visual`/`voiceover`/
-`seconds` — copied from the sibling `shot_list`'s matching shot) ride the entry even when its image failed,
-so the FE can still show the beat. `part_key` (`storyboard.<i>`, 0-indexed) is what the serve/save/refine
-endpoints address — see "Per-shot addressing" below.
+A storyboard shot entry: `{ index: int, visual: string, voiceover: string, seconds: int,
+features_character: bool, image_status: 'pending'|'rendering'|'ok'|'failed', image?, part_key?, image_error?,
+image_error_code? }` — mirrors a scene entry, with four differences:
+
+- **`image_status` carries TWO extra, TRANSIENT values, `pending`/`rendering`**, absent from a scene entry.
+  Since the distributed storyboard frame engine (ADR-0041), a shot's image is not produced inline — it is
+  ANNOUNCED as `pending` the moment the run persists the storyboard, then flips to `rendering` when its own
+  queue job claims it, then settles `ok`/`failed`. A session fetched mid-run (or reopened after a page
+  refresh while a storyboard is still generating) legitimately carries shots in either transient state; the
+  FE renders both as "still coming" (a skeleton placeholder), never as an error. See "Distributed storyboard
+  frames" below for the full per-frame lifecycle.
+- **`features_character` (additive) is TRUE when this beat is drawn from the session's frozen character
+  likeness** (the character visual-identity phase, ADR-0042) — absent/false on every shot list written
+  before the flag existed, and on every run without a drawable character. See "Frozen character visual
+  identity" below.
+- **`part_key` rides the entry from ANNOUNCEMENT, not from success** — unlike a scene's, which appears only
+  on `image_status:'ok'`. A shot carries `part_key` (`storyboard.<i>`, 0-indexed) through `pending` and
+  `rendering` too (the frame is announced with it), and DROPS it only on `failed`. Consumers must still gate
+  image fetches on `image_status === 'ok'` — a transient `part_key` addresses a frame that has no bytes yet.
+- EVERY shot still attempts an image once it reaches a TERMINAL state (no `'none'` arm at settle), and the
+  descriptive fields (`visual`/`voiceover`/`seconds`/`features_character` — copied from the sibling
+  `shot_list`'s matching shot) ride the entry through every state, pending included, so the FE can show the
+  beat's text while its image is still coming. `part_key` is what the serve/save/refine endpoints address —
+  see "Per-shot addressing" below.
 
 **Every `error`/`image_error` is a localized, non-secret string** (`generator.sessions.part_failed`,
 `image_base_unavailable`, `ai_generate_unsupported`, `image_budget`, `image_generate_budget`,
-`image_failed`, …) — never the
-resolved prompt, the instruction, or a provider response body. A per-part failure is **fail-soft**: every
-other part in the same run still executes, and the session as a whole still ends `ready`. Only a run-level
-infra fault (e.g. a DB error) fails the whole session.
+`image_failed`, `image_safety`, …) — never the
+resolved prompt, the instruction, or a provider response body. Its companion machine-readable
+`error_code`/`image_error_code` is ADDITIVE and present only for a failure that has one — today only a
+provider MODERATION refusal (`image_safety`, mirroring the Disk edit's `error_code:'safety_rejected'`),
+absent for every other reason (missing base, exhausted budget, malformed chain, a lost/reaped frame). A
+per-part (or per-shot/per-scene) failure is **fail-soft**: every other part — or shot — in the same run still
+executes, and the session as a whole still ends `ready`. Only a run-level infra fault (e.g. a DB error) fails
+the whole session.
 
 **`stale` — the cross-part coherence hint.** Any `ok` result may additionally carry `stale: true` (never
 `false` — simply absent when not stale) when an UPSTREAM part it (textually or structurally) depends on was
@@ -742,19 +965,24 @@ TIGHTENING of the platform ceiling (`TemplateContentValidator::validateMaxShots`
 and `generator.storyboard_max_shots`; over-ceiling is a `422` at write, absent/null means "use the
 ceiling"). At run time the executor reads the sibling `shot_list`'s STRUCTURED `shots[]` by direct
 intra-composition (the first `shot_list`-kind part declared before it — NOT via `parts.*`, which is
-text-only) and, for EACH shot (bounded by the run's EFFECTIVE cap
+text-only) and ANNOUNCES one FRAME per shot (bounded by the run's EFFECTIVE cap
 `min(authored max_shots ?? ceiling, generator.storyboard_max_shots)` — the same one value the shot list was
-written and clamped against), generates ONE image: the prompt is the composed
-`<continuity clause> + <direction anchor, when the run has one> + <resolved authored style> + <the shot's
-visual>` (see "A `storyboard` shot's base is always an INTERNAL `ai_generate`" under "The image chain"
-below) — the `visual` is resolved with an IDENTITY function (never re-run through the
-directive resolver), because it is the shot-list AI's OWN output and must never be re-interpreted as a
-directive (an injection safeguard, extending the same posture `globals`/`parts` values already have to a
-nested AI-to-AI handoff). The optional authored `filters` chain then runs exactly like an `image_plan`'s
-(same pixel-op set + `ai_edit`, both metered/budget-gated the same way — see "The image chain" below), on
-EVERY shot, out of the run's ONE cumulative `ai_edit` budget.
+written and clamped against). **Each frame's image is then produced by its OWN queue job, not inline inside
+this part's execution** — see "Distributed storyboard frames" below for why and how; the prompt composition
+and the filter chain described next are what THAT job runs, identically to what an inline loop would have
+run: the composed `<continuity clause> + <direction anchor, when the run has one> + <recurring character's
+subject, when this shot is flagged for one — see "Frozen character visual identity" below> +
+<resolved authored style> + <the shot's visual>` (see "A `storyboard` shot's base is always an INTERNAL
+`ai_generate`" under "The image chain" below) — the `visual` is resolved with an IDENTITY function (never
+re-run through the directive resolver), because it is the shot-list AI's OWN output and must never be
+re-interpreted as a directive (an injection safeguard, extending the same posture `globals`/`parts` values
+already have to a nested AI-to-AI handoff). The optional authored `filters` chain then runs exactly like an
+`image_plan`'s (same pixel-op set + `ai_edit`, both metered/budget-gated the same way — see "The image chain"
+below), on EVERY shot, out of the run's ONE cumulative (now PERSISTED — see "Distributed storyboard frames")
+`ai_edit` budget.
 Per-shot FAIL-SOFT: a broken shot never sinks the others; the `storyboard` part itself is never `failed`.
-An empty/missing/failed sibling `shot_list` yields `{status:'ok', shots:[]}`.
+An empty/missing/failed sibling `shot_list` yields `{status:'ok', shots:[]}` — no frames announced, nothing
+queued, the run settles inside the session job as usual.
 
 **Per-shot addressing (`storyboard.<i>`) reuses the EXISTING per-part op contract verbatim** — no new
 endpoints. The dotted sub-key is recognized wherever a bare part key is (mirrors `scene_plan.<i>`, R2
@@ -774,6 +1002,95 @@ still work (they re-render/restore ALL shots). Refining or regenerating `shot_li
 `storyboard` `stale: true` (a structural dependency, not a `parts.*` reference — see "Cross-part context"
 above); regenerating `storyboard.<i>` itself does not un-stale the WHOLE storyboard (only a full `generate`,
 or regenerating the bare `storyboard` part, clears it).
+
+### Distributed storyboard frames
+
+**Why this exists.** A storyboard's per-shot provider calls are slow — measured at ~33s for a plain
+`ai_generate` base, a median **57.8s** for an `ai_edit` (a reference-anchored edit — see "Frozen character
+visual identity" below) — and `RunGenerationSessionJob`'s 300s timeout is **inviolate**: the queue's
+`WithoutOverlapping` lock, the whole-session stale-recovery reaper, and the text/image budget
+timeout-invariant math are all ordered strictly on top of that one number. Eight shots could never fit inside
+it rendered inline, and even the plain-generate case was already at the edge before the run's text parts and
+its one creative-direction derivation (B2) were paid for. So a `storyboard` part no longer renders its shots
+to completion itself — it ANNOUNCES each one as a `pending` FRAME, and each frame is rendered by its OWN
+queue job, on its own budget, potentially in parallel with every other frame of the same run. Full design
+record: `docs/decisions/ADR-0041-storyboard-frame-engine.md`.
+
+**Per-frame lifecycle** (`Support\StoryboardFrame`), stored directly on the shot entry in `results` (no side
+table — the row that already holds every other part's state of record):
+
+```
+pending    announced, queued, unspent — the session job persisted this beat and dispatched its job.
+rendering  a frame job WON the claim and is talking to the provider.
+ok         terminal — {image_status:'ok', image:{mime,width,height,version}, part_key} — byte-identical
+           to a shot rendered inline; the transient claim bookkeeping is stripped on settle.
+failed     terminal — {image_status:'failed', image_error, image_error_code?} — same shape a per-shot
+           regenerate/refine failure already produces.
+```
+
+**The claim is CORRELATED by a per-delivery token, never by shot index alone.** Every announced frame carries
+a `frame_token` (an opaque uuid, stripped from every API response — see `publicResults()` below) that
+`RenderStoryboardFrameJob` must match EXACTLY to act on that shot: a redelivered duplicate of the same job
+finds the shot already `rendering` (or terminal) and stops silently; a straggler from a run that was reaped or
+re-claimed since finds a DIFFERENT token (a full re-claim wipes `results` and re-announces with fresh ones)
+and stops. Neither case ever bills a second image — the same discipline the workflow suspend/resume engine's
+`waiting_key` claim already uses.
+
+**One job per frame, `timeout=240`, `tries=1`.** Every frame gets a WHOLE job's own budget (one
+`ai_generate` plus one `ai_edit` at their full 120s hung-provider ceilings) — a slow or failing shot burns
+only its own job, never the run's remaining headroom. The render itself REUSES the exact per-shot path a
+`storyboard.<i>` regenerate already uses (the frame manager calls the public
+`GenerationSessionExecutor::renderPartFromSnapshot($session, 'storyboard.<i>')`), so there is exactly ONE
+implementation of "render shot i," shared by the whole-run announcement path, the frame job, and the manual
+per-shot regenerate endpoint.
+
+**Exactly one terminal broadcast, still.** The session stays `generating` while its frames render; the LAST
+frame to settle — the one that, under the session row's lock, finds no `pending`/`rendering` frame left — is
+the one that flips the status to `ready` and pushes the single `GenerationSessionUpdated` broadcast (or the
+stale-frame reaper does, below, if it was the one to settle the last straggler). A run with no storyboard is
+completely unaffected — it still settles inside the session job, with the SAME one broadcast it always had.
+
+**A whole-run failure closes every outstanding frame in the same write as the status flip** — a frame may
+only be claimed while its session is `generating`, so a run failed for an unrelated reason (a DB error in a
+text part, say) would otherwise strand its already-announced frames unclaimable forever, and the FE (which
+branches per shot on `image_status`) would show them spinning indefinitely. `GenerationSessionRunManager::
+fail()` settles every outstanding shot `failed` (the same lost-frame message the reaper uses) inside the SAME
+locked transaction that marks the session `failed`; a session with no outstanding frame writes the exact
+column it always did.
+
+**Redelivery hardening — the actual blocking finding from the pre-ship review.** A frame's token identifies
+the FRAME, not the DELIVERY: under `tries=1`, a redelivered duplicate of a still-rendering frame's job is
+failed by the queue's OWN retry-exhaustion check before it ever reaches the job's `handle()` — yet still
+triggers `failed()`, on a fresh command instance carrying the SAME token the still-running original is
+using. Left unguarded, that would let a duplicate settle (and orphan the paid image of) a frame its rightful
+owner is still actively rendering, prematurely flip the run terminal, and strand every other outstanding
+frame. Both `RenderStoryboardFrameJob::failed()` and — retrofitted, because the identical redelivery gap
+already existed there — `RunGenerationSessionJob::failed()` now act ONLY when the delivery being failed
+actually entered its unit of work (the live instance's own flag, or — reconstructed fresh — the queue `Job`'s
+own `attempts() <= 1`). See `docs/decisions/ADR-0041-storyboard-frame-engine.md` (D6) for the full account.
+
+**The stale-frame reaper is the finer-grained recovery, and runs FIRST in every sweep.** A frame worker
+killed between its claim and its write-back (SIGKILL/OOM) never fires its own `failed()` hook — unlike a lost
+whole-run job, that strands a run whose OTHER frames may already be finished and PAID FOR, and the
+whole-session stale window (30 minutes) would otherwise discard a run that might be 7/8 complete. See
+"Lifecycle" below for the config table and the timeout-ordering invariant across all five windows.
+
+**A rejected write-back deletes its own orphaned image.** A frame can lose its claim WHILE its provider call
+is still in flight (the reaper gave up on it moments earlier; a re-claim superseded the whole run); by the
+time its write-back arrives the bytes are already stored as a new version nothing will ever reference again.
+That version — provably the delivery's own allocation, since the image store hands out strictly-increasing
+versions — is deleted on the spot rather than left for a general blob sweep to find weeks later (logged as a
+warning: session, part key, version only — never bytes/prompt).
+
+**Single-worker consequence, stated plainly.** Frames of ONE run render in PARALLEL only ACROSS multiple
+workers; a single worker still dequeues and renders them one at a time, so a full 8-shot storyboard whose
+shots include character reference edits (~58s median each) is several minutes end-to-end on one worker — the
+architecture's payoff is horizontal (more workers), not a faster single-worker path.
+
+**Wire.** `results[storyboardKey].shots[i]` carries the same `image_status`/`image`/`part_key`/`image_error`/
+`image_error_code` shape documented above; the two IN-FLIGHT-only bookkeeping keys (the correlation token and
+its claim timestamp) are stripped by `GenerationSessionResource::publicResults()` before any response —
+never visible on the wire, even mid-run, even to the session's own owner.
 
 ### `part_history` — the undo affordance
 
@@ -817,8 +1134,9 @@ already-async `RunGenerationSessionJob` — no nested queue. `Services\ImageChai
      a body, then a synchronous `Disk\Services\ImageAiService::edit()` call — **metered** (channel
      `ai_image_edit`, session-tagged, see "Cost meter integration" below) and gated by a **per-session
      budget** (`generator.image_edit_max_calls_per_session`, default 8 — in lock-step with
-     `storyboard_max_shots`, instance-counted, cumulative across every image part AND every storyboard shot in
-     the run) — an over-budget `ai_edit` is refused BEFORE any provider call. **In a CHAIN that refusal
+     `storyboard_max_shots`, cumulative across every image part AND every storyboard shot in
+     the run — see the PERSISTED-ledger note in "Cost meter integration" below, since the distributed
+     storyboard frame engine) — an over-budget `ai_edit` is refused BEFORE any provider call. **In a CHAIN that refusal
      DEGRADES GRACEFULLY**: the step is SKIPPED (logged, fact only) and the chain continues, so the part still
      yields `status:'ok'` with a real image, just without that filter. It is deliberately not a part failure —
      an authored storyboard filter chain runs on EVERY shot, so failing the part would destroy the tail of the
@@ -846,14 +1164,23 @@ IN THIS ORDER by `produceStoryboardShotImage()`:
    independent text→image calls from reading as N different films;
 2. the run's **direction anchor** (`CreativeDirection::forImage()` — art direction + recurring subject +
    continuity notes), when the run has a direction and the layer is enabled — see "Creative direction layer"
-   above, whose table lists the storyboard shot as one of `forImage()`'s injection points;
-3. the resolved authored **`style`** (LAST of the framing, so a template can override the derived anchor);
-4. the shot's **`visual`** — what THIS frame shows.
+   above, whose table lists the storyboard shot as one of `forImage()`'s injection points. **When this shot
+   is flagged `features_character` and the session has a frozen likeness, the anchor's SUBJECT line is
+   REPLACED by the character's own description** rather than the model-derived guess — see "Frozen character
+   visual identity" above;
+3. the frozen character's **guardrails** (aesthetic + prohibitions), when the session has one — ride EVERY
+   shot's prompt, flagged or not;
+4. the resolved authored **`style`** (LAST of the framing, so a template can override the derived anchor);
+5. the shot's **`visual`** — what THIS frame shows.
 
 The whole composed prompt is then passed through an IDENTITY resolver (never the real directive resolver)
-so neither the shot's `visual` — the shot-list AI's own output — nor the model-derived anchor is
-re-interpreted as a directive; only the authored `style` and the `filters`' own prompts resolve through the
-normal session resolver.
+so neither the shot's `visual` — the shot-list AI's own output — nor the model-derived anchor (nor the
+frozen character's own free text) is re-interpreted as a directive; only the authored `style` and the
+`filters`' own prompts resolve through the normal session resolver. **A flagged shot's base is then produced
+by EDITING the frozen likeness rather than generating from text** (`ImageAiService::edit()`, not
+`ImageGenerateService::generate()`) — see "Frozen character visual identity" above for the budget/meter split
+this swap uses. A session with no frozen likeness (or the layer disabled) composes and produces this base
+exactly as it did before that feature existed.
 
 **Failure is fail-soft per part.** A domain failure (`ImageBaseUnavailable`, `ImageBaseUnsupported`,
 `ImageGenerateBudgetExceeded` — all `Exceptions\ImageChainException`) turns that ONE part (or ONE storyboard
@@ -949,15 +1276,27 @@ Every prompt in the table above resolves through an IDENTITY function once compo
 anchor is model-derived content (data to draw/write from), never re-interpreted as a directive, exactly like
 the shot-list's own `visual` output already is.
 
-**Consistency caveat (character identity).** Prompt anchoring makes a storyboard's WORLD consistent — style,
-medium, palette, lighting, camera, setting — but it does NOT guarantee the SAME character's face across
-frames: each shot is an independent text→image call. Exact cross-frame character identity needs
-image-to-image chaining (feed frame N's bytes as frame N+1's edit base), the named v2 path in ADR-0038
-"Alternatives considered".
+**Consistency caveat (character identity) — closed for a DELEGATED session with a likeness; still open in
+general.** Prompt anchoring makes a storyboard's WORLD consistent — style, medium, palette, lighting, camera,
+setting — but on its own does NOT guarantee the SAME character's face across frames, because each shot is
+still an independent text→image call. The character visual-identity phase (`docs/decisions/
+ADR-0042-character-visual-identity.md`, "Frozen character visual identity" above) closes this specifically
+for a session delegated to a bot with an approved likeness: a flagged frame's base is produced by EDITING
+that FROZEN reference rather than generating fresh from text, so the same photo — not merely a shared written
+description — grounds every character shot of the run. This is a NARROWER, DIFFERENT mechanism from the
+general "any storyboard" gap ADR-0038 named and deferred as its "v2 path" (image-to-image CHAINING — feed
+frame N's produced bytes as frame N+1's edit base): that path remains unbuilt, and a non-delegated run, or a
+delegated one whose bot has no approved likeness, still gets only the world/style consistency this section
+describes, with no guarantee of the same face twice.
 
-**Voice wins on tone.** When a session is delegated to a bot (ADR-0036), the bot's voice sits in the system
-instruction; the direction's `tone` field is dropped from `forText()`/`forShotList()` (their `$withTone`
-parameter) so the two never compete over the same wording decision.
+**Voice wins on tone (widened to block granularity by ADR-0040).** `GeneratorAiTextService::withDirection()`
+asks `AiVoiceContext::effectiveDirective($authorId)` — the SAME precedence function "Per-block AI-text
+authors" above centralizes — rather than the session voice alone: whichever voice actually applies to THIS
+block (its own author, or failing that a delegated session's voice, ADR-0036) already sits in the system
+instruction, so the direction's `tone` field is dropped from `forText()`/`forShotList()` (their `$withTone`
+parameter) for that block, rather than competing with it. This now suppresses the derived tone for an
+author-written block even inside an otherwise UNdelegated session — previously only whole-session delegation
+triggered the suppression. A block with no effective voice at all keeps the full, unchanged projection.
 
 **Lifecycle.** Derived ONCE per FULL run (`GenerationSessionExecutor::directionForFullRun()` — reuses an
 already-stored direction on a redelivered run rather than deriving twice) and PERSISTED; every ISOLATED
@@ -1051,9 +1390,22 @@ PER-RUN call-count ceilings, purely to bound one recipe's fan-out — NOT a doll
 | Config key | Default | Scope |
 |---|---|---|
 | `generator.ai_text_max_calls_per_session` | 4 | `@[ai-text]` provider calls in ONE run (`GeneratorAiTextService`, instance-counted, resets each run) — a `shot_list` generate/refine counts as ONE of these calls too |
-| `generator.image_edit_max_calls_per_session` | 8 | `ai_edit` provider calls in ONE run (`ImageChainExecutor`, instance-counted, cumulative across every image part AND every storyboard shot). Also kept in LOCK-STEP with `storyboard_max_shots`: an authored storyboard filter chain runs on EVERY shot, so ONE `ai_edit` filter x a full 8-shot storyboard = 8 edits. Exhausted ⇒ the over-budget filter STEP is skipped (the image is still produced, unfiltered), not a failed part — see "The image chain" above. |
-| `generator.image_generate_max_calls_per_session` | 8 | `ai_generate` text→image BASE provider calls in ONE run (`ImageChainExecutor`, instance-counted, cumulative across every image part). Kept in LOCK-STEP with `storyboard_max_shots` (below, also 8) so a FULL `video_script` storyboard's per-shot generates all fit inside one run's budget — if this is ever lowered below the ceiling, the last shots of a long list come back frameless. |
+| `generator.image_edit_max_calls_per_session` | 8 | `ai_edit` provider calls in ONE run (`ImageChainExecutor`, cumulative across every image part AND every storyboard shot — see the PERSISTED-ledger note below). Also kept in LOCK-STEP with `storyboard_max_shots`: an authored storyboard filter chain runs on EVERY shot, so ONE `ai_edit` filter x a full 8-shot storyboard = 8 edits. Exhausted ⇒ the over-budget filter STEP is skipped (the image is still produced, unfiltered), not a failed part — see "The image chain" above. |
+| `generator.image_generate_max_calls_per_session` | 8 | `ai_generate` text→image BASE provider calls in ONE run (`ImageChainExecutor`, cumulative across every image part — see the PERSISTED-ledger note below). Kept in LOCK-STEP with `storyboard_max_shots` (below, also 8) so a FULL `video_script` storyboard's per-shot generates all fit inside one run's budget — if this is ever lowered below the ceiling, the last shots of a long list come back frameless. |
 | `generator.storyboard_max_shots` | 8 | The PLATFORM CEILING on shots in one `video_script` run (video_script rework Phase B; adaptive since the narrative-contract upgrades, B1 above) — the REAL cost bound, not a metering ceiling. A template MAY tighten it per recipe (`content.storyboard.max_shots`, see "`storyboard` — one AI image per shot" below); the run's EFFECTIVE cap is `min(authored, ceiling)`, resolved ONCE by `GenerationSessionExecutor::effectiveShotCap()` and threaded explicitly into the shot-list agent's instructed bound, the parse clamp, AND the storyboard's per-shot image iteration — one value, so they cannot drift. BOTH image budgets' defaults are kept equal to the ceiling (the three-way coupling documented in `config/generator.php`). |
+
+**PERSISTED ledger, since the distributed storyboard frame engine (ADR-0041).** The two image budgets used
+to be plain instance counters on `ImageChainExecutor` — correct exactly as long as one run meant one job. The
+moment a `storyboard` run became one job PER FRAME (above), that stopped bounding anything: each frame job
+resolves its own fresh `ImageChainExecutor`, which would start counting from zero. Both ceilings are now
+charged against two persisted `unsignedInteger` columns on the session row — `ai_generate_calls`/
+`ai_edit_calls` — via ONE atomic guarded `UPDATE … SET x = x + 1 WHERE id = ? AND x < <max>` per reservation
+(`Services\SessionImageBudget`), so N frame jobs reserving concurrently can never lose a reservation to a
+lost-update race. Both counters are reset to 0 by EVERY claim (`GenerationSessionRunManager::
+claimAndDispatch()`, whole-run and part-op alike) — so the documented semantics above are UNCHANGED (a
+budget per RUN, a regenerate/refine gets its own fresh one); only the definition of "one run" now spans the
+session job plus its frame jobs. A direct, session-less caller (the chain's own unit tests) still gets the
+pre-existing instance-counter behavior, unaffected.
 
 An exhausted per-run text budget resolves that `@[ai-text]` block to `''` (fail-closed, the SAME contract
 as an over-cap monthly gate — the run still completes `ready`); an exhausted image-edit budget SKIPS the
@@ -1129,20 +1481,26 @@ by the scheduled `generator:reap-sessions` command (`Console\ReapGenerationSessi
 (unscoped — covers every shared-mode workspace) and once per READY own-database workspace (one broken
 tenant is logged and skipped, so the sweep still finishes for the rest).
 
-Three windows, each with a config-driven cutoff and a hard 60s floor so a misconfiguration can never
-reap/purge instantly:
+**Five windows** (four applying to every session; the fifth a narrow exception to the archive freeze itself),
+each with a config-driven cutoff and a hard 60s floor so a misconfiguration can never reap/purge instantly.
+**Order matters**: frame recovery runs FIRST in every pass, so a run it rescues never reaches the coarser
+stale-recovery window in the SAME sweep.
 
 | Step | Config key | Default | Effect |
 |---|---|---|---|
-| **Stale recovery** | `generator.session_stale_after` | 1800s (30 min) | A session stuck in `generating` past the cutoff → `failed` via the run manager's terminal-safe `fail()` (a run that completes in the reap race is never clobbered). Recovers a worker-SIGKILL/OOM that never reached the job's `failed()` hook — nothing else does. Must EXCEED the job's whole retry/lock budget (`tries=1`, `timeout=300s`, `WithoutOverlapping` up to 600s) so a slow-but-alive run is never reaped. |
+| **Frame recovery** (distributed storyboard frames, ADR-0041) | `generator.frame_stale_after` | 900s (15 min) | A storyboard FRAME claimed but never settled past the cutoff → `failed` individually (the lost-frame message), and its run settles if it was the last frame outstanding. Recovers a frame-worker SIGKILL/OOM that never reached the frame job's `failed()` hook. Runs BEFORE stale recovery below — without it, a run 7/8 complete would otherwise wait for the coarser 30-minute window to discard the whole thing. See "Distributed storyboard frames" above for the full five-window timeout-ordering invariant (`240s < 300s < 600s < 900s < 1800s`). |
+| **Stale recovery** | `generator.session_stale_after` | 1800s (30 min) | A session stuck in `generating` past the cutoff → `failed` via the run manager's terminal-safe `fail()` (a run that completes in the reap race is never clobbered; any outstanding storyboard frame is closed in the same write — see "Distributed storyboard frames" above). Recovers a worker-SIGKILL/OOM that never reached the job's `failed()` hook — nothing else does. Must EXCEED the job's whole retry/lock budget (`tries=1`, `timeout=300s`, `WithoutOverlapping` up to 600s) so a slow-but-alive run is never reaped. |
 | **Trash** | `generator.session_trash_after` | 604800s (~1 week) | A NON-archived session idle (`updated_at`) past the cutoff → soft-deleted. Any activity (edit/refine) bumps `updated_at`, so an actively-used session is never trashed. |
-| **Purge** | `generator.session_purge_after` | 2592000s (~1 month) | A soft-deleted, NON-archived session whose trash (`deleted_at`) is past the cutoff → **force-deleted** AND its whole produced-image blob prefix is garbage-collected (`GeneratedImageStore::clearSessionForWorkspace()`, derived from the row's own `workspace_id` since the shared-DB pass runs with tenancy cleared). |
+| **Purge** | `generator.session_purge_after` | 2592000s (~1 month) | A soft-deleted, NON-archived session whose trash (`deleted_at`) is past the cutoff → **force-deleted** AND BOTH of its byte stores are garbage-collected: the produced-image blob prefix (`GeneratedImageStore::clearSessionForWorkspace()`) AND — since the character visual-identity phase — the frozen character reference (`SessionIdentityImageStore::clearSessionForWorkspace()`), both derived from the row's own `workspace_id` since the shared-DB pass runs with tenancy cleared. |
+| **Archived-likeness purge** (the ONE exception to the freeze, character visual-identity phase) | `generator.session_purge_after` (same cutoff, measured from `deleted_at`) | 2592000s (~1 month) | An ARCHIVED session that was ALSO manually trashed, past the SAME purge cutoff, gives up its frozen character LIKENESS ONLY — never its row, never its produced content. It is exempt from the row-purge step above (archive keeps the row forever), but a trashed row this old has no restore route through the API, so the copy of a real person's face it is still holding is readable by no run that row can ever have again. See D17 in `docs/decisions/ADR-0042-character-visual-identity.md`. |
 
 **Archive is a blanket freeze**, not merely a trash exemption: `POST …/archive` sets `archived_at`, which
-excludes the session from BOTH the trash and purge scopes (`scopeTrashable`/`scopePurgable` both
-`whereNull('archived_at')`). Stale-recovery is likewise skipped for an archived session
-(`scopeStaleGenerating` also excludes it) — an archived session is never auto-failed either, matching the
-"archive disables all cleanup" contract. `POST …/unarchive` re-enrolls it in every window.
+excludes the session from the trash, purge, AND stale-recovery scopes (`scopeTrashable`/`scopePurgable`/
+`scopeStaleGenerating` all `whereNull('archived_at')`) — an archived session is never auto-failed, trashed, or
+force-deleted, matching the "archive disables all cleanup" contract. `POST …/unarchive` re-enrolls it in
+every window. **The archived-likeness purge above is the sole exception**, and only for a row that is
+ALREADY unreachable through the API (archived, then trashed, then past the purge window) — it never touches
+the row, the produced content, or a session that still has a restore path.
 
 ---
 
@@ -1157,7 +1515,10 @@ excludes the session from BOTH the trash and purge scopes (`scopeTrashable`/`sco
 - `app/modules/Generator/Services/GeneratorAiTextService.php` — the live, budgeted `@[ai-text]` implementation
 - `app/modules/Generator/Services/ImageChainExecutor.php`, `ImageBaseResolver.php`, `ImagePixelProcessor.php`, `GeneratedImageStore.php`
 - `app/modules/Generator/Services/GenerationSessionLifecycleService.php`, `Console/ReapGenerationSessionsCommand.php`
-- `app/modules/Generator/Jobs/RunGenerationSessionJob.php`
+- `app/modules/Generator/Jobs/RunGenerationSessionJob.php`, `Jobs/RenderStoryboardFrameJob.php`
+- `app/modules/Generator/Services/StoryboardFrameManager.php`, `SessionImageBudget.php`, `Support/StoryboardFrame.php`
+- `tests/Feature/StoryboardFrameFanOutTest.php`, `tests/Feature/GeneratorRedeliveryTest.php` — the fan-out
+  guarantees + the delivery-vs-payload redelivery hardening
 - `app/modules/Generator/Http/Controllers/GenerationSessionController.php`
 - `app/modules/Generator/Http/Requests/StoreGenerationSessionRequest.php`, `UpdateGenerationSessionRequest.php`, `RefineSessionPartRequest.php`, `SaveGeneratedImageRequest.php`
 - `app/modules/Generator/Http/Resources/GenerationSessionResource.php`
@@ -1234,6 +1595,35 @@ excludes the session from BOTH the trash and purge scopes (`scopeTrashable`/`sco
 - `docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md` — the R2 sub-stage 5 design record: the suspend/resume engine, the automation seam, the composite-slot refusal, the `SlotScopePolicy` divergence from ADR-0036
 - `tests/Feature/WorkflowGenerateContentStepTest.php`, `tests/Feature/WorkflowSuspendResumeTest.php`, `tests/Feature/WorkflowSuspendResumeHardeningTest.php`, `tests/Feature/WorkflowsGeneratorBoundaryTest.php` — the step's run/resume/fill/export behavior, the suspend/resume engine's correlated-claim/fingerprint/timeout hardening, and the one-way module boundary
 
+**Distributed storyboard frames** (see "Distributed storyboard frames" above for the shipped contract,
+`docs/decisions/ADR-0041-storyboard-frame-engine.md` for the design record):
+
+- `app/modules/Generator/Support/StoryboardFrame.php` — the frame state-machine vocabulary + shape helpers, shared by the executor, the run manager, the frame manager, and the reaper
+- `app/modules/Generator/Jobs/RenderStoryboardFrameJob.php` — one queue job per frame; the delivery-vs-payload `failed()` guard
+- `app/modules/Generator/Services/StoryboardFrameManager.php` — claim/render/settle/reap, all under the session row's lock
+- `app/modules/Generator/Services/SessionImageBudget.php` — the persisted, guarded-UPDATE per-run image ledger
+- `app/modules/Generator/Jobs/RunGenerationSessionJob.php` — `mayFailRun()`, the retrofitted delivery-vs-payload guard (the same finding applied to the pre-existing job)
+- `database/migrations/2026_08_06_000000_add_image_budget_counters_to_generation_sessions_table.php` (+ `database/migrations/tenant/0001_01_01_000056_...` mirror) — `ai_generate_calls`/`ai_edit_calls`
+- `tests/Feature/StoryboardFrameFanOutTest.php` — the claim/settle/redelivery/reap contract, the persisted ledger across separate frame jobs, the single terminal broadcast
+
+**Frozen character visual identity** (see "Frozen character visual identity (the bot-look phase)" above for
+the shipped wire/config contract, `docs/backend/bots-api.md` → "Visual identity module ('Wygląd')" for the
+Bot-module side, `docs/decisions/ADR-0042-character-visual-identity.md` for the design record):
+
+- `app/modules/Generator/Support/SessionVisualIdentity.php` — the frozen overlay's normalized VO, the security boundary, and the prose projections (`subjectDescription`/`guardrails`)
+- `app/modules/Generator/Services/SessionIdentityImageStore.php` — the per-character frozen-bytes store, deliberately outside the produced-image root
+- `app/modules/Generator/Services/SessionDelegationService.php` — `applyDelegation()`'s frozen-look extension, `clearDelegation()`'s bytes cleanup
+- `app/modules/Generator/Services/ImageChainExecutor.php` — the `characterReference` parameter, the reserve-generate/bill-edit split
+- `app/modules/Generator/Services/ImagePlanValidator.php` — the authored `character: 'auto'|'never'` field
+- `app/modules/Generator/Services/ShotListRenderer.php`, `Agents/ShotListAgent.php` — the model-decided per-shot `features_character` flag
+- `app/modules/Generator/Exceptions/ImageSafetyRejected.php` — the `image_safety` domain error code
+- `app/modules/Bot/Services/BotVisualIdentityService.php`, `Http/Controllers/BotVisualController.php`, `Jobs/GenerateBotVisualJob.php` — the Bot-module side (see `docs/backend/bots-api.md`)
+- `app/modules/Disk/Services/ImageAiService.php` — the resumable `prepare()`/`process()`/`produce()` split this feature's generation worker rides; `Services/OpenAiImageEditClient.php` — `input_fidelity` now actually sent
+- `config/generator.php` — `visual_identity.enabled` (the kill switch, consumption-only — never gates the freeze)
+- `tests/Feature/GeneratorVisualIdentityTest.php` — the freeze/undo/re-delegation/purge lifecycle, render-time consumption, the reserve-generate/bill-edit split, moderation codes, the byte-identical kill-switch/no-likeness pins
+- `tests/Feature/BotVisualIdentityTest.php` — the generation/curation endpoints, moderation, the resumable-retry + throwing-hook hardening (Bot-module side)
+- `tests/Feature/BotModuleBoundaryTest.php` — pins the new one-way `Bot → Disk` edge in both directions
+
 ## Planned / deferred (not implemented)
 
 - **Bot autonomy beyond slot-fill** (R2 sub-stage 3 follow-up) — a delegated bot fills in-scope slots once,
@@ -1250,9 +1640,13 @@ excludes the session from BOTH the trash and purge scopes (`scopeTrashable`/`sco
   is not modeled.~~ — **DONE (R2 sub-stage 5)**, see "Automation seam (R2 sub-stage 5)" above and
   `docs/backend/workflows-api.md` → "Steps: `generate_content`" / "Suspend/resume engine". Kept struck
   through so a reader of an older snapshot understands the change.
-- **A bot delegating a workflow-driven generation** — `SlotScopePolicy::Bot` (R2 sub-stage 3) and
+- ~~**A bot delegating a workflow-driven generation** — `SlotScopePolicy::Bot` (R2 sub-stage 3) and
   `SlotScopePolicy::Automation` (R2 sub-stage 5) are sibling trust boundaries today, not composed; a
-  `generate_content` step's session cannot be handed to a bot mid-run.
+  `generate_content` step's session cannot be handed to a bot mid-run.~~ — **DONE (2026-07-31)**, see
+  `docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md`'s addendum and
+  `docs/backend/workflows-api.md` → "`generate_content`" → "Author delegation (`bot_id`)". The bot is
+  named on the step and resolved/stamped once, at session creation — not handed off mid-run. Kept struck
+  through so a reader of an older snapshot understands the change.
 - **Per-part granular `generate_content` outputs** — the step publishes one assembled `content` string and
   one `image_file_ids` list; a later workflow step cannot address one specific part's text/image
   individually.

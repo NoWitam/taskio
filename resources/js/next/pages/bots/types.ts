@@ -18,6 +18,10 @@ import type { TaskListItem } from '../tasks/types';
 // The polymorphic `creator` union (user | workflow_run | bot) is shared across
 // every resource that emits it — imported, never redefined.
 import type { Creator } from '../../ui/patterns/creator';
+// The `BotStatus` enum lives in `ui/data/botStatus` next to its StatusBadge map: the design
+// system's `BotSelect` renders bot statuses and `ui/**` may not import from `pages/**`, so the
+// enum sits in the lower layer and this contract mirror reads it from there.
+import type { BotStatus } from '../../ui/data/botStatus';
 
 /**
  * A user as returned by UserResource. Retained for reference; the bot `creator`
@@ -30,13 +34,6 @@ export interface BotUser {
   email?: string | null;
   avatar?: string | null;
 }
-
-/**
- * The bot status enum — collapsed to a two-state toggle. A bot is either live
- * (`active`, tone success) or off (`inactive`, tone neutral). Status is NEVER sent
- * on create/update; it is toggled through `PATCH /bots/{id}/status`.
- */
-export type BotStatus = 'active' | 'inactive';
 
 /**
  * A dictionary ("gwara"/slang) entry — a word/expression the bot uses + its
@@ -89,6 +86,43 @@ export interface BotKnowledge {
   entries: BotKnowledgeEntry[];
 }
 
+/**
+ * The VISUAL module ("Wygląd") — the bot's LIKENESS: the written identity an image is drawn from, the
+ * generated candidate strip, and which of those is APPROVED. Mirrors `Bot::visualIdentity()` 1:1; the
+ * detail resource returns `null` when the module was never configured (a bot older than the module).
+ *
+ *   descriptor        WHO the character is (≤240) — one sentence, not a second persona,
+ *   wardrobe          the default outfit (≤500) — the one steerable defence against the provider's
+ *                     output-side moderation (the same character is refused in a swimsuit, accepted in
+ *                     a dress), which is why it is a first-class field and not part of `aesthetic`,
+ *   aesthetic         palette / medium / lighting (≤2000) — applies to EVERY image of this character,
+ *   prohibitions      visual "never draw this" list (≤50 entries),
+ *   reference_file_id the source image a (re)generation edits (an upload the bot owns, OR a Disk pick),
+ *   candidates        the generated iterations to choose from, file ids, OLDEST FIRST (≤6),
+ *   canonical_file_id the APPROVED likeness — the one a delegated session freezes,
+ *   prompt            the last composed generation prompt (server-written audit; read-only in the UI).
+ *
+ * File ids are rendered through the Disk serve route (`GET /api/disk/{id}?inline=1`).
+ */
+export interface BotVisualIdentity {
+  enabled: boolean;
+  descriptor: string | null;
+  aesthetic: string | null;
+  wardrobe: string | null;
+  prohibitions: string[];
+  reference_file_id: string | null;
+  candidates: string[];
+  canonical_file_id: string | null;
+  prompt: string | null;
+}
+
+/**
+ * How many candidates the module keeps (`BotVisualIdentityService::MAX_CANDIDATES`). Mirrored here so the
+ * editor can WARN before a seventh generation permanently evicts the oldest unapproved one; the server
+ * stays authoritative.
+ */
+export const BOT_VISUAL_MAX_CANDIDATES = 6;
+
 /** A bot LIST row (BotListResource). */
 export interface BotListItem {
   id: string;
@@ -101,6 +135,10 @@ export interface BotListItem {
   has_text_module: boolean;
   /** Whether the task-execution module is configured + enabled. */
   task_execution_enabled: boolean;
+  /** Whether the VISUAL module is switched on (its likeness may be used in sessions). */
+  visual_enabled: boolean;
+  /** Whether the bot has an APPROVED likeness (independent of the toggle above). */
+  visual_has_image: boolean;
   /** The current user created this bot. */
   is_owner: boolean;
   created_at: string | null;
@@ -130,8 +168,9 @@ export interface BotDetail {
   prohibitions: string[];
   // --- 2. Task-execution module (nullable until configured) ---
   task_execution: BotTaskExecution | null;
-  // --- 3 & 4. Not-yet-writable placeholders (always null) ---
-  visual: null;
+  // --- 3. Visual module ("Wygląd") — null until the module was ever configured. ---
+  visual: BotVisualIdentity | null;
+  // --- 4. Not-yet-writable placeholder (always null) ---
   /** Batch 6: renamed from `voice`. Placeholder, not writable/meaningful yet. */
   audio: null;
   // --- 5. Knowledge module — { enabled, entries: [{title, content}] }. ---
@@ -192,9 +231,15 @@ export interface BotTaskExecutionPayload {
  *   name (req ≤255), description (nullable ≤2500), persona (REQUIRED ≤10000),
  *   style (nullable ≤5000), dictionary ({term,meaning}[] ≤100), phrases
  *   ({phrase,context?}[] ≤100), prohibitions (string[]), task_execution (nullable
- *   `{ enabled, tools }`), knowledge (`{ enabled, entries }`). `status` is NEVER
- *   sent here (toggled via `PATCH /bots/{id}/status`); `visual`/`audio` are NOT
- *   writable (placeholders, omitted entirely).
+ *   `{ enabled, tools }`), knowledge (`{ enabled, entries }`), visual (nullable
+ *   {@link BotVisualIdentity}). `status` is NEVER sent here (toggled via
+ *   `PATCH /bots/{id}/status`); `audio` is NOT writable (placeholder, omitted).
+ *
+ * `visual` is OMIT-MEANS-UNTOUCHED server-side (`BotDTO::normalizeVisual`) and OVERWRITES the module
+ * WHOLE when sent — including `candidates` / `canonical_file_id`, which a generation writes
+ * ASYNCHRONOUSLY. A client that sends a stale snapshot would DELETE a candidate that landed while the
+ * form was open, so the editor sends the SERVER's latest file pointers merged with the user's text, and
+ * omits the key entirely when it never had a trustworthy copy of the module.
  */
 export interface BotWritePayload {
   name: string;
@@ -209,6 +254,41 @@ export interface BotWritePayload {
   task_execution?: BotTaskExecutionPayload | null;
   /** Knowledge module — `{ enabled, entries }`. */
   knowledge?: BotKnowledge;
+  /** Visual module — the WHOLE identity (see the note above); omitted when unseeded. */
+  visual?: BotVisualIdentity;
+}
+
+// --- Visual module endpoints (BotVisualController) -------------------------
+
+/** Where a generation's image comes from: an existing photo, or the written identity alone. */
+export type BotVisualMode = 'reference' | 'description';
+
+/**
+ * The generation body (`POST /api/bots/{bot}/visual/generate`, `multipart/form-data`). Mirrors
+ * `GenerateBotVisualRequest` 1:1: in `reference` mode EXACTLY ONE of `reference` (a fresh jpeg/png/webp
+ * upload ≤25 MB) / `reference_file_id` (an id the bot owns OR a disk-native file the user picked) must be
+ * present; `description` mode carries neither. `instruction` (≤2000) steers THIS run only — the identity
+ * itself is read from the SAVED module, never from the wire.
+ */
+export interface BotVisualGeneratePayload {
+  mode: BotVisualMode;
+  reference?: File | null;
+  reference_file_id?: string | null;
+  instruction?: string | null;
+}
+
+/**
+ * The 202 envelope of a queued generation — a {@see DiskAiEditResource} status row the client follows on
+ * `GET /api/disk/ai/image/{id}` (the SAME endpoint the Disk preview editor polls). When it reports `done`
+ * the candidate is ALREADY filed on the bot, so the client refetches the bot rather than reading the image.
+ */
+export interface BotVisualGenerateResponse {
+  data: { id: string; status: string };
+}
+
+/** The approve body (`POST /api/bots/{bot}/visual/approve`) → a full {@link BotDetail}. */
+export interface BotVisualApprovePayload {
+  file_id: string;
 }
 
 /** Body for `PATCH /bots/{id}/status` — toggle a bot's live status (creator-only). */

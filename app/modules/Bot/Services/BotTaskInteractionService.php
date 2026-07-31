@@ -21,7 +21,8 @@ use RuntimeException;
  * The service tracks a terminal OUTCOME for the run so the job knows how it ended:
  *   - null      : run continues (agent may call more tools),
  *   - Waiting   : ask_and_wait fired — end the run, task stays in_progress + waiting,
- *   - Finished  : finish fired — task submitted to in_test.
+ *   - Finished  : finish fired — task submitted to in_test (approval attached) or moved
+ *                 straight to done (no approval to wait for).
  */
 class BotTaskInteractionService
 {
@@ -82,15 +83,20 @@ class BotTaskInteractionService
         $this->task->loadMissing('formSubmission');
 
         if ($this->task->formSubmission) {
-            $this->submissions->update($this->task->formSubmission, $answers);
+            $submission = $this->submissions->update($this->task->formSubmission, $answers);
         } else {
-            $this->submissions->create(new FormSubmissionDTO(
+            $submission = $this->submissions->create(new FormSubmissionDTO(
                 form_id: $this->task->form_id,
                 submittable_type: $this->task->getMorphClass(),
                 submittable_id: $this->task->getKey(),
                 data: $answers,
             ));
         }
+
+        // Keep the long-lived run Task in sync: its `formSubmission` was eager-loaded as
+        // null by the context builder before this call created the row, and everything
+        // downstream in the run (finish's unfilled-form guard) reads that relation.
+        $this->task->setRelation('formSubmission', $submission);
 
         $this->formFilled = true;
         $this->actions->record($this->bot, $this->task, BotActionType::FormFilled);
@@ -122,12 +128,20 @@ class BotTaskInteractionService
     }
 
     /**
-     * Submit the task to in_test (auto-starts an attached approval pipeline). If the
-     * task has a form that was never filled (this run or previously), finish FAILS with
-     * an instructive tool-error so the agent fills the form first — we never submit an
-     * incomplete deliverable.
+     * End the run with the work delivered. Where the task LANDS depends on whether anyone
+     * is going to review it:
+     *
+     *  - approval pipeline attached -> in_test, which is what STARTS the review (the task
+     *    is reassigned to the first stage approver),
+     *  - no pipeline               -> done, because in_test would mean waiting for a
+     *    review that nobody is going to perform — the task would sit there until a human
+     *    clicked "done" for no reason.
+     *
+     * If the task has a form that was never filled (this run or previously), finish FAILS
+     * with an instructive tool-error so the agent fills the form first — we never deliver
+     * an incomplete deliverable either way.
      */
-    public function finish(): string
+    public function finish(?string $summary = null): string
     {
         if ($this->task->form_id && !$this->formFilled) {
             $this->task->loadMissing('formSubmission');
@@ -139,11 +153,19 @@ class BotTaskInteractionService
             }
         }
 
-        $this->tasks->botSubmitToTest($this->task);
-        $this->actions->record($this->bot, $this->task, BotActionType::SubmittedToTest);
-
+        $payload = $summary !== null ? ['summary' => $summary] : [];
         $this->outcome = self::OUTCOME_FINISHED;
 
-        return 'Zadanie przesłane do testów.';
+        if (!$this->task->hasApprovalPipeline()) {
+            $this->tasks->botComplete($this->task);
+            $this->actions->record($this->bot, $this->task, BotActionType::MarkedDone, $payload);
+
+            return 'Zadanie zakończone i oznaczone jako zrobione (brak przypiętej akceptacji).';
+        }
+
+        $this->tasks->botSubmitToTest($this->task);
+        $this->actions->record($this->bot, $this->task, BotActionType::SubmittedToTest, $payload);
+
+        return 'Zadanie przesłane do testów — uruchomiono akceptację.';
     }
 }

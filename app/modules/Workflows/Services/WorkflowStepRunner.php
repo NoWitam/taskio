@@ -2,7 +2,9 @@
 
 namespace App\Modules\Workflows\Services;
 
+use App\Modules\Variables\Contracts\AuthorVoiceResolver;
 use App\Modules\Variables\Services\VariableResolver;
+use App\Modules\Variables\Support\AiVoiceContext;
 use App\Modules\Variables\Support\FunctionScope;
 use App\Modules\Workflows\Enums\WorkflowRunState;
 use App\Modules\Workflows\Enums\WorkflowRunStepStatus;
@@ -49,6 +51,8 @@ class WorkflowStepRunner
         private WorkflowRunContext $runContext,
         private WorkflowVariableCatalogService $catalog,
         private WorkflowAiTextService $aiText,
+        private AiVoiceContext $voice,
+        private AuthorVoiceResolver $authorVoices,
     ) {}
 
     /** First pass over a freshly claimed run: every step, from position 0. */
@@ -148,7 +152,34 @@ class WorkflowStepRunner
         $outerAiTextCalls = $this->aiText->callsMade();
         $this->aiText->restoreCalls($resumeFrom !== null ? (int) ($resumeFrom['ai_text_calls'] ?? 0) : 0);
 
+        // PER-BLOCK `@[ai-text]` AUTHORS. A workflow has no snapshot to freeze voices into (a run always
+        // executes the workflow AS IT IS NOW), so they are resolved LIVE, once per pass, over the WHOLE
+        // definition — one batch lookup for every step's config, never one per block. Resolving live is the
+        // right answer for SUSPEND/RESUME too: a resumed pass re-enters through here and rebuilds the map
+        // from the database like everything else it rebuilds, so nothing about voices has to be persisted
+        // into the wait record or replayed. This must happen BEFORE the loop, because it is the loop's
+        // config RESOLUTION that executes the ai-text blocks.
+        //
+        // TENANCY: the workspace is pinned EXPLICITLY off the run — a queued run has no active workspace, so
+        // an ambient-only lookup would be unconstrained and could resolve a FOREIGN author's voice (in
+        // own-database mode the run carries no id and the connection is the boundary).
+        //
+        // SAVE/RESTORE, exactly like the run context + the ai-text budget above and for the same reason: a
+        // re-triggered CHILD run executes IN-PROCESS inside a step, and an unconditional clear() in the
+        // finally would strip the PARENT's authors from every step it still has to run.
+        //
+        // Only the SAVE (a pure getter) sits out here — the map is INSTALLED as the first statement inside
+        // the try below, because it is the one line of this prologue that reads the DATABASE. A throwable
+        // escaping it from OUT here would skip the whole `finally` and leave a DEAD run published
+        // PROCESS-WIDE: every later job this worker picks up would stamp its rows with it (ADR-0015) and be
+        // charged for its AI spend, and the failed run's ai-text budget would ride along too.
+        $outerAuthorVoices = $this->voice->authorVoices();
+
         try {
+            // FIRST, and inside the try on purpose (see above). authorVoicesFor() additionally absorbs its
+            // own failures, so the ordinary outcome of a broken lookup is a pass that loses its TONE.
+            $this->voice->setAuthorVoices($this->authorVoicesFor($run, $definition));
+
             foreach ($definition as $position => $step) {
                 if ($position < $startPosition) {
                     continue;
@@ -233,7 +264,80 @@ class WorkflowStepRunner
         } finally {
             $outerRun === null ? $this->runContext->clear() : $this->runContext->set($outerRun);
             $this->aiText->restoreCalls($outerAiTextCalls);
+            $this->voice->setAuthorVoices($outerAuthorVoices);
         }
+    }
+
+    /**
+     * The `{authorId: opaque voice}` map for a run: every `@[ai-text]` author named anywhere in the
+     * definition's step configs, resolved in ONE lookup through the Variables CONTRACT.
+     *
+     * BOUNDARY: Workflows asks the CONTRACT and never learns what an author actually is — the module that
+     * owns authors binds the concrete. Naming it here would couple the engine to a sibling module (pinned
+     * by WorkflowsGeneratorBoundaryTest).
+     *
+     * FAIL-SAFE end to end: the resolver never throws and simply OMITS what it cannot resolve, so a deleted
+     * or foreign author costs a step its authored TONE and never its text.
+     *
+     * That promise is also UPHELD HERE rather than merely trusted. "Never throws" is a contract clause, not
+     * a language guarantee: a severed connection, a deadlock, a tenant database missing the authors' table
+     * would all surface as a throwable from an implementation that reads one. Since the value at stake is a
+     * TONE and the cost of a leak is the whole run (plus, before the install moved inside the run scope, the
+     * process-wide leak described there), a failure degrades to the empty map — exactly the outcome an
+     * unresolvable author already has. It is deliberately NOT reported: a QueryException's message carries
+     * the failed statement AND its bindings, i.e. the author ids, which never go to a log.
+     *
+     * @param  array<int, mixed>  $definition
+     * @return array<string, string>
+     */
+    private function authorVoicesFor(WorkflowRun $run, array $definition): array
+    {
+        $ids = [];
+
+        foreach ($definition as $step) {
+            $config = is_array($step) && is_array($step['config'] ?? null) ? $step['config'] : [];
+
+            foreach ($this->authorIdsIn($config) as $id) {
+                $ids[] = $id;
+            }
+        }
+
+        $ids = array_values(array_unique($ids));
+
+        if ($ids === []) {
+            return [];
+        }
+
+        try {
+            return $this->authorVoices->voicesFor($ids, $run->workspace_id);
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * Every author id named anywhere in a (possibly deeply nested) step config. Each STRING leaf goes
+     * through the SHARED {@see VariableResolver::collectAiTextAuthorIds} — the same scanner the resolver's
+     * own execution walk uses, descending into nested prompts and if-block branches — so a collected author
+     * is exactly one the run could actually generate with.
+     *
+     * @return array<int, string>
+     */
+    private function authorIdsIn(mixed $config): array
+    {
+        if (is_array($config)) {
+            $ids = [];
+
+            foreach ($config as $value) {
+                foreach ($this->authorIdsIn($value) as $id) {
+                    $ids[] = $id;
+                }
+            }
+
+            return $ids;
+        }
+
+        return is_string($config) && $config !== '' ? $this->resolver->collectAiTextAuthorIds($config) : [];
     }
 
     /**

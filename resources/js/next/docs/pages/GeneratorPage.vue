@@ -32,13 +32,21 @@
 // docs/decisions/ADR-0039-workflow-suspend-resume-and-generate-content.md; the step
 // itself, its config/output contract, and the generic suspend/resume engine it runs on
 // are documented in resources/js/next/docs/pages/WorkflowsPage.vue, not here.
+// A `storyboard` part's images now render in ONE QUEUE JOB PER SHOT (§22, ADR-0041) —
+// the platform ceiling (8) plus the character phase's slower reference edits no longer
+// fit inside the session job's fixed 300s window rendered inline. A session delegated
+// to a bot with an approved likeness (§23, ADR-0042) FREEZES that LOOK alongside the
+// voice (§20) and can draw its OWN images from it — a reference edit of the frozen
+// photo, not merely a shared written description.
 // Documents the IMPLEMENTED behavior of app/modules/Generator/ (+ the Bot-module
 // delegation edge); the variable system + AI-cost meter it reuses live in the shared
 // Variables module (one engine — never a fork). Deferred/planned items — bot autonomy
 // beyond slot-fill, file/deep-composite slot bot-fill, a bot delegating a
 // workflow-driven generation, a user-created content type, native structured output for
-// shot_list, image-to-image chaining for exact cross-frame character consistency — are
-// called out explicitly in the "Planned / deferred" section.
+// shot_list, GENERAL image-to-image chaining for a non-character storyboard's exact
+// cross-frame consistency (§23 closes this only for a delegated session with a likeness
+// — a narrower, different mechanism, not the same v2 path) — are called out explicitly
+// in the "Planned / deferred" section.
 //
 // Sections:
 //   1. Module overview & concepts (a template is a RECIPE, not a prompt; one engine; the one-way boundary)
@@ -62,7 +70,9 @@
 //   19. Video script rework — structured shot_list + storyboard (Phase B)
 //   20. Bots in the generator — session delegation (R2 sub-stage 3)
 //   21. Content quality — narrative contract + the creative direction layer
-//   22. Planned / deferred
+//   22. Distributed storyboard frames — one queue job per shot
+//   23. Character visual identity — the bot-look phase
+//   24. Planned / deferred
 import StoryPage from '../StoryPage.vue';
 import StorySection from '../StorySection.vue';
 import ApiTable, { type ApiRow } from '../ApiTable.vue';
@@ -182,6 +192,12 @@ const filterKindRows: ApiRow[] = [
   { name: 'ai_edit', type: "{ kind, prompt: <markdown>, mask? }", description: 'A provider image-edit prompt (directive-validated like a body) + an optional mask reference. Reuses Disk\\Services\\ImageAiService::edit() — called for real by a generation Session (§15), never by the template endpoints on this page.' },
 ];
 
+// ── image_plan.character (the character visual-identity phase, §23) ────────
+const characterModeRows: ApiRow[] = [
+  { name: 'absent, or \'auto\'', type: '(default)', description: 'Draw the session\'s frozen creator when it has one — handing a whole session to a persona implies its face appears, so this needs no opting into.' },
+  { name: "'never'", type: '—', description: 'This image never shows the creator, whoever the session belongs to — the product shot, the logo, the chart.' },
+];
+
 // ── Generation Sessions (R2 sub-stage 2, all of 2a-2d shipped) ─────────────
 
 // ── Status machine ───────────────────────────────────────────────────────────
@@ -271,6 +287,7 @@ const delegationEndpointRows: ApiRow[] = [
 const delegationOverlayRows: ApiRow[] = [
   { name: 'bot_author', type: '{id,name,icon} | null', description: 'The SNAPSHOTTED bot-author {id,name,icon} — read off the overlay, never the live bot. null when undelegated.' },
   { name: 'is_delegated', type: 'boolean', description: 'Whether the delegation overlay is present.' },
+  { name: 'has_character_image', type: 'boolean', description: '(§23) Whether this session froze a CHARACTER LIKENESS with its delegation — i.e. whether its images are drawn from the author\'s approved face rather than a description. A flag only; the identity text is never on the wire.' },
   { name: 'can_delegate', type: 'boolean', description: 'owner AND status.isEditable() (draft/ready) — gates the "Delegate to bot" action.' },
   { name: 'can_undo_delegation', type: 'boolean', description: 'owner AND is_delegated AND status !== generating — gates "Undo delegation". NOT the same gate as can_delegate: a delegated FAILED session stays revertible even though it is not editable.' },
   { name: 'unfilled_required_slots', type: 'string[]', description: 'SOFT signal — required slots still without a usable value (incl. a required FILE slot, which the bot can never fill). NOT a hard generate-gate.' },
@@ -590,7 +607,39 @@ Consumed by the shared Variables engine:
           </p>
         </div>
 
-        <ApiTable title="@[ai-text] personas (closed tone set, label-less on the wire)" :rows="aiPersonaRows" />
+        <ApiTable title="@[ai-text] personas (closed tone set, label-less on the wire) — legacy, read-only in the editor" :rows="aiPersonaRows" />
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">Per-block AUTHOR (R2, ADR-0040) — replaces the persona picker</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            The persona picker no longer appears in the editor. Instead, an
+            <code class="font-next-mono">@[ai-text]</code> block's edit panel opens with an Author
+            <code class="font-next-mono">BotSelect</code> — pick one of the workspace's Bots to write THIS
+            block; the bot contributes its VOICE (persona/style/dictionary/phrases/prohibitions), never its
+            knowledge or its tools. Wire keys: optional <code class="font-next-mono">authorId</code> + a
+            display-only <code class="font-next-mono">authorName</code> snapshot, EMIT-OR-OMIT (an
+            author-less block still serializes byte-identically to before this feature). A block already
+            carrying a legacy <code class="font-next-mono">personaId</code> shows it as a READ-ONLY "legacy
+            tone" bar with a Clear action — precedence has the author win when both are present. This is the
+            SAME picker §12 ("Bots in the generator — session delegation") documents for the session-wide
+            case, generalized to block granularity; see
+            <code class="font-next-mono">docs/decisions/ADR-0040-per-block-ai-text-author.md</code>.
+          </p>
+        </div>
+
+        <Alert variant="info" size="sm">
+          <strong>Frozen at session CREATION, not live.</strong> Every author a recipe's
+          <code class="font-next-mono">@[ai-text]</code> blocks name is resolved ONCE, in a single batch
+          lookup, and written into <code class="font-next-mono">recipe_snapshot.author_voices</code>
+          alongside the rest of the snapshot when a session is created from a template
+          (<code class="font-next-mono">GenerationSessionService::create()</code>) — the SAME
+          snapshot-not-live rule <code class="font-next-mono">recipe_snapshot</code> itself already follows
+          (§11). Editing or deleting a bot afterward can never change what an already-created session
+          renders. <code class="font-next-mono">author_voices</code> is a SERVER-ONLY key — it is never
+          included in <code class="font-next-mono">GenerationSessionResource</code> or any other response; the
+          FE never reads it. See "Generation Sessions" (§11) for the full <code class="font-next-mono">
+          recipe_snapshot</code> shape.
+        </Alert>
       </div>
     </StorySection>
 
@@ -609,6 +658,7 @@ Consumed by the shared Variables engine:
         <ApiTable title="Image base kinds" type-header="Wire" :rows="imageBaseRows" />
         <ApiTable title="Filter chain — one entry, in order" type-header="Wire" :rows="filterKindRows" />
         <ApiTable title="Pixel ops (ImagePlanValidator::PIXEL_OPS)" type-header="Params" :rows="pixelOpRows" />
+        <ApiTable title="character (optional, §23 — the character visual-identity phase)" type-header="Value" :rows="characterModeRows" />
 
         <Alert variant="info" size="sm">
           <strong><code class="font-next-mono">ai_generate</code> is LIVE (R2 sub-stage 6).</strong> The
@@ -618,7 +668,11 @@ Consumed by the shared Variables engine:
           <code class="font-next-mono">ai_image_generate</code> seam (see §15). The video_script rework's
           <code class="font-next-mono">storyboard</code> part (§19) also drives an
           <code class="font-next-mono">ai_generate</code> call per shot, but that one is fully AUTOMATIC —
-          a storyboard has no authored <code class="font-next-mono">base</code> field at all.
+          a storyboard has no authored <code class="font-next-mono">base</code> field at all. Whether a
+          storyboard SHOT draws the session's character is likewise never authored — the model decides per
+          shot (§23's <code class="font-next-mono">features_character</code>); the <code class="font-next-mono">
+          character</code> field above only exists on a plain <code class="font-next-mono">image_plan</code>,
+          which has no shot list to ask.
         </Alert>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
@@ -786,7 +840,8 @@ Consumed by the shared Variables engine:
           <p class="mb-next-2 font-next-semibold text-next-fg">Shape</p>
           <pre class="overflow-x-auto rounded-next-md bg-next-muted p-next-3 font-next-mono text-next-xs text-next-fg">GenerationSession
   template_id       (provenance only — nullable, no FK; the session outlives an edited/deleted template)
-  recipe_snapshot     (&#123;content_type, slots, content&#125; captured at creation — never re-read)
+  recipe_snapshot     (&#123;content_type, slots, content, author_voices&#125; captured at creation — never re-read;
+                      author_voices is SERVER-ONLY — never emitted on the wire, see §6)
   slot_values             (the user's filled inputs)
   results                    (per-part outcome map — see §12 "The results map")
   status                        (draft → generating → ready | failed)
@@ -861,13 +916,20 @@ Consumed by the shared Variables engine:
           <p class="mt-next-2 text-next-xs text-next-muted-foreground">
             An <code class="font-next-mono">image_plan</code> result never carries bytes — the chat fetches
             them from the serve endpoint. Every <code class="font-next-mono">error</code> is a LOCALIZED,
-            NON-SECRET string — never the resolved prompt, the refine instruction, or a provider response. A
-            <code class="font-next-mono">shot_list</code> result additionally carries
-            <code class="font-next-mono">&#123;hook, shots, cta, text, parse_ok&#125;</code>; a
+            NON-SECRET string — never the resolved prompt, the refine instruction, or a provider response
+            — with an ADDITIVE machine-readable <code class="font-next-mono">error_code</code> for the one
+            failure worth its own fix (a moderation refusal, <code class="font-next-mono">image_safety</code>
+            — see §23). A <code class="font-next-mono">shot_list</code> result additionally carries
+            <code class="font-next-mono">&#123;hook, shots, cta, text, parse_ok&#125;</code>, each shot
+            additive with <code class="font-next-mono">features_character</code>; a
             <code class="font-next-mono">storyboard</code> result carries per-shot
-            <code class="font-next-mono">shots</code> (nested images, no top-level <code class="font-next-mono">version</code>);
-            any result may carry <code class="font-next-mono">stale: true</code> — see §18/§19 below for the
-            video_script rework's shapes.
+            <code class="font-next-mono">shots</code> (nested images, no top-level
+            <code class="font-next-mono">version</code>) whose
+            <code class="font-next-mono">image_status</code> is <code class="font-next-mono">pending
+            | rendering | ok | failed</code> — since §22, a shot's image renders in its OWN queue job, so a
+            session fetched mid-run legitimately shows beats still "in flight"; any result may carry
+            <code class="font-next-mono">stale: true</code> — see §18/§19 below for the video_script
+            rework's shapes, §22/§23 for the distributed-frame + character additions.
           </p>
         </div>
       </div>
@@ -879,9 +941,15 @@ Consumed by the shared Variables engine:
         <p class="text-next-muted-foreground">
           <code class="font-next-mono">SessionChatView.vue</code> reads a session as a CONVERSATION: a
           collapsible <strong>Setup</strong> turn (the typed slot form, expanded while
-          <code class="font-next-mono">draft</code>, collapsed to a one-line input-chip summary once the
-          session has generated at least once — still editable), then one turn per DECLARED part, in the
-          content type's order, once results exist. While
+          <code class="font-next-mono">draft</code>, collapsed to a label/value summary once the session has
+          generated at least once — still editable), then one turn per DECLARED part, in the
+          content type's order, once results exist. <strong>Every turn card collapses</strong> through the
+          same header affordance (chevron + Show/Hide, <code class="font-next-mono">aria-expanded</code> +
+          <code class="font-next-mono">aria-controls</code>); result cards start EXPANDED, the creative
+          direction starts collapsed. Bodies are hidden with <code class="font-next-mono">v-show</code>, never
+          <code class="font-next-mono">v-if</code> — a result card owns image watchers and blob URLs that an
+          unmount would tear down and re-fetch on every toggle. The result card's actions live in the Card
+          FOOTER, so collapsing never hides refine/regenerate/undo/save. While
           <code class="font-next-mono">generating</code>, per-part skeleton turns show the run is in flight.
           At ≥ <code class="font-next-mono">next-xl</code> a docked <strong>"Gotowy post"</strong> rail
           (<code class="font-next-mono">FinalPostPane.vue</code>) pins the assembled result + its Save
@@ -896,7 +964,7 @@ Consumed by the shared Variables engine:
             <li><strong>image_plan</strong> — the produced image (<code class="font-next-mono">SessionPartImage.vue</code>, bytes fetched from the authorized serve endpoint) or a failed danger Alert.</li>
             <li><strong>scene_plan</strong> <em>(legacy)</em> — each scene's narration + its optional produced image / per-scene error, each scene image individually savable.</li>
             <li><strong>shot_list</strong> — the hook / timed shots / cta (video_script rework, §19); a non-JSON reply renders its raw text with a "couldn't structure" note (<code class="font-next-mono">parse_ok:false</code>).</li>
-            <li><strong>storyboard</strong> — each shot's beat + its produced image / per-shot error, each shot image individually regeneratable/refinable/savable via <code class="font-next-mono">storyboard.&lt;i&gt;</code> (§19); a "may be out of date" badge when <code class="font-next-mono">stale</code>.</li>
+            <li><strong>storyboard</strong> — each shot's beat + its produced image / per-shot error, each shot image individually regeneratable/refinable/savable via <code class="font-next-mono">storyboard.&lt;i&gt;</code> (§19); a "may be out of date" badge when <code class="font-next-mono">stale</code>; a skeleton placeholder while a shot's frame is still <code class="font-next-mono">pending</code>/<code class="font-next-mono">rendering</code> in its own queue job (§22); a "Z postacią" badge on a shot drawn from the session's frozen likeness, and — on a character shot's moderation failure — a "Wygląd bota" repair action that deep-links into the bot's visual module (§23).</li>
           </ul>
         </div>
         <p class="text-next-muted-foreground">
@@ -1328,6 +1396,16 @@ Consumed by the shared Variables engine:
           for the full design record.
         </p>
 
+        <Alert variant="info" size="sm">
+          <strong>Generalized to block granularity by ADR-0040 (R2, "Per-block AUTHOR", §6).</strong> This
+          section's session-wide delegated voice is now the FALLBACK a block can locally override: an
+          individual <code class="font-next-mono">@[ai-text]</code> block may name its OWN bot author, which
+          wins over the session's delegated voice for that one block. "A delegated bot writes everything that
+          has no author of its own" — delegation is not a stronger claim a block's own choice could ever lose
+          to. The same opaque-voice mechanism, composer, and `AiVoiceContext` seam described below now serve
+          both cases.
+        </Alert>
+
         <ApiTable title="Delegate / undo endpoints (Bot module — the ONE new Bot → Generator edge)" type-header="Body" :rows="delegationEndpointRows" />
 
         <Alert variant="warning" size="sm">
@@ -1352,9 +1430,13 @@ Consumed by the shared Variables engine:
             non-delegated run never sets it, so behavior is byte-identical to before this feature. The SAME
             directive reaches <code class="font-next-mono">ShotListAgent</code> (§19) as an ADDITIVE tone
             clause — the strict <code class="font-next-mono">&#123;hook, shots, cta&#125;</code> JSON contract
-            is unchanged. The <code class="font-next-mono">storyboard</code> IMAGE prompt is untouched — it
-            stays the authored <code class="font-next-mono">style</code> only; the voice colors TEXT output,
-            not image-generation prompts.
+            is unchanged. The VOICE never touches an image prompt — it colors TEXT output only. A
+            <code class="font-next-mono">storyboard</code> shot's IMAGE prompt is a SEPARATE mechanism: it
+            stayed untouched by delegation until the character visual-identity phase (§23), which — only
+            when the shot is flagged as showing the creator — composes the character's own description +
+            guardrails into it and draws the base from the frozen likeness instead of text alone. A
+            delegation with no approved likeness (or the character kill switch off) still leaves every image
+            prompt exactly as authored.
           </p>
         </div>
 
@@ -1428,7 +1510,7 @@ Consumed by the shared Variables engine:
           slots.
         </Alert>
 
-        <ApiTable title="GenerationSessionResource — the 5 new delegation fields" type-header="Field" :rows="delegationOverlayRows" />
+        <ApiTable title="GenerationSessionResource — the delegation + character fields" type-header="Field" :rows="delegationOverlayRows" />
 
         <Alert variant="warning" size="sm">
           <strong>Undo is a FULL, reversible restore, not merely an overlay-clear.</strong> Delegation
@@ -1472,6 +1554,18 @@ Consumed by the shared Variables engine:
             <code class="font-next-mono">can_undo_delegation</code>, confirmed).
           </p>
         </div>
+
+        <p class="text-next-xs text-next-muted-foreground">
+          <strong>What a bot BRINGS (§23).</strong> The picker states it per row: the VOICE always, the
+          LIKENESS only when the picked bot's Visual module is on AND it has an approved image
+          (<code class="font-next-mono">visual_enabled &amp;&amp; visual_has_image</code> — the same two
+          flags <code class="font-next-mono">BotsPage.vue</code>'s card readiness chip reads, §12). The two
+          HALF states (module on with no image; an image with the module off) are surfaced as a caveat line
+          under the SELECTED bot only — six bots × a caveat each would be noise. Once delegated, a session
+          with a frozen likeness shows a "Wizerunek postaci" chip in the chat header
+          (<code class="font-next-mono">has_character_image</code>) and each character-drawn shot carries
+          the "Z postacią" badge documented in §13.
+        </p>
       </div>
     </StorySection>
 
@@ -1545,9 +1639,14 @@ Consumed by the shared Variables engine:
           resolved prompt value, never the elevated trust of an agent's own system instruction. Every
           injection point above rides the USER message as DATA; the one thing that ever reaches a SYSTEM
           instruction is a trusted, content-free FLAG ("a direction block is present"), never the block's own
-          text. <strong>Voice wins on tone</strong> (§20): a delegated session already carries the bot's voice
-          in the system instruction, so the direction's <code class="font-next-mono">tone</code> field is
-          dropped from the text/shot-list projections rather than competing with it.
+          text. <strong>Voice wins on tone</strong> (§20, widened by ADR-0040): whichever voice actually
+          applies to THIS block — its own per-block author, or failing that the session's delegated voice —
+          already carries the tone in the system instruction, so the direction's
+          <code class="font-next-mono">tone</code> field is dropped from the text/shot-list projections for
+          that block rather than competing with it. This now suppresses the derived tone for an
+          author-written block even inside an otherwise UNdelegated session — previously only a
+          whole-session delegation triggered the suppression. A block with no effective voice at all keeps
+          the full, unchanged projection.
         </Alert>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
@@ -1624,31 +1723,229 @@ Consumed by the shared Variables engine:
           </p>
         </div>
 
-        <Alert variant="danger" size="sm">
-          <strong>Honest limitation.</strong> Prompt anchoring (the <code class="font-next-mono">forImage()</code>
-          projection above) gives consistent world/style/palette/camera across independently generated
-          frames, but it does <strong>NOT</strong> give the same character FACE (or exact garment/object
-          identity) across frames — each <code class="font-next-mono">ai_generate</code> call is still an
-          independent text→image generation that merely STARTS from a shared written description, not from
-          shared pixels. The named v2 path for closing that gap is IMAGE-TO-IMAGE CHAINING (feed frame N's
-          produced bytes as frame N+1's edit base) — cheaper per call, but fundamentally SERIAL (no per-shot
-          fail-soft parallelism), tends to over-preserve composition, and would need
-          <code class="font-next-mono">image_edit_max_calls_per_session</code> raised FURTHER (its 8 is
-          sized for ONE authored filter per shot, not for a per-frame chain on top of it). Not built now — see
-          <code class="font-next-mono">docs/decisions/ADR-0038-creative-direction-layer.md</code>
-          ("Alternatives considered" / "Consequences") for the full trade-off.
+        <Alert variant="warning" size="sm">
+          <strong>Honest limitation — closed for a DELEGATED session with a likeness (§23); still open in
+          general.</strong> Prompt anchoring (the <code class="font-next-mono">forImage()</code> projection
+          above) gives consistent world/style/palette/camera across independently generated frames, but on
+          its own does <strong>NOT</strong> give the same character FACE across frames — each
+          <code class="font-next-mono">ai_generate</code> call is still an independent text→image
+          generation that merely STARTS from a shared written description, not from shared pixels. The
+          character visual-identity phase (§23, <code class="font-next-mono">
+          docs/decisions/ADR-0042-character-visual-identity.md</code>) closes this SPECIFICALLY for a
+          session delegated to a bot with an approved likeness: a flagged shot's base is produced by
+          EDITING that FROZEN reference photo rather than generating fresh from text. This is a NARROWER,
+          DIFFERENT mechanism from the general "any storyboard" gap this section otherwise still describes —
+          it does not chain frame N's bytes into frame N+1 (the still-unbuilt IMAGE-TO-IMAGE CHAINING v2
+          path named in <code class="font-next-mono">docs/decisions/ADR-0038-creative-direction-layer.md</code>
+          "Alternatives considered"), so a non-delegated run, or a delegated one whose bot has no approved
+          likeness, still gets only the world/style consistency described above, with no guaranteed same
+          face twice.
         </Alert>
       </div>
     </StorySection>
 
-    <!-- 22. Planned / deferred -->
+    <!-- 22. Distributed storyboard frames — one queue job per shot -->
+    <StorySection title="Distributed storyboard frames — one queue job per shot">
+      <div class="flex flex-col gap-next-4 text-next-sm">
+        <p class="text-next-muted-foreground">
+          A storyboard's per-shot provider calls are slow — measured at ~33s for a plain
+          <code class="font-next-mono">ai_generate</code>, a median <strong>57.8s</strong> for an
+          <code class="font-next-mono">ai_edit</code> (§23's reference-anchored character edit) — and
+          <code class="font-next-mono">RunGenerationSessionJob</code>'s 300s timeout is INVIOLATE: the
+          queue's <code class="font-next-mono">WithoutOverlapping</code> lock, the whole-session
+          stale-recovery reaper, and the §15 budget timeout-invariant math are all ordered strictly on top
+          of that one number. A full 8-shot storyboard could never render inline inside it — even the
+          plain-generate case was already at the edge before the run's text parts and its one creative-
+          direction derivation (§21) were paid for. So a <code class="font-next-mono">storyboard</code>
+          part no longer renders its shots to completion itself — it ANNOUNCES each one as a
+          <code class="font-next-mono">pending</code> FRAME, and each frame is rendered by its OWN queue job,
+          potentially in PARALLEL with every other frame of the same run. Design record:
+          <code class="font-next-mono">docs/decisions/ADR-0041-storyboard-frame-engine.md</code>.
+        </p>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">Per-frame lifecycle (stored on the shot entry itself)</p>
+          <pre class="overflow-x-auto rounded-next-md bg-next-bg p-next-3 text-next-2xs leading-relaxed text-next-fg">pending    announced, queued, unspent.
+rendering  a frame job WON the claim and is talking to the provider.
+ok         terminal — byte-identical to a shot rendered inline; claim bookkeeping stripped on settle.
+failed     terminal — &#123;image_error, image_error_code?&#125;, same shape a per-shot refine failure uses.</pre>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            No side table — the state machine lives directly on the shot in <code class="font-next-mono">results</code>,
+            the row that is already every other layer's state of record. A session fetched mid-run
+            legitimately carries shots in either transient state; the FE renders both as a skeleton
+            placeholder, never as an error (see §13).
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 gap-next-3 next-sm:grid-cols-2">
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">Correlated claim, not shot index alone</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              Every announced frame carries a one-off <code class="font-next-mono">frame_token</code> a
+              frame job must match EXACTLY to act on that shot. A redelivered duplicate finds the shot
+              already <code class="font-next-mono">rendering</code> (or terminal) and stops; a straggler
+              from a reaped/re-claimed run finds a DIFFERENT token and stops. Neither ever bills a second
+              image — the same discipline the workflow suspend/resume engine's
+              <code class="font-next-mono">waiting_key</code> claim already uses.
+            </p>
+          </div>
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">One job per frame, 240s, one shared render path</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              Every frame gets a WHOLE job's own budget (one <code class="font-next-mono">ai_generate</code>
+              plus one <code class="font-next-mono">ai_edit</code> at their full 120s ceilings) — a slow or
+              failing shot burns only its own job. The render REUSES the exact per-shot path a
+              <code class="font-next-mono">storyboard.&lt;i&gt;</code> regenerate already used — ONE
+              implementation of "render shot i," shared by the announcement path, the frame job, and the
+              manual per-shot regenerate endpoint.
+            </p>
+          </div>
+        </div>
+
+        <p class="text-next-muted-foreground">
+          <strong>Exactly one terminal broadcast, still.</strong> The session stays
+          <code class="font-next-mono">generating</code> while its frames render; the LAST frame to
+          settle — the one that, under the session row's lock, finds no frame left
+          <code class="font-next-mono">pending</code>/<code class="font-next-mono">rendering</code> — is the
+          one that flips the status and pushes the SAME single <code class="font-next-mono">
+          GenerationSessionUpdated</code> broadcast §12 already documents. A run with no storyboard is
+          unaffected — it still settles inside the session job, exactly as before this stage existed.
+        </p>
+
+        <Alert variant="warning" size="sm">
+          <strong>The redelivery finding — the actual blocking issue from the pre-ship review.</strong> A
+          frame's token identifies the FRAME, not the DELIVERY: under the queue's own retry-exhaustion
+          rules, a redelivered duplicate of a still-rendering frame's job can trigger its
+          <code class="font-next-mono">failed()</code> hook WITHOUT ever having entered the render — and,
+          left unguarded, that hook could settle (and orphan the paid image of) a frame its rightful owner
+          is still actively rendering, prematurely flip the run terminal, and strand every other outstanding
+          frame. Both the frame job's <code class="font-next-mono">failed()</code> hook and — retrofitted,
+          because the identical gap already existed there — the pre-existing SESSION job's own
+          <code class="font-next-mono">failed()</code> hook now act only for the delivery that actually ran.
+          See D6 in <code class="font-next-mono">docs/decisions/ADR-0041-storyboard-frame-engine.md</code>.
+        </Alert>
+
+        <p class="text-next-muted-foreground">
+          A stale-FRAME reaper (<code class="font-next-mono">generator.frame_stale_after</code>, default
+          900s) recovers a frame worker killed between its claim and its write-back, and runs BEFORE the
+          whole-session stale-recovery window (§16) in every sweep pass — without it, a run 7/8 complete
+          would otherwise wait for the coarser 30-minute window to discard the whole thing. A rejected
+          write-back deletes its own now-orphaned image rather than leaving it for a general blob sweep.
+          <strong>Single-worker consequence, stated plainly:</strong> frames of ONE run render in parallel
+          only ACROSS workers — a single worker still dequeues them one at a time, so a full character-heavy
+          storyboard is several minutes end-to-end on one worker; the architecture's payoff is horizontal
+          (more workers), not a faster single-worker path.
+        </p>
+      </div>
+    </StorySection>
+
+    <!-- 23. Character visual identity — the bot-look phase -->
+    <StorySection title="Character visual identity — the bot-look phase">
+      <div class="flex flex-col gap-next-4 text-next-sm">
+        <p class="text-next-muted-foreground">
+          A session delegated to a bot with its Visual module ("Wygląd," see
+          <code class="font-next-mono">BotsPage.vue</code> §12) on AND an approved likeness ALSO freezes
+          the bot's LOOK onto the session (§20), exactly as it already freezes the VOICE — the image-side
+          twin of the same snapshot contract. Design record:
+          <code class="font-next-mono">docs/decisions/ADR-0042-character-visual-identity.md</code>.
+        </p>
+
+        <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">The bytes are a COPY, in a store of their own</p>
+          <p class="text-next-xs text-next-muted-foreground">
+            The delegation controller resolves the bot's CURRENT approved likeness once, at delegation
+            time, and writes the raw bytes into a session-scoped store
+            (<code class="font-next-mono">generation-identity/&lt;workspace&gt;/&lt;session&gt;/
+            &lt;characterId&gt;.png</code>) — never a live reference. Mirrors the voice's snapshot contract
+            for the identical reason: the human may re-approve a different likeness, or delete the file,
+            between delegating and generating, and a run that silently starts drawing someone else is worse
+            than one that keeps drawing exactly who it was told to. Keyed PER CHARACTER (not per session) —
+            v1 freezes exactly one, but the keying needs no reshape for a future second. Deliberately a
+            SEPARATE root from the produced-image prefix a full re-run wipes wholesale, so a re-run can
+            never destroy its own character reference.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 gap-next-3 next-sm:grid-cols-2">
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">Who decides a frame draws the character</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              A <code class="font-next-mono">storyboard</code>'s shot list already decides who is on screen
+              — the model returns a per-shot <code class="font-next-mono">features_character</code> boolean,
+              defaulting FALSE on any absent/ambiguous value. A single authored
+              <code class="font-next-mono">image_plan</code> has no shot list to ask, so its author gets an
+              explicit <code class="font-next-mono">character: 'auto' | 'never'</code> switch instead
+              (§7) — default (and what an ABSENT key means) <code class="font-next-mono">auto</code>: a
+              delegated session's image shows its creator by default. No <code class="font-next-mono">
+              'always'</code> — <code class="font-next-mono">auto</code> already means yes, when there is
+              one.
+            </p>
+          </div>
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">Reserve GENERATE, bill EDIT</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              A flagged frame's base is produced by EDITING the frozen likeness instead of generating from
+              text — but it still RESERVES against the per-run <code class="font-next-mono">ai_generate</code>
+              ledger (it is still, conceptually, the shot's base) while it METERS an
+              <code class="font-next-mono">ai_image_edit</code> call (the real cost). Charging the edit
+              ledger instead would let a storyboard's per-shot bases compete with the SAME budget an
+              authored <code class="font-next-mono">ai_edit</code> filter needs on every shot (§21's 8/8/8
+              lock-step) — silently losing the author's look on the tail of a long storyboard.
+            </p>
+          </div>
+        </div>
+
+        <p class="text-next-muted-foreground">
+          The character's SUBJECT REPLACES the creative direction's own derived one (§21) when a frame
+          draws it — a picture has exactly one recurring subject, and the human-approved character
+          outranks a model's inferred guess; the substitution states its own precedence explicitly in the
+          composed prompt text. The character's aesthetic + prohibitions ride EVERY image of the session,
+          flagged or not. Prompts stay UNFENCED prose (an image call has no system channel to respect a
+          fence label), scrubbed with the SAME fence-marker authority §21's creative direction uses.
+        </p>
+
+        <Alert variant="warning" size="sm">
+          <strong>Wardrobe matters more than it looks like it should.</strong> The provider's OUTPUT-side
+          moderation is wardrobe-sensitive for an otherwise-identical character — a swimsuit refused, a
+          dress accepted. This is why <code class="font-next-mono">wardrobe</code> is its own guardrail line
+          rather than folded into <code class="font-next-mono">aesthetic</code>, and why a moderation
+          refusal (<code class="font-next-mono">error_code: 'image_safety'</code>, mirrored on the wire as
+          the ordinary <code class="font-next-mono">failed</code> status) is worth its own action in the
+          UI — "check the wardrobe/description" — rather than a generic retry.
+        </Alert>
+
+        <p class="text-next-xs text-next-muted-foreground">
+          <strong>Kill switch, consumption-only.</strong> <code class="font-next-mono">
+          generator.visual_identity.enabled</code> (default true) gates whether the render layer reads
+          anything from the overlay — it does NOT gate the freeze at delegation time, so switching it back
+          on never leaves an already-delegated session permanently character-less. Everything defaults
+          FALSE/off, so a run without this feature composes byte-identical prompts to one from before it
+          existed (pinned by tests). <strong>Cost:</strong> no extra calls of its own — a character frame is
+          one provider call either way, just a slower, edit-channel one instead of a plain generate.
+        </p>
+
+        <Alert variant="info" size="sm">
+          Full wire/config contract lives in <code class="font-next-mono">docs/backend/
+          generator-sessions-api.md</code> ("Frozen character visual identity"); the Bot-module side (the
+          "Wygląd" editor panel, the candidate strip, the generate/approve/delete endpoints) lives in
+          <code class="font-next-mono">docs/backend/bots-api.md</code> and
+          <code class="font-next-mono">BotsPage.vue</code> §12. The deep-link
+          <code class="font-next-mono">?bot=&lt;id&gt;&amp;botModule=visual</code> a failed character shot's
+          "Wygląd bota" action follows is the SAME query contract the editor drawer already reads for any
+          other module deep link.
+        </Alert>
+      </div>
+    </StorySection>
+
+    <!-- 24. Planned / deferred -->
     <StorySection title="Planned / deferred (not implemented)">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <ul class="flex list-disc flex-col gap-next-2 pl-next-5 text-next-xs text-next-muted-foreground">
-          <li><strong>Image-to-image chaining for exact cross-frame character consistency</strong> (§21) — prompt anchoring keeps a storyboard's world/style/palette consistent but not the SAME character face across frames; the named v2 path (feed frame N's bytes as frame N+1's edit base) is cheaper per call but serial and composition-preserving, and needs image_edit_max_calls_per_session raised. See ADR-0038 "Alternatives considered".</li>
-          <li><strong>Bot autonomy beyond slot-fill</strong> (R2 sub-stage 3 follow-up, §20) — a delegated bot fills in-scope slots ONCE, at delegation time; it does not initiate its own regenerate/refine or otherwise act on the session afterward.</li>
+          <li><strong>GENERAL image-to-image chaining for a non-character storyboard's exact cross-frame consistency</strong> (§21) — prompt anchoring keeps a storyboard's world/style/palette consistent but not the SAME character face across frames for a run with NO delegated likeness; the named v2 path (feed frame N's bytes as frame N+1's edit base) is cheaper per call but serial and composition-preserving, and needs image_edit_max_calls_per_session raised. See ADR-0038 "Alternatives considered". **Partially superseded** for a session delegated to a bot with an approved likeness — §23 (ADR-0042) closes that NARROWER case with a mechanically different approach (one frozen reference, independently edited per flagged frame, not chained frame-to-frame) that keeps per-shot parallelism.</li>
+          <li><strong>Bot autonomy beyond slot-fill</strong> (R2 sub-stage 3 follow-up, §20) — a delegated bot fills in-scope slots ONCE, at delegation time; it does not initiate its own regenerate/refine or otherwise act on the session afterward. Freezing the LOOK alongside the voice (§23) does not change this — the bot still does not act on its own after delegation.</li>
           <li><strong>File / deep-composite slot bot-fill</strong> (§20) — a FILE-based slot or a deep composite is deliberately NEVER offered to the autonomous slot-fill (a bot must never forge a Disk reference); a required one always surfaces in <code class="font-next-mono">unfilled_required_slots</code> for the human to complete.</li>
           <li><strong>Delegation feeding Approvals or Publishing</strong> — a delegated session's content is not yet wired into the approvals pipeline or a future publish step.</li>
+          <li><strong>Multi-character frames</strong> (§23 follow-up) — the character visual-identity phase freezes exactly ONE likeness per session (the delegated author); a frame naming two on-screen characters is not supported. The identity store is already keyed per-character rather than per-session so this does not need a reshape later, and the provider's edit endpoint is confirmed to accept multiple reference images — nothing composes two references into one call yet.</li>
           <li><strong>~~The <code class="font-next-mono">generate_content</code> workflow step~~ — consuming a template/session from a workflow is not modeled.</strong> DONE (R2 sub-stage 5), no longer deferred — see the automation note in §11 above, <code class="font-next-mono">docs/backend/generator-sessions-api.md</code> → "Automation seam (R2 sub-stage 5)", and ADR-0039. Kept struck through so a reader of an older snapshot understands the change.</li>
           <li><strong>A bot delegating a workflow-driven generation</strong> (§20 follow-up) — the bot-delegation overlay (<code class="font-next-mono">SlotScopePolicy::Bot</code>) and the workflow automation seam (<code class="font-next-mono">SlotScopePolicy::Automation</code>) are sibling trust boundaries today, not composed — a <code class="font-next-mono">generate_content</code> step's session cannot be handed to a bot mid-run.</li>
           <li><strong>Redo</strong> — undo (§14) is one-directional; the just-undone version's blob is deleted, not merely hidden. No "redo the undo" in v1.</li>

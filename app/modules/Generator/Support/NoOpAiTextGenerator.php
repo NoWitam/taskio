@@ -20,7 +20,8 @@ use App\Modules\Variables\Contracts\AiTextGenerator;
  */
 class NoOpAiTextGenerator implements AiTextGenerator
 {
-    public function generate(string $prompt, ?string $personaId): string
+    /** $authorId is accepted for the contract and ignored: a preview names no author and calls no model. */
+    public function generate(string $prompt, ?string $personaId, ?string $authorId = null): string
     {
         return $prompt === '' ? '' : '[AI: ' . $prompt . ']';
     }

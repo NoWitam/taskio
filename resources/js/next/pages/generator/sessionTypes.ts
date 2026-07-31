@@ -59,7 +59,29 @@ export interface SessionScene {
   part_key?: string;
   /** A localized, non-secret failure message when `image_status === 'failed'`. */
   image_error?: string;
+  /** The machine-readable reason for a failed scene image, when the server has one (additive). */
+  image_error_code?: SessionImageErrorCode;
 }
+
+/**
+ * The per-shot image lifecycle of a produced `storyboard` (the distributed-frames stage). A storyboard part
+ * ANNOUNCES its beats and renders each image in its OWN queue job, so a shot lives through a lifetime the FE
+ * can observe on a page reload mid-run:
+ *   pending    announced + queued, nothing spent,
+ *   rendering  a frame job claimed it and is talking to the provider,
+ *   ok/failed  terminal (byte-identical to the pre-distribution shape — the transient keys are dropped).
+ * Mirrors {@see \App\Modules\Generator\Support\StoryboardFrame} 1:1.
+ */
+export type StoryboardImageStatus = 'pending' | 'rendering' | 'ok' | 'failed';
+
+/**
+ * A MACHINE-READABLE reason a produced image failed, additive to the human `error` / `image_error`.
+ * `image_safety` = the provider RENDERED the picture and then refused to hand it over (its own moderation).
+ * It is the one image failure a user can actually fix, and the fix is the CHARACTER's description or
+ * wardrobe — not the plan — so the UI promotes it over the generic prose. Kept open (`string`) so an
+ * unforeseen code still falls back to the server's message instead of breaking the wire.
+ */
+export type SessionImageErrorCode = 'image_safety' | (string & {});
 
 /**
  * One SHOT of a produced `shot_list` result (video_script Phase B): the on-screen `visual`, the spoken
@@ -69,26 +91,39 @@ export interface ShotListShot {
   visual: string;
   voiceover: string;
   seconds: number;
+  /**
+   * Whether the session's frozen CREATOR is VISIBLE in this beat (R2 sub-stage 3). Emitted only for a run
+   * that HAS a character; absent means false. It is what makes the storyboard draw that beat FROM the
+   * character's reference image rather than from a description.
+   */
+  features_character?: boolean;
 }
 
 /**
  * One SHOT of a produced `storyboard` result (video_script Phase B) — mirrors {@see SessionScene} but
  * richer: the descriptive beat (`index`, `visual`, `voiceover`, `seconds`) rides the entry even on image
- * failure, and its produced image is served + saved via `part_key` (`storyboard.<i>`). `image_status` is
- * only `'ok'`/`'failed'` (every shot attempts an image; there is no `'none'` arm). A failed shot carries a
- * localized `image_error`.
+ * failure, and its produced image is served + saved via `part_key` (`storyboard.<i>`). `image_status` walks
+ * the {@link StoryboardImageStatus} lifetime — a session that is `generating` with partial results is
+ * FETCHABLE, so a page reload mid-run legitimately reads `pending` / `rendering` and must render a loading
+ * arm, not an empty hole. A failed shot carries a localized `image_error` (+ an optional machine-readable
+ * `image_error_code` — the SHOT key differs from a part result's `error_code` on purpose: it mirrors the
+ * wire, where per-item image failures are namespaced `image_*` exactly like `image_error`).
  */
 export interface StoryboardShot {
   index: number;
   visual: string;
   voiceover: string;
   seconds: number;
-  image_status: 'ok' | 'failed';
+  image_status: StoryboardImageStatus;
   image?: ProducedImage | null;
   /** The storage key to fetch/save this shot's produced image (`image_status === 'ok'`) — `storyboard.<i>`. */
   part_key?: string;
   /** A localized, non-secret failure message when `image_status === 'failed'`. */
   image_error?: string;
+  /** The machine-readable reason for a failed frame, when the server has one (additive). */
+  image_error_code?: SessionImageErrorCode;
+  /** Whether the session's frozen creator is VISIBLE in this beat (absent = false) — see {@link ShotListShot}. */
+  features_character?: boolean;
 }
 
 /**
@@ -107,6 +142,12 @@ export interface SessionPartResult {
   text?: string;
   /** A localized, non-secret failure message for a `failed` part. */
   error?: string;
+  /**
+   * The machine-readable reason for a `failed` part, when the server has one (ADDITIVE — absent on older
+   * results and on failures with no classified cause). Today: `image_safety`. See
+   * {@link SessionImageErrorCode}.
+   */
+  error_code?: SessionImageErrorCode;
   /** A produced image for an `image_plan` part (`status === 'ok'`); bytes are served separately. */
   image?: ProducedImage | null;
   /** The produced scenes for a `scene_plan` part (`status === 'ok'`). */
@@ -307,6 +348,13 @@ export interface Session {
   bot_author: BotAuthor | null;
   /** Whether a bot currently authors this session (the delegation overlay is present) (R2 sub-stage 3). */
   is_delegated: boolean;
+  /**
+   * Whether this session FROZE a character LIKENESS with its delegation — i.e. whether its images are drawn
+   * from the author's approved likeness rather than from a description alone (R2 sub-stage 3). A FLAG, never
+   * the identity itself (the descriptor / wardrobe / aesthetic are prompt material and stay off the wire).
+   * Emitted by BOTH the list and the detail projection.
+   */
+  has_character_image: boolean;
   /** May delegate to a bot (creator AND editable — the same rights delegate needs) (R2 sub-stage 3). */
   can_delegate: boolean;
   /**

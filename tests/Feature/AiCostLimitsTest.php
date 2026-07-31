@@ -387,7 +387,7 @@ class AiCostLimitsTest extends TestCase
         // Scripted client — no real provider.
         $spy = new class extends \App\Modules\Disk\Services\OpenAiImageEditClient
         {
-            public function edit(string $image, string $prompt, ?string $mask = null): array
+            public function edit(string $image, string $prompt, ?string $mask = null, string $size = 'auto'): array
             {
                 return ['image' => 'RESULT', 'mime' => 'image/png'];
             }

@@ -15,6 +15,17 @@ class BotService
     {
         return Bot::query()
             ->search(['name', 'description'], $request->get('search'))
+            // Opt-in `can_execute_tasks=1`: only bots that can actually RUN a task —
+            // the SQL mirror of Bot::canExecuteTasks() (active + the task-execution
+            // module enabled). The task-assignee pickers pass it so a bot that could
+            // never start is not offerable in the first place; every other consumer
+            // (filters, approver picker, ai-text author) is untouched by default.
+            ->when(
+                $request->boolean('can_execute_tasks'),
+                fn ($query) => $query
+                    ->where('status', BotStatus::ACTIVE)
+                    ->where('task_execution->enabled', true)
+            )
             ->orderBy('created_at', 'desc')
             ->cursorPaginate(8);
     }
@@ -60,8 +71,10 @@ class BotService
     }
 
     /**
-     * Map the DTO onto persisted columns. task_execution is only written when
-     * supplied (null leaves the stored config untouched on update).
+     * Map the DTO onto persisted columns. task_execution and visual are only written when
+     * supplied (null leaves the stored config untouched on update) — for `visual` that is a
+     * data-safety property, not a convenience: its candidates/canonical are filled in by the
+     * async identity generator, so an ordinary save that omits the module must not blank them.
      */
     private function attributes(BotDTO $dto): array
     {
@@ -79,6 +92,10 @@ class BotService
 
         if ($dto->taskExecution !== null) {
             $attributes['task_execution'] = $dto->taskExecution;
+        }
+
+        if ($dto->visual !== null) {
+            $attributes['visual'] = $dto->visual;
         }
 
         return $attributes;

@@ -1358,6 +1358,8 @@ export const en = {
     placeholderMultiple: 'Select bots',
     search: 'Search bots…',
     ariaLabel: 'Select bots',
+    // Shown when the picker only offers task-EXECUTING bots and none qualifies.
+    emptyExecutable: 'No bot can execute tasks yet — enable the task-execution module on a bot.',
   },
 
   // PipelineSelect (global approval-pipeline picker).
@@ -2024,14 +2026,51 @@ export const en = {
     aiText: {
       chipFallback: 'AI text',
       editTitle: 'Edit AI text',
-      persona: 'Persona',
-      selectPersona: 'Select a persona',
-      personaHint: 'Personas help shape the AI’s tone of voice.',
+      // The per-block AUTHOR (a bot). It contributes a VOICE, not knowledge or tools.
+      author: 'Author',
+      authorPlaceholder: 'No author (neutral tone)',
+      authorHint:
+        'A bot brings its voice: tone, style and vocabulary. It does not bring its knowledge or tools.',
+      authorAria: 'Choose the bot author for this text',
+      // (the in-dropdown search placeholder is BotSelect's own `botSelect.search`)
+      authorClear: 'Clear author',
+      authorInactive: 'This bot is inactive. Its voice will still be used in this block.',
+      authorMissing: 'This author no longer exists. The block will use the default, neutral tone.',
+      authorMissingShort: 'Author unavailable',
+      authorUnknownName: 'Unknown author',
+      authorCheckFailed: 'We couldn’t check this author.',
+      authorRetry: 'Try again',
+      authorEmptyTitle: 'No bots in this workspace',
+      authorEmptyBody:
+        'Without an author the block writes in a neutral tone. Create a bot to give it a voice.',
+      authorEmptyAction: 'Open Bots in a new tab',
+      authorNoResults: 'No bots match “{query}”.',
+      authorClearSearch: 'Clear search',
+      // LEGACY tone (the retired `personaId`): read-only, clearable, never re-selectable.
+      legacyToneBadge: 'Legacy tone',
+      legacyToneHint:
+        'This block was saved with an old tone. It still works, but it can no longer be picked by hand.',
+      legacyToneClear: 'Clear tone',
+      legacyToneClearAria: 'Clear legacy tone: {tone}',
+      legacyToneCleared: 'Tone cleared — after saving, the block will use the neutral tone.',
+      legacyToneOverridden: 'The author takes precedence over the legacy tone.',
+      tone: {
+        neutral: 'Neutral',
+        friendly: 'Friendly',
+        formal: 'Formal',
+        concise: 'Concise',
+        unknown: 'Unknown tone',
+      },
+      chipAria: {
+        plain: 'AI text. Open editor.',
+        withAuthor: 'AI text, author: {name}. Open editor.',
+        missingAuthor:
+          'AI text. The chosen author no longer exists — the default tone will be used. Open editor.',
+        withTone: 'AI text, legacy tone: {tone}. Open editor.',
+      },
       prompt: 'Prompt',
       promptPlaceholder: 'Describe what the AI should generate…',
       promptHint: 'You can use full Markdown, variables and IF blocks.',
-      knowledgeLabels: 'Knowledge labels',
-      selectLabels: 'Select labels',
       save: 'Save',
       cancel: 'Cancel',
       remove: 'Delete',
@@ -2242,9 +2281,8 @@ export const en = {
       text: 'Text',
       taskExecution: 'Task execution',
       knowledge: 'Knowledge',
-      visual: 'Visual',
+      visual: 'Appearance',
       audio: 'Audio',
-      visualSoon: 'Visual · soon',
       audioSoon: 'Audio · soon',
       state: {
         required: 'Required',
@@ -2263,6 +2301,14 @@ export const en = {
     card: {
       noDescription: 'No description',
       open: 'Open {name}',
+      // The Appearance chip reports OPERATIONAL READINESS (module on AND a likeness approved), not
+      // "is it configured". Both half-states get their own line — each silently changes the output.
+      visualReady: 'Appearance',
+      visualReadyTitle: 'The module is on and a likeness is approved — the bot will appear on images.',
+      visualNoImage: 'Appearance · no image',
+      visualNoImageTitle: 'The module is on but the bot has no approved likeness.',
+      visualOff: 'Appearance off',
+      visualOffTitle: 'The bot has a likeness but the module is off — images will be made without the character.',
     },
     actions: {
       menu: 'Bot actions',
@@ -2389,7 +2435,14 @@ export const en = {
       noKnowledge: 'No knowledge entries',
       taskExecutionNotConfigured: 'Task execution has not been configured for this bot.',
       comingSoon: 'Coming soon',
-      visualPlaceholder: 'Visual identity (avatar, imagery) arrives in a later release.',
+      // Appearance module (read-only preview).
+      visualNotConfigured: 'Appearance has not been configured for this bot.',
+      visualNoImage: 'No approved likeness.',
+      visualDescriptor: 'Who the character is',
+      visualWardrobe: 'Default wardrobe',
+      visualAesthetic: 'Aesthetic',
+      visualProhibitions: 'Never show',
+      visualImageAlt: 'Approved likeness of bot {name}',
       audioPlaceholder: 'Voice and audio settings arrive in a later release.',
       activityTitle: 'Tasks & activity',
       activityDescription: 'Task execution and action history arrive with the execution module.',
@@ -2529,8 +2582,113 @@ export const en = {
         contentPlaceholder: 'What the bot should know…',
         maxReached: 'You can add up to 50 entries.',
       },
-      visualHint: 'How the bot looks — avatar and imagery.',
-      visualPlaceholder: 'Configuring the bot’s visual identity arrives in a later release.',
+      visualHint:
+        "The character's likeness: an AI-made image the bot uses on generated images.",
+      // The "Appearance" module — the bot's likeness (R2 sub-stage 3).
+      visual: {
+        offHint:
+          "The module is off — the likeness won't be used in sessions. You can prepare it now and turn it on later.",
+        identityLegend: 'Character description',
+        descriptorLabel: 'Who the character is',
+        descriptorHint: 'One sentence: age, gender, look, hair. Not a second persona.',
+        descriptorPlaceholder: 'e.g. woman around 30, dark shoulder-length hair, natural make-up',
+        wardrobeLabel: 'Default wardrobe',
+        wardrobeHint:
+          "The most effective defence against the provider's moderation: the same character gets refused in a swimsuit and accepted in a dress.",
+        wardrobePlaceholder: 'e.g. a simple summer dress, delicate jewellery',
+        aestheticLabel: 'Aesthetic',
+        aestheticHint: 'Palette, medium and light — applies to every image of this character.',
+        aestheticPlaceholder: 'e.g. warm palette, natural photography, soft daylight',
+        prohibitionsLabel: 'Never show',
+        prohibitionsHint: 'Visual prohibitions — sent to the prompt as a list.',
+        prohibitionsPlaceholder: 'e.g. brand logos',
+        prohibitionsAdd: 'Add a prohibition',
+        prohibitionsEmpty: 'No visual prohibitions.',
+        prohibitionsRemove: 'Remove prohibition {value}',
+
+        createLegend: 'New likeness',
+        modeLabel: 'Where the image comes from',
+        mode: {
+          reference: 'From a reference',
+          referenceHint: 'Keep the face from an existing photo.',
+          description: 'From the description',
+          descriptionHint: 'Invent the character from the fields above.',
+        },
+        referenceLabel: 'Reference photo',
+        referenceUploadTitle: 'Drop a photo or click to browse',
+        referenceUploadHint: 'JPG, PNG or WEBP, up to 25 MB.',
+        referencePick: 'Pick from the Disk',
+        referenceCurrent: 'Current reference',
+        referenceClear: 'Clear the reference',
+        referenceRequired: 'Pick a reference photo or switch to "From the description".',
+        instructionLabel: 'Instruction for this run (optional)',
+        instructionHint: 'Applies to this one image only — e.g. "waist-up", "looking away".',
+        instructionPlaceholder: 'e.g. waist-up shot, neutral background',
+        generate: 'Generate a likeness',
+        generateSavesHint: 'Generating saves the bot first — the image is made from the saved description.',
+        generateNeedsMaterial:
+          'Fill in the description, wardrobe or aesthetic — there is nothing to draw from.',
+        generateNeedsBot: 'Save the bot to generate a likeness.',
+        generateBusy: 'A generation is running — wait for the result.',
+        evictionWarning:
+          'You have all {max} likenesses. The next run will replace the oldest unapproved one.',
+
+        status: {
+          saving: 'Saving the bot…',
+          queued: 'Queued…',
+          processing: 'Creating the likeness — usually 30–60 seconds.',
+          background: 'You can close the editor — the run finishes in the background.',
+          slow: "It's taking longer than usual.",
+          check: 'Check now',
+          dismiss: 'Dismiss',
+        },
+
+        errors: {
+          safety:
+            'The AI refused to deliver this image because of its content policy. Adjust the character description or wardrobe and try again.',
+          failed: 'The likeness could not be generated. Try again.',
+          dailyCap: "This workspace's daily image-generation limit is used up. Try again tomorrow.",
+          budget: "This workspace's monthly AI budget is used up.",
+          budgetManage: 'Raise the limit',
+          budgetContactOwner: 'Contact the workspace owner.',
+          throttled: 'Too many attempts in a row. Wait a moment.',
+          network: "Couldn't reach the server. Try again.",
+          forbidden: "Only the bot's creator can change its appearance.",
+          retry: 'Try again',
+        },
+
+        candidates: {
+          legend: 'Likenesses ({count}/{max})',
+          empty: 'This bot has no likeness yet.',
+          emptyHint: 'Generate the first image below.',
+          itemLabel: 'Likeness {n} of {count} — set as the likeness',
+          canonicalItemLabel: 'Likeness {n} of {count} — approved',
+          canonicalBadge: 'Approved',
+          approve: 'Set as the likeness',
+          unapprove: 'Clear the approval',
+          unapproveConfirmTitle: 'Clear the approval?',
+          unapproveConfirmBody:
+            'The bot will have no likeness, and the editor will also save your other changes.',
+          preview: 'Enlarge',
+          previewTitle: 'Likeness {n}',
+          remove: 'Delete likeness {n}',
+          removeCanonical: "The approved likeness can't be deleted — clear the approval first.",
+          removeConfirmTitle: 'Delete this likeness?',
+          removeConfirmBody: 'The image will be permanently deleted.',
+          oldestHint: 'The oldest — the next run will replace it.',
+          imageAlt: 'Likeness of bot {name}, variant {n}',
+          loadError: "Couldn't load the image.",
+        },
+
+        toasts: {
+          generateStarted: 'Generation started.',
+          generated: 'The new likeness is ready.',
+          approved: "The bot's likeness is set.",
+          unapproved: 'The approval was cleared.',
+          removed: 'Likeness deleted.',
+          error: 'That operation failed.',
+        },
+      },
       audioHint: 'How the bot sounds — voice and audio.',
       audioPlaceholder: 'Configuring the bot’s audio arrives in a later release.',
       validation: {
@@ -2685,6 +2843,13 @@ export const en = {
           removeStep: 'Remove step',
           summaryLabel: 'Plan',
           noBase: 'No base chosen yet.',
+          // Whether a delegated session's character may appear in THIS image. `auto` = no key on the wire.
+          character: {
+            label: 'Character',
+            auto: 'Automatic — when the session has one',
+            never: 'Never in this part',
+            hint: 'Choose "never" for product shots, logos and charts.',
+          },
         },
         pixelOp: {
           grayscale: 'Grayscale',
@@ -2790,11 +2955,15 @@ export const en = {
       archive: 'Archive',
       unarchive: 'Unarchive',
       menu: 'Session actions',
+      // ONE show/hide vocabulary for every collapsible turn card (setup / direction / result /
+      // fill report) — per-card duplicates would drift.
+      toggle: {
+        expand: 'Show',
+        collapse: 'Hide',
+      },
       direction: {
         title: 'Creative direction',
         derivedCaption: 'Derived automatically for this run.',
-        expand: 'Show',
-        collapse: 'Hide',
         durationValue: '~{seconds} s',
         labels: {
           message: 'Message',
@@ -2821,6 +2990,13 @@ export const en = {
         dialogTitle: 'Delegate to a bot',
         dialogSubtitle: 'Let a bot fill the inputs in its own voice. You review them before generating.',
         pickBot: 'Choose a bot',
+        // What the bot BRINGS: the voice always, the likeness only when the module is on and approved.
+        brings: {
+          voice: 'Voice in the copy',
+          likeness: 'Likeness on images',
+          noLikeness: 'This bot has no approved likeness — images will be made without a character.',
+          likenessOff: 'This bot has a likeness but the Appearance module is off.',
+        },
         fillMode: {
           legend: 'What should the bot do?',
           gaps: 'Fill only the empty inputs',
@@ -2877,6 +3053,20 @@ export const en = {
           undoError: 'Could not undo the delegation. Please try again.',
         },
       },
+      // CHARACTER signals: the session froze its author's likeness, so its images draw the same person.
+      character: {
+        chip: 'Character likeness',
+        chipTitle: "This session's images use the author's approved likeness.",
+        shotBadge: 'With character',
+        shotBadgeTitle: "This shot is drawn from the character's likeness.",
+        shotSuffix: 'with character',
+        // The provider's moderation refusal — the one image failure a user can actually fix.
+        safetyFailed:
+          'The AI refused to deliver this shot because of its content policy. Adjust the character description or wardrobe.',
+        openAppearance: 'Bot appearance',
+        openAppearanceTitle:
+          "The character's description and wardrobe affect whether the provider delivers an image.",
+      },
       picker: {
         title: 'Choose a template',
         subtitle: 'Start a session from one of your content recipes.',
@@ -2903,7 +3093,6 @@ export const en = {
       setup: {
         title: 'Inputs',
         edit: 'Edit inputs',
-        collapse: 'Collapse',
         summary: '{count} inputs',
         dirty: 'Changed since generation',
         noValue: 'No value',
@@ -2959,9 +3148,16 @@ export const en = {
         voiceover: 'Voiceover',
         seconds: '{n}s',
         shotImageAlt: 'Image for shot {n}',
+        // A storyboard frame rendered by its own queue job — a session fetched mid-run carries
+        // `pending`/`rendering` frames, which need a loading state of their own.
+        framePending: 'Frame in progress…',
         parseFallback: "We couldn't structure this reply — showing the raw text.",
         storyboardEmpty: 'No shots yet — generate a shot list first.',
         regenerateStoryboard: 'Regenerate all shots',
+        // Collapsed-card teasers (built from data the card already holds — never a new request).
+        previewShots: '{count} shots',
+        previewImage: 'Image ready',
+        previewEmpty: 'Nothing produced yet.',
         stale: 'May be out of date',
         staleHint: 'The script changed — regenerate to refresh this part.',
         saveToDiskTitle: 'Save to Disk',
@@ -3780,6 +3976,18 @@ export const en = {
           added: 'New required inputs: {slots}.',
           removeUnknown: 'Clear the removed inputs',
         },
+        // The optional session AUTHOR (a bot). What it BRINGS is said with the delegation's own
+        // keys (generator.sessions.delegate.brings.*) so the promise is identical on both paths.
+        botLabel: 'Author (bot)',
+        botHint: 'The bot this step generates as: it gives the copy its voice and puts its likeness on the images. It does not fill the inputs above — you map those yourself.',
+        botPlaceholder: 'No author (the default voice)',
+        botUnknownName: 'Unknown bot',
+        // A DEFINITIVE 404/403 on the chosen author. Deliberately NOT the ai-text panel's
+        // `editor.aiText.authorMissing`: that one promises "the block will use the default,
+        // neutral tone", which is true of a text block and FALSE here — a step whose author is
+        // gone is refused at save (StoreWorkflowRequest::validateAuthorId) and hard-fails at run.
+        botMissing:
+          'This bot no longer exists in this workspace. Pick another author or clear the field — while it is set, saving is refused and every run of this step would fail.',
         nameLabel: 'Name',
         nameHint: 'Optional name for the generation this step creates. Leave empty to use the template’s name.',
         namePlaceholder: 'e.g. Weekly post',

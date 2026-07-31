@@ -10,6 +10,7 @@ use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Models\Task;
+use App\Modules\Tasks\Services\TaskService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -119,6 +120,44 @@ class TaskFormSubmissionApprovalTest extends TestCase
         $this->patchJson("/api/tasks/{$task->id}/status/in_progress")->assertOk();
 
         $this->assertFalse($submission->fresh()->isApproved());
+    }
+
+    /**
+     * The approval must not depend on the CALLER's relation cache. A long-lived Task instance
+     * can carry `formSubmission` eager-loaded as null from before the submission existed —
+     * which is exactly what a bot run holds: BotTaskContextBuilder eager-loads it up front,
+     * then fill_form creates the row on that same instance. Reading the cached relation there
+     * left the submission a draft, so the form_submitted workflow trigger never fired even
+     * though the task was done.
+     */
+    public function test_done_approves_the_submission_even_with_a_stale_relation_cache(): void
+    {
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        $form = Form::factory()->enabled()->create();
+        $task = Task::factory()->create([
+            'creator_id' => $user->id,
+            'assigned_id' => $user->id,
+            'status' => TaskStatus::IN_PROGRESS,
+            'approval_pipeline_id' => null,
+            'form_id' => $form->id,
+        ]);
+
+        // Cache the relation as null BEFORE the submission exists.
+        $task->loadMissing('formSubmission');
+        $this->assertNull($task->formSubmission);
+
+        $submission = $this->draftSubmission($user, $form, $task);
+
+        // The stale instance performs the transition — the bot completion path.
+        app(TaskService::class)->botComplete($task);
+
+        $this->assertEquals(TaskStatus::DONE, $task->fresh()->status);
+        $this->assertTrue(
+            $submission->fresh()->isApproved(),
+            'A stale relation cache must not stop the task from confirming its form submission.'
+        );
     }
 
     public function test_moving_task_without_submission_to_done_succeeds(): void

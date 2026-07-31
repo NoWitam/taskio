@@ -163,15 +163,44 @@ try {
 // wall-clock sentence + preview run in the viewer's zone. An EDITED schedule keeps its
 // saved tz — seedFromDetail() overrides the draft below via configToDraft.
 
-// Seed ONCE from the prefetched detail when editing (the layout keys this component
-// by id, so it remounts + re-seeds per workflow → setup runs fresh).
+// Seed ONCE when editing (the layout keys this component by id, so it remounts +
+// re-seeds per workflow → setup runs fresh).
+//
+// The detail is only in the store when the module layout PREFETCHED it, and that
+// watcher keys off the ROUTE id — i.e. the per-workflow detail page. Opening the
+// editor from the LIST (or any deep link) sets only `?workflow=<id>`, so nothing
+// has fetched it and the store holds null or a DIFFERENT workflow. Erroring out
+// there made "edit from the list" permanently broken while "edit from the detail
+// page" worked. So: use the cached detail when it matches, otherwise FETCH it
+// here. The error state is now reserved for a fetch that actually fails
+// (deleted / forbidden / offline).
 const detailError = ref(false);
+const detailLoading = ref(false);
+
 if (isEdit.value) {
-  const detail = store.detail && store.detail.id === props.workflowId ? store.detail : null;
-  if (detail) {
-    seedFromDetail(clonePlain(detail));
+  const cached = store.detail && store.detail.id === props.workflowId ? store.detail : null;
+  if (cached) {
+    seedFromDetail(clonePlain(cached));
   } else {
+    void loadDetail();
+  }
+}
+
+/** Fetch the workflow being edited and seed the draft from it (see above). */
+async function loadDetail(): Promise<void> {
+  if (!props.workflowId) return;
+  detailLoading.value = true;
+  try {
+    const fetched = await store.fetchWorkflow(props.workflowId);
+    if (fetched) {
+      seedFromDetail(clonePlain(fetched));
+    } else {
+      detailError.value = true;
+    }
+  } catch {
     detailError.value = true;
+  } finally {
+    detailLoading.value = false;
   }
 }
 
@@ -694,7 +723,8 @@ function onStepClick(value: WizardStep): void {
       </h2>
     </header>
 
-    <!-- Deep-link without a prefetched detail → a clear error (no blank form). -->
+    <!-- The workflow could not be loaded (deleted / forbidden / offline) → a clear
+         error, never a blank form seeded with defaults that would OVERWRITE it on save. -->
     <EmptyState
       v-if="detailError"
       variant="error"
@@ -708,6 +738,16 @@ function onStepClick(value: WizardStep): void {
         </Button>
       </template>
     </EmptyState>
+
+    <!-- Loading the workflow being edited. Skeletons MIMIC the wizard beneath (stepper
+         strip + a panel of fields) rather than a spinner, so the shell does not jump. -->
+    <div v-else-if="detailLoading" class="flex flex-col gap-next-4 p-next-4" aria-busy="true">
+      <Skeleton class="h-10 w-full rounded-next-md" />
+      <Skeleton class="h-9 w-1/3 rounded-next-md" />
+      <Skeleton class="h-24 w-full rounded-next-md" />
+      <Skeleton class="h-9 w-2/3 rounded-next-md" />
+      <Skeleton class="h-24 w-full rounded-next-md" />
+    </div>
 
     <!-- 3-STEP WIZARD: the stepper sits under the header; only the active step's panel
          renders. Panels use v-show (not v-if) so the trigger fields stay mounted — the

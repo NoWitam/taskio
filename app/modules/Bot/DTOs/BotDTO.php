@@ -21,6 +21,8 @@ class BotDTO
         public readonly ?array $taskExecution,
         // Knowledge module — { enabled, entries: [{title, content}] }.
         public readonly array $knowledge,
+        // Visual module — null leaves the column untouched (see normalizeVisual).
+        public readonly ?array $visual,
     ) {}
 
     /**
@@ -43,6 +45,7 @@ class BotDTO
             )),
             taskExecution: self::normalizeTaskExecution($request),
             knowledge: self::normalizeKnowledge($request),
+            visual: self::normalizeVisual($request),
         );
     }
 
@@ -142,5 +145,67 @@ class BotDTO
             'enabled' => (bool) ($knowledge['enabled'] ?? false),
             'entries' => $entries,
         ];
+    }
+
+    /**
+     * Normalize the VISUAL module into its persisted shape, or null when the request did not
+     * carry it.
+     *
+     * The null-means-untouched posture (shared with {@see normalizeTaskExecution}, deliberately
+     * NOT with knowledge) is load-bearing here: `candidates` / `canonical_file_id` are written
+     * ASYNCHRONOUSLY by the identity generator's worker, so a plain bot save that knows nothing
+     * about the visual module — every existing client — must not blank them. A module is cleared
+     * by SENDING it with empty content, never by omitting it.
+     *
+     * `enabled` is an explicit per-module toggle and NEVER erases content: the identity stays
+     * stored while the module is off, exactly like the knowledge module's entries.
+     *
+     * @return array{enabled: bool, descriptor: ?string, aesthetic: ?string, wardrobe: ?string, prohibitions: array<int, string>, reference_file_id: ?string, candidates: array<int, string>, canonical_file_id: ?string, prompt: ?string}|null
+     */
+    private static function normalizeVisual(Request $request): ?array
+    {
+        if (!$request->has('visual') || $request->input('visual') === null) {
+            return null;
+        }
+
+        $visual = $request->array('visual');
+
+        return [
+            'enabled' => (bool) ($visual['enabled'] ?? false),
+            'descriptor' => self::visualText($visual['descriptor'] ?? null),
+            'aesthetic' => self::visualText($visual['aesthetic'] ?? null),
+            'wardrobe' => self::visualText($visual['wardrobe'] ?? null),
+            'prohibitions' => self::visualList($visual['prohibitions'] ?? []),
+            'reference_file_id' => self::visualText($visual['reference_file_id'] ?? null),
+            'candidates' => self::visualList($visual['candidates'] ?? []),
+            'canonical_file_id' => self::visualText($visual['canonical_file_id'] ?? null),
+            'prompt' => self::visualText($visual['prompt'] ?? null),
+        ];
+    }
+
+    /** A submitted visual string, trimmed to null when blank/non-scalar. */
+    private static function visualText(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    /**
+     * A submitted visual string list, cleaned of blanks/non-strings and re-indexed.
+     *
+     * @return array<int, string>
+     */
+    private static function visualList(mixed $value): array
+    {
+        return collect(is_array($value) ? $value : [])
+            ->map(fn ($item) => is_string($item) ? trim($item) : null)
+            ->filter(fn (?string $item) => $item !== null && $item !== '')
+            ->values()
+            ->all();
     }
 }

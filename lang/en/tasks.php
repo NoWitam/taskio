@@ -95,6 +95,10 @@ return [
     'assignedTo' => 'Assigned to',
     'labels' => 'Labels',
 
+    'validation' => [
+        'bot_cannot_execute' => 'This bot cannot execute tasks. Enable the task-execution module on the bot (and activate it) before assigning it.',
+    ],
+
     'messages' => [
         'created' => 'Task created successfully',
         'updated' => 'Task updated successfully',

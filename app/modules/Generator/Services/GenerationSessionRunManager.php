@@ -6,10 +6,13 @@ use App\Modules\Generator\Enums\GenerationRunMode;
 use App\Modules\Generator\Enums\GenerationSessionStatus;
 use App\Modules\Generator\Events\GenerationSessionUpdated;
 use App\Modules\Generator\Exceptions\GenerationBudgetExceeded;
+use App\Modules\Generator\Jobs\RenderStoryboardFrameJob;
 use App\Modules\Generator\Jobs\RunGenerationSessionJob;
 use App\Modules\Generator\Models\GenerationSession;
+use App\Modules\Generator\Support\StoryboardFrame;
 use App\Modules\Variables\Services\AiUsageService;
 use App\Tenancy\TenantContext;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -31,6 +34,13 @@ use Illuminate\Support\Facades\Log;
  *                       regenerate/refine → the {@see GenerationSessionRefiner} part op. Then `ready`.
  *   fail()              terminal-safe whole-run failure (the job's failed() hook) — mark `failed` unless
  *                       already terminal.
+ *
+ * A run no longer necessarily ENDS with the session job. When the rendered results announce storyboard
+ * FRAMES ({@see StoryboardFrame} — one queue job per shot image, because N slow provider calls cannot fit the
+ * job's inviolate 300s window), run() persists the results, leaves the session `generating`, and queues those
+ * jobs; the LAST frame to settle flips the status and calls {@see announceSettled}. The FE contract is
+ * unchanged and is precisely why the status is held open: `generating` until exactly ONE terminal broadcast.
+ * A session with no storyboard announces nothing, queues nothing, and settles inside run() as it always did.
  *
  * The STALE reaper (a run stuck in `generating` past a timeout → failed) lives in the separate
  * {@see GenerationSessionLifecycleService} + the scheduled `generator:reap-sessions` command (R2 sub-stage 2d),
@@ -87,6 +97,14 @@ class GenerationSessionRunManager
 
         $isFull = $mode === GenerationRunMode::Full;
 
+        // IMAGE BUDGET RESET (the distributed-frames stage): the per-run `ai_generate`/`ai_edit` ceilings are
+        // now charged against PERSISTED counters, because a storyboard run spans the session job plus one job
+        // per frame and no in-process counter can bound that. Zeroing them here — on EVERY claim, full run and
+        // part op alike — keeps the documented semantics exactly as they were: a budget per RUN, where a
+        // regenerate/refine is its own run and gets its own fresh budget. The claim is already the single
+        // choke point every entry point routes through, so this is the one place that can define "a run".
+        $ledgerReset = ['ai_generate_calls' => 0, 'ai_edit_calls' => 0];
+
         $claimed = GenerationSession::query()
             ->whereKey($session->getKey())
             ->whereIn('status', [
@@ -95,8 +113,8 @@ class GenerationSessionRunManager
                 GenerationSessionStatus::Failed->value,
             ])
             ->update($isFull
-                ? ['status' => GenerationSessionStatus::Generating->value, 'results' => null, 'history' => null, 'creative_direction' => null, 'last_op_status' => null, 'last_op_error' => null]
-                : ['status' => GenerationSessionStatus::Generating->value, 'last_op_status' => null, 'last_op_error' => null]);
+                ? ['status' => GenerationSessionStatus::Generating->value, 'results' => null, 'history' => null, 'creative_direction' => null, 'last_op_status' => null, 'last_op_error' => null] + $ledgerReset
+                : ['status' => GenerationSessionStatus::Generating->value, 'last_op_status' => null, 'last_op_error' => null] + $ledgerReset);
 
         if ($claimed === 0) {
             return false;
@@ -176,18 +194,69 @@ class GenerationSessionRunManager
         $gcBlobs = $update['gc_blobs'] ?? [];
         unset($update['gc_blobs']);
 
+        // DISTRIBUTED FRAMES: a storyboard part ANNOUNCES its shots rather than rendering them (the images
+        // are too slow to fit this job's inviolate 300s window), so finishing this job no longer means
+        // finishing the RUN. When frames were announced the session deliberately stays `generating` — the FE
+        // contract is one broadcast at settle, and settling now belongs to whichever frame job finishes last.
+        $frames = StoryboardFrame::pendingIn(is_array($update['results'] ?? null) ? $update['results'] : []);
+
         // A1: a part op's $update also carries last_op_status/last_op_error, so the op OUTCOME lands in the SAME
         // write that flips `ready` (a full run leaves them null — already cleared at claim).
-        $session->update($update + ['status' => GenerationSessionStatus::Ready]);
+        $session->update($update + ['status' => $frames === [] ? GenerationSessionStatus::Ready : GenerationSessionStatus::Generating]);
 
         $this->refiner->gcDroppedBlobs($session, $gcBlobs);
 
+        if ($frames !== []) {
+            $this->dispatchFrames($session, $frames, $mode);
+
+            return;
+        }
+
+        $this->announceSettled($session, $mode->value);
+    }
+
+    /**
+     * Queue ONE {@see RenderStoryboardFrameJob} per announced frame, AFTER the results carrying those frames
+     * are persisted — a frame job re-reads the row and must find its own `pending` entry there, so dispatching
+     * earlier would race the write. Scalars only (id + workspace + the frame's canonical `storyboard.<i>` key
+     * + its correlation token), never the model: the worker rebuilds everything under its own tenancy.
+     *
+     * The frame key is passed as the single dotted address rather than as a (part, index) pair, because that
+     * dotted key is ALREADY the canonical way every layer addresses a shot (the executor, the refiner, the
+     * image store); splitting it in the payload would create two values that could disagree.
+     *
+     * @param  array<int, array{part_key: string, token: string}>  $frames
+     */
+    private function dispatchFrames(GenerationSession $session, array $frames, GenerationRunMode $mode): void
+    {
+        $workspaceId = (string) $this->tenant->id();
+
+        foreach ($frames as $frame) {
+            RenderStoryboardFrameJob::dispatch($session->getKey(), $workspaceId, $frame['part_key'], $frame['token']);
+        }
+
+        // The FACT only (how many frames, for which run) — never a visual, prompt or shot text.
+        Log::info('Generation session storyboard frames dispatched', [
+            'session_id' => $session->getKey(),
+            'mode' => $mode->value,
+            'frames' => count($frames),
+        ]);
+    }
+
+    /**
+     * The run reached its TERMINAL state: log the non-secret outcome trail and push the single settle
+     * broadcast the FE waits on. PUBLIC because the settling write is no longer always made by the session
+     * job — when a run fanned out, the LAST frame job flips the status and then calls this, so the terminal
+     * log + the one broadcast keep exactly one definition instead of being reimplemented per path.
+     */
+    public function announceSettled(GenerationSession $session, string $mode): void
+    {
         // Outcome trail: the run is `ready`, but individual parts may have `failed` (fail-soft). Log the
         // per-part status map (keys + statuses only — never the produced content) so a run that looks
         // successful yet has a silently-failed part is diagnosable. See the executor for each part's cause.
         Log::info('Generation session run completed', [
-            'session_id' => $sessionId,
-            'mode' => $mode->value,
+            'session_id' => $session->getKey(),
+            'mode' => $mode,
             'status' => $session->status->value,
             'part_status' => $this->partStatusSummary($session),
             'last_op_status' => $session->last_op_status,
@@ -239,20 +308,40 @@ class GenerationSessionRunManager
     }
 
     /**
-     * Mark a run failed (the job's failed() hook / a future reaper). Terminal-safe — never overwrites an
-     * already-finished session. The per-part reason (if any) lives in `results`; a whole-run failure is
-     * signalled by the status alone (no secret is ever surfaced).
+     * Mark a run failed (the job's failed() hook / the stale-session reaper). Terminal-safe — never
+     * overwrites an already-finished session. The per-part reason (if any) lives in `results`; a whole-run
+     * failure is signalled by the status alone (no secret is ever surfaced).
+     *
+     * IT ALSO CLOSES THE FRAMES THE RUN ABANDONS. A frame may only be claimed while its session is still
+     * `generating` ({@see StoryboardFrameManager::claim}), so failing the run makes every `pending`/
+     * `rendering` shot permanently unreachable — no worker will ever settle it, and the FE (which branches
+     * per shot on `image_status`) would show them in flight for the lifetime of the row. They are settled
+     * `failed` with the same lost-frame reason the reaper uses, in the SAME write as the status flip, under
+     * the session row lock the frame writers serialize on — so a frame committing concurrently either lands
+     * before this and is preserved, or blocks and finds the run already terminal.
      */
     public function fail(string $sessionId): void
     {
-        $session = GenerationSession::find($sessionId);
+        $failed = DB::transaction(function () use ($sessionId): ?GenerationSession {
+            $locked = GenerationSession::query()->whereKey($sessionId)->lockForUpdate()->first();
 
-        if ($session === null || $session->status->isTerminal()) {
-            return;
+            if ($locked === null || $locked->status->isTerminal()) {
+                return null;
+            }
+
+            $results = is_array($locked->results) ? $locked->results : [];
+            $closed = StoryboardFrame::failOutstandingIn($results, __('generator.sessions.frame_lost'));
+
+            // A run with no outstanding frame writes exactly the column it always did (the helper returns
+            // the results UNCHANGED), so a text-only session's failure is byte-identical to before.
+            $locked->update(['status' => GenerationSessionStatus::Failed]
+                + ($closed === $results ? [] : ['results' => $closed]));
+
+            return $locked;
+        });
+
+        if ($failed !== null) {
+            $this->broadcastTerminal($failed);
         }
-
-        $session->update(['status' => GenerationSessionStatus::Failed]);
-
-        $this->broadcastTerminal($session);
     }
 }

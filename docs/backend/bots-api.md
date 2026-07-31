@@ -8,7 +8,11 @@ Covers B1–B6: CRUD + persona (B1–B2), polymorphic actor + one-shot execution
 see below), interactive multi-turn execution (B4), the optional tool registry (B5), and the
 5-module structure + knowledge module (B6). Also covers R2 sub-stage 3 ("Boty w generatorze") —
 the `Bot → Generator` session-DELEGATION edge, letting a bot author a Generator `GenerationSession`
-in its own voice; see the delegate/undo endpoints below.
+in its own voice; see the delegate/undo endpoints below. Also covers the character VISUAL IDENTITY
+phase — the "Wygląd" module's real read/write logic (a likeness the bot generates/curates, and the
+new one-way `Bot → Disk` edge it rides) and its extension of the R2 sub-stage 3 delegation overlay to
+freeze the LOOK alongside the voice; see "Visual identity module ('Wygląd')" below and
+`docs/decisions/ADR-0042-character-visual-identity.md`.
 
 ---
 
@@ -21,7 +25,7 @@ A **Bot** is a workspace-scoped AI character (digital worker) with **5 modules**
 | Text             | `persona`, `style`, `dictionary`, `phrases`, `prohibitions` | Yes | Always shapes the AI voice. |
 | Task-execution   | `task_execution` (`{enabled, tools}`) | No | Makes the bot an interactive task participant (B4) with optional registry tools (B5). |
 | Knowledge        | `knowledge` (`{enabled, entries}`) | No | Entries injected into the execution context only when enabled (B6). |
-| Visual           | `visual`                      | No       | Placeholder — read-only, no logic yet.             |
+| Visual           | `visual` (`{enabled, descriptor, aesthetic, wardrobe, prohibitions, reference_file_id, candidates, canonical_file_id, prompt}`) | No | The bot's LIKENESS — an approved reference image a delegated Generator session draws from. Real read/write logic; see "Visual identity module ('Wygląd')" below. |
 | Audio            | `audio`                       | No       | Placeholder — read-only, no logic yet. Renamed from `voice` in B6 (column rename; same null-placeholder semantics). |
 
 The bot is not a one-shot task runner. Once assigned to a task it can execute (B4), it is an
@@ -44,8 +48,8 @@ and wait for a reply, and resumes automatically when that reply arrives.
 | `task_started`       | A run began. Payload: `{run, trigger}` (B4 — see below).                |
 | `form_filled`        | Bot submitted/updated answers to the task's attached form.              |
 | `commented`          | Bot posted a comment via `post_comment`.                                |
-| `submitted_to_test`  | Bot advanced the task to `in_test` via `finish` (auto-starts approval). |
-| `marked_done`        | Task passed approval and reached `done` (recorded on the snapshotted original bot). |
+| `submitted_to_test`  | Bot advanced the task to `in_test` via `finish` — only when an approval pipeline is attached (auto-starts approval). |
+| `marked_done`        | Task reached `done`: either `finish` completed it directly (no approval pipeline attached), or it passed approval (recorded on the snapshotted original bot). |
 | `execution_failed`   | Unrecoverable error; run ends, task stays `in_progress`.                |
 | `question_asked`     | (B4) `ask_and_wait` fired. Payload: `{question}`.                       |
 | `resumed`            | (B4) A run began because a human replied on a waiting task. Payload: `{run}`. |
@@ -111,7 +115,17 @@ records its own `resumed` / `revision_started` action alongside `task_started`.
     "entries": [{ "title": "string", "content": "string" }]
   },
 
-  "visual": null,
+  "visual": {
+    "enabled": false,
+    "descriptor": "string | null (max 240)",
+    "aesthetic": "string | null (max 2000)",
+    "wardrobe": "string | null (max 500)",
+    "prohibitions": ["banned-visual-term"],
+    "reference_file_id": "uuid | null",
+    "candidates": ["uuid", "uuid"],
+    "canonical_file_id": "uuid | null",
+    "prompt": "string | null"
+  },
   "audio": null,
 
   "creator": { "type": "user", "id": "uuid", "name": "string", "email": "string", "avatar": null },
@@ -143,9 +157,13 @@ Notes:
   shape from before B6 (treated as `enabled = true` iff it held entries) so old stored rows keep
   working without a data migration.
 - **`audio`** (B6) replaces `voice` (straight column rename; same read-only `null` placeholder
-  semantics — no logic yet).
-- `visual` and `audio` are stored JSON columns reserved for future modules, returned as-is
-  (typically `null`). Treat them as read-only; no write path exists.
+  semantics — no logic yet). Still a placeholder — no write path exists, unlike `visual` below.
+- **`visual`** (the character visual-identity phase) is `Bot::visualIdentity()`'s NORMALIZED shape —
+  `null` only when the module has never been configured at all (a bot older than the feature, or one
+  that was never touched). It is a REAL, writable module — see "Visual identity module ('Wygląd')"
+  below for the write path, the two async generation endpoints, and the curation contract. Unlike
+  `task_execution`/`knowledge`, its `candidates`/`canonical_file_id` are also written
+  ASYNCHRONOUSLY by a queued generation, not only by `PUT /bots/{id}`.
 - `can_execute_tasks` is `true` only when `status === 'active' && task_execution.enabled === true`.
 - `can_be_edited` / `can_be_deleted` reflect `BotPolicy::update` / `delete` for the auth user.
 
@@ -203,6 +221,7 @@ List bots in the workspace. Cursor-paginated, 8 per page, newest first.
 |----------|----------|-----------------------------------------------------------|
 | `search` | no       | case-insensitive match on `name` / `description`        |
 | `cursor` | no       | cursor from `meta.next_cursor` for the next page        |
+| `can_execute_tasks` | no | truthy → only bots that can actually RUN a task: `status = active` AND `task_execution.enabled = true` (the SQL mirror of `Bot::canExecuteTasks()`). Used by the task-assignee pickers, which must not offer a bot the task write path would reject. Omitted → every bot, unchanged. |
 
 **Response** `200 OK`
 
@@ -402,8 +421,14 @@ Auth: workspace membership (no ownership check — any member can view).
 composes its persona/style/dictionary/phrases/prohibitions into ONE opaque voice directive, autonomously
 fills the session's in-scope slots (AT MOST one metered `ai_text` call), and becomes the session's snapshotted
 content author, while the human stays the session's owner. `DELETE` undoes it (restores the pre-delegation
-inputs). This is the ONE new cross-module edge in the app: `Bot → Generator + Variables`, one-way — the
-Generator/Variables seams these endpoints call take primitives/opaque strings only, never a `Bot` model.
+inputs). This is a new cross-module edge, `Bot → Generator + Variables`, one-way — the
+Generator/Variables seams these endpoints call take primitives/opaque strings only, never a `Bot` model. Since
+the character visual-identity phase, the same delegation ALSO freezes the bot's approved LIKENESS (when its
+Visual module is on and has one) onto the session — the image-side twin of the voice, snapshotted the same
+way; see `docs/backend/generator-sessions-api.md` → "Frozen character visual identity" and
+`docs/decisions/ADR-0042-character-visual-identity.md`. (The OTHER new cross-module edge, `Bot → Disk`, backs
+the Visual module's own generation endpoints below — it is unrelated to this delegation edge and never
+touches a `GenerationSession`.)
 
 The body's optional `fill_mode` (`'gaps' | 'fresh'`, DEFAULT `gaps` — `App\Modules\Bot\Enums\SlotFillMode`) is
 the human's click-time choice: `gaps` fills only the EMPTY inputs and never touches a value the human typed
@@ -418,6 +443,150 @@ inputs/authorship, an owner action on the session, not an action on the bot.
 Full request/response contract, the overlay + `fill_report` wire shapes, and the voice/slot-fill mechanics
 live in `docs/backend/generator-sessions-api.md` ("Bot-author delegation overlay"); the design record is
 `docs/decisions/ADR-0036-bot-delegation-generation-sessions.md`.
+
+---
+
+## Visual identity module ("Wygląd")
+
+The bot's LOOK: a written identity (`descriptor`/`aesthetic`/`wardrobe`/`prohibitions`) an image is drawn
+from, a bounded strip of generated candidates to choose from, and which one is APPROVED as the bot's
+canonical likeness. `Bot::visual` is the shape (`{enabled, descriptor, aesthetic, wardrobe, prohibitions,
+reference_file_id, candidates, canonical_file_id, prompt}`) — the SAME json column shipped as a placeholder
+in the original `bots` migration, now with real logic. This is what a Generator session freezes when it is
+delegated to a bot with the module on and an approved likeness (`docs/backend/generator-sessions-api.md` →
+"Frozen character visual identity"). Full design record: `docs/decisions/
+ADR-0042-character-visual-identity.md`.
+
+**`enabled` gates USE, never editing.** Like `knowledge`, this is an explicitly-toggled optional module: its
+stored content is fully editable and generateable while off — turning it on only decides whether a LATER
+Generator delegation may draw from it. It is NOT the same gate as "has an approved image" (`visual_has_image`
+on the list resource, below) — a bot can have one without the other, and the UI shows both states.
+
+**Send the module WHOLE, or not at all (`PUT /bots/{id}`).** `BotDTO::normalizeVisual()` treats an ABSENT
+`visual` key as "leave the stored module untouched" and a PRESENT one as a full overwrite —
+`candidates`/`canonical_file_id` are written ASYNCHRONOUSLY by the generation worker (below), so a client
+that knows nothing about this module (or is mid-edit on an older snapshot of it) must never send a partial/
+stale `visual` object, or it will silently delete a candidate that landed while the form was open. A client
+that DOES send `visual` always sends the server's current file pointers merged with whatever text it changed.
+To clear the module's content, send it with empty/default values explicitly — omitting the key is a no-op,
+not a clear.
+
+**Never logged.** `BotVisualIdentityService` and `GenerateBotVisualJob` surface only structured facts (which
+mode, which file, a moderation code) — the descriptor/aesthetic/wardrobe/prohibitions text and the composed
+provider prompt are never written to a log line.
+
+### `POST /bots/{id}` / `PUT /bots/{id}` — `visual` sub-payload
+
+| Field | Required | Constraints |
+|---|---|---|
+| `visual.enabled` | no | boolean |
+| `visual.descriptor` | no | string, max 240 — deliberately SHORT: one line of a composed subject, not a second persona |
+| `visual.aesthetic` | no | string, max 2000 — palette / medium / lighting, applies to every drawn image |
+| `visual.wardrobe` | no | string, max 500 — the default outfit; the ONE steerable defense against the provider's OUTPUT-side moderation (the same character is refused in a swimsuit, accepted in a dress — see ADR-0042), which is why it is its own field rather than prose inside `aesthetic` |
+| `visual.prohibitions` | no | array of strings, max 50 entries, each max 255 — a visual "never draw this" list |
+| `visual.reference_file_id` | no | uuid. Must belong to THIS bot (a prior upload) OR be a disk-native file the user picked from their own Disk (`BotVisualFile(allowDiskNative: true)`) |
+| `visual.candidates` | no | array of uuids, max 6 (`BotVisualIdentityService::MAX_CANDIDATES`). Each must be a file already OWNED by this bot — set by the generation worker, not normally hand-written by a client |
+| `visual.canonical_file_id` | no | uuid. Must be one of `visual.candidates` — the approved likeness |
+| `visual.prompt` | no | string, max 2000 — the last composed generation prompt (server-written audit trail; read-only in practice) |
+
+### POST /api/bots/{bot}/visual/generate
+
+Queue ONE likeness generation. `multipart/form-data`, owner-only (`update` on the bot — spends real provider
+budget and writes to the bot). Its own tight throttle bucket (`throttle:10,1,bot-visual`) — a long,
+provider-billed call. Requires an active workspace (`RequireWorkspace` — the only bot routes that touch
+workspace-owned binaries).
+
+| Field | Required | Notes |
+|---|---|---|
+| `mode` | yes | `'reference' \| 'description'` (`App\Modules\Bot\Enums\BotVisualMode`) — the human's explicit choice, never inferred from which fields happen to be filled. |
+| `reference` | reference mode: EXACTLY ONE of `reference`/`reference_file_id` | A fresh upload — jpeg/png/webp, max 25600 KB (mirrors the Disk AI editor's canvas limit). |
+| `reference_file_id` | reference mode: EXACTLY ONE of `reference`/`reference_file_id` | An existing file id — the bot's own image, or a disk-native file the user picked. |
+| `instruction` | no | string, max 2000 — a ONE-OFF steer for THIS run ("looking to the left", "close-up"); never persisted as part of the identity. |
+
+**Two ways in, one pipeline out.** REFERENCE mode edits the supplied/picked image toward the SAVED identity
+(`ImageAiService::edit`, metered channel `ai_image_edit`); DESCRIPTION mode generates outright from nothing
+but the saved identity text (`ImageAiService::generate` → the shared text→image seam, metered channel
+`ai_image_generate`). **The prompt is composed from the PERSISTED module, never from this request** — a
+generation always draws whatever the user last saved, so the UI saves the bot first when there are unsaved
+edits. Composition order: subject (`descriptor`) → wardrobe → style (`aesthetic`) → prohibitions →
+`instruction`. `422` (`bot.visual.nothing_to_generate`) when descriptor, wardrobe, aesthetic AND `instruction`
+are ALL empty — a reference anchor alone describes nothing, and this is checked BEFORE any spend.
+
+Both modes ride the Disk module's EXISTING async image machinery (`Disk\Models\DiskAiEdit`, the SAME daily
+cap + $-cost-meter gate-before-spend + poll/broadcast contract the Disk preview editor uses — see
+`docs/backend/disk-api.md`) rather than a second pipeline — the ONE new thing this endpoint adds is what
+happens to the result: it becomes a FILE OWNED BY THE BOT (`fileable_type = 'bot'`), filed by a
+Bot-module-owned worker (`GenerateBotVisualJob`) BEFORE the Disk edit is published `done`, so a client woken
+by the poll/broadcast always finds the candidate already there. This is the new one-way `Bot → Disk` edge
+(Disk never names Bot) — pinned by tests in both directions.
+
+**Response** `202 Accepted` — a `DiskAiEditResource` status row:
+
+```json
+{ "data": { "id": "uuid", "status": "queued" } }
+```
+
+**Follow it exactly like a Disk AI edit** — `GET /api/disk/ai/image/{id}` (see `docs/backend/disk-api.md`),
+the same poll shape and the same private-workspace-channel broadcast. When it reports `done`, the candidate
+is ALREADY on the bot; refetch the bot (`GET /bots/{id}`) rather than reading the image off the edit row.
+A `failed` status with `error_code: 'safety_rejected'` means the provider's moderation refused the content —
+the fix is usually the wardrobe or descriptor, not a retry (moderation is deterministic).
+
+**Errors**: `403` not the bot's owner; `404` cross-workspace/unknown `{bot}`; `422` `mode` missing/invalid,
+not exactly one reference source in reference mode, an unowned/foreign `reference_file_id`, or nothing to
+generate; `429` the route's own throttle bucket, OR the workspace's daily image cap
+(`ai.disk_image_max_per_day`), OR the workspace's monthly $ cap — all three read as a plain 429 and are told
+apart client-side by the response shape (rate-limit headers vs. the usage summary's `blocked` flag vs. neither).
+
+### POST /api/bots/{bot}/visual/approve
+
+Promote a candidate to the APPROVED likeness. Owner-only. Synchronous.
+
+| Field | Required | Notes |
+|---|---|---|
+| `file_id` | yes | uuid. Must be one of the bot's OWN files, AND (checked by the service) one of the current `candidates` — a fresh reference upload is not itself an iteration. |
+
+**Response** `200 OK` — `BotResource`. The candidate stays IN the strip (and becomes un-evictable — see
+below) rather than moving anywhere. **Errors**: `403` not owner; `404` cross-workspace/unknown `{bot}`;
+`422` (`bot.visual.not_a_candidate`) when `file_id` — which arrives in the BODY, there is no `{file}` route
+parameter here — is unknown, foreign, or simply not one of the bot's current candidates.
+
+### DELETE /api/bots/{bot}/visual/candidates/{file}
+
+Delete a candidate and its bytes. Owner-only. Synchronous.
+
+The APPROVED likeness is refused as a candidate to delete (`bot.visual.canonical_locked`) — clearing the
+approval is a normal bot save (`visual.canonical_file_id: null`) done FIRST, then the delete; removing it as
+a side effect of tidying the strip would silently un-identify the bot. Deleting the (re)generation SOURCE
+clears the `reference_file_id` pointer as part of the same operation, so the module never names bytes that no
+longer exist.
+
+**Response** `200 OK` — `BotResource`. **Errors**: `403` not owner; `404` cross-workspace/unknown `{bot}`,
+or a `{file}` that is not a well-formed uuid (the route constrains only the SHAPE — `whereUuid`); `422`
+(`bot.visual.not_a_candidate`) for a well-formed `{file}` that is not one of this bot's current candidates
+— including a same-workspace file owned by something else (the service, not the route, is the ownership
+gate); `422` (`bot.visual.canonical_locked`) the file is the approved likeness.
+
+### Candidate strip lifecycle (`BotVisualIdentityService::MAX_CANDIDATES = 6`)
+
+A strip the user CHOOSES from, not an unbounded archive: when a 7th candidate arrives, the OLDEST
+UNAPPROVED one is evicted and its bytes deleted (the approved likeness is never evicted this way). Every
+bot-owned file the module points to (`reference_file_id`, `candidates`, `canonical_file_id`) is a resource
+file (`fileable_type = 'bot'`) — deliberately NOT disk-native, so the Disk browser (which lists only
+disk-native files) and the "Zasoby" resource tree (which walks only registered resource types) never surface
+a bot's iteration strip.
+
+### `BotListResource` — additive readiness fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `visual_enabled` | boolean | The module's own toggle — whether its likeness MAY be used in a Generator delegation. |
+| `visual_has_image` | boolean | Whether the bot has an APPROVED likeness at all — independent of the toggle above. |
+
+Both together answer "will this bot's face actually appear in a session it authors?" — `enabled && has_image`
+is the only combination that does. The card UI reads the two independently (a module that is on with no
+approved image, or an approved image with the module off, are both distinct, actionable states — see
+`resources/js/next/pages/bots/BotCard.vue`).
 
 ---
 
@@ -436,6 +605,11 @@ live in `docs/backend/generator-sessions-api.md` ("Bot-author delegation overlay
 | `restore`  | Same rule as `update`.           |
 | `changeStatus` | Same rule as `update` (toggling `active`/`disabled` — `PATCH /bots/{id}/status`, not otherwise documented on this page). |
 | `retry`    | Same rule as `update` (manually retrying a failed task run — `POST /bots/{bot}/tasks/{task}/retry`, not otherwise documented on this page; gated to the owner because it dispatches a real, cap-exempt AI run). |
+
+All three Visual-module endpoints (`POST .../visual/generate`, `POST .../visual/approve`,
+`DELETE .../visual/candidates/{file}`) are gated by the SAME rule as `update` — checked via `FormRequest::
+authorize()` on each (not the resource controller's `authorizeResource()`), since generating spends real
+provider budget and curating rewrites the bot's stored identity.
 
 **A `Bot` is created only through the authenticated `POST /bots` endpoint** — no engine step or
 agent creates one — so in practice its creator is always human today, and the workspace-owner
@@ -512,6 +686,27 @@ claim fails simply because a run is already active, it is a no-op.
 All three funnel into `BotTaskRunManager::dispatch(Task $task, BotRunTrigger $trigger)`, which
 performs the atomic claim and, on success, dispatches `BotTaskExecutionJob` with that trigger.
 
+### Assigning a bot that cannot execute (write-time refusal)
+
+`dispatch()` silently declines a bot that fails `canExecuteTasks()` (inactive, or the
+task-execution module off). Historically the assignment itself was still accepted, so the
+task sat in `to_do` forever with no run, no action row and nothing in the UI to explain it.
+
+`StoreTasksRequest` now **refuses that assignment** — `POST /api/tasks` and
+`PUT /api/tasks/{task}` return `422` on `assignee_id`
+(`tasks.validation.bot_cannot_execute`) when `assignee_type = 'bot'` and the bot cannot
+execute. Two deliberate bounds:
+
+- Only a **change** of assignee is validated. A task already held by a bot whose module was
+  switched off afterwards stays fully editable — otherwise deactivating one bot would freeze
+  every task assigned to it.
+- The runtime guard in `dispatch()` is **unchanged** and still authoritative: assignments made
+  outside the request path (workflow `create_task`, approval-reject restore) and bots disabled
+  mid-flight are still no-ops rather than errors.
+
+The pickers ask `/bots?can_execute_tasks=1`, so a bot the write path would reject is not
+offered in the first place.
+
 ### Context injection (`BotTaskContextBuilder`)
 
 Before each run, the agent's instructions are built from:
@@ -534,9 +729,41 @@ the four *optional* registry tools (B5, see below):
 | Tool             | Signature                  | Availability                          | Effect |
 |-------------------|-----------------------------|------------------------------------------|--------|
 | `post_comment`    | `post_comment(text)`        | Always.                                  | Posts a bot-authored comment. Usable any number of times, any point in the run. Records `commented`. |
-| `fill_form`       | `fill_form(answers)`        | Only when the task has an attached form. | Persists form answers (create or update). Empty `answers` throws a tool-error. Records `form_filled`. |
+| `fill_form`       | `fill_form(answers)`        | Only when the task has an attached form. | Persists form answers (create or update). `answers` is a **JSON object string** (`{"<field id>": <answer>}`) — decoded by the tool; a pre-decoded map is also accepted (scripted tests). Malformed JSON or empty `answers` throws an instructive tool-error. Records `form_filled`. |
 | `ask_and_wait`    | `ask_and_wait(question)`    | Always.                                  | Posts the question as a bot comment, records `question_asked{question}`, and **ends the run** — task stays `in_progress`, `bot_run_state → waiting`. The next comment with `author_type = 'user'` resumes the run (`trigger = resume`). A bot's own comment never resumes it. |
-| `finish`          | `finish()`                  | Always.                                  | Submits the task to `in_test` (auto-starts an attached approval pipeline, identical to the human path). **Fails with an instructive tool-error** if the task has an attached form that was never filled (this run or previously) — the agent must call `fill_form` first. Records `submitted_to_test`. |
+| `finish`          | `finish(summary?)`          | Always.                                  | Delivers the work. **Approval pipeline attached** → `in_test` + the approval process starts and the task is reassigned to the first approver (identical to the human path); records `submitted_to_test`. **No pipeline** → straight to `done`; records `marked_done`. (`in_test` without a pipeline would mean waiting for a review nobody performs.) Either way it **fails with an instructive tool-error** if the task has an attached form that was never filled (this run or previously) — the agent must call `fill_form` first. The optional `summary` rides along in the action payload. |
+
+> **`finish` also CONFIRMS the task's form.** A task's form submission is a DRAFT while the
+> task is worked on and is approved when the task reaches `done` (`TaskObserver::updated`) —
+> and that approval is what fires the `form_submitted` workflow trigger. So a bot that fills a
+> form and finishes a task with no pipeline completes the whole chain (submission approved →
+> trigger fires); with a pipeline the confirmation happens later, when the approval completes
+> and the task reaches `done`.
+>
+> The observer reads the submission **from the DB, not from the relation cache**: a run holds
+> ONE long-lived Task instance whose `formSubmission` was eager-loaded as null by
+> `BotTaskContextBuilder` before `fill_form` created the row. Trusting that cache left the
+> submission a draft forever — task done, workflow never triggered. Pinned by
+> `TaskFormSubmissionApprovalTest::test_done_approves_the_submission_even_with_a_stale_relation_cache`
+> (unit-level invariant) and
+> `WorkflowDispatchTest::test_a_bot_completing_a_task_confirms_its_form_and_fires_form_submitted`
+> (end-to-end chain).
+
+> **Strict-mode schema constraint (do not regress).** laravel/ai sends `strict: true` for
+> every function, and OpenAI then requires each object in the schema to enumerate its
+> `properties`, mark them all `required`, and set `additionalProperties: false`. Two shapes
+> break that and **400 the entire run** (not just the tool call):
+>
+> 1. an **empty** schema — laravel/ai omits `parameters` altogether, and the API answers
+>    `Invalid schema for function 'FinishTool': In context=(), 'additionalProperties' is
+>    required to be supplied and to be false`;
+> 2. a **free-form `object()`** with no declared properties (e.g. a dynamic answers map).
+>
+> So an argument-free tool declares one `nullable()->required()` property (`finish.summary`,
+> and the Approvals tools' `include_comments_count` / `cursor`), and a dynamic map travels
+> as a JSON string (`fill_form.answers`). `tests/Unit/Bot/BotToolSchemaTest.php` pins this
+> on the ACTUAL mapped payload for every tool in the module — the scripted test agent calls
+> tools directly, so nothing else in the suite can catch a provider-invalid schema.
 
 A run ends when the agent calls a terminal tool (`ask_and_wait` or `finish`) or simply stops
 issuing tool calls (treated the same as an ordinary stop — run-state released to `idle`,
@@ -718,9 +945,12 @@ instructions and...").
 - There is no cross-task or cross-workspace reach: `read_attachments` only sees the current
   task's files; `generate_file` only attaches to the current task; comments/form fills only
   touch the current task.
-- **Approvals still gate advancement.** A task submitted via `finish` still goes through
-  `in_test` and, if a pipeline is attached, a real approval process — an injected instruction
-  cannot bypass human or AI review to reach `done` on its own.
+- **Approvals still gate advancement — where an approval exists.** With a pipeline attached,
+  `finish` stops at `in_test` and starts the real approval process; an injected instruction
+  cannot bypass that human or AI review to reach `done`. With **no pipeline attached** there
+  is no review to bypass: `finish` completes the task itself (that is the point of attaching
+  a pipeline). So the review guarantee comes from the TASK's configuration, not from the bot
+  — attach a pipeline to any task whose output must be checked before it counts as done.
 
 **Residual risk (accepted):** a sufficiently crafted page/attachment could still manipulate the
 bot's tone, cause it to post a misleading comment, or waste run budget — but it cannot escalate
@@ -817,6 +1047,27 @@ ADR-0036-bot-delegation-generation-sessions.md` for the design record):
 - `app/modules/Variables/Support/AiVoiceContext.php` — the ambient voice-directive holder (mirrors `MeterContext`)
 - `tests/Feature/BotSessionDelegationTest.php`, `tests/Feature/BotModuleBoundaryTest.php`, `tests/Feature/ShotListVoiceTest.php`
 
+**Visual identity module ("Wygląd")** (see "Visual identity module ('Wygląd')" above for the full endpoint
+contract, `docs/backend/generator-sessions-api.md` § "Frozen character visual identity" for how a delegation
+freezes it onto a session, `docs/decisions/ADR-0042-character-visual-identity.md` for the design record):
+
+- `app/modules/Bot/Models/Bot.php` — `visual`/`visualEnabled()`/`visualIdentity()`/`visualImages()` (the `MorphMany` resource-file relation)
+- `app/modules/Bot/Services/BotVisualIdentityService.php` — generate/attach/approve/remove, candidate-strip eviction, prompt composition
+- `app/modules/Bot/Http/Controllers/BotVisualController.php` — `generate`/`approve`/`destroyCandidate`
+- `app/modules/Bot/Http/Requests/GenerateBotVisualRequest.php`, `ApproveBotVisualRequest.php`, `DestroyBotVisualCandidateRequest.php`
+- `app/modules/Bot/Rules/BotVisualFile.php` — file-ownership validation (bot-owned, with an optional disk-native allowance for the reference)
+- `app/modules/Bot/Enums/BotVisualMode.php` — `reference`/`description`, and which metered channel each spends on
+- `app/modules/Bot/DTOs/BotVisualGenerationDTO.php`
+- `app/modules/Bot/Jobs/GenerateBotVisualJob.php` — the worker; rides `Disk\Services\ImageAiService::process()` with a materialization hook, never re-implements the image pipeline
+- `app/modules/Disk/Services/ImageAiService.php` — `prepare()`/`process()`/`produce()` (the shared, now RESUMABLE async image machinery both Disk and Bot ride), `generate()` (the null-image text→image mode)
+- `app/modules/Disk/Services/OpenAiImageEditClient.php` — `input_fidelity` now actually sent on every edit (fixed defect); the `size` parameter seam
+- `app/modules/Disk/Enums/DiskAiEditStatus.php` — the `safety_rejected` stored-only terminal state + `wireStatus()`/`errorCode()`
+- `app/modules/Generator/Support/SessionVisualIdentity.php` — the frozen overlay's normalized VO + security boundary (prose projections, fence-marker scrub reuse)
+- `app/modules/Generator/Services/SessionIdentityImageStore.php` — the per-character frozen-bytes store
+- `tests/Feature/BotVisualModuleTest.php` — the module's read/write/ownership/list-flags contract
+- `tests/Feature/BotVisualIdentityTest.php` — generate/curate endpoints, moderation, candidate eviction, the resumable-retry + throwing-hook hardening
+- `tests/Feature/GeneratorVisualIdentityTest.php` — the delegation freeze + render-time consumption (Generator-side; see `docs/backend/generator-sessions-api.md`)
+
 ---
 
 ## AI test seam — corrected for B4 (this replaces the earlier `Agent::fake()`-only description)
@@ -864,6 +1115,13 @@ its two different agents:
   terminal tool (`ask_and_wait` / `finish`) fires. This means a scripted test exercises the
   FULL real application path — dispatch → run-state claim → tool side-effects → run-state
   release — with only the LLM call itself replaced.
+
+  **Blind spot to respect:** because the scripted agent invokes tools directly, it never
+  serializes the tool SCHEMAS for a provider — so a schema OpenAI rejects passes every
+  feature test here and only fails in production (this is exactly how the `FinishTool`
+  strict-mode 400 shipped). `tests/Unit/Bot/BotToolSchemaTest.php` covers that gap by
+  asserting the mapped OpenAI payload of every tool in the module. Scripted steps may pass
+  `answers` either as the decoded map (as above) or as the JSON string the provider sends.
 
 Reuse this trait for any future agent flow: structured-output agents can usually use
 `Agent::fake()` directly; a multi-step tool-calling agent should follow the

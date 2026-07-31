@@ -53,6 +53,7 @@ import FormFileInput from '../forms/FormFileInput.vue';
 import FolderPickerPanel from '../disk/FolderPickerPanel.vue';
 import { useI18n } from '../../app/i18n';
 import { useTemplatesStore } from '../../app/stores/templates';
+import { useBotDirectoryStore, type BotDirectoryEntry } from '../../app/stores/botDirectory';
 import { stepIcon, stepLabel } from './workflowMeta';
 import { allValueVariables, stripVariableDirectives, toEditorVariablesTyped, variablesOfType } from './workflowVariables';
 import { resolveOperationCatalog } from './workflowConditions';
@@ -61,6 +62,7 @@ import { sanitizeStepKey, type StepDraft } from './workflowEditorModel';
 import { defaultSingleValue } from '../variables/consts';
 import { contentTypeLabel } from '../generator/templateMeta';
 import { STORYBOARD_MAX_SHOTS, type Template, type TemplateSlot } from '../generator/types';
+import type { BotStatus } from '../../ui/data/botStatus';
 import type { VariableDescriptorOption, VariableLiteralBase } from '../../ui/variables/types';
 import type {
   CatalogVariable,
@@ -707,6 +709,151 @@ function onSlotInput(name: string, value: WorkflowFieldValue | null): void {
   else setSlot(name, value);
 }
 
+// --- The optional session AUTHOR (a bot) ------------------------------------
+// The step may DELEGATE the session it creates to one of the workspace's bots: the bot's voice
+// lands in the generated copy and its approved likeness on the generated images, and the AI spend
+// is attributed to it. It is authorial configuration, NOT an execution capability — which is why
+// the picker is deliberately NOT `executable-only` and why an INACTIVE bot stays on the list with
+// its status shown: the run-time resolver does not filter by status either (a paused bot must not
+// silently change what a workflow was told to publish in its name).
+//
+// The bot NEVER fills the inputs here — automation slot-filling is the interactive delegation's
+// job. The mapping above stays the workflow author's.
+//
+// Facts about the chosen bot (its current NAME for the trigger, its STATUS, and the two visual
+// flags the "what it brings" line reads) come from the shared `botDirectory` store: one request per
+// distinct id, deduplicated + cached per session/workspace — never per keystroke — and NOT the
+// browse `useBotsStore`, whose `fetchBot` would stomp the global bot-detail view. Resolved LAZILY
+// (like the templates store above) so a create_task / create_form_report card never instantiates it.
+function botDirectory() {
+  return useBotDirectoryStore();
+}
+
+/** The chosen author's id, or null = no author (the run generates in the house voice). */
+const botId = computed<string | null>(() => idValue('bot_id'));
+
+/**
+ * Make sure we know everything the field renders about `id`. A plain `resolve` is enough for a
+ * never-seen id; an entry that was merely PRIMED (name + status from a picker page, e.g. the
+ * ai-text author panel earlier in this session) knows nothing about the visual module, and the
+ * "what this bot brings" line must never be GUESSED — so ask for the detail once, forced. A real
+ * read always fills `visual`, so this can happen at most once per id.
+ */
+async function ensureAuthorFacts(id: string | null): Promise<void> {
+  if (!id) return;
+  const store = botDirectory();
+  await store.resolve(id);
+  const entry = store.entry(id);
+  if (entry?.state === 'resolved' && entry.visual === null) await store.resolve(id, true);
+}
+
+// Resolve on hydration AND whenever the author changes (a re-pick, or an id restored from a saved
+// step). Guarded by type so no other step type ever touches the store.
+watch(
+  botId,
+  (id) => {
+    if (props.step.type !== 'generate_content') return;
+    void ensureAuthorFacts(id);
+  },
+  { immediate: true },
+);
+
+const authorEntry = computed(() => (botId.value ? botDirectory().entry(botId.value) : null));
+
+/**
+ * A DEFINITIVE verdict (404/403): the chosen author is gone, or was never ours. The directory
+ * separates this from a mere network failure, and the field MUST honour that distinction — this
+ * state is not "configured, name pending", it is BROKEN:
+ * `StoreWorkflowRequest::validateAuthorId` refuses the save, and a run would hard-fail. So nothing
+ * below may go on promising what this bot "brings".
+ */
+const authorMissing = computed(() => !!botId.value && authorEntry.value?.state === 'missing');
+
+/**
+ * We could NOT find out (network blip / 5xx). Deliberately NOT rendered as a deletion: the bot is
+ * probably fine, so the VOICE badge stays (a voice is true of EVERY bot) — but the name is never
+ * faked and the failure is stated with a retry, exactly as the ai-text author panel does.
+ */
+const authorUnresolved = computed(() => !!botId.value && authorEntry.value?.state === 'unresolved');
+
+/** Re-ask for an author whose last answer was inconclusive (the store gates re-tries itself). */
+function retryAuthor(): void {
+  void botDirectory().retry(botId.value);
+}
+
+/**
+ * The picker seed for a SAVED author (the write body carries only an id, so nothing else would
+ * know its name). Seeded ONLY once the name is actually known: BotSelect merges a late seed by
+ * ADDING unknown values, so seeding a placeholder first would cache that placeholder permanently.
+ * The trigger's own display is covered meanwhile by `botDisplayName` below.
+ */
+const botSeed = computed(() => {
+  const id = botId.value;
+  const entry = authorEntry.value;
+  if (!id || !entry?.name) return [];
+  return [{ id, name: entry.name, status: entry.status }];
+});
+
+/**
+ * What a bot picker's TRIGGER shows for a chosen id: the directory's resolved name first, then
+ * whatever label the picker itself already holds (a bot picked from a loaded page), then a neutral
+ * placeholder. NEVER the raw uuid — which is exactly what `Select.resolveOption` falls back to for
+ * a value it has no option for (an id off the current async page, one the picker's own filter can
+ * never return, or one that no longer exists at all).
+ *
+ * Shared by BOTH bot pickers on this card (the generate_content AUTHOR and the create_task BOT
+ * ASSIGNEE) so a saved id can never read as a uuid on one of them and as a name on the other.
+ */
+function botDisplayName(
+  entry: BotDirectoryEntry | null,
+  option: { value: string; label: string },
+): string {
+  if (entry?.name) return entry.name;
+  if (option.label && option.label !== option.value) return option.label;
+  return t('workflows.step.generate_content.botUnknownName');
+}
+function authorDisplayName(option: { value: string; label: string }): string {
+  return botDisplayName(authorEntry.value, option);
+}
+
+/**
+ * A bot picked from a LOADED page already told us its name + status, so feed the directory rather
+ * than let the seed above fall back to the placeholder while a request is in flight. Guarded so an
+ * id fallback (BotSelect labels an unknown value with the id itself) is never written back as a name.
+ */
+function onBotSelected(options: Array<{ value: string; label: string; status?: BotStatus | null }>): void {
+  const picked = options[0];
+  if (!picked || !botId.value || picked.value !== botId.value) return;
+  if (picked.label === picked.value) return;
+  botDirectory().prime({ id: picked.value, name: picked.label, status: picked.status ?? null });
+}
+
+/** The chosen author's visual facts, or null while they are not known yet (say nothing then). */
+const authorVisual = computed(() =>
+  authorEntry.value?.state === 'resolved' ? authorEntry.value.visual : null,
+);
+
+/**
+ * Whether the author also brings its LIKENESS — the module ON *and* an approved image, the exact
+ * pair the delegate dialog reads (`visual_enabled && visual_has_image`).
+ */
+const authorBringsLikeness = computed(
+  () => !!authorVisual.value?.enabled && !!authorVisual.value?.hasImage,
+);
+
+/**
+ * The one honest caveat for the chosen author, or null when there is nothing to say (it brings
+ * everything, or we do not know yet). Same precedence + wording as the interactive delegation, so a
+ * bot never means one thing here and another there.
+ */
+const authorLikenessCaveat = computed<string | null>(() => {
+  const visual = authorVisual.value;
+  if (!visual || (visual.enabled && visual.hasImage)) return null;
+  if (visual.enabled) return t('generator.sessions.delegate.brings.noLikeness');
+  if (visual.hasImage) return t('generator.sessions.delegate.brings.likenessOff');
+  return t('generator.sessions.delegate.brings.noLikeness');
+});
+
 // --- The optional Disk folder + session name --------------------------------
 /** Where produced images are exported; null = the Disk ROOT (the picker's current level). */
 const folderModel = computed<string | null>({
@@ -852,6 +999,48 @@ function onAssigneeSegment(v: 'user' | 'bot'): void {
   // Changing the target type clears a stale id (both-or-neither integrity).
   setCfg('assignee_type', null);
   setCfg('assignee_id', null);
+}
+
+/**
+ * The SAVED bot assignee's id (null unless this step actually assigns to a bot).
+ *
+ * Its picker is `executable-only` — it offers only bots that can run a task — which means a bot
+ * that LATER lost the task-execution module is never returned by the picker's own list request. The
+ * name therefore has to come from somewhere else, or `Select.resolveOption` labels the value with
+ * the value and the author reads a raw uuid. That "somewhere else" is the shared directory the
+ * generate_content author already uses: a plain per-id detail read, deduplicated + cached, which
+ * does NOT re-apply the executable filter (it is a lookup, not an offer — the filtering itself is
+ * untouched here).
+ */
+const assigneeBotId = computed<string | null>(() =>
+  props.step.type === 'create_task' && idValue('assignee_type') === 'bot'
+    ? idValue('assignee_id')
+    : null,
+);
+
+// Resolve on hydration AND whenever the assignee changes. A user assignee never touches the store.
+watch(
+  assigneeBotId,
+  (id) => {
+    if (id) void botDirectory().resolve(id);
+  },
+  { immediate: true },
+);
+
+const assigneeBotEntry = computed(() =>
+  assigneeBotId.value ? botDirectory().entry(assigneeBotId.value) : null,
+);
+
+/** Same late-seed discipline as the author's: only ever seeded with a name we actually know. */
+const assigneeBotSeed = computed(() => {
+  const id = assigneeBotId.value;
+  const entry = assigneeBotEntry.value;
+  if (!id || !entry?.name) return [];
+  return [{ id, name: entry.name, status: entry.status }];
+});
+
+function assigneeDisplayName(option: { value: string; label: string }): string {
+  return botDisplayName(assigneeBotEntry.value, option);
 }
 
 // --- create_form_report: sources (two-checkbox report vocabulary) ----------
@@ -1101,11 +1290,21 @@ const labelsModel = computed<string[]>({
             <BotSelect
               v-else
               :model-value="idValue('assignee_id')"
+              executable-only
+              :seed="assigneeBotSeed"
               class="min-w-0 flex-1"
               :aria-label="t('workflows.step.config.assigneeBot')"
               :placeholder="t('workflows.step.config.assigneePlaceholder')"
               @update:model-value="(v) => setAssignee(v)"
-            />
+            >
+              <!-- A saved assignee arrives as a bare id, and `executable-only` means the picker's
+                   own pages may never contain it (a bot that lost the task-execution module), so
+                   the trigger resolves its display name instead of falling back to the uuid. -->
+              <template #value="{ option }">
+                <Icon name="sparkles" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
+                <span class="truncate">{{ assigneeDisplayName(option) }}</span>
+              </template>
+            </BotSelect>
           </div>
         </FormField>
 
@@ -1508,6 +1707,100 @@ const labelsModel = computed<string[]>({
             </FormField>
           </div>
         </template>
+
+        <!-- The optional AUTHOR: the bot the produced session is delegated to. Deliberately NOT
+             `executable-only` — a voice/likeness is authorial configuration, not an execution
+             capability, so an inactive bot stays offered (with its status) exactly as the run-time
+             resolver treats it. Clearing the picker drops the key from the wire. -->
+        <FormField
+          :label="t('workflows.step.generate_content.botLabel')"
+          :description="t('workflows.step.generate_content.botHint')"
+          :error="fieldError('bot_id')"
+        >
+          <div class="flex flex-col gap-next-2">
+            <BotSelect
+              :model-value="botId"
+              status-badge
+              :seed="botSeed"
+              :aria-label="t('workflows.step.generate_content.botLabel')"
+              :placeholder="t('workflows.step.generate_content.botPlaceholder')"
+              @update:model-value="(v) => setCfg('bot_id', v)"
+              @update:selected="onBotSelected"
+            >
+              <!-- A saved author arrives as a bare id, so the trigger resolves its own display
+                   name rather than falling back to that id while the lookup is in flight. A
+                   DEFINITIVELY gone author is additionally badged, so the broken state is visible
+                   on the collapsed control itself — carried by glyph + words, not colour alone. -->
+              <template #value="{ option }">
+                <Icon name="sparkles" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
+                <span class="truncate">{{ authorDisplayName(option) }}</span>
+                <Badge
+                  v-if="authorMissing"
+                  variant="danger"
+                  tone="subtle"
+                  size="sm"
+                  icon="alert-triangle"
+                  class="shrink-0"
+                >
+                  {{ t('editor.aiText.authorMissingShort') }}
+                </Badge>
+              </template>
+            </BotSelect>
+
+            <!-- The chosen author, in the ONE state the directory reports.
+                 • MISSING (404/403) — a definitive verdict. The field is BROKEN, not configured:
+                   the save is refused and every run would fail, so the "brings" promise is
+                   WITHDRAWN entirely rather than shown next to an unresolvable name.
+                 • otherwise — what the bot BRINGS. The VOICE is true of every bot; the LIKENESS
+                   only when its module is on AND it has an approved image — the same two badges
+                   (and the same keys) the interactive delegation shows, so the promise never
+                   differs between the two ways of delegating a session. An UNRESOLVED lookup keeps
+                   the voice (still true) but says so, and offers a retry. -->
+            <template v-if="botId">
+              <Alert v-if="authorMissing" :key="`bot-missing-${botId}`" variant="danger" size="sm">
+                {{ t('workflows.step.generate_content.botMissing') }}
+              </Alert>
+
+              <template v-else>
+                <div class="flex flex-wrap items-center gap-next-1_5">
+                  <Badge variant="primary" tone="subtle" size="sm" icon="file-text">
+                    {{ t('generator.sessions.delegate.brings.voice') }}
+                  </Badge>
+                  <Badge
+                    v-if="authorBringsLikeness"
+                    variant="success"
+                    tone="subtle"
+                    size="sm"
+                    icon="palette"
+                  >
+                    {{ t('generator.sessions.delegate.brings.likeness') }}
+                  </Badge>
+                </div>
+                <p
+                  v-if="authorLikenessCaveat"
+                  class="flex items-start gap-next-1 text-next-xs text-next-muted-foreground"
+                  role="status"
+                >
+                  <Icon name="info" class="mt-px shrink-0" aria-hidden="true" />
+                  <span>{{ authorLikenessCaveat }}</span>
+                </p>
+
+                <!-- Could not verify — explicitly NOT "deleted", and retryable. -->
+                <div
+                  v-if="authorUnresolved"
+                  class="flex flex-wrap items-center gap-next-2 text-next-xs text-next-muted-foreground"
+                  role="status"
+                >
+                  <Icon name="alert-circle" class="shrink-0" aria-hidden="true" />
+                  <span>{{ t('editor.aiText.authorCheckFailed') }}</span>
+                  <Button variant="ghost" size="sm" leading-icon="rotate-ccw" @click="retryAuthor">
+                    {{ t('editor.aiText.authorRetry') }}
+                  </Button>
+                </div>
+              </template>
+            </template>
+          </div>
+        </FormField>
 
         <!-- Optional session NAME + the Disk destination for the produced images. -->
         <FormField

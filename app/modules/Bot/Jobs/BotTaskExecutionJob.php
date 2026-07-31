@@ -30,7 +30,8 @@ use Illuminate\Support\Facades\Log;
  * finalizes. The agent READS its context and ACTS through tools (post_comment,
  * fill_form, ask_and_wait, finish). A run ends when the agent calls a terminal tool or
  * simply stops:
- *   - finish   -> task submitted to in_test, run-state released to idle,
+ *   - finish   -> task submitted to in_test (approval attached) or moved to done (none),
+ *     run-state released to idle,
  *   - ask_and_wait -> task stays in_progress, run-state set to waiting (a human reply
  *     resumes it),
  *   - otherwise -> run-state released to idle (task stays in_progress).

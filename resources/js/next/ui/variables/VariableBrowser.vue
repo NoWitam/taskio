@@ -282,6 +282,11 @@ onBeforeUnmount(() => {
  * open one), ← collapses an open container (or steps out to the parent).
  *
  * @returns true when the event was consumed (the caller should not act on it further).
+ *
+ * DELIBERATELY NOT in `useOverlayStack`: the browser is not an overlay and does not dismiss itself —
+ * Escape only EMITS `close` and the HOST decides (VariableBrowserPopover's panel, the `{` caret
+ * popup, an inline panel that is not dismissible at all). Registering here would put an entry in the
+ * stack for a component that may not even be floating, and would double up with the host's own.
  */
 function handleKey(event: KeyboardEvent, origin: 'body' | 'query' = 'body'): boolean {
   if (event.key === 'Escape') {

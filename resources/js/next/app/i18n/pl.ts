@@ -1349,6 +1349,8 @@ export const pl: MessageSchema = {
     placeholderMultiple: 'Wybierz boty',
     search: 'Szukaj botów…',
     ariaLabel: 'Wybierz boty',
+    // Widoczne, gdy lista pokazuje tylko boty WYKONUJĄCE zadania i żaden się nie kwalifikuje.
+    emptyExecutable: 'Żaden bot nie może jeszcze wykonywać zadań — włącz w bocie moduł wykonywania zadań.',
   },
 
   // PipelineSelect (globalny wybór ścieżki akceptacji).
@@ -1989,14 +1991,51 @@ export const pl: MessageSchema = {
     aiText: {
       chipFallback: 'Tekst AI',
       editTitle: 'Edytuj tekst AI',
-      persona: 'Postać',
-      selectPersona: 'Wybierz personę',
-      personaHint: 'Persony pomagają dobrać styl wypowiedzi AI.',
+      // AUTOR bloku (bot). Wnosi GŁOS, nie wiedzę i nie narzędzia.
+      author: 'Autor',
+      authorPlaceholder: 'Bez autora (ton neutralny)',
+      authorHint:
+        'Bot wnosi swój głos: ton, styl i słownictwo. Nie wnosi swojej wiedzy ani narzędzi.',
+      authorAria: 'Wybierz bota-autora tego tekstu',
+      // (placeholder wyszukiwarki w liście pochodzi z BotSelect: `botSelect.search`)
+      authorClear: 'Wyczyść autora',
+      authorInactive: 'Ten bot jest nieaktywny. Jego głos i tak zostanie użyty w tym bloku.',
+      authorMissing: 'Ten autor już nie istnieje. Blok użyje domyślnego, neutralnego tonu.',
+      authorMissingShort: 'Autor niedostępny',
+      authorUnknownName: 'Nieznany autor',
+      authorCheckFailed: 'Nie udało się sprawdzić autora.',
+      authorRetry: 'Spróbuj ponownie',
+      authorEmptyTitle: 'Brak botów w tym obszarze roboczym',
+      authorEmptyBody:
+        'Bez autora blok pisze neutralnym tonem. Utwórz bota, żeby nadać mu głos.',
+      authorEmptyAction: 'Otwórz Boty w nowej karcie',
+      authorNoResults: 'Brak botów pasujących do „{query}”.',
+      authorClearSearch: 'Wyczyść wyszukiwanie',
+      // TON ZASTANY (wycofane `personaId`): tylko do odczytu, można wyczyścić, nie da się wybrać.
+      legacyToneBadge: 'Ton zastany',
+      legacyToneHint:
+        'Ten blok zapisano ze starym tonem. Nadal działa, ale nie da się go już wybrać ręcznie.',
+      legacyToneClear: 'Wyczyść ton',
+      legacyToneClearAria: 'Wyczyść ton zastany: {tone}',
+      legacyToneCleared: 'Ton wyczyszczony — po zapisie blok użyje tonu neutralnego.',
+      legacyToneOverridden: 'Autor ma pierwszeństwo przed tonem zastanym.',
+      tone: {
+        neutral: 'Neutralny',
+        friendly: 'Przyjazny',
+        formal: 'Formalny',
+        concise: 'Zwięzły',
+        unknown: 'Nieznany ton',
+      },
+      chipAria: {
+        plain: 'Tekst AI. Otwórz edycję.',
+        withAuthor: 'Tekst AI, autor: {name}. Otwórz edycję.',
+        missingAuthor:
+          'Tekst AI. Wybrany autor już nie istnieje — zostanie użyty ton domyślny. Otwórz edycję.',
+        withTone: 'Tekst AI, ton zastany: {tone}. Otwórz edycję.',
+      },
       prompt: 'Prompt',
       promptPlaceholder: 'Opisz, co AI ma wygenerować…',
       promptHint: 'Możesz używać pełnego Markdownu, zmiennych oraz bloków IF.',
-      knowledgeLabels: 'Etykiety wiedzy',
-      selectLabels: 'Wybierz etykiety',
       save: 'Zapisz',
       cancel: 'Anuluj',
       remove: 'Usuń',
@@ -2207,9 +2246,8 @@ export const pl: MessageSchema = {
       text: 'Tekst',
       taskExecution: 'Wykonywanie zadań',
       knowledge: 'Wiedza',
-      visual: 'Wizualny',
+      visual: 'Wygląd',
       audio: 'Audio',
-      visualSoon: 'Wizualny · wkrótce',
       audioSoon: 'Audio · wkrótce',
       state: {
         required: 'Wymagany',
@@ -2228,6 +2266,14 @@ export const pl: MessageSchema = {
     card: {
       noDescription: 'Brak opisu',
       open: 'Otwórz {name}',
+      // Chip modułu Wygląd — GOTOWOŚĆ OPERACYJNA (moduł włączony ORAZ zatwierdzony wizerunek), a nie
+      // „czy skonfigurowano". Oba stany pośrednie mają własny komunikat, bo oba cicho zmieniają wynik.
+      visualReady: 'Wygląd',
+      visualReadyTitle: 'Moduł włączony, wizerunek zatwierdzony — bot pojawi się na obrazach.',
+      visualNoImage: 'Wygląd bez wizerunku',
+      visualNoImageTitle: 'Moduł włączony, ale bot nie ma zatwierdzonego wizerunku.',
+      visualOff: 'Wygląd wyłączony',
+      visualOffTitle: 'Bot ma wizerunek, ale moduł jest wyłączony — obrazy powstaną bez postaci.',
     },
     actions: {
       menu: 'Akcje bota',
@@ -2354,7 +2400,14 @@ export const pl: MessageSchema = {
       noKnowledge: 'Brak wpisów wiedzy',
       taskExecutionNotConfigured: 'Wykonywanie zadań nie zostało skonfigurowane dla tego bota.',
       comingSoon: 'Wkrótce',
-      visualPlaceholder: 'Tożsamość wizualna (awatar, grafiki) pojawi się w przyszłej wersji.',
+      // Moduł Wygląd (podgląd tylko do odczytu).
+      visualNotConfigured: 'Wygląd nie został skonfigurowany dla tego bota.',
+      visualNoImage: 'Brak zatwierdzonego wizerunku.',
+      visualDescriptor: 'Kim jest postać',
+      visualWardrobe: 'Domyślny strój',
+      visualAesthetic: 'Estetyka',
+      visualProhibitions: 'Czego nigdy nie pokazywać',
+      visualImageAlt: 'Zatwierdzony wizerunek bota {name}',
       audioPlaceholder: 'Ustawienia głosu i dźwięku pojawią się w przyszłej wersji.',
       activityTitle: 'Zadania i aktywność',
       activityDescription: 'Wykonywanie zadań i historia działań pojawią się wraz z modułem wykonywania.',
@@ -2494,8 +2547,114 @@ export const pl: MessageSchema = {
         contentPlaceholder: 'Co bot powinien wiedzieć…',
         maxReached: 'Możesz dodać maksymalnie 50 wpisów.',
       },
-      visualHint: 'Jak bot wygląda — awatar i grafika.',
-      visualPlaceholder: 'Konfiguracja tożsamości wizualnej bota pojawi się w przyszłej wersji.',
+      visualHint:
+        'Wizerunek postaci: obraz tworzony przez AI, którego bot używa na grafikach w sesjach generatora.',
+      // Moduł „Wygląd" — wizerunek postaci (R2 sub-etap 3).
+      visual: {
+        offHint:
+          'Moduł jest wyłączony — wizerunek nie trafi do sesji. Możesz przygotować go teraz i włączyć później.',
+        identityLegend: 'Opis postaci',
+        descriptorLabel: 'Kim jest postać',
+        descriptorHint: 'Jedno zdanie: wiek, płeć, typ urody, fryzura. To nie druga persona.',
+        descriptorPlaceholder: 'np. kobieta ok. 30 lat, ciemne włosy do ramion, naturalny makijaż',
+        wardrobeLabel: 'Domyślny strój',
+        wardrobeHint:
+          'Najskuteczniejsza obrona przed odmową moderacji dostawcy: ta sama postać w stroju kąpielowym bywa odrzucana, a w sukience przechodzi.',
+        wardrobePlaceholder: 'np. prosta letnia sukienka, delikatna biżuteria',
+        aestheticLabel: 'Estetyka',
+        aestheticHint: 'Paleta, medium i światło — dotyczy każdego obrazu tej postaci.',
+        aestheticPlaceholder: 'np. ciepła paleta, fotografia naturalna, miękkie światło dzienne',
+        prohibitionsLabel: 'Czego nigdy nie pokazywać',
+        prohibitionsHint: 'Zakazy wizualne — trafiają do promptu jako lista.',
+        prohibitionsPlaceholder: 'np. logotypy marek',
+        prohibitionsAdd: 'Dodaj zakaz',
+        prohibitionsEmpty: 'Brak zakazów wizualnych.',
+        prohibitionsRemove: 'Usuń zakaz {value}',
+
+        createLegend: 'Nowy wizerunek',
+        modeLabel: 'Skąd wziąć obraz',
+        mode: {
+          reference: 'Z referencji',
+          referenceHint: 'Zachowaj twarz z gotowego zdjęcia.',
+          description: 'Z opisu',
+          descriptionHint: 'Wymyśl postać na podstawie pól powyżej.',
+        },
+        referenceLabel: 'Zdjęcie referencyjne',
+        referenceUploadTitle: 'Przeciągnij zdjęcie albo kliknij, żeby wybrać',
+        referenceUploadHint: 'JPG, PNG lub WEBP, do 25 MB.',
+        referencePick: 'Wybierz z Dysku',
+        referenceCurrent: 'Aktualna referencja',
+        referenceClear: 'Usuń referencję',
+        referenceRequired: 'Wybierz zdjęcie referencyjne albo przełącz na tryb „Z opisu”.',
+        instructionLabel: 'Wskazówka do tej generacji (opcjonalnie)',
+        instructionHint: 'Dotyczy tylko tego jednego obrazu — np. „ujęcie do pasa”, „patrzy w bok”.',
+        instructionPlaceholder: 'np. ujęcie do pasa, neutralne tło',
+        generate: 'Generuj wizerunek',
+        generateSavesHint: 'Generowanie najpierw zapisze bota — obraz powstaje z zapisanego opisu.',
+        generateNeedsMaterial:
+          'Uzupełnij opis postaci, strój lub estetykę — inaczej nie ma z czego rysować.',
+        generateNeedsBot: 'Zapisz bota, żeby wygenerować wizerunek.',
+        generateBusy: 'Trwa generowanie — poczekaj na wynik.',
+        evictionWarning:
+          'Masz komplet {max} wizerunków. Kolejna generacja zastąpi najstarszy niezatwierdzony.',
+
+        status: {
+          saving: 'Zapisywanie bota…',
+          queued: 'W kolejce…',
+          processing: 'Tworzenie wizerunku — zwykle 30–60 sekund.',
+          background: 'Możesz zamknąć edytor — generowanie dokończy się w tle.',
+          slow: 'Trwa dłużej niż zwykle.',
+          check: 'Sprawdź teraz',
+          dismiss: 'Ukryj',
+        },
+
+        errors: {
+          safety:
+            'AI odmówiło wydania tego obrazu ze względu na zasady dotyczące treści. Zmień opis postaci lub jej strój i spróbuj ponownie.',
+          failed: 'Nie udało się wygenerować wizerunku. Spróbuj ponownie.',
+          dailyCap: 'Wyczerpano dzienny limit generacji obrazów w tym workspace. Spróbuj jutro.',
+          budget: 'Wyczerpano miesięczny budżet AI tego workspace’u.',
+          budgetManage: 'Podnieś limit',
+          budgetContactOwner: 'Skontaktuj się z właścicielem workspace’u.',
+          throttled: 'Za dużo prób pod rząd. Odczekaj chwilę.',
+          network: 'Brak połączenia z serwerem. Spróbuj ponownie.',
+          forbidden: 'Tylko twórca bota może zmieniać jego wygląd.',
+          retry: 'Spróbuj ponownie',
+        },
+
+        candidates: {
+          legend: 'Wizerunki ({count}/{max})',
+          empty: 'Ten bot nie ma jeszcze żadnego wizerunku.',
+          emptyHint: 'Wygeneruj pierwszy obraz poniżej.',
+          itemLabel: 'Wizerunek {n} z {count} — ustaw jako wizerunek',
+          canonicalItemLabel: 'Wizerunek {n} z {count} — zatwierdzony',
+          canonicalBadge: 'Zatwierdzony',
+          approve: 'Ustaw jako wizerunek',
+          unapprove: 'Cofnij zatwierdzenie',
+          unapproveConfirmTitle: 'Cofnąć zatwierdzenie?',
+          unapproveConfirmBody:
+            'Bot przestanie mieć wizerunek, a edytor zapisze też pozostałe zmiany.',
+          preview: 'Powiększ',
+          previewTitle: 'Wizerunek {n}',
+          remove: 'Usuń wizerunek {n}',
+          removeCanonical:
+            'Nie można usunąć zatwierdzonego wizerunku — najpierw cofnij zatwierdzenie.',
+          removeConfirmTitle: 'Usunąć ten wizerunek?',
+          removeConfirmBody: 'Obraz zostanie trwale usunięty.',
+          oldestHint: 'Najstarszy — zostanie zastąpiony przy kolejnej generacji.',
+          imageAlt: 'Wizerunek bota {name}, wariant {n}',
+          loadError: 'Nie udało się wczytać obrazu.',
+        },
+
+        toasts: {
+          generateStarted: 'Generowanie rozpoczęte.',
+          generated: 'Nowy wizerunek jest gotowy.',
+          approved: 'Ustawiono wizerunek bota.',
+          unapproved: 'Cofnięto zatwierdzenie wizerunku.',
+          removed: 'Wizerunek usunięty.',
+          error: 'Nie udało się wykonać tej operacji.',
+        },
+      },
       audioHint: 'Jak bot brzmi — głos i dźwięk.',
       audioPlaceholder: 'Konfiguracja audio bota pojawi się w przyszłej wersji.',
       validation: {
@@ -2651,6 +2810,13 @@ export const pl: MessageSchema = {
           removeStep: 'Usuń krok',
           summaryLabel: 'Plan',
           noBase: 'Nie wybrano jeszcze bazy.',
+          // Czy postać zleconej sesji może pojawić się na TYM obrazie. „auto" = brak klucza na drucie.
+          character: {
+            label: 'Postać',
+            auto: 'Automatycznie — gdy sesja ma postać',
+            never: 'Nigdy w tej części',
+            hint: 'Wybierz „nigdy” dla ujęć produktowych, logotypów i wykresów.',
+          },
         },
         pixelOp: {
           grayscale: 'Odcienie szarości',
@@ -2756,11 +2922,15 @@ export const pl: MessageSchema = {
       archive: 'Archiwizuj',
       unarchive: 'Przywróć z archiwum',
       menu: 'Akcje sesji',
+      // JEDEN słownik pokaż/ukryj dla wszystkich zwijanych kart tury (dane wejściowe / kierunek /
+      // wynik / raport bota) — duplikaty per karta rozjechałyby się.
+      toggle: {
+        expand: 'Pokaż',
+        collapse: 'Ukryj',
+      },
       direction: {
         title: 'Kierunek kreatywny',
         derivedCaption: 'Wyprowadzony automatycznie dla tego uruchomienia.',
-        expand: 'Pokaż',
-        collapse: 'Ukryj',
         durationValue: '~{seconds} s',
         labels: {
           message: 'Przekaz',
@@ -2787,6 +2957,13 @@ export const pl: MessageSchema = {
         dialogTitle: 'Zleć botowi',
         dialogSubtitle: 'Pozwól botowi wypełnić dane swoim głosem. Zanim wygenerujesz, sprawdzisz je.',
         pickBot: 'Wybierz bota',
+        // Co bot WNOSI do sesji — głos zawsze, wizerunek tylko gdy moduł włączony i obraz zatwierdzony.
+        brings: {
+          voice: 'Głos w tekstach',
+          likeness: 'Wizerunek na obrazach',
+          noLikeness: 'Ten bot nie ma zatwierdzonego wizerunku — obrazy powstaną bez postaci.',
+          likenessOff: 'Ten bot ma wizerunek, ale moduł Wygląd jest wyłączony.',
+        },
         fillMode: {
           legend: 'Co ma zrobić bot?',
           gaps: 'Uzupełnij tylko puste pola',
@@ -2843,6 +3020,20 @@ export const pl: MessageSchema = {
           undoError: 'Nie udało się cofnąć zlecenia. Spróbuj ponownie.',
         },
       },
+      // Sygnały POSTACI: sesja zamroziła wizerunek autora, więc jej obrazy rysują tę samą osobę.
+      character: {
+        chip: 'Wizerunek postaci',
+        chipTitle: 'Obrazy tej sesji korzystają z zatwierdzonego wizerunku autora.',
+        shotBadge: 'Z postacią',
+        shotBadgeTitle: 'Ten kadr rysowany jest z wizerunku postaci.',
+        shotSuffix: 'z postacią',
+        // Odmowa moderacji dostawcy — jedyna awaria obrazu, którą użytkownik naprawdę może naprawić.
+        safetyFailed:
+          'AI odmówiło wydania tego kadru ze względu na zasady dotyczące treści. Zmień opis postaci lub jej strój.',
+        openAppearance: 'Wygląd bota',
+        openAppearanceTitle:
+          'Opis i strój postaci wpływają na to, czy dostawca wyda obraz.',
+      },
       picker: {
         title: 'Wybierz szablon',
         subtitle: 'Rozpocznij sesję z jednego ze swoich przepisów na treść.',
@@ -2869,7 +3060,6 @@ export const pl: MessageSchema = {
       setup: {
         title: 'Dane wejściowe',
         edit: 'Edytuj dane',
-        collapse: 'Zwiń',
         summary: 'Dane wejściowe: {count}',
         dirty: 'Zmieniono po generacji',
         noValue: 'Brak wartości',
@@ -2925,9 +3115,16 @@ export const pl: MessageSchema = {
         voiceover: 'Narracja',
         seconds: '{n}s',
         shotImageAlt: 'Obraz ujęcia {n}',
+        // Kadr storyboardu renderowany przez własne zadanie kolejki — sesja pobrana w trakcie biegu
+        // niesie kadry `pending`/`rendering`, które muszą mieć własny stan ładowania.
+        framePending: 'Kadr w przygotowaniu…',
         parseFallback: 'Nie udało się ustrukturyzować tej odpowiedzi — pokazujemy surowy tekst.',
         storyboardEmpty: 'Brak ujęć — najpierw wygeneruj listę ujęć.',
         regenerateStoryboard: 'Wygeneruj ponownie wszystkie ujęcia',
+        // Zapowiedzi treści na zwiniętej karcie (z danych, które karta już ma — zero nowych żądań).
+        previewShots: 'Ujęcia: {count}',
+        previewImage: 'Obraz gotowy',
+        previewEmpty: 'Nic jeszcze nie powstało.',
         stale: 'Może być nieaktualne',
         staleHint: 'Scenariusz się zmienił — wygeneruj ponownie, aby odświeżyć ten element.',
         saveToDiskTitle: 'Zapisz na Dysk',
@@ -3745,6 +3942,18 @@ export const pl: MessageSchema = {
           added: 'Nowe wymagane wejścia: {slots}.',
           removeUnknown: 'Wyczyść usunięte wejścia',
         },
+        // Opcjonalny AUTOR sesji (bot). To, co bot WNOSI, opisują klucze samego zlecania
+        // (generator.sessions.delegate.brings.*), żeby obietnica była identyczna na obu ścieżkach.
+        botLabel: 'Autor (bot)',
+        botHint: 'Bot, w imieniu którego generuje ten krok: nadaje tekstom swój głos, a obrazom swój wizerunek. Nie wypełnia danych wejściowych powyżej — te mapujesz sam.',
+        botPlaceholder: 'Bez autora (domyślny głos)',
+        botUnknownName: 'Nieznany bot',
+        // DEFINITYWNE 404/403 dla wybranego autora. Świadomie NIE klucz panelu ai-text
+        // (`editor.aiText.authorMissing`): tamten obiecuje „blok użyje domyślnego, neutralnego
+        // tonu”, co jest prawdą dla bloku tekstu, a FAŁSZEM tutaj — krok z usuniętym autorem
+        // zostaje odrzucony przy zapisie (StoreWorkflowRequest::validateAuthorId) i pada w runie.
+        botMissing:
+          'Ten bot już nie istnieje w tym obszarze roboczym. Wybierz innego autora albo wyczyść pole — dopóki jest ustawiony, zapis zostanie odrzucony, a każde uruchomienie tego kroku zakończy się błędem.',
         nameLabel: 'Nazwa',
         nameHint: 'Opcjonalna nazwa generowania tworzonego przez ten krok. Zostaw puste, aby użyć nazwy szablonu.',
         namePlaceholder: 'np. Cotygodniowy post',

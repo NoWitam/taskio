@@ -17,6 +17,10 @@ vi.mock('../../../app/lib/api', () => ({
   api: { get: vi.fn(async () => new Blob([], { type: 'image/png' })) },
 }));
 
+// The "bot appearance" repair action deep-links into the bots editor.
+const routerPush = vi.hoisted(() => vi.fn());
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }));
+
 import { api } from '../../../app/lib/api';
 import SessionResultCard from '../session/SessionResultCard.vue';
 import type { ContentTypePart } from '../types';
@@ -438,6 +442,113 @@ describe('SessionResultCard', () => {
     wrapper.unmount();
   });
 
+  // --- Collapse toggle (owner note #2) --------------------------------------
+  // The card carries the same show/hide affordance as the other turn cards, but starts EXPANDED and hides
+  // its body with `v-show`. The v-show rule is load-bearing: SessionPartImage owns an IntersectionObserver
+  // and a blob object-URL per image, so a `v-if` regression would re-fetch every image on each collapse and
+  // dangle `aria-controls`. These tests pin that.
+  describe('collapse', () => {
+    /** The header's show/hide control (the action row lives in the footer, outside header actions). */
+    const toggleOf = (wrapper: ReturnType<typeof mountCard>) =>
+      wrapper.get('.next-card__header-actions button');
+
+    it('starts EXPANDED — the result is the artifact the user came for', () => {
+      const wrapper = mountCard({
+        part: part(),
+        result: { kind: 'text_body', status: 'ok', text: 'Hello world' },
+      });
+      const toggle = toggleOf(wrapper);
+      expect(toggle.attributes('aria-expanded')).toBe('true');
+      expect(toggle.text()).toBe('Hide');
+      const body = wrapper.get(`#${toggle.attributes('aria-controls')}`);
+      expect((body.element as HTMLElement).style.display).not.toBe('none');
+      wrapper.unmount();
+    });
+
+    it('collapses and re-expands, tracking aria-expanded against a RESOLVING aria-controls', async () => {
+      const wrapper = mountCard({
+        part: part(),
+        result: { kind: 'text_body', status: 'ok', text: 'Hello world' },
+      });
+      const selector = `#${toggleOf(wrapper).attributes('aria-controls')}`;
+
+      await toggleOf(wrapper).trigger('click');
+      expect(toggleOf(wrapper).attributes('aria-expanded')).toBe('false');
+      expect(toggleOf(wrapper).text()).toBe('Show');
+      expect((wrapper.get(selector).element as HTMLElement).style.display).toBe('none');
+
+      await toggleOf(wrapper).trigger('click');
+      expect(toggleOf(wrapper).attributes('aria-expanded')).toBe('true');
+      expect((wrapper.get(selector).element as HTMLElement).style.display).not.toBe('none');
+      wrapper.unmount();
+    });
+
+    it('collapsing HIDES but never UNMOUNTS the body — the image is not re-fetched (v-if guard)', async () => {
+      const wrapper = mountCard({
+        part: part({ key: 'image', kind: 'image_plan', label: 'Image' }),
+        result: { kind: 'image_plan', status: 'ok', image: { mime: 'image/png', width: 100, height: 80 } },
+      });
+      await flushPromises();
+      expect(apiMock.get).toHaveBeenCalledTimes(1);
+
+      const selector = `#${toggleOf(wrapper).attributes('aria-controls')}`;
+      await toggleOf(wrapper).trigger('click');
+      await flushPromises();
+
+      // The body element (and the <img> inside it) survives the collapse…
+      expect(wrapper.find(selector).exists()).toBe(true);
+      expect(wrapper.find('img').exists()).toBe(true);
+
+      await toggleOf(wrapper).trigger('click');
+      await flushPromises();
+      // …so re-expanding costs nothing: still exactly one blob fetch.
+      expect(apiMock.get).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+
+    it('keeps the whole-part action row reachable while collapsed (it lives in the footer)', async () => {
+      const wrapper = mountCard({
+        part: part(),
+        result: { kind: 'text_body', status: 'ok', text: 'hi', version: 2 },
+        partHistory: { can_undo: true, undo_depth: 1 },
+      });
+      await toggleOf(wrapper).trigger('click');
+
+      const footer = wrapper.get('.next-card__footer');
+      expect((footer.element as HTMLElement).style.display).not.toBe('none');
+      expect(footer.find('button[aria-label="Regenerate"]').exists()).toBe(true);
+      expect(footer.find('button[aria-label="Undo"]').attributes('disabled')).toBeUndefined();
+      wrapper.unmount();
+    });
+
+    it('shows a one-line teaser when collapsed — text: the first line; storyboard: the shot count', async () => {
+      const textCard = mountCard({
+        part: part(),
+        result: { kind: 'text_body', status: 'ok', text: '# Spring promo\n\nBody copy here.' },
+      });
+      await toggleOf(textCard).trigger('click');
+      // Asserted on the HEADER: the body stays mounted, so a whole-wrapper match would prove nothing.
+      expect(textCard.get('.next-card__header').text()).toContain('Spring promo');
+      textCard.unmount();
+
+      const storyboard = mountCard({ part: storyboardPart(), result: twoShots() });
+      await flushPromises();
+      await toggleOf(storyboard).trigger('click');
+      expect(storyboard.get('.next-card__header').text()).toContain('2 shots');
+      storyboard.unmount();
+    });
+
+    it('teases the ERROR of a failed part (the reason to open it)', async () => {
+      const wrapper = mountCard({
+        part: part(),
+        result: { kind: 'text_body', status: 'failed', error: 'boom on this part' },
+      });
+      await toggleOf(wrapper).trigger('click');
+      expect(wrapper.get('.next-card__header').text()).toContain('boom on this part');
+      wrapper.unmount();
+    });
+  });
+
   // --- Stale hint (Phase A cross-part coherence) ----------------------------
   it('stale: a downstream part flagged stale shows a non-color-only "may be out of date" badge', () => {
     const wrapper = mountCard({
@@ -445,6 +556,163 @@ describe('SessionResultCard', () => {
       result: { kind: 'storyboard', status: 'ok', shots: [], stale: true },
     });
     expect(wrapper.text()).toContain('May be out of date');
+    wrapper.unmount();
+  });
+
+  // --- In-flight frames (the distributed-frames stage) ----------------------
+  // A storyboard's frames render in SEPARATE queue jobs, so a session fetched mid-run legitimately
+  // carries `pending` / `rendering` shots. Before this arm they rendered as an empty hole: the beat's
+  // text with nothing where the picture goes, and no way to tell "still coming" from "nothing here".
+  it('renders a placeholder of the same geometry for a frame that is still being rendered', async () => {
+    const sb = {
+      kind: 'storyboard' as const,
+      status: 'ok' as const,
+      shots: [
+        { index: 0, visual: 'wide shot', voiceover: 'a', seconds: 3, image_status: 'pending' },
+        { index: 1, visual: 'close up', voiceover: 'b', seconds: 2, image_status: 'rendering' },
+      ],
+    };
+    const wrapper = mountCard({ part: storyboardPart(), result: sb });
+    await flushPromises();
+
+    expect(wrapper.findAll('[data-test="shot-frame-pending"]')).toHaveLength(2);
+    expect(wrapper.text()).toContain('Frame in progress…');
+    // The beats themselves are still readable while their images are on the way.
+    expect(wrapper.text()).toContain('wide shot');
+    // No image request is made for a frame that has none yet.
+    expect(apiMock.get).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  // --- Character signals (R2 sub-stage 3) ----------------------------------
+  it('marks the shots drawn from the session CHARACTER — and only when the session has one', async () => {
+    const sb = {
+      kind: 'storyboard' as const,
+      status: 'ok' as const,
+      shots: [
+        { index: 0, visual: 'the creator to camera', voiceover: 'a', seconds: 3, image_status: 'ok', part_key: 'storyboard.0', features_character: true },
+        { index: 1, visual: 'the product alone', voiceover: 'b', seconds: 2, image_status: 'ok', part_key: 'storyboard.1', features_character: false },
+      ],
+    };
+
+    // Without a character the flag means nothing — no marker at all.
+    const plain = mountCard({ part: storyboardPart(), result: sb });
+    await flushPromises();
+    expect(plain.text()).not.toContain('With character');
+    plain.unmount();
+
+    const wrapper = mountCard({ part: storyboardPart(), result: sb, hasCharacterImage: true });
+    await flushPromises();
+    // Exactly one shot is marked — the one the model flagged.
+    expect(wrapper.findAll('.next-badge').filter((b) => b.text() === 'With character')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('promotes a MODERATION refusal over the generic prose, and offers the appearance as the fix', async () => {
+    const sb = {
+      kind: 'storyboard' as const,
+      status: 'ok' as const,
+      shots: [
+        {
+          index: 0,
+          visual: 'the creator to camera',
+          voiceover: 'a',
+          seconds: 3,
+          image_status: 'failed',
+          image_error: 'The image could not be produced.',
+          // The per-SHOT key — namespaced `image_*` like `image_error`. The whole-part fixture below
+          // uses `error_code`; asserting BOTH shapes is what catches a FE/BE key drift between them.
+          image_error_code: 'image_safety',
+          features_character: true,
+        },
+      ],
+    };
+    const wrapper = mountCard({
+      part: storyboardPart(),
+      result: sb,
+      hasCharacterImage: true,
+      botAuthorId: 'bot-9',
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('content policy');
+    expect(wrapper.text()).not.toContain('The image could not be produced.');
+
+    const action = wrapper.findAll('button').find((b) => b.text().includes('Bot appearance'))!;
+    await action.trigger('click');
+    // Deep-links into the bot editor's Wygląd module — where the description + wardrobe live.
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'next.bots',
+      query: { bot: 'bot-9', botModule: 'visual' },
+    });
+    wrapper.unmount();
+  });
+
+  it('offers the appearance action on CONTEXT, not on the error text — and never without a character', async () => {
+    const failedNonCharacter = {
+      kind: 'storyboard' as const,
+      status: 'ok' as const,
+      shots: [
+        { index: 0, visual: 'a chart', voiceover: 'a', seconds: 3, image_status: 'failed', image_error: 'boom', features_character: false },
+      ],
+    };
+    const wrapper = mountCard({
+      part: storyboardPart(),
+      result: failedNonCharacter,
+      hasCharacterImage: true,
+      botAuthorId: 'bot-9',
+    });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('Bot appearance');
+    wrapper.unmount();
+
+    // A character shot, but nothing to link to (an undelegated session) → no dead action.
+    const noAuthor = mountCard({
+      part: storyboardPart(),
+      result: {
+        ...failedNonCharacter,
+        shots: [{ ...failedNonCharacter.shots[0], features_character: true }],
+      },
+      hasCharacterImage: true,
+    });
+    await flushPromises();
+    expect(noAuthor.text()).not.toContain('Bot appearance');
+    noAuthor.unmount();
+  });
+
+  it('promotes a moderation refusal on a SCENE image too (the third arm)', async () => {
+    const wrapper = mountCard({
+      part: part({ key: 'scenes', kind: 'scene_plan', label: 'Scenes' }),
+      result: {
+        kind: 'scene_plan',
+        status: 'ok',
+        scenes: [
+          {
+            narration: 'A scene.',
+            image_status: 'failed',
+            image_error: 'The image could not be produced.',
+            image_error_code: 'image_safety',
+          },
+        ],
+      },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain('content policy');
+    expect(wrapper.text()).not.toContain('The image could not be produced.');
+    wrapper.unmount();
+  });
+
+  it('promotes a moderation refusal on a whole image PART too', () => {
+    const wrapper = mountCard({
+      part: part({ key: 'image', kind: 'image_plan', label: 'Image' }),
+      result: {
+        kind: 'image_plan',
+        status: 'failed',
+        error: 'The image could not be produced.',
+        error_code: 'image_safety',
+      },
+    });
+    expect(wrapper.text()).toContain('content policy');
     wrapper.unmount();
   });
 });

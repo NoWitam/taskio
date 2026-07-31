@@ -2,11 +2,17 @@
 // SessionSlotSetupCard — the opening, collapsible "Setup" turn of the session chat (owner decision #2).
 //
 // The typed slot form authored AS the opening message: EXPANDED while the session is a `draft`, then
-// COLLAPSED to a one-line summary of input chips after the first generate — re-expandable on demand and
+// COLLAPSED to a summary of the entered values after the first generate — re-expandable on demand and
 // still editable during refinement (a `ready` session). A `modified` marker (Badge variant="modified")
 // shows when a value changed since the last generate. It reuses `SlotValuesForm` (→ the shared
-// `TypedLiteralInput`) for the inputs; the summary chips read straight from the value map, so they
-// render even before the source template's descriptors have loaded.
+// `TypedLiteralInput`) for the inputs; the summary reads straight from the value map, so it renders
+// even before the source template's descriptors have loaded.
+//
+// The summary is a DEFINITION LIST, not chips. Real slot values are whole paragraphs (a brief, an
+// audience description — hundreds of characters), and a full-radius pill wrapping onto four lines with
+// its label drifting off to the left reads as broken layout. A `dt`/`dd` row clamped to two lines looks
+// identical whether the value is "3" or an essay. `summarize()` (the empty / list / file cases) is
+// untouched — this is presentation only.
 import { computed, ref, watch } from 'vue';
 import Card from '../../../ui/layout/Card.vue';
 import Badge from '../../../ui/primitives/Badge.vue';
@@ -15,6 +21,7 @@ import Icon from '../../../ui/primitives/Icon.vue';
 import Alert from '../../../ui/feedback/Alert.vue';
 import Skeleton from '../../../ui/data/Skeleton.vue';
 import SlotValuesForm from './SlotValuesForm.vue';
+import { nextId } from '../../../ui/forms/formField';
 import { useI18n } from '../../../app/i18n';
 import type { TemplateSlot } from '../types';
 import type { SessionStatus } from '../sessionTypes';
@@ -61,9 +68,25 @@ function toggle(): void {
   manualExpanded.value = !expanded.value;
 }
 
-// --- Summary chips (read straight from the value map — no descriptors needed) ---
+// A stable id for the form region so the toggle's `aria-controls` always resolves — the region stays
+// MOUNTED and is hidden with v-show (never v-if), so SlotValuesForm keeps its per-input state (an
+// in-flight file pick included) across a collapse.
+const bodyId = nextId('next-setup');
+
+/**
+ * The toggle's label. Expanding this card is ALSO entering edit mode, so when editing is actually
+ * possible the expand label keeps saying so ("Edit inputs") — that is the honest promise of the click.
+ * When the session is read-only it degrades to the shared "Show", because "Edit inputs" would lie.
+ * The ICON and the behavior are the shared chevron pattern in either case (owner note #2).
+ */
+const toggleLabel = computed(() => {
+  if (expanded.value) return t('generator.sessions.toggle.collapse');
+  return props.canEdit ? t('generator.sessions.setup.edit') : t('generator.sessions.toggle.expand');
+});
+
+// --- Summary (read straight from the value map — no descriptors needed) ---
 const slotNames = computed(() => props.slots.map((s) => s.name));
-/** The chips to summarize: declared slots in order, else whatever keys the values carry. */
+/** The rows to summarize: declared slots in order, else whatever keys the values carry. */
 const summaryEntries = computed(() => {
   const names = slotNames.value.length ? slotNames.value : Object.keys(values.value);
   return names.map((name) => ({ name, value: values.value[name] }));
@@ -99,37 +122,40 @@ const summaryCount = computed(() => summaryEntries.value.length);
     </template>
 
     <template #headerActions>
-      <!-- Collapse/expand toggle: only after the first generate (a draft stays open). -->
+      <!-- Collapse/expand toggle — the same chevron affordance as every other turn card. Absent while a
+           DRAFT on purpose: the draft body holds the only Generate button, so a collapse there would hide
+           the screen's critical action behind a control the user has no reason to re-open. -->
       <Button
         v-if="!isDraft"
         variant="ghost"
         size="sm"
-        :leading-icon="expanded ? 'chevron-up' : 'pencil'"
+        :leading-icon="expanded ? 'chevron-up' : 'chevron-down'"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        :aria-controls="bodyId"
         @click="toggle"
       >
-        {{ expanded ? t('generator.sessions.setup.collapse') : t('generator.sessions.setup.edit') }}
+        {{ toggleLabel }}
       </Button>
     </template>
 
-    <!-- COLLAPSED: a one-line summary of input chips. -->
-    <div v-if="!expanded" class="flex flex-col gap-next-2">
+    <!-- COLLAPSED: the counter line + a definition list of the entered values (2-line clamp, so a
+         200-character brief and a one-word value produce the same row shape). -->
+    <div v-show="!expanded" class="flex flex-col gap-next-2">
       <span class="text-next-xs text-next-muted-foreground">
         {{ t('generator.sessions.setup.summary', '', { count: summaryCount }) }}
       </span>
-      <div v-if="summaryEntries.length" class="flex flex-wrap gap-next-1_5">
-        <span
-          v-for="entry in summaryEntries"
-          :key="entry.name"
-          class="inline-flex items-center gap-next-1 rounded-next-full bg-next-muted px-next-2 py-next-0_5 text-next-xs text-next-muted-foreground"
-        >
-          {{ entry.name }}
-          <span class="font-next-medium text-next-fg">{{ summarize(entry.value) }}</span>
-        </span>
-      </div>
+      <dl v-if="summaryEntries.length" class="flex flex-col gap-next-2">
+        <div v-for="entry in summaryEntries" :key="entry.name" class="flex min-w-0 flex-col gap-next-0_5">
+          <dt class="text-next-xs font-next-medium text-next-muted-foreground">{{ entry.name }}</dt>
+          <!-- `break-words` so an unbroken 300-character value can never widen the card. -->
+          <dd class="line-clamp-2 break-words text-next-sm text-next-fg">{{ summarize(entry.value) }}</dd>
+        </div>
+      </dl>
     </div>
 
-    <!-- EXPANDED: the typed inputs (+ a Generuj primary while a draft). -->
-    <div v-else class="flex flex-col gap-next-4">
+    <!-- EXPANDED: the typed inputs (+ a Generuj primary while a draft). Hidden with v-show, never v-if,
+         so the form (and any in-flight input state) survives a collapse. -->
+    <div v-show="expanded" :id="bodyId" class="flex flex-col gap-next-4">
       <div v-if="loadingSlots" class="flex flex-col gap-next-2" aria-hidden="true">
         <Skeleton variant="text" width="30%" />
         <Skeleton variant="rect" width="100%" height="2.25rem" radius="md" />

@@ -80,7 +80,7 @@ function textLabel(key: DirectionTextField): string {
 </script>
 
 <template>
-  <Card v-if="visible" variant="default">
+  <Card v-if="visible" variant="default" :body-collapsed="!expanded">
     <template #header>
       <div class="flex min-w-0 flex-1 items-center gap-next-2">
         <Icon name="palette" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
@@ -106,7 +106,7 @@ function textLabel(key: DirectionTextField): string {
         :aria-controls="bodyId"
         @click="toggle"
       >
-        {{ expanded ? t('generator.sessions.direction.collapse') : t('generator.sessions.direction.expand') }}
+        {{ expanded ? t('generator.sessions.toggle.collapse') : t('generator.sessions.toggle.expand') }}
       </Button>
     </template>
 

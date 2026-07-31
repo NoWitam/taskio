@@ -17,11 +17,12 @@ use App\Modules\Workflows\Services\WorkflowAiTextService;
  * it never touches the real decorator's injected shared generator. The overridden generate() matches
  * the AiTextGenerator contract's `?string $personaId` and maps it to an AiPersona (fromNullable) for
  * recording — exactly as the real generator does — so persona assertions read the resolved persona
- * value, not the raw id.
+ * value, not the raw id. The per-block `?string $authorId` is recorded RAW (it is an opaque id the real
+ * generator only hands to the voice seam), so a test can pin that the resolver passed it through.
  */
 class ScriptedWorkflowAiTextService extends WorkflowAiTextService
 {
-    /** @var array<int, array{prompt: string, persona: AiPersona}> */
+    /** @var array<int, array{prompt: string, persona: AiPersona, authorId: ?string}> */
     public array $recorded = [];
 
     /** @param array<int, string>|null $responses ordered canned outputs; null → always $default */
@@ -30,9 +31,9 @@ class ScriptedWorkflowAiTextService extends WorkflowAiTextService
         private string $default = '',
     ) {}
 
-    public function generate(string $prompt, ?string $personaId): string
+    public function generate(string $prompt, ?string $personaId, ?string $authorId = null): string
     {
-        $this->recorded[] = ['prompt' => $prompt, 'persona' => AiPersona::fromNullable($personaId)];
+        $this->recorded[] = ['prompt' => $prompt, 'persona' => AiPersona::fromNullable($personaId), 'authorId' => $authorId];
 
         if ($this->responses !== null) {
             return array_shift($this->responses) ?? $this->default;

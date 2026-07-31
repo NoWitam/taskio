@@ -50,6 +50,8 @@ class GenerationSession extends AbstractModel
         'bot_author_id',
         'bot_delegation',
         'creative_direction',
+        'ai_generate_calls',
+        'ai_edit_calls',
         'creator_id',
     ];
 
@@ -60,6 +62,11 @@ class GenerationSession extends AbstractModel
         'history' => 'array',
         'bot_delegation' => 'array',
         'creative_direction' => 'array',
+        // The RUN's persisted image-call ledger. Instance counters stopped being able to bound a run the
+        // moment a storyboard run became many jobs; these are reset by every claim and reserved with a
+        // guarded UPDATE ({@see \App\Modules\Generator\Services\SessionImageBudget}).
+        'ai_generate_calls' => 'integer',
+        'ai_edit_calls' => 'integer',
         'status' => GenerationSessionStatus::class,
         'archived_at' => 'datetime',
         'created_at' => 'datetime',
@@ -113,6 +120,35 @@ class GenerationSession extends AbstractModel
     }
 
     /**
+     * The FROZEN per-block `@[ai-text]` AUTHOR voices — `{authorId: opaque voice}` — captured into the
+     * recipe snapshot at CREATION ({@see \App\Modules\Generator\Services\RecipeAuthorVoiceSnapshotter}).
+     * Read snapshot-not-live, exactly like {@see botVoice}: editing or deleting an authoring bot after the
+     * session exists must never change what it produces.
+     *
+     * FAIL-SOFT to `[]` on anything unexpected (a legacy session created before the feature; a hand-edited
+     * column): an absent author simply falls back to the session voice and then the block's persona tone,
+     * which is the contract's documented fail-SAFE outcome. Non-string entries are dropped rather than
+     * trusted — the values land in an agent's SYSTEM instruction. NEVER logged.
+     *
+     * @return array<string, string>
+     */
+    public function authorVoices(): array
+    {
+        $snapshot = is_array($this->recipe_snapshot) ? $this->recipe_snapshot : [];
+        $voices = is_array($snapshot['author_voices'] ?? null) ? $snapshot['author_voices'] : [];
+
+        $out = [];
+
+        foreach ($voices as $authorId => $voice) {
+            if (is_string($authorId) && $authorId !== '' && is_string($voice) && $voice !== '') {
+                $out[$authorId] = $voice;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * The denormalized bot-author snapshot `{id, name, icon}` captured at delegation (for the wire/FE
      * "authored by bot" badge), or null when undelegated. Snapshotted so a later bot edit/delete cannot
      * change what a delegated session shows.
@@ -124,6 +160,46 @@ class GenerationSession extends AbstractModel
         $author = is_array($this->bot_delegation) ? ($this->bot_delegation['author'] ?? null) : null;
 
         return is_array($author) ? $author : null;
+    }
+
+    /**
+     * The FROZEN VISUAL identity overlay — `bot_delegation.visual` — captured at delegation time, or null
+     * when the session is undelegated or its author had no (enabled) visual module. The image-side twin of
+     * {@see botVoice}: read straight off the overlay, NEVER re-derived from the live author, so editing,
+     * re-approving or deleting the character afterwards cannot change what a delegated session draws. The
+     * overlay's own `enabled` is part of that freeze — turning the module off tomorrow must not silently
+     * change a session that was already delegated with it on.
+     *
+     * Raw here and normalized by its consumer ({@see \App\Modules\Generator\Support\SessionVisualIdentity},
+     * the security boundary), mirroring how {@see creativeDirection} defers to CreativeDirection. Fail-soft
+     * to null on anything unexpected (a legacy/hand-edited column). NEVER logged.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function botVisualIdentity(): ?array
+    {
+        $visual = is_array($this->bot_delegation) ? ($this->bot_delegation['visual'] ?? null) : null;
+
+        return is_array($visual) ? $visual : null;
+    }
+
+    /** Whether a character reference IMAGE was frozen with the delegation (its bytes live in the store). */
+    public function hasCharacterImage(): bool
+    {
+        return ($this->botVisualIdentity()['has_character_image'] ?? null) === true;
+    }
+
+    /**
+     * The key this session's frozen character bytes are stored under
+     * ({@see \App\Modules\Generator\Services\SessionIdentityImageStore}), or null when nothing was frozen.
+     *
+     * It is the delegated AUTHOR's id: the store is keyed PER CHARACTER rather than per session because one
+     * frame showing two characters is the obvious next ask, and a per-session key would have to be reshaped
+     * to allow it. v1 freezes exactly one.
+     */
+    public function characterImageKey(): ?string
+    {
+        return $this->hasCharacterImage() && is_string($this->bot_author_id) ? $this->bot_author_id : null;
     }
 
     // ---- Creative direction (the direction layer) -------------------------------------
@@ -244,6 +320,22 @@ class GenerationSession extends AbstractModel
     }
 
     /**
+     * Sessions that are mid-run and may therefore be holding storyboard FRAMES — the candidate set for the
+     * stale-FRAME sweep ({@see \App\Modules\Generator\Services\StoryboardFrameManager::reapStaleFrames}).
+     *
+     * Deliberately NOT narrowed by `updated_at` the way {@see scopeStaleGenerating} is: every frame that
+     * settles writes the row, so a run whose frames are progressing normally looks freshly touched even
+     * while one specific frame has been dead for ten minutes. Frame staleness is per FRAME (its own claim
+     * stamp), so the row-level clock cannot select the candidates. The set is naturally tiny — `generating`
+     * is a transient state — and archived sessions are exempt, exactly like every other reaper window.
+     */
+    public function scopeGeneratingWithFrames(Builder $query): void
+    {
+        $query->where('status', GenerationSessionStatus::Generating->value)
+            ->whereNull('archived_at');
+    }
+
+    /**
      * LIVE (not-yet-trashed) sessions eligible for the trash step: NON-archived and idle (updated_at)
      * past the trash cutoff. Archived sessions are EXEMPT from all cleanup, so `archived_at` gates them
      * out. The SoftDeletes global scope already excludes rows in the trash, so this only ever matches
@@ -264,6 +356,21 @@ class GenerationSession extends AbstractModel
     {
         $query->onlyTrashed()
             ->whereNull('archived_at')
+            ->where('deleted_at', '<', $cutoff);
+    }
+
+    /**
+     * The COMPLEMENT of {@see scopePurgable}: trashed sessions past the purge cutoff that are ARCHIVED, and
+     * therefore exempt from the row purge forever. They keep their row and their produced content — that is
+     * what archive means — but a delegated one also holds a copy of a real person's LIKENESS, which is only
+     * ever readable by a run this session can no longer have (a trashed row has no restore route). That one
+     * store is reclaimed by {@see GenerationSessionLifecycleService::purgeArchivedIdentityImages}; this scope
+     * is its candidate set.
+     */
+    public function scopeArchivedPurgableIdentity(Builder $query, DateTimeInterface $cutoff): void
+    {
+        $query->onlyTrashed()
+            ->whereNotNull('archived_at')
             ->where('deleted_at', '<', $cutoff);
     }
 }

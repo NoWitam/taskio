@@ -11,6 +11,7 @@ use App\Modules\Bot\Models\Bot;
 use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Models\Task;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Concerns\FakesBotExecutionAgent;
 use Tests\TestCase;
 
 /**
@@ -20,7 +21,7 @@ use Tests\TestCase;
  */
 class TaskPolymorphicAssigneeTest extends TestCase
 {
-    use RefreshDatabase;
+    use FakesBotExecutionAgent, RefreshDatabase;
 
     public function test_user_assigned_task_round_trips_with_legacy_and_new_fields(): void
     {
@@ -96,7 +97,11 @@ class TaskPolymorphicAssigneeTest extends TestCase
     public function test_store_accepts_explicit_bot_assignee(): void
     {
         $user = User::factory()->create();
-        $bot = Bot::factory()->create(['creator_id' => $user->id]);
+        // A bot assignee must be able to EXECUTE tasks to be accepted at write time
+        // (StoreTasksRequest); the run it triggers is scripted so no provider is hit.
+        $bot = Bot::factory()->executesTasks()->create(['creator_id' => $user->id]);
+        $this->actingAs($user);
+        $this->scriptBotRun([['finish']]);
 
         $response = $this->actingAs($user)
             ->postJson('/api/tasks', [

@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { h as vh, type VNode } from 'vue';
 import { setLocale } from '../../../app/i18n';
+import { en } from '../../../app/i18n/en';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 
 const hoisted = vi.hoisted(() => ({
@@ -51,6 +52,8 @@ function bot(overrides: Record<string, unknown> = {}) {
     icon: null,
     has_text_module: true,
     task_execution_enabled: false,
+    visual_enabled: false,
+    visual_has_image: false,
     is_owner: true,
     created_at: null,
     ...overrides,
@@ -173,6 +176,53 @@ describe('DelegateBotDialog', () => {
     expect(wrapper.emitted('confirm')?.[0]).toEqual([
       { botId: 'b1', autoGenerate: true, fillMode: 'gaps' },
     ]);
+    wrapper.unmount();
+  });
+
+  // --- What the bot BRINGS (R2 sub-stage 3 · appearance) --------------------
+  // Delegating hands over two things. A user who only knows about the voice is startled when the
+  // pictures start showing a person — so every row states both contributions.
+  it('every row says the bot brings its VOICE; only a ready appearance also brings the LIKENESS', () => {
+    hoisted.store.items = [
+      bot({ id: 'ready', name: 'Ready Bot', visual_enabled: true, visual_has_image: true }),
+      bot({ id: 'plain', name: 'Plain Bot', visual_enabled: false, visual_has_image: false }),
+    ];
+    const wrapper = mountDialog();
+    const rows = wrapper.findAll('button[role="radio"]');
+
+    expect(rows[0].text()).toContain(en.generator.sessions.delegate.brings.voice);
+    expect(rows[0].text()).toContain(en.generator.sessions.delegate.brings.likeness);
+    expect(rows[1].text()).toContain(en.generator.sessions.delegate.brings.voice);
+    expect(rows[1].text()).not.toContain(en.generator.sessions.delegate.brings.likeness);
+    wrapper.unmount();
+  });
+
+  it('keeps the half-states OUT of the rows and states them once, for the SELECTED bot', async () => {
+    hoisted.store.items = [
+      bot({ id: 'noimg', visual_enabled: true, visual_has_image: false }),
+      bot({ id: 'off', visual_enabled: false, visual_has_image: true }),
+    ];
+    const wrapper = mountDialog();
+
+    // Nothing shouted before a choice is made.
+    expect(wrapper.text()).not.toContain(en.generator.sessions.delegate.brings.noLikeness);
+
+    await wrapper.findAll('button[role="radio"]')[0].trigger('click');
+    expect(wrapper.text()).toContain(en.generator.sessions.delegate.brings.noLikeness);
+
+    await wrapper.findAll('button[role="radio"]')[1].trigger('click');
+    expect(wrapper.text()).toContain(en.generator.sessions.delegate.brings.likenessOff);
+    expect(wrapper.text()).not.toContain(en.generator.sessions.delegate.brings.noLikeness);
+    wrapper.unmount();
+  });
+
+  it('says nothing extra when the selected bot brings everything', async () => {
+    hoisted.store.items = [bot({ visual_enabled: true, visual_has_image: true })];
+    const wrapper = mountDialog();
+    await wrapper.find('button[role="radio"]').trigger('click');
+
+    expect(wrapper.text()).not.toContain(en.generator.sessions.delegate.brings.noLikeness);
+    expect(wrapper.text()).not.toContain(en.generator.sessions.delegate.brings.likenessOff);
     wrapper.unmount();
   });
 

@@ -71,8 +71,13 @@ class GeneratorAiTextService implements AiTextGenerator
      * later refine of that text — writes to the SAME brief instead of being an island. With no direction
      * (kill switch off, derivation failed, or an isolated op on a session that never stored one) the prompt
      * is passed through BYTE-IDENTICALLY.
+     *
+     * AUTHOR: $authorId (the block's own author) is passed STRAIGHT THROUGH to the shared service, which
+     * ranks it against the ambient session voice — and is ALSO what decides, per block, whether the
+     * direction's TONE is suppressed ({@see withDirection}). The parameter is defaulted so a caller with no
+     * per-block author keeps compiling.
      */
-    public function generate(string $prompt, ?string $personaId): string
+    public function generate(string $prompt, ?string $personaId, ?string $authorId = null): string
     {
         if (trim($prompt) === '') {
             return '';
@@ -87,11 +92,12 @@ class GeneratorAiTextService implements AiTextGenerator
         $this->calls++;
 
         return $this->generator->generate(
-            $this->withDirection($prompt),
+            $this->withDirection($prompt, $authorId),
             $personaId,
             (int) config('generator.ai_text_max_chars', 5000),
             self::PURPOSE_HINT,
             self::LENGTH_GUIDANCE,
+            $authorId,
         );
     }
 
@@ -101,12 +107,17 @@ class GeneratorAiTextService implements AiTextGenerator
      * it may only ever ride the USER message — never the agent's system instruction, whose prompt-is-DATA
      * hardening is exactly what frames this block (D7).
      *
-     * VOICE WINS ON TONE: a delegated run already carries the bot's voice in the system instruction, so the
-     * direction's `tone` is dropped from the projection rather than competing with it.
+     * VOICE WINS ON TONE (ADR-0038), now PER BLOCK: whichever voice actually applies to THIS block — its own
+     * author's, or failing that the delegated session's — already carries the tone in the system
+     * instruction, so the direction's `tone` is dropped from the projection rather than competing with it.
+     * Asking {@see AiVoiceContext::effectiveDirective} (the one place precedence is decided) rather than the
+     * session directive alone is what makes an author-written block in an UNdelegated run suppress the tone
+     * too — previously it would have been directed AND authored at once, and the two would fight. A block
+     * with no effective voice keeps the full projection, byte-identically to before.
      */
-    private function withDirection(string $prompt): string
+    private function withDirection(string $prompt, ?string $authorId): string
     {
-        $section = $this->direction->direction()?->forText($this->voice->directive() === null);
+        $section = $this->direction->direction()?->forText($this->voice->effectiveDirective($authorId) === null);
 
         return $section === null ? $prompt : $section . "\n\n" . $prompt;
     }

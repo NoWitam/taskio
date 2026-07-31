@@ -2,6 +2,7 @@
 
 namespace App\Modules\Variables;
 
+use App\Modules\Variables\Contracts\AuthorVoiceResolver;
 use App\Modules\Variables\Contracts\MeteredAiCall;
 use App\Modules\Variables\Models\Constant;
 use App\Modules\Variables\Models\CustomFunction;
@@ -10,6 +11,7 @@ use App\Modules\Variables\Policies\CustomFunctionPolicy;
 use App\Modules\Variables\Support\AiVoiceContext;
 use App\Modules\Variables\Support\LedgerMeteredAiCall;
 use App\Modules\Variables\Support\MeterContext;
+use App\Modules\Variables\Support\NullAuthorVoiceResolver;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
@@ -42,6 +44,17 @@ class VariablesModuleServiceProvider extends ServiceProvider
         // MeterContext (a shared instance the executor sets around a delegated run and the ai-text seam
         // reads). Empty for every non-delegated path, so existing behavior is byte-preserved.
         $this->app->singleton(AiVoiceContext::class);
+
+        // The per-block AUTHOR-voice seam. The DEFAULT is the null object (no author ever resolves, so
+        // every ai-text block falls back to the session voice / persona exactly as before); the module
+        // that owns authors binds the real resolver over it.
+        //
+        // bindIf — NOT bind — ON PURPOSE: it fills the seam only when nothing else has, so this default can
+        // never CLOBBER a concrete that another module already bound. Together with the UNCONDITIONAL bind on
+        // the Bot side, that makes the winner independent of provider load ORDER, which matters because
+        // getting it wrong is fail-SAFE and therefore invisible: no run breaks, every authored block just
+        // quietly stops sounding authored. Both halves are pinned by BotModuleBoundaryTest.
+        $this->app->bindIf(AuthorVoiceResolver::class, NullAuthorVoiceResolver::class);
 
         // The shared "metered AI call" seam (D7): the real token-LEDGER meter (R2 sub-stage 2a) is
         // bound OVER the shipped pass-through. It gates BEFORE spend on the workspace's calendar-month

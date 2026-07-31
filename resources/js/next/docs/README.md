@@ -73,6 +73,40 @@ treated as an incomplete change.
   beside the theme toggle. The full reference + a live demo is the **Foundations →
   Internationalization** gallery page (`pages/I18nPage.vue`).
 
+## Layer boundary: `ui/` never imports `pages/`
+
+`resources/js/next/ui/**` is the design system — the LOWER layer every page
+consumes. A page may import down into `ui/`; `ui/` must never import up into
+`pages/`, or the design system stops being independently reusable. This was
+previously honored only by comment + local duplication, until a real runtime
+import slipped into `ui/forms/BotSelect.vue`. It is now **enforced by a test**,
+not just documented: `resources/js/next/__tests__/uiLayerImportBoundary.spec.ts`
+walks every `.ts`/`.vue` file under `ui/`, collects every `from '…'` and dynamic
+`import('…')` specifier (comments don't false-positive — a prose mention has no
+`from '…'` shape), and fails on any specifier containing `pages/` — type-only
+imports included, since they encode the same wrong direction even though they
+erase at build time. The same spec also pins that no file under `ui/` imports
+the frozen legacy frontend (`@/…` or a relative escape out of `next/`).
+
+**The fix for a genuinely shared thing is to move it DOWN into `ui/`, never to
+copy it.** Two known exceptions currently do copy, and are debt — not a pattern
+to imitate:
+
+- `ui/forms/TemplateSelect.vue` keeps a LOCAL content-type → icon map (the same
+  three ids `pages/generator/templateMeta.ts` maps), because a design-system
+  component may not reach into a page for it. It is presentation-only — an
+  unknown/new id falls back to the generic file glyph, same as the page-side map.
+- `ui/variables/types.ts` re-declares `VariableSourceVar` LOCALLY, structurally
+  identical to the Workflows page's `CatalogVariable`
+  (`pages/workflows/types.ts`) — same keys, unions, optionality — so a page can
+  pass its catalog arrays straight in with zero mapping. If the backend contract
+  ever widens `CatalogVariable`, the local copy has to be mirrored by hand; it
+  is not derived from the page type.
+
+Both are candidates for the same DOWN-move the boundary rule asks for
+elsewhere (e.g. `ui/data/botStatus.ts`, moved from `pages/bots/` so both the
+Bots pages and the design-system `BotSelect` could read one definition).
+
 ## Tokens page
 
 `TokensPage.vue` resolves token values **live** from

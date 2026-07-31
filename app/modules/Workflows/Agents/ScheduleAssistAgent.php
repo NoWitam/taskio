@@ -15,7 +15,17 @@ use Stringable;
  * AI SCHEDULE ASSIST (B5). Turns a NATURAL-LANGUAGE schedule description (Polish or English)
  * into the structured v2 `trigger_config.schedule` descriptor the human UI builds — or an honest
  * report of what the request cannot express in our model, with an optional valid alternative. It
- * NEVER silently approximates: an approximation only ever lands in `alternative` (with feasible:false).
+ * NEVER silently approximates the requested PATTERN: an approximation of the pattern only ever
+ * lands in `alternative` (with feasible:false).
+ *
+ * THE ONLY LIMIT IS THE VOCABULARY. A request is infeasible when the descriptor below cannot
+ * express the PATTERN (a rolling "every 90 minutes", "every second week") — never because the
+ * request was vague, informal, or needed ordinary calendar knowledge to pin down. An
+ * UNDER-SPECIFIED request ("three times a day — morning, afternoon and evening", "daily except
+ * non-working days") IS feasible: the model picks concrete values, stays feasible:true, and
+ * DISCLOSES what it picked in `explanation`. That disclosure is what keeps "choose a detail"
+ * from becoming "silently substitute a different schedule" — the user sees the chosen times and
+ * can adjust them in the builder, which is not true of an approximated pattern.
  *
  * NO TOOLS and NO structured-output schema on purpose: the agent emits a strict JSON STRING that
  * WorkflowScheduleAssistService parses defensively (malformed -> safe feasible:false, never a 500)
@@ -37,9 +47,18 @@ class ScheduleAssistAgent implements Agent
     /**
      * @param  string  $language  BCP-ish language hint for the explanation ('pl'|'en'); the model
      *                            must answer in the language of the user's prompt regardless.
+     * @param  string|null  $today  TODAY as "YYYY-MM-DD" in the caller's zone. Without it the model
+     *                              cannot anchor calendar knowledge (it would enumerate public
+     *                              holidays for whatever year its training suggests), so any
+     *                              `exclusions.dates` it produced would silently be for the wrong
+     *                              year. Null omits the whole calendar-anchor clause.
+     * @param  string|null  $tz  the caller's IANA zone, used ONLY as a hint for WHICH country's
+     *                           holidays are meant (the config's own `tz` is merged server-side).
      */
     public function __construct(
         private string $language = 'pl',
+        private ?string $today = null,
+        private ?string $tz = null,
     ) {}
 
     public function instructions(): Stringable|string
@@ -47,6 +66,7 @@ class ScheduleAssistAgent implements Agent
         $vocabulary = $this->vocabularySection();
         $caveats = $this->semanticCaveats();
         $examples = $this->examplesSection();
+        $calendar = $this->calendarKnowledgeSection();
         $lang = $this->language === 'en' ? 'English' : 'Polish';
 
         return <<<INSTRUCTIONS
@@ -59,6 +79,23 @@ class ScheduleAssistAgent implements Agent
         You may ONLY use the axes, modes and fields listed below. NEVER invent a mode, a field name,
         or a value outside its stated bounds. If the desired schedule needs something this vocabulary
         cannot express, it is NOT feasible in `config` (report it in `unsupported`).
+
+        THE VOCABULARY IS THE ONLY LIMIT — this is the most important rule here. Distinguish:
+        - UNSUPPORTED: the vocabulary below cannot express the requested PATTERN (a rolling "every
+          90 minutes", "every second week", a one-off single date, sub-minute cadences). ONLY these
+          belong in `unsupported`, and only these make a request infeasible.
+        - UNDER-SPECIFIED: the request is perfectly expressible, the user just did not pin down a
+          detail — a vague time of day ("rano", "po południu", "wieczorem", "w nocy", "przed pracą"),
+          no time at all ("codziennie"), or a fuzzy count ("kilka razy dziennie"). This is NOT a
+          reason to refuse. CHOOSE concrete, sensible values, stay feasible:true, and STATE in
+          `explanation` exactly which values you chose so the user can adjust them in the builder.
+          Conventional anchors when the user names none: morning 08:00, midday 12:00,
+          afternoon 15:00, evening 20:00, night 23:00; a bare "codziennie"/"daily" with no
+          time of its own -> 09:00.
+        NEVER report a request as infeasible because it is imprecise, informal, colloquial, or needs
+        ordinary calendar knowledge. Refuse ONLY on a genuine gap in the vocabulary below.
+
+        {$calendar}
 
         SCHEDULE VOCABULARY (the complete, only source of truth):
         {$vocabulary}
@@ -93,6 +130,12 @@ class ScheduleAssistAgent implements Agent
           "co drugi tydzień" — no every-N-weeks axis). If a sensible valid config APPROXIMATES the
           intent, put it in `alternative.config` with `alternative.note` honestly stating the
           difference; otherwise `alternative` is null.
+          NEVER list here a detail that is merely IMPRECISE ("rano", "wieczorem", "kilka razy") or one
+          that ordinary calendar knowledge resolves (which dates are public holidays). Those are
+          things you DECIDE and disclose in `explanation` — they keep the request feasible:true.
+        - When you chose any value the user did not state (a wall-clock time behind a vague phrase, a
+          default time, a set of holiday dates), `explanation` MUST name those values explicitly. A
+          user who disagrees adjusts them in the builder; one who never sees them cannot.
         - `time` is REQUIRED in any config; include `day`/`month` ONLY when the request restricts them.
         - Only include `tz` when the user names a timezone; otherwise omit it or set null.
         - `explanation`: one short paragraph in {$lang} (the user's language) — what you produced and,
@@ -100,6 +143,45 @@ class ScheduleAssistAgent implements Agent
 
         Return the JSON object and nothing else.
         INSTRUCTIONS;
+    }
+
+    /**
+     * CALENDAR KNOWLEDGE. There is no "public holiday" axis and there will not be one — holidays are
+     * jurisdiction-specific, move every year, and would be a data feed. They are nonetheless
+     * EXPRESSIBLE as concrete `exclusions.dates`, so the model is told to enumerate them from its own
+     * knowledge rather than report "no holiday support" as an unsupported feature (which is what made
+     * "codziennie z wyjątkiem dni wolnych od pracy" fail).
+     *
+     * Anchored on TODAY because otherwise the enumerated year is whatever the model's training
+     * suggests — a silently wrong config. With no $today the anchor clause is omitted entirely and
+     * the model is told to avoid dated exclusions, which is the honest degradation.
+     */
+    private function calendarKnowledgeSection(): string
+    {
+        if ($this->today === null) {
+            return implode("\n        ", [
+                'CALENDAR KNOWLEDGE: you do NOT know today\'s date in this call, so do NOT emit dated',
+                'exclusions (`exclusions.dates`) — you could not tell which year they would land in. Express',
+                'recurring day restrictions with the day axis / exclusions.weekdays instead.',
+            ]);
+        }
+
+        $zone = $this->tz !== null ? sprintf(' The caller\'s timezone is "%s".', $this->tz) : '';
+
+        return implode("\n        ", [
+            'CALENDAR KNOWLEDGE — USE what you know about the calendar to fill this vocabulary:',
+            sprintf('- Today is %s.%s Infer WHICH country\'s holidays are meant from the language of the', $this->today, $zone),
+            '  request and that timezone (a Polish request -> Polish public holidays).',
+            '- Public holidays / "dni wolne od pracy" / "dni świąteczne" have no dedicated axis, but they',
+            sprintf('  ARE expressible: put the concrete dates in `exclusions.dates` ("YYYY-MM-DD", at most %d).', ScheduleLimits::EXCLUSIONS_DATES_MAX),
+            '  Enumerate them FORWARD from today, for as many whole years as fit that cap.',
+            '- "dni wolne od pracy" (non-working days) means weekends AND public holidays: restrict `day`',
+            '  to weekdays [1,2,3,4,5] (or exclude [0,6] via `exclusions.weekdays`) AND list the',
+            '  public-holiday dates. "święta" alone means only the holidays.',
+            '- The date list is FIXED, not a live feed: say in `explanation` which years you covered and',
+            '  that the schedule stops skipping holidays once those dates pass. That is a DISCLOSURE, not',
+            '  a reason to mark the request infeasible.',
+        ]);
     }
 
     /**
@@ -284,7 +366,8 @@ class ScheduleAssistAgent implements Agent
             '- weekday-of-month IS supported via day.special: "nth_weekday" (e.g. 1st Monday; ordinal=5 skips a month without a 5th occurrence) and "last_weekday" (e.g. last Friday). "last_working_day" is the last Mon-Fri and requires time.mode="at".',
             '- MULTIPLE fire times a day live in time.at (up to ' . ScheduleLimits::MAX_AT_TIMES . ' HH:mm), and combine freely with a day/month restriction (e.g. "o 8 i 17 w dni robocze").',
             '- every-N-days IS supported (day.every_n_days) and time WINDOWS ARE supported (time.every_minutes / time.every_hours with from/to) — do not report these as unsupported.',
-            '- STILL unsupported: rolling intervals the grids cannot express (every 90 minutes, every 2.5 hours), "every N weeks", one-off single dates, and sub-minute cadences. Report these in `unsupported` (offer an alternative when one reasonably approximates).',
+            '- STILL unsupported: rolling intervals the grids cannot express (every 90 minutes, every 2.5 hours), "every N weeks", one-off single dates, and sub-minute cadences. Report these in `unsupported` (offer an alternative when one reasonably approximates). This list is EXHAUSTIVE — nothing else is a reason to refuse.',
+            '- NOT unsupported, so never reported as such: vague times of day, a missing time, a fuzzy count, and public holidays / non-working days (holidays have no axis but ARE expressible as concrete exclusions.dates). Decide these and disclose them.',
         ]);
     }
 
@@ -300,6 +383,10 @@ class ScheduleAssistAgent implements Agent
             '- "last Friday of the month at 17:00" -> {"time":{"mode":"at","at":["17:00"]},"day":{"mode":"special","special":"last_weekday","weekday":5}}',
             '- "co godzinę oprócz weekendów" -> {"time":{"mode":"every_hours","hours":1,"minute":0},"exclusions":{"weekdays":[0,6]}}',
             '- "ostatniego dnia miesiąca o 23:00, oprócz sierpnia" -> {"time":{"mode":"at","at":["23:00"]},"day":{"mode":"special","special":"last_day"},"exclusions":{"months":[8]}}',
+            // UNDER-SPECIFIED, still feasible — the two shapes that used to be refused outright.
+            '- "trzy razy dziennie — rano, popołudniu i wieczorem" -> {"time":{"mode":"at","at":["08:00","15:00","20:00"]}} — feasible:true; name the three chosen hours in `explanation`.',
+            '- "codziennie z wyjątkiem dni wolnych od pracy" -> {"time":{"mode":"at","at":["09:00"]},"day":{"mode":"weekdays","weekdays":[1,2,3,4,5]},"exclusions":{"dates":["<each public holiday falling Mon-Fri, from today forward>"]}} — feasible:true; state the assumed 09:00 and which years the holiday list covers.',
+            '- "every morning on workdays" -> {"time":{"mode":"at","at":["08:00"]},"day":{"mode":"weekdays","weekdays":[1,2,3,4,5]}} — feasible:true; say that "morning" was read as 08:00.',
         ]);
     }
 }

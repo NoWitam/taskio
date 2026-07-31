@@ -14,12 +14,23 @@ return [
         'resume_without_wait' => 'This run could not be continued because there is no record of what it was waiting for.',
     ],
 
-    // Workflow STEPS — text a step WRITES into the domain (not failure prose).
+    // Workflow STEPS — text a step WRITES into the domain, plus a step's OWN refusal prose (the engine's
+    // lives under `runs` above). NON-SECRET by construction: no ids, no step content.
     'steps' => [
         'generate_content' => [
             // The Disk name a generated image is exported under; the part key is appended, so a
             // multi-image recipe does not produce a folder of identically-named files.
             'image_name' => 'Generated image',
+
+            // RUN TIME: the step names an author (`bot_id`) that no longer resolves in this workspace, so
+            // the generation was refused. It is a refusal, not a degradation — publishing the piece in
+            // nobody's voice and without the intended likeness is not a lesser version of what was asked
+            // for. Lands in `workflow_runs.error`.
+            'bot_unavailable' => 'The bot this step generates content as is no longer available in this workspace, so nothing was generated. Pick another bot for the step, or remove it.',
+
+            // AUTHOR TIME: the same check, run when the workflow is saved, so the definition cannot be
+            // stored in a state that would fail every single run.
+            'bot_invalid' => 'The selected bot is not available in this workspace.',
         ],
     ],
 

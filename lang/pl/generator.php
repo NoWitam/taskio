@@ -16,6 +16,13 @@ return [
         'image_budget' => 'Ten obraz ma zbyt wiele edycji AI, aby wygenerować go w jednym przebiegu. Zmniejsz liczbę edycji AI i spróbuj ponownie.',
         'image_generate_budget' => 'Ta receptura generuje zbyt wiele obrazów AI w jednym przebiegu. Zmniejsz liczbę obrazów generowanych przez AI i spróbuj ponownie.',
         'ai_generate_unsupported' => 'Generowanie obrazu z opisu tekstowego nie jest jeszcze dostępne.',
+        // Dostawca wyrenderował obraz i odmówił jego wydania (własna moderacja treści). Osobny komunikat, bo
+        // to jedyny błąd obrazu, który UŻYTKOWNIK może naprawić — odesłanie go do „bazy i filtrów" byłoby
+        // mylące: poprawką jest opis postaci lub jej strój.
+        'image_safety' => 'AI odmówiło wydania tego obrazu ze względu na zasady dotyczące treści. Zmień opis postaci lub jej strój i spróbuj ponownie.',
+        // Kadr storyboardu, którego renderowanie zostało przerwane (padł worker) i który odzyskał reaper.
+        // NIE-tajny i konkretny: pozostałe kadry są całe, więc naprawą jest wygenerowanie tego jednego od nowa.
+        'frame_lost' => 'Nie udało się dokończyć tego kadru. Wygeneruj go ponownie, aby spróbować jeszcze raz.',
         'saved_image_name' => 'Wygenerowany obraz',
         'deleted' => 'Sesja została usunięta.',
         // Pętla dopracowania (R2 pod-etap 2d) — tłumaczone, NIE-tajne komunikaty konfliktu / możliwości.

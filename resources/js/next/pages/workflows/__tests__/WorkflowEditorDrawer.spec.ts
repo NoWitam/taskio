@@ -26,6 +26,7 @@ import type { ScheduleDraft } from '../workflowSchedule';
 const createWorkflow = vi.fn();
 const updateWorkflow = vi.fn();
 const fetchWorkflowCatalog = vi.fn();
+const fetchWorkflow = vi.fn();
 const detailRef = ref<WorkflowDetail | null>(null);
 
 const CATALOG: WorkflowCatalog = {
@@ -40,6 +41,7 @@ vi.mock('../../../app/stores/workflows', () => ({
     },
     createWorkflow,
     updateWorkflow,
+    fetchWorkflow,
     fetchWorkflowCatalog,
     schedulePreview: vi.fn().mockResolvedValue({ occurrences: [], count: 6, empty: false, approximate: false }),
   }),
@@ -183,6 +185,33 @@ const StepsStub = {
           },
           'fillGc',
         ),
+        // The optional session AUTHOR: pick a bot / clear the picker back to "no author".
+        h(
+          'button',
+          {
+            class: 'pick-gc-bot',
+            onClick: () => {
+              const next = (props.steps as StepDraft[]).map((s) =>
+                s.type === 'generate_content' ? { ...s, config: { ...s.config, bot_id: 'bot-7' } } : s,
+              );
+              emit('update:steps', next);
+            },
+          },
+          'pickGcBot',
+        ),
+        h(
+          'button',
+          {
+            class: 'clear-gc-bot',
+            onClick: () => {
+              const next = (props.steps as StepDraft[]).map((s) =>
+                s.type === 'generate_content' ? { ...s, config: { ...s.config, bot_id: null } } : s,
+              );
+              emit('update:steps', next);
+            },
+          },
+          'clearGcBot',
+        ),
       ]);
   },
 };
@@ -288,6 +317,8 @@ describe('WorkflowEditorDrawer', () => {
     createWorkflow.mockReset();
     updateWorkflow.mockReset();
     fetchWorkflowCatalog.mockReset();
+    fetchWorkflow.mockReset();
+    fetchWorkflow.mockResolvedValue(null);
     toastSuccess.mockReset();
     toastDanger.mockReset();
     toastInfo.mockReset();
@@ -488,6 +519,64 @@ describe('WorkflowEditorDrawer', () => {
     expect(toastDanger).toHaveBeenCalled();
   });
 
+  // REGRESSION: opening the editor from the LIST used to render the "could not load" empty
+  // state. The module layout prefetches the detail off the ROUTE id (the per-workflow detail
+  // page); from the list the editor is opened by the `?workflow=<id>` QUERY alone, so nothing
+  // had fetched it and the store held null. Editing from the detail page worked, editing from
+  // the list never did. The drawer now fetches what it needs.
+  it('edit from the LIST (nothing prefetched) FETCHES the workflow instead of erroring', async () => {
+    detailRef.value = null;
+    fetchWorkflow.mockResolvedValue({
+      id: 'wf-from-list',
+      name: 'Z listy',
+      status: 'inactive',
+      description: '',
+      icon: null,
+      trigger_type: 'form_submitted',
+      trigger_config: { form_id: 'form-a', source: { in: ['task'] }, anonymous: false },
+      conditions: [],
+      steps: [{ type: 'create_task', key: 'task', config: { title: 'Existing' } }],
+      last_scheduled_run_at: null,
+      next_due_at: null,
+      is_owner: true,
+      can_be_edited: true,
+      can_be_deleted: true,
+      can_change_status: true,
+      can_run: true,
+      created_at: null,
+      updated_at: null,
+    });
+
+    const { wrapper } = mountDrawer('wf-from-list');
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+
+    expect(fetchWorkflow).toHaveBeenCalledWith('wf-from-list');
+    // Seeded from the fetched detail — the wizard rendered, not the error state.
+    expect(wrapper.get('.steps-stub').exists()).toBe(true);
+    expect((wrapper.get('input') as unknown as { element: HTMLInputElement }).element.value).toBe('Z listy');
+  });
+
+  // The error state is now reserved for a fetch that genuinely fails (deleted / forbidden /
+  // offline) — never for "the store simply had not loaded it yet".
+  it('edit shows the error state ONLY when the fetch actually fails', async () => {
+    detailRef.value = null;
+    fetchWorkflow.mockResolvedValue(null);
+
+    const { wrapper } = mountDrawer('gone');
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+
+    expect(fetchWorkflow).toHaveBeenCalledWith('gone');
+    expect(wrapper.find('.steps-stub').exists()).toBe(false);
+  });
+
   it('edit seed — hydrates a LEGACY flat condition list into an editable TREE + saves the tree', async () => {
     detailRef.value = {
       id: 'wf1',
@@ -665,6 +754,61 @@ describe('WorkflowEditorDrawer', () => {
     expect(payload.steps).toEqual([
       { type: 'generate_content', key: 'content', config: { template_id: 'tpl-1' } },
     ]);
+  });
+
+  it('SAVE payload — a chosen AUTHOR rides as config.bot_id, and clearing it drops the key', async () => {
+    const { wrapper } = mountDrawer();
+    await wrapper.get('input').setValue('My workflow');
+    await gotoSteps(wrapper);
+    await wrapper.get('.add-gc').trigger('click');
+    await nextTick();
+    await wrapper.get('.fill-gc').trigger('click');
+    await nextTick();
+    await wrapper.get('.pick-gc-bot').trigger('click');
+    await nextTick();
+
+    await save(wrapper);
+
+    expect(createWorkflow.mock.calls[0][0].steps).toEqual([
+      { type: 'generate_content', key: 'content', config: { template_id: 'tpl-1', bot_id: 'bot-7' } },
+    ]);
+
+    // Clearing the picker must send NO key at all — never null/'' — so the step goes back to
+    // being byte-identical to one that never had an author.
+    createWorkflow.mockClear();
+    await wrapper.get('.clear-gc-bot').trigger('click');
+    await nextTick();
+    await save(wrapper);
+
+    expect(createWorkflow.mock.calls[0][0].steps).toEqual([
+      { type: 'generate_content', key: 'content', config: { template_id: 'tpl-1' } },
+    ]);
+  });
+
+  it('routes a 422 on steps.0.config.bot_id onto the offending step field', async () => {
+    const { wrapper } = mountDrawer();
+    await wrapper.get('input').setValue('My workflow');
+    await gotoSteps(wrapper);
+    await wrapper.get('.add-gc').trigger('click');
+    await nextTick();
+    await wrapper.get('.fill-gc').trigger('click');
+    await nextTick();
+    await wrapper.get('.pick-gc-bot').trigger('click');
+    await nextTick();
+
+    createWorkflow.mockRejectedValueOnce({
+      response: {
+        data: {
+          errors: { 'steps.0.config.bot_id': ['The selected bot is not available in this workspace.'] },
+        },
+      },
+    });
+    await save(wrapper);
+
+    expect(activeStep(wrapper)).toBe('steps');
+    expect(wrapper.findComponent(StepsStub).props('errors')).toMatchObject({
+      'steps.0.config.bot_id': 'The selected bot is not available in this workspace.',
+    });
   });
 
   it('rejects the THIRD generate_content step on its own row (max 2 per workflow)', async () => {

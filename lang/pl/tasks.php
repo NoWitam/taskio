@@ -97,6 +97,10 @@ return [
     'assignedTo' => 'Przypisane do',
     'labels' => 'Etykiety',
 
+    'validation' => [
+        'bot_cannot_execute' => 'Ten bot nie może wykonywać zadań. Włącz w nim moduł wykonywania zadań (i aktywuj bota), zanim go przypiszesz.',
+    ],
+
     'messages' => [
         'created' => 'Zadanie zostało utworzone pomyślnie',
         'updated' => 'Zadanie zostało zaktualizowane pomyślnie',

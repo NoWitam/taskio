@@ -13,6 +13,10 @@ use Tests\TestCase;
  * agents' voice-awareness — the opaque directive REPLACES the persona line in {@see AiTextAgent}, and folds
  * into {@see ShotListAgent} as a tone clause WITHOUT relaxing the strict-JSON output contract. The run-time
  * wiring (executor sets it, leak-proof clear) is covered in the feature tests.
+ *
+ * It also pins the PER-BLOCK AUTHOR precedence the holder now arbitrates (a later R2 sub-stage): a block's
+ * own author beats the delegated session's voice, and everything unresolvable falls back rather than
+ * blanking the tone. How a directive reaches the agent from there is unchanged — that is the point.
  */
 class AiVoiceContextTest extends TestCase
 {
@@ -30,6 +34,55 @@ class AiVoiceContextTest extends TestCase
         $ctx->setDirective('again');
         $ctx->clear();
         $this->assertNull($ctx->directive(), 'clear() must null the directive (the leak-proof reset)');
+    }
+
+    /**
+     * PRECEDENCE (per-block authors): a block that names a RESOLVED author writes in that author's voice
+     * even on a session delegated to a bot — the block is the more specific, explicit authoring decision.
+     * Everything else falls back: no author, or an author that resolved to NOTHING, uses the session voice.
+     */
+    public function test_a_resolved_block_author_wins_over_the_delegated_session_voice(): void
+    {
+        $ctx = new AiVoiceContext;
+        $ctx->setDirective('THE SESSION BOT VOICE');
+        $ctx->setAuthorVoices(['author-1' => 'THE BLOCK AUTHOR VOICE']);
+
+        $this->assertSame('THE BLOCK AUTHOR VOICE', $ctx->effectiveDirective('author-1'));
+        $this->assertSame('THE SESSION BOT VOICE', $ctx->effectiveDirective(null), 'no author → the session voice');
+        $this->assertSame('THE SESSION BOT VOICE', $ctx->effectiveDirective(''), 'an empty author id is no author');
+        $this->assertSame(
+            'THE SESSION BOT VOICE',
+            $ctx->effectiveDirective('deleted-author'),
+            'an author ABSENT from the map (deleted / foreign / malformed) must fall back, never blank the voice',
+        );
+    }
+
+    /**
+     * FAIL-SAFE floor: with NO session voice, an unresolvable author yields null — which makes the ai-text
+     * generator use the block's own persona tone. A vanished author degrades tone; it never breaks a run.
+     */
+    public function test_an_unresolvable_author_with_no_session_voice_falls_through_to_null(): void
+    {
+        $ctx = new AiVoiceContext;
+        $ctx->setAuthorVoices(['author-1' => 'A VOICE']);
+
+        $this->assertNull($ctx->effectiveDirective('gone'));
+        $this->assertNull($ctx->effectiveDirective(null));
+        $this->assertSame('A VOICE', $ctx->effectiveDirective('author-1'));
+    }
+
+    /** clear() must reset BOTH sources — either one left behind would re-tone a later, unrelated run. */
+    public function test_clear_resets_the_author_voices_as_well_as_the_session_directive(): void
+    {
+        $ctx = new AiVoiceContext;
+        $ctx->setDirective('SESSION');
+        $ctx->setAuthorVoices(['author-1' => 'AUTHOR']);
+
+        $ctx->clear();
+
+        $this->assertNull($ctx->directive());
+        $this->assertSame([], $ctx->authorVoices(), 'clear() must empty the author map too (leak-proofing)');
+        $this->assertNull($ctx->effectiveDirective('author-1'), 'a cleared holder must color nothing');
     }
 
     public function test_ai_text_agent_voice_replaces_the_persona_style_line(): void

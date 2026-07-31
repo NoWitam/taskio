@@ -188,6 +188,38 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Character visual identity (the bot-look phase)
+    |--------------------------------------------------------------------------
+    |
+    | A session DELEGATED to a bot that has a visual identity freezes that identity on itself — the written
+    | descriptor / aesthetic / wardrobe / prohibitions in the `bot_delegation.visual` overlay, and the
+    | approved likeness's BYTES in a store of their own (SessionIdentityImageStore). The render layer then
+    | draws the shots that show the creator FROM that likeness (an `ai_generate` base becomes a reference
+    | edit) and applies the aesthetic + prohibitions to every image of the session.
+    |
+    | visual_identity.enabled  The KILL SWITCH for CONSUMPTION. False → the render layer reads nothing from
+    |                          the overlay and injects nothing: every composed prompt and provider call is
+    |                          byte-identical to a run with no character (pinned by a test).
+    |
+    |                          It deliberately does NOT stop the FREEZE at delegation time. Freezing is cheap
+    |                          and reversible, and gating it too would mean that turning the switch back on
+    |                          left every already-delegated session permanently character-less — a far worse
+    |                          failure mode than a few unused bytes that the lifecycle purge collects anyway.
+    |
+    | COST: the layer adds no calls of its own. A frame that shows the creator swaps its text→image
+    | generation for a reference EDIT — one provider call either way, billed on the `ai_image_edit` channel
+    | instead of `ai_image_generate`, and measurably slower (~58s vs ~33s in the spike), which the frame job's
+    | 240s timeout already accommodates. The GENERATE ledger still bounds the per-run fan-out, so a full
+    | storyboard cannot spend more calls than it could before.
+    |
+    */
+
+    'visual_identity' => [
+        'enabled' => (bool) env('GENERATOR_VISUAL_IDENTITY_ENABLED', true),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Refine loop — per-part history / undo (R2 sub-stage 2d)
     |--------------------------------------------------------------------------
     |
@@ -231,6 +263,22 @@ return [
     |                       the lock expiry — generous headroom, like the Disk edit reaper's 900s. Raise
     |                       it (never lower it below the lock expiry) if the job timeout/lock ever grows.
     |
+    | frame_stale_after     A storyboard FRAME that was CLAIMED but never settled past this window is marked
+    |                       `failed` and its run settles if it was the last one outstanding (the
+    |                       distributed-frames stage). A frame job killed between its claim and its write-back
+    |                       never fires its own failed() hook, and unlike a lost whole-run job it strands a run
+    |                       whose other frames are already finished AND PAID FOR.
+    |
+    |                       FRAME-TIMEOUT INVARIANT, slotting UNDER the existing session ordering rather than
+    |                       disturbing it: RenderStoryboardFrameJob has tries=1, timeout=240s (one
+    |                       ai_generate + one ai_edit at their full 120s hung-provider ceilings) and a
+    |                       WithoutOverlapping lock with releaseAfter(30)+expireAfter(600), so the widest
+    |                       window a LIVE frame can hold `rendering` is ~600s. Ordering: frame job timeout
+    |                       (240s) < run job timeout (300s) < lock expireAfter (600s) < frame_stale_after
+    |                       (900s) < session_stale_after (1800s). The default 900s matches the Disk edit
+    |                       reaper's window and leaves the whole-session backstop a clear 2x above it, so the
+    |                       fine-grained sweep always gets to rescue a run before the coarse one discards it.
+    |
     | session_trash_after   A NON-archived session idle (updated_at) past this window is SOFT-DELETED
     |                       (trash). ~1 week. Any archived session (archived_at set) is EXEMPT. A refine
     |                       or edit bumps updated_at, so an actively-used session is never trashed.
@@ -243,6 +291,8 @@ return [
     */
 
     'session_stale_after' => (int) env('GENERATOR_SESSION_STALE_AFTER', 1800),
+
+    'frame_stale_after' => (int) env('GENERATOR_FRAME_STALE_AFTER', 900),
 
     'session_trash_after' => (int) env('GENERATOR_SESSION_TRASH_AFTER', 604800),
 

@@ -1,10 +1,12 @@
 <?php
 
+use App\Http\Middleware\RequireWorkspace;
 use App\Modules\Bot\Http\Controllers\BotActionController;
 use App\Modules\Bot\Http\Controllers\BotController;
 use App\Modules\Bot\Http\Controllers\BotInboxController;
 use App\Modules\Bot\Http\Controllers\BotSessionDelegationController;
 use App\Modules\Bot\Http\Controllers\BotToolRegistryController;
+use App\Modules\Bot\Http\Controllers\BotVisualController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -37,6 +39,29 @@ Route::middleware('auth:sanctum')->group(function () {
         ->whereUuid('bot')
         ->whereUuid('session')
         ->name('bots.sessions.undelegate');
+
+    // Bot VISUAL identity (the "Wygląd" module): create a likeness, approve one, drop one. Declared
+    // before the {bot} resource so the deeper paths bind cleanly.
+    //
+    // RequireWorkspace is attached HERE and nowhere else in this file: these are the only bot routes
+    // that touch workspace-owned BINARIES, and without an active tenant the File lookups would run
+    // unscoped. Fail closed, exactly like the Disk routes.
+    //
+    // Generation rides its own TIGHT throttle bucket — a long, provider-billed call — with the key
+    // prefix that keeps it from sharing a counter with every other throttled surface.
+    Route::middleware(RequireWorkspace::class)->group(function () {
+        Route::post('bots/{bot}/visual/generate', [BotVisualController::class, 'generate'])
+            ->whereUuid('bot')
+            ->middleware('throttle:10,1,bot-visual')
+            ->name('bots.visual.generate');
+        Route::post('bots/{bot}/visual/approve', [BotVisualController::class, 'approve'])
+            ->whereUuid('bot')
+            ->name('bots.visual.approve');
+        Route::delete('bots/{bot}/visual/candidates/{file}', [BotVisualController::class, 'destroyCandidate'])
+            ->whereUuid('bot')
+            ->whereUuid('file')
+            ->name('bots.visual.candidates.destroy');
+    });
 
     Route::resource('bots', BotController::class)
         ->only(['index', 'show', 'store', 'update', 'destroy'])

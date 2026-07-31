@@ -6,10 +6,12 @@ use App\Models\User;
 use App\Modules\Generator\Agents\ShotListAgent;
 use App\Modules\Generator\Enums\GenerationRunMode;
 use App\Modules\Generator\Enums\GenerationSessionStatus;
+use App\Modules\Generator\Jobs\RenderStoryboardFrameJob;
 use App\Modules\Generator\Jobs\RunGenerationSessionJob;
 use App\Modules\Generator\Models\GenerationSession;
 use App\Modules\Generator\Services\GeneratedImageStore;
 use App\Modules\Generator\Services\GenerationSessionRunManager;
+use App\Modules\Generator\Services\StoryboardFrameManager;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Tenancy\TenantContext;
 use Database\Factories\TemplateFactory;
@@ -149,7 +151,22 @@ class StoryboardTest extends TestCase
         (new RunGenerationSessionJob($session->id, $this->workspace->id, $mode->value, $partKey, $instruction))
             ->handle(app(GenerationSessionRunManager::class));
 
+        $this->runDispatchedFrames();
+
         return $session->fresh();
+    }
+
+    /**
+     * Run whatever storyboard FRAME jobs the run just queued. Storyboard images render in their own jobs now
+     * (they cannot fit the run job's window), and this helper FAKES the queue to keep the run job from
+     * self-dispatching — which captures the frame jobs too. Draining them here keeps these cases asserting
+     * the same end state they always did: a settled run with real images.
+     */
+    private function runDispatchedFrames(): void
+    {
+        foreach (Queue::pushed(RenderStoryboardFrameJob::class) as $job) {
+            $job->handle(app(StoryboardFrameManager::class), app(GenerationSessionRunManager::class));
+        }
     }
 
     // ---- whole-run fan-out -----------------------------------------------------

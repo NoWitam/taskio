@@ -56,6 +56,45 @@ describe('Select custom-render slots', () => {
     expect(custom.text()).toBe('Gamma#');
   });
 
+  // #empty — added so a consumer can tell "nothing exists" from "the search matched
+  // nothing". The slot-less path must stay byte-identical for every other consumer.
+  it('renders the DEFAULT empty text when no #empty slot is given', async () => {
+    const wrapper = mount(Select, {
+      attachTo: document.body,
+      props: { options: [], emptyText: 'Nothing here' },
+    });
+    await wrapper.find('[role="combobox"]').trigger('click');
+    await nextTick();
+    expect(document.body.textContent).toContain('Nothing here');
+    wrapper.unmount();
+  });
+
+  it('renders #empty slot content instead, with the current query', async () => {
+    const wrapper = mount(Select, {
+      attachTo: document.body,
+      props: { options: [], searchable: true, emptyText: 'Nothing here' },
+      slots: {
+        empty: `<template #empty="{ query }"><span class="custom-empty">q=[{{ query }}]</span></template>`,
+      },
+    });
+    await wrapper.find('[role="combobox"]').trigger('click');
+    await nextTick();
+
+    const custom = document.body.querySelector('.custom-empty');
+    expect(custom).not.toBeNull();
+    expect(custom!.textContent).toBe('q=[]');
+    expect(document.body.textContent).not.toContain('Nothing here');
+
+    // Typing updates the payload immediately, so the slot can switch its copy.
+    const search = document.body.querySelector('[role="searchbox"]') as HTMLInputElement;
+    search.value = 'abc';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    expect(document.body.querySelector('.custom-empty')!.textContent).toBe('q=[abc]');
+
+    wrapper.unmount();
+  });
+
   it('renders #option slot content in the open listbox', async () => {
     const wrapper = mount(Select, {
       attachTo: document.body,

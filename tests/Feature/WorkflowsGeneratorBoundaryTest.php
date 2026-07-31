@@ -108,6 +108,43 @@ class WorkflowsGeneratorBoundaryTest extends TestCase
     }
 
     /**
+     * Workflows must name NO Bot class, module-wide. The per-block `@[ai-text]` AUTHOR picker works in
+     * workflow steps too, and an author IS a bot — but the engine only ever asks the Variables
+     * {@see \App\Modules\Variables\Contracts\AuthorVoiceResolver} CONTRACT, which the Bot module binds the
+     * concrete for. That inversion is the entire reason the feature can cross modules at all; a single
+     * `use App\Modules\Bot\…` in the step runner (the obvious "quick fix") would couple two peer modules
+     * that must only ever meet through the lower Variables layer.
+     */
+    public function test_no_workflows_file_ever_names_bot(): void
+    {
+        $root = app_path('modules/Workflows');
+        $this->assertDirectoryExists($root);
+
+        $scanned = 0;
+
+        /** @var iterable<\SplFileInfo> $files */
+        $files = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+        );
+
+        foreach ($files as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+
+            $scanned++;
+
+            $this->assertStringNotContainsString(
+                'App\\Modules\\Bot',
+                (string) file_get_contents($file->getPathname()),
+                $file->getPathname() . ' must not depend on Bot (authors reach Workflows through the Variables contract).',
+            );
+        }
+
+        $this->assertGreaterThan(0, $scanned, 'expected to scan the Workflows module source files');
+    }
+
+    /**
      * The wait KIND is one string shared by the step, the resolver and the listener — built through the
      * step's own helper so a rename can never desynchronize the park key from the resolver's registry key
      * or from what the listener looks a parked run up by.

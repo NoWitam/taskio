@@ -56,4 +56,25 @@ class BotFactory extends Factory
     {
         return $this->state(fn () => ['knowledge' => ['enabled' => $enabled, 'entries' => $entries]]);
     }
+
+    /**
+     * Bot with a configured VISUAL module. Defaults describe a usable identity (a descriptor +
+     * aesthetic + the steerable wardrobe) with no images yet; $overrides layer on the file-bearing
+     * parts (candidates / canonical_file_id / reference_file_id), which must reference files
+     * actually owned by the bot.
+     */
+    public function withVisual(array $overrides = [], bool $enabled = true): static
+    {
+        return $this->state(fn () => ['visual' => array_merge([
+            'enabled' => $enabled,
+            'descriptor' => 'A cheerful red-haired illustrator in her late twenties.',
+            'aesthetic' => 'Soft flat illustration, warm palette, gentle rim light.',
+            'wardrobe' => 'A simple green summer dress.',
+            'prohibitions' => [],
+            'reference_file_id' => null,
+            'candidates' => [],
+            'canonical_file_id' => null,
+            'prompt' => null,
+        ], $overrides)]);
+    }
 }

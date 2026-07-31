@@ -100,6 +100,13 @@ function toggle(): void {
 }
 
 // Esc closes + returns focus; outside-click closes without stealing focus back.
+//
+// DELIBERATELY NOT in `useOverlayStack` (unlike Modal/Drawer/Popover/Select): this handler is bound
+// to the panel, so it only ever fires while DOM focus is INSIDE the panel. A control that IS in the
+// stack and can be open here (a `Select` list) takes focus into its own body-teleported list, so the
+// two are never the target of the same press — the stack closes the list first and returns focus
+// here, and the NEXT Escape reaches this handler. Registering would add an entry to the stack's
+// ordering/z-index semantics that nothing needs.
 function onPanelKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault();

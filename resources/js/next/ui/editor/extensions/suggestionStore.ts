@@ -23,6 +23,10 @@
 // variant that forwarding goes through `onKey`, which the popup wires to the browser's one
 // keyboard model.
 import { reactive } from 'vue';
+import {
+  useOverlayStack,
+  type OverlayHandle,
+} from '../../../app/composables/useOverlayStack';
 import type { VariableNode } from '../../variables/types';
 
 /** ONE flat row of the MENTION popup (the variable popup renders `nodes`, not rows). */
@@ -95,3 +99,40 @@ export function createSuggestionStore(): SuggestionState {
 }
 
 export type SuggestionStore = ReturnType<typeof createSuggestionStore>;
+
+/** The open/close seam a trigger plugin uses to keep its popup in the shared overlay stack. */
+export interface SuggestionOverlay {
+  /** Join the stack (idempotent) — call when the popup becomes active. */
+  acquire: () => void;
+  /** Leave the stack (idempotent) — call from the plugin's `close()` and on destroy. */
+  release: () => void;
+}
+
+/**
+ * Register an ACTIVE caret popup with the shared overlay stack.
+ *
+ * WHY BOTH TRIGGER PLUGINS NEED THIS: they answer Escape from ProseMirror's `handleKeyDown`, which
+ * is a BUBBLE-phase listener on the editor surface. The overlay stack listens on `document` in the
+ * CAPTURE phase and `stopPropagation()`s Escape on behalf of the topmost overlay — so with the
+ * editor inside a Modal/Drawer (where every markdown editor in Taskio lives) the first Escape closed
+ * the MODAL and discarded the user's text while the suggestion list stayed open. Registering makes
+ * the active popup the topmost overlay: Escape closes the list, a second one the modal. `Select`
+ * was fixed the same way, and since it now registers too it is the most common overlay in the app,
+ * which is what turned this ordering gap from theoretical into reachable.
+ *
+ * Not a Vue component, so there is no `onBeforeUnmount`: the plugin owns the lifetime and releases
+ * from its own `close()` / `destroy()`.
+ */
+export function createSuggestionOverlay(close: () => void): SuggestionOverlay {
+  let handle: OverlayHandle | null = null;
+  return {
+    acquire(): void {
+      if (handle) return;
+      handle = useOverlayStack({ kind: 'popover', close });
+    },
+    release(): void {
+      handle?.release();
+      handle = null;
+    },
+  };
+}

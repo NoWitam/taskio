@@ -26,7 +26,11 @@ import type { EditorView } from '@tiptap/pm/view';
 import { createApp, type App } from 'vue';
 import VariableChip from './VariableChip.vue';
 import VariableSuggest from './VariableSuggest.vue';
-import { createSuggestionStore, type SuggestionStore } from './suggestionStore';
+import {
+  createSuggestionStore,
+  createSuggestionOverlay,
+  type SuggestionStore,
+} from './suggestionStore';
 import { variableFeedTree } from './variableFeed';
 import {
   registerMarkdownNode,
@@ -249,7 +253,12 @@ export function createVariable(options: VariableOptions = {}) {
         store.loading = false;
         store.query = '';
         store.rect = null;
+        overlay.release();
       };
+      // The active popup is a real overlay: it joins the shared stack so Escape closes IT and not
+      // the Modal/Drawer around the editor (see `createSuggestionOverlay`). Declared after `close`
+      // because the stack needs it as the dismiss callback; it only runs after setup.
+      const overlay = createSuggestionOverlay(close);
       store.onClose = close;
 
       const caretRect = (view: EditorView, pos: number): DOMRect => {
@@ -403,6 +412,7 @@ export function createVariable(options: VariableOptions = {}) {
                   store.rect = caretRect(view, state.range!.from);
                   if (!prev.active) {
                     store.active = true;
+                    overlay.acquire();
                     store.query = state.query;
                     publishNodes();
                   } else if (prev.query !== state.query) {

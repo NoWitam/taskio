@@ -182,8 +182,20 @@ class CreativeDirection
      * notes) for a text→image prompt, or null when the direction carries no visual guidance. Deliberately
      * NOT fenced and deliberately narrow — an image model has no system message and would happily draw a
      * "GOAL: raise sign-ups" line, so those fields never reach it.
+     *
+     * $subjectOverride REPLACES the CONTENT of the subject line with a caller-supplied description — the
+     * seam the frozen character identity uses ({@see SessionVisualIdentity::subjectDescription}). The
+     * derived `subject` is what the direction model INFERRED from the recipe; a delegated session's
+     * character is what the human actually CONFIGURED, and a picture can only have one recurring subject, so
+     * the configured one wins and says so in the line itself ({@see imageSubjectAnchor}). Everything else —
+     * the art-direction facets and the continuity notes — is untouched: the character changes WHO is drawn,
+     * not the world they are drawn in.
+     *
+     * The override is emitted even when the direction inferred NO subject of its own, so a run that derived
+     * only a palette still anchors the character. With a null override the output is BYTE-IDENTICAL to
+     * before this seam existed.
      */
-    public function forImage(): ?string
+    public function forImage(?string $subjectOverride = null): ?string
     {
         $lines = [];
         $facets = [];
@@ -198,7 +210,9 @@ class CreativeDirection
             $lines[] = 'Consistent art direction across all frames: ' . implode('; ', $facets) . '.';
         }
 
-        if ($this->subject !== null) {
+        if ($subjectOverride !== null && $subjectOverride !== '') {
+            $lines[] = self::imageSubjectAnchor($subjectOverride);
+        } elseif ($this->subject !== null) {
             $lines[] = 'Recurring subject, identical in every frame: ' . $this->subject;
         }
 
@@ -207,6 +221,37 @@ class CreativeDirection
         }
 
         return $lines === [] ? null : implode("\n", $lines);
+    }
+
+    /**
+     * The SUBJECT anchor line for an overridden subject — the ONE authority for its wording, shared by
+     * {@see forImage} (which substitutes it for its own derived subject line) and by the executor's
+     * direction-LESS path (a run with no direction, or one whose direction carries no visual guidance at
+     * all, still has to anchor the character somewhere).
+     *
+     * It carries an explicit PRECEDENCE sentence because the composed base prompt is a stack of notes that
+     * can legitimately disagree about who is in the frame: the shot list's own `visual` text, an authored
+     * style block and a derived anchor were all written without knowing a specific character was going to
+     * be drawn. Stating which one wins is cheaper — and far more reliable — than trying to rewrite the
+     * others.
+     */
+    public static function imageSubjectAnchor(string $subject): string
+    {
+        return 'Recurring subject, identical in every frame: ' . $subject
+            . ' This is the binding description of that subject: where any other note in this prompt '
+            . 'describes the subject differently, THIS description wins.';
+    }
+
+    /**
+     * Neutralize every occurrence of the DATA-fence markers this class emits, replacing (never deleting)
+     * each with a non-empty sentinel. PUBLIC because the fence has to be unforgeable by ANY value composed
+     * into the same prompt, not just by a direction field — the frozen character identity
+     * ({@see SessionVisualIdentity}) rides the same base prompt and reuses this ONE scrub authority rather
+     * than restating the discipline. See {@see text} for why deletion would be unsafe.
+     */
+    public static function scrubFenceMarkers(string $value): string
+    {
+        return str_ireplace([self::FENCE_OPEN, self::FENCE_CLOSE], self::SCRUBBED, $value);
     }
 
     /**
@@ -258,7 +303,7 @@ class CreativeDirection
         // a single pass would hand that forged marker straight to the prompt. A sentinel makes that
         // impossible by construction — it contains no character of either marker, so a marker can never span
         // it, and every marker occurrence WITHIN a surviving segment was already replaced by this same pass.
-        $clean = str_ireplace([self::FENCE_OPEN, self::FENCE_CLOSE], self::SCRUBBED, $clean);
+        $clean = self::scrubFenceMarkers($clean);
 
         $clean = trim($clean);
 

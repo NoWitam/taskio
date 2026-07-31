@@ -2,10 +2,12 @@
 
 namespace App\Modules\Generator\Services;
 
+use App\Modules\Disk\Exceptions\ImageSafetyRejectedException;
 use App\Modules\Disk\Services\ImageAiService;
 use App\Modules\Disk\Services\ImageGenerateService;
 use App\Modules\Generator\Exceptions\ImageEditBudgetExceeded;
 use App\Modules\Generator\Exceptions\ImageGenerateBudgetExceeded;
+use App\Modules\Generator\Exceptions\ImageSafetyRejected;
 use Illuminate\Support\Facades\Log;
 use Imagick;
 
@@ -20,6 +22,11 @@ use Imagick;
  *                     (see {@see generateBase}): the prompt is resolved through $resolvePrompt, then a
  *                     SYNCHRONOUS {@see ImageGenerateService::generate()} — metered (channel `ai_image_generate`)
  *                     and session-tagged via the ambient MeterContext, the same posture as an ai_edit.
+ *                     GIVEN A CHARACTER REFERENCE, that same base is produced by EDITING the frozen likeness
+ *                     to the resolved prompt instead ({@see ImageAiService::edit()}), so the frame draws the
+ *                     SAME person a description alone could only approximate. It reserves the GENERATE
+ *                     budget (it is still the base) but meters as an EDIT (that is the call being paid for)
+ *                     — see {@see generateBase} for why those two must not be the same ledger.
  *   - pixel filter    {@see ImagePixelProcessor} — an exact Imagick equivalent of the imageOps math.
  *   - ai_edit filter  the prompt markdown resolved through the SAME session resolver ($resolvePrompt), then a
  *                     SYNCHRONOUS {@see ImageAiService::edit()} — metered (channel `ai_image_edit`) and
@@ -32,19 +39,20 @@ use Imagick;
  * that filter (see {@see execute}). The working image is capped to `generator.image_max_edge` on its longest
  * edge BEFORE the chain to bound cost. Output is always PNG.
  *
- * BUDGET SCOPE: {@see $aiEdits} (the per-session `ai_edit` call budget) and {@see $aiGenerations} (the
- * per-session `ai_generate` base budget) are INSTANCE state. The executor is a plain container concrete (NOT
- * a singleton), resolved fresh with GenerationSessionExecutor for each session run, so each counter naturally
- * scopes to ONE run yet accumulates across every image part WITHIN that run (they share the one instance). Do
- * NOT bind it as a singleton, or the budgets would leak across runs. This mirrors the ai-text decorator's
- * per-session $calls.
+ * BUDGET SCOPE: the per-run `ai_edit` / `ai_generate` ceilings are charged against the RUN, and since the
+ * distributed-frames stage a run can span MANY jobs (the session job plus one job per storyboard frame), so
+ * the ledger lives on the session row and every reservation is one atomic guarded UPDATE — see
+ * {@see SessionImageBudget}, which the session executor binds around a render. The instance counters below
+ * are the UNBOUND fallback ONLY (a direct, session-less caller — the chain's own tests): the executor is a
+ * plain container concrete resolved fresh per use, so they scope to one instance exactly as they always did.
+ * Do NOT bind this class as a singleton, or that fallback would leak across callers.
  */
 class ImageChainExecutor
 {
-    /** `ai_edit` provider calls made so far in this session run (see BUDGET SCOPE above). */
+    /** `ai_edit` calls made on THIS instance — the unbound fallback only (see BUDGET SCOPE above). */
     private int $aiEdits = 0;
 
-    /** `ai_generate` (text→image base) provider calls made so far in this session run (see BUDGET SCOPE above). */
+    /** `ai_generate` calls made on THIS instance — the unbound fallback only (see BUDGET SCOPE above). */
     private int $aiGenerations = 0;
 
     public function __construct(
@@ -52,26 +60,33 @@ class ImageChainExecutor
         private ImagePixelProcessor $pixels,
         private ImageAiService $imageAi,
         private ImageGenerateService $imageGenerate,
+        private SessionImageBudget $budget,
     ) {}
 
     /**
      * Produce the image for $plan. $resolvePrompt resolves an ai_edit / base prompt markdown through the
      * session's resolver + context (the SAME `@[variable]`/`slots.*` engine a body uses).
      *
+     * $characterReference are the raw bytes of a frozen CHARACTER likeness this image must show. When given,
+     * an `ai_generate` base stops being a text→image call and becomes a reference EDIT of that likeness —
+     * the only way an image model reliably draws the SAME person twice. Null (every non-delegated run, and
+     * every frame that does not show the character) leaves the chain byte-identical.
+     *
      * @param  array<string, mixed>  $plan  the image plan config (`{base, filters?}`)
      * @param  array<string, mixed>  $slotValues  the session's filled slot values (for a `from_slot` base / mask)
      * @param  callable(string): string  $resolvePrompt
      * @return array{bytes: string, mime: string, width: int, height: int}
      */
-    public function execute(array $plan, array $slotValues, callable $resolvePrompt): array
+    public function execute(array $plan, array $slotValues, callable $resolvePrompt, ?string $characterReference = null): array
     {
         $base = is_array($plan['base'] ?? null) ? $plan['base'] : [];
 
         // An ai_generate (text→image) base is intercepted BEFORE the resolver: it needs the session prompt
         // resolver + the metered generate provider call, neither of which the file-reading resolver owns.
-        // Every other base kind (disk_file / from_slot) still resolves to Disk bytes as before.
+        // Every other base kind (disk_file / from_slot) still resolves to Disk bytes as before — and takes no
+        // character reference, because it already HAS a base image and nothing would be left to substitute.
         $resolved = ($base['kind'] ?? null) === 'ai_generate'
-            ? $this->generateBase($base, $resolvePrompt)
+            ? $this->generateBase($base, $resolvePrompt, $characterReference)
             : $this->baseResolver->resolve($base, $slotValues);
 
         $image = new Imagick;
@@ -196,11 +211,9 @@ class ImageChainExecutor
      */
     private function aiEdit(Imagick $image, array $filter, array $slotValues, callable $resolvePrompt): Imagick
     {
-        if ($this->aiEdits >= $this->maxAiEdits()) {
+        if (!$this->reserveEdit()) {
             throw new ImageEditBudgetExceeded;
         }
-
-        $this->aiEdits++;
 
         $prompt = $resolvePrompt(is_string($filter['prompt'] ?? null) ? $filter['prompt'] : '');
         $mask = $this->baseResolver->resolveMask($filter['mask'] ?? null, $slotValues);
@@ -227,23 +240,85 @@ class ImageChainExecutor
      * {@see ImageGenerateBudgetExceeded} (fail-soft — the session executor fails ONLY this part), never a
      * wasted call or spend. Only the guarding FACT is logged, never the prompt (which may carry slot values).
      *
+     * WITH A CHARACTER REFERENCE the base is produced by EDITING the frozen likeness towards the same
+     * resolved prompt instead of generating from text — the provider then draws THAT person rather than a
+     * new one who merely matches the description.
+     *
+     * The two sides of that swap are charged deliberately differently, because they answer different
+     * questions:
+     *   - the BUDGET reserves a GENERATE, because this call still IS the part's base. Charging it to the
+     *     edit ledger would let a storyboard's per-shot bases eat the budget that an authored `ai_edit`
+     *     filter needs on every shot, and the tail of the shot list would silently lose the author's look
+     *     (the exact failure the 8/8/8 lock-step exists to prevent).
+     *   - the METER records an `ai_image_edit`, because that is the call actually made and therefore the
+     *     real money. Metering is accounting; the ledger above is fan-out control.
+     *
      * @param  array<string, mixed>  $base
      * @param  callable(string): string  $resolvePrompt
      * @return array{bytes: string, mime: string}
      */
-    private function generateBase(array $base, callable $resolvePrompt): array
+    private function generateBase(array $base, callable $resolvePrompt, ?string $characterReference = null): array
     {
-        if ($this->aiGenerations >= $this->maxAiGenerations()) {
+        if (!$this->reserveGenerate()) {
             Log::warning('Generator image chain: per-session ai_generate budget reached; image part failed.');
 
             throw new ImageGenerateBudgetExceeded;
         }
 
-        $this->aiGenerations++;
-
         $prompt = $resolvePrompt(is_string($base['prompt'] ?? null) ? $base['prompt'] : '');
 
-        return $this->imageGenerate->generate($prompt);
+        if ($characterReference === null) {
+            return $this->imageGenerate->generate($prompt);
+        }
+
+        try {
+            // No mask: the whole frame is redrawn to the prompt, with the reference as the source of WHO is
+            // in it. Metered on `ai_image_edit` by the Disk seam, session-tagged by the ambient MeterContext.
+            $result = $this->imageAi->edit($characterReference, $prompt, null);
+        } catch (ImageSafetyRejectedException) {
+            // The provider rendered the frame and then refused to hand it over. Re-thrown as the GENERATOR's
+            // own domain failure so the executor keeps ONE catch and the user gets the one image message
+            // that names a fix they can actually make. Never logged with the prompt.
+            throw new ImageSafetyRejected;
+        }
+
+        return ['bytes' => (string) base64_decode($result['image'], true), 'mime' => $result['mime'] ?? 'image/png'];
+    }
+
+    /**
+     * Reserve one `ai_generate` call: against the RUN's persisted ledger when a session is bound (the only
+     * shape that survives the storyboard fan-out, where N frame jobs reserve concurrently), else against
+     * this instance's own counter — the pre-existing behavior, kept verbatim for a session-less caller.
+     */
+    private function reserveGenerate(): bool
+    {
+        if ($this->budget->isBound()) {
+            return $this->budget->reserveGenerate($this->maxAiGenerations());
+        }
+
+        if ($this->aiGenerations >= $this->maxAiGenerations()) {
+            return false;
+        }
+
+        $this->aiGenerations++;
+
+        return true;
+    }
+
+    /** Reserve one `ai_edit` call — the {@see reserveGenerate} split, for the edit ledger. */
+    private function reserveEdit(): bool
+    {
+        if ($this->budget->isBound()) {
+            return $this->budget->reserveEdit($this->maxAiEdits());
+        }
+
+        if ($this->aiEdits >= $this->maxAiEdits()) {
+            return false;
+        }
+
+        $this->aiEdits++;
+
+        return true;
     }
 
     /**

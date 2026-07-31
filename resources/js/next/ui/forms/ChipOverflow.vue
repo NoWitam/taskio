@@ -104,6 +104,10 @@ onBeforeUnmount(() => {
 
 useOutsideClick([panelRef, plusRef], () => closePanel(false), open);
 
+// DELIBERATELY NOT in `useOverlayStack`: bound to the panel, so it only fires while DOM focus is
+// inside it, and the panel holds nothing that registers (chips + a remove button — no nested
+// overlay). There is no press both this and a stacked overlay could want, so an entry would only
+// add noise to the stack's ordering.
 function onPanelKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault();

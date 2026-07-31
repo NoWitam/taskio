@@ -34,8 +34,12 @@ class BotResource extends JsonResource
                 'entries' => $this->knowledgeEntries(),
             ],
 
-            // Visual / Audio placeholders (no logic yet).
-            'visual' => $this->visual,
+            // Visual module: the NORMALIZED identity, or null when it was never configured
+            // (a bot from before the module existed). Never the raw column.
+            // File ids are rendered by the caller through the Disk serve route (GET /api/disk/{id}).
+            'visual' => $this->visualIdentity(),
+
+            // Audio placeholder (no logic yet).
             'audio' => $this->audio,
 
             'creator' => CreatorResource::make($this->whenLoaded('creator')),

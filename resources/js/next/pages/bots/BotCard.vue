@@ -21,7 +21,7 @@ import Icon from '../../ui/primitives/Icon.vue';
 import Spinner from '../../ui/primitives/Spinner.vue';
 import DropdownMenu from '../../ui/overlay/DropdownMenu.vue';
 import DropdownMenuItem from '../../ui/overlay/DropdownMenuItem.vue';
-import { botStatusMap } from './botStatus';
+import { botStatusMap } from '../../ui/data/botStatus';
 import { useI18n } from '../../app/i18n';
 import type { IconName } from '../../ui/primitives/icons';
 import type { BotListItem } from './types';
@@ -50,6 +50,42 @@ const isActive = computed(() => props.bot.status === 'active');
 const statusDisabledReason = computed<string | undefined>(() =>
   props.bot.is_owner ? undefined : t('bots.actions.statusDisabledOwner'),
 );
+
+/**
+ * The VISUAL module chip — OPERATIONAL READINESS, not "is this configured": the module being on and a
+ * likeness being approved are independent, and only BOTH means "this bot will appear on its images".
+ * The two half-states are the ones a user needs told (an enabled module with no image silently produces
+ * character-less pictures; an approved likeness with the module off does the same), so each gets its own
+ * variant + icon + title. Neither → no chip at all: the module was simply never touched.
+ */
+const visualChip = computed<{ label: string; title: string; variant: 'primary' | 'warning' | 'neutral'; icon: IconName } | null>(() => {
+  const { visual_enabled: enabled, visual_has_image: hasImage } = props.bot;
+  if (enabled && hasImage) {
+    return {
+      label: t('bots.card.visualReady'),
+      title: t('bots.card.visualReadyTitle'),
+      variant: 'primary',
+      icon: 'palette',
+    };
+  }
+  if (enabled) {
+    return {
+      label: t('bots.card.visualNoImage'),
+      title: t('bots.card.visualNoImageTitle'),
+      variant: 'warning',
+      icon: 'alert-triangle',
+    };
+  }
+  if (hasImage) {
+    return {
+      label: t('bots.card.visualOff'),
+      title: t('bots.card.visualOffTitle'),
+      variant: 'neutral',
+      icon: 'palette',
+    };
+  }
+  return null;
+});
 
 const editDisabledReason = computed<string | undefined>(() =>
   props.bot.is_owner ? undefined : t('bots.actions.editDisabledOwner'),
@@ -128,8 +164,8 @@ function onOpen(): void {
 
     <!-- Module chips: a CONSISTENT footer showing which modules the bot carries.
          Text is always present (persona is mandatory); Task-execution shows when
-         enabled; Visual / Voice render as disabled "soon" chips so the IA is
-         visible without faking capability. -->
+         enabled; the Appearance chip reports operational readiness (see `visualChip`);
+         Audio stays a disabled "soon" chip so the IA is visible without faking capability. -->
     <template #meta>
       <Badge variant="primary" tone="subtle" size="sm" icon="file-text">
         {{ t('bots.modules.text') }}
@@ -143,8 +179,15 @@ function onOpen(): void {
       >
         {{ t('bots.modules.taskExecution') }}
       </Badge>
-      <Badge variant="neutral" tone="subtle" size="sm" icon="palette">
-        {{ t('bots.modules.visualSoon') }}
+      <Badge
+        v-if="visualChip"
+        :variant="visualChip.variant"
+        tone="subtle"
+        size="sm"
+        :icon="visualChip.icon"
+        :title="visualChip.title"
+      >
+        {{ visualChip.label }}
       </Badge>
       <Badge variant="neutral" tone="subtle" size="sm" icon="bell">
         {{ t('bots.modules.audioSoon') }}

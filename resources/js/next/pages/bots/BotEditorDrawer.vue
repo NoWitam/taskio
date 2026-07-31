@@ -11,11 +11,15 @@
 //     (`PATCH /bots/{id}/status`), never through this form.
 //   • MODULES as a left vertical nav + a right content panel:
 //       1. text (required, always on) · 2. task-execution · 3. knowledge ·
-//       4. visual (soon) · 5. audio (soon).
-//   • The enable Switch for the toggleable modules (task-execution + knowledge)
-//     lives IN THE NAV ROW; ENABLED modules stand out (accent left-border + filled
-//     dot + bolder label). Each content panel ALWAYS shows the module's description
-//     at the top; when a module is OFF its fields stay visible but disabled/readable.
+//       4. visual ("Wygląd", toggleable — the character's AI-made likeness) ·
+//       5. audio (soon).
+//   • The enable Switch for the toggleable modules (task-execution + knowledge +
+//     visual) lives IN THE NAV ROW; ENABLED modules stand out (accent left-border +
+//     filled dot + bolder label). Each content panel ALWAYS shows the module's
+//     description at the top; when a module is OFF its fields stay visible but
+//     disabled/readable — EXCEPT visual, whose creation controls stay LIVE on
+//     purpose: `enabled` gates only downstream use in sessions, not preparing
+//     the likeness (see BotVisualPanel).
 //
 // Edits a LOCAL reactive state seeded once from the store's prefetched detail (the
 // component is keyed by id in the layout, so it remounts per bot). `structuredClone`
@@ -23,9 +27,17 @@
 //
 // Submitting builds the EXACT FormRequest payload (persona required; dictionary/
 // phrases as object arrays; task_execution as `{enabled, tools}` or null; knowledge
-// as `{enabled, entries}`; NO status; visual/audio omitted) and maps a 422 onto
-// field errors, jumping to the first module that carries an error.
+// as `{enabled, entries}`; visual as the WHOLE module; NO status; audio omitted) and
+// maps a 422 onto field errors, jumping to the first module that carries an error.
+//
+// THE VISUAL MODULE SPLITS ITS STATE, and that split is load-bearing. A save OVERWRITES `visual`
+// WHOLE, while a likeness generation writes `candidates` / `canonical_file_id` ASYNCHRONOUSLY in a
+// worker. So the TEXT fields are ordinary form state (`form.visual`), while the FILE POINTERS are a
+// read-only MIRROR of the server (`visualServer`) that is replaced only from a server response —
+// never from the form. Without this, saving the bot after a background generation landed would
+// silently DELETE the image that just arrived.
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import FormField from '../../ui/forms/FormField.vue';
 import TextInput from '../../ui/forms/TextInput.vue';
 import Textarea from '../../ui/forms/Textarea.vue';
@@ -40,13 +52,20 @@ import Skeleton from '../../ui/data/Skeleton.vue';
 import EmptyState from '../../ui/data/EmptyState.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import EntryListInput from './EntryListInput.vue';
+import BotVisualPanel from './BotVisualPanel.vue';
 import { toolIcon, toolLabel, toolDescription, combineToolSelection } from './botToolMeta';
 import { useBotsStore } from '../../app/stores/bots';
 import { useBotToolRegistryStore } from '../../app/stores/botToolRegistry';
 import { useToast } from '../../app/composables/useToast';
 import { useI18n } from '../../app/i18n';
 import type { IconName } from '../../ui/primitives/icons';
-import type { BotDetail, BotDictionaryEntry, BotPhraseEntry, BotWritePayload } from './types';
+import type {
+  BotDetail,
+  BotDictionaryEntry,
+  BotPhraseEntry,
+  BotVisualIdentity,
+  BotWritePayload,
+} from './types';
 
 const props = defineProps<{
   /** Bot id to edit, or null to create a new one. */
@@ -59,6 +78,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const route = useRoute();
 const store = useBotsStore();
 const toolRegistry = useBotToolRegistryStore();
 const toast = useToast();
@@ -70,7 +90,17 @@ function clonePlain<T>(value: T): T {
 const isEdit = computed(() => props.botId !== null);
 
 // --- Modules (the left nav) -----------------------------------------------
+// A DESCRIPTOR, not a chain of if/elses: every module declares where its enable flag lives and which
+// error slots belong to it, so `moduleEnabled` / `moduleToggle` / `moduleHasError` / `jumpToFirstError`
+// are generic. Adding the audio module later is one row here plus its form/error slots — no branching.
 type ModuleKey = 'text' | 'task_execution' | 'knowledge' | 'visual' | 'audio';
+/** The `form` keys that hold a module's enable flag (the only ones a toggle may write). */
+type ModuleEnabledField = 'taskExecutionEnabled' | 'knowledgeEnabled' | 'visualEnabled';
+/** Error slots holding ONE message. */
+type ScalarErrorKey = 'persona' | 'tools' | 'knowledge' | 'visual';
+/** Error slots holding a per-ROW map (`{ <i>: { field: msg } }`) — non-empty means "has an error". */
+type GroupErrorKey = 'knowledgeEntries' | 'dictionaryEntries' | 'phraseEntries' | 'visualFields';
+
 interface ModuleMeta {
   key: ModuleKey;
   icon: IconName;
@@ -80,18 +110,54 @@ interface ModuleMeta {
   soon?: boolean;
   /** Toggleable modules carry an enable Switch IN their nav row. */
   toggleable?: boolean;
+  /** Where this module's enable flag lives in `form` (toggleable modules only). */
+  enabledField?: ModuleEnabledField;
+  /** Single-message error slots that belong to this module. */
+  errorFields?: ScalarErrorKey[];
+  /** Per-row error maps that belong to this module. */
+  errorGroups?: GroupErrorKey[];
 }
 const MODULES: ModuleMeta[] = [
-  { key: 'text', icon: 'file-text', required: true },
-  { key: 'task_execution', icon: 'list-checks', toggleable: true },
-  { key: 'knowledge', icon: 'bookmark', toggleable: true },
-  { key: 'visual', icon: 'palette', soon: true },
+  {
+    key: 'text',
+    icon: 'file-text',
+    required: true,
+    errorFields: ['persona'],
+    errorGroups: ['dictionaryEntries', 'phraseEntries'],
+  },
+  { key: 'task_execution', icon: 'list-checks', toggleable: true, enabledField: 'taskExecutionEnabled', errorFields: ['tools'] },
+  {
+    key: 'knowledge',
+    icon: 'bookmark',
+    toggleable: true,
+    enabledField: 'knowledgeEnabled',
+    errorFields: ['knowledge'],
+    errorGroups: ['knowledgeEntries'],
+  },
+  // The visual module is LIVE: toggleable like knowledge. Note that `enabled` gates USE in sessions,
+  // not authoring — the panel stays fully operable while it is off (see BotVisualPanel's header).
+  {
+    key: 'visual',
+    icon: 'palette',
+    toggleable: true,
+    enabledField: 'visualEnabled',
+    errorFields: ['visual'],
+    errorGroups: ['visualFields'],
+  },
   { key: 'audio', icon: 'bell', soon: true },
 ];
-const activeModule = ref<ModuleKey>('text');
+
+/** Deep link from elsewhere in the app (`?bot=<id>&botModule=visual`) opens straight on that module. */
+function initialModule(): ModuleKey {
+  const raw = Array.isArray(route.query.botModule) ? route.query.botModule[0] : route.query.botModule;
+  const key = String(raw ?? '');
+  return MODULES.some((m) => m.key === key) ? (key as ModuleKey) : 'text';
+}
+const activeModule = ref<ModuleKey>(initialModule());
 
 // --- Local editor state ---------------------------------------------------
 // Status is NOT part of the form (toggled via the detail's status action).
+// `visual` holds ONLY the visual module's TEXT — its file pointers live in `visualServer` (see header).
 const form = reactive<{
   name: string;
   description: string;
@@ -105,6 +171,8 @@ const form = reactive<{
   tools: string[];
   knowledgeEnabled: boolean;
   knowledge: Record<string, string>[];
+  visualEnabled: boolean;
+  visual: { descriptor: string; wardrobe: string; aesthetic: string; prohibitions: string[] };
 }>({
   name: '',
   description: '',
@@ -118,53 +186,102 @@ const form = reactive<{
   tools: [],
   knowledgeEnabled: false,
   knowledge: [],
+  visualEnabled: false,
+  visual: { descriptor: '', wardrobe: '', aesthetic: '', prohibitions: [] },
 });
+
+/**
+ * The SERVER's copy of the visual module's file pointers (candidates / approved / reference / prompt).
+ * Replaced ONLY from a server response — a generation writes these in the background, so the form must
+ * never author them (see the file header).
+ */
+const visualServer = ref<BotVisualIdentity | null>(null);
 
 // Whether a module is currently ENABLED (drives the nav emphasis + inert forms).
 function moduleEnabled(key: ModuleKey): boolean {
-  if (key === 'text') return true;
-  if (key === 'task_execution') return form.taskExecutionEnabled;
-  if (key === 'knowledge') return form.knowledgeEnabled;
-  return false; // visual / audio placeholders
+  const meta = MODULES.find((m) => m.key === key);
+  if (meta?.required) return true;
+  return meta?.enabledField ? form[meta.enabledField] : false; // `soon` modules have no flag
 }
 
 /** Toggle a module's enable Switch from its nav row (v-model bridge). */
 function moduleToggle(key: ModuleKey): boolean {
-  return key === 'task_execution' ? form.taskExecutionEnabled : form.knowledgeEnabled;
+  const field = MODULES.find((m) => m.key === key)?.enabledField;
+  return field ? form[field] : false;
 }
 function setModuleToggle(key: ModuleKey, value: boolean): void {
-  if (key === 'task_execution') form.taskExecutionEnabled = value;
-  else if (key === 'knowledge') form.knowledgeEnabled = value;
+  const field = MODULES.find((m) => m.key === key)?.enabledField;
+  if (field) form[field] = value;
 }
 
-// Seed ONCE from the prefetched detail when editing.
 const detailError = ref(false);
-if (isEdit.value) {
-  const detail = store.detail && store.detail.id === props.botId ? store.detail : null;
-  if (detail) {
-    const cloned = clonePlain(detail);
-    form.name = cloned.name;
-    form.description = cloned.description ?? '';
-    form.icon = (cloned.icon as IconName | null) ?? null;
-    form.persona = cloned.persona ?? '';
-    form.style = cloned.style ?? '';
-    // dictionary/phrases arrive as object arrays (accessor-normalized server-side).
-    form.dictionary = (cloned.dictionary ?? []).map((d) => ({ term: d.term, meaning: d.meaning }));
-    form.phrases = (cloned.phrases ?? []).map((p) => ({ phrase: p.phrase, context: p.context ?? '' }));
-    form.prohibitions = cloned.prohibitions ?? [];
-    if (cloned.task_execution) {
-      form.taskExecutionEnabled = cloned.task_execution.enabled;
-      form.tools = cloned.task_execution.tools ?? [];
-    }
-    form.knowledgeEnabled = cloned.knowledge?.enabled ?? false;
-    form.knowledge = (cloned.knowledge?.entries ?? []).map((k) => ({ title: k.title, content: k.content }));
-  } else {
-    detailError.value = true;
+/**
+ * Whether the form actually holds the bot. Load-bearing beyond "did it render": the visual module is
+ * sent WHOLE, so writing it from a form that was never seeded would blank the module. Until this is
+ * true the `visual` key is OMITTED and the server leaves it untouched (`BotDTO::normalizeVisual`).
+ */
+const seeded = ref(false);
+const loadingDetail = ref(false);
+
+/** The FORM's snapshot — the baseline `dirty` is measured against. */
+function formSnapshot(): string {
+  return JSON.stringify(form);
+}
+/** Re-baselined on seed + after each successful save, so a just-saved editor reads clean. */
+const savedSnapshot = ref(formSnapshot());
+/** Whether the form diverges from what was last persisted — the visual panel saves before it spends. */
+const dirty = computed(() => formSnapshot() !== savedSnapshot.value);
+
+function seedFrom(detail: BotDetail): void {
+  const cloned = clonePlain(detail);
+  form.name = cloned.name;
+  form.description = cloned.description ?? '';
+  form.icon = (cloned.icon as IconName | null) ?? null;
+  form.persona = cloned.persona ?? '';
+  form.style = cloned.style ?? '';
+  // dictionary/phrases arrive as object arrays (accessor-normalized server-side).
+  form.dictionary = (cloned.dictionary ?? []).map((d) => ({ term: d.term, meaning: d.meaning }));
+  form.phrases = (cloned.phrases ?? []).map((p) => ({ phrase: p.phrase, context: p.context ?? '' }));
+  form.prohibitions = cloned.prohibitions ?? [];
+  if (cloned.task_execution) {
+    form.taskExecutionEnabled = cloned.task_execution.enabled;
+    form.tools = cloned.task_execution.tools ?? [];
   }
+  form.knowledgeEnabled = cloned.knowledge?.enabled ?? false;
+  form.knowledge = (cloned.knowledge?.entries ?? []).map((k) => ({ title: k.title, content: k.content }));
+  // Visual: the TEXT into the form, the FILE POINTERS into the server mirror (see the file header).
+  form.visualEnabled = cloned.visual?.enabled ?? false;
+  form.visual = {
+    descriptor: cloned.visual?.descriptor ?? '',
+    wardrobe: cloned.visual?.wardrobe ?? '',
+    aesthetic: cloned.visual?.aesthetic ?? '',
+    prohibitions: cloned.visual?.prohibitions ?? [],
+  };
+  visualServer.value = cloned.visual;
+  seeded.value = true;
+  savedSnapshot.value = formSnapshot();
 }
 
-// --- Tool registry --------------------------------------------------------
-onMounted(() => void toolRegistry.fetchRegistry());
+// Seed from the prefetched detail when editing; a NEW bot is trivially "seeded" (its module is empty).
+if (isEdit.value) {
+  const cached = store.detail && store.detail.id === props.botId ? store.detail : null;
+  if (cached) seedFrom(cached);
+} else {
+  seeded.value = true;
+}
+
+// --- Tool registry + a deep-linked bot the store hasn't cached -------------
+// `?bot=<id>` can arrive from ANYWHERE (a generator session's "bot appearance" action, a shared link),
+// where nothing prefetched the detail. Fetch it rather than showing an error for a bot that exists.
+onMounted(async () => {
+  void toolRegistry.fetchRegistry();
+  if (!isEdit.value || seeded.value || !props.botId) return;
+  loadingDetail.value = true;
+  const fresh = await store.fetchBot(props.botId);
+  loadingDetail.value = false;
+  if (fresh) seedFrom(fresh);
+  else detailError.value = true;
+});
 
 const toolOptions = computed<SelectOption[]>(() =>
   toolRegistry.availableIds().map((id) => ({
@@ -195,33 +312,33 @@ const errors = reactive<{
   persona: string | null;
   tools: string | null;
   knowledge: string | null;
+  /** A module-level visual message (e.g. a rejected file id). */
+  visual: string | null;
   knowledgeEntries: Record<number, { title?: string; content?: string }>;
   /** Per-row dictionary errors: `{ <i>: { term?, meaning? } }`. */
   dictionaryEntries: Record<number, Record<string, string>>;
   /** Per-row phrases errors: `{ <i>: { phrase?, context? } }`. */
   phraseEntries: Record<number, Record<string, string>>;
+  /** Per-FIELD visual errors, keyed like a row map so the descriptor can test it generically. */
+  visualFields: Record<string, string>;
 }>({
   name: null,
   persona: null,
   tools: null,
   knowledge: null,
+  visual: null,
   knowledgeEntries: {},
   dictionaryEntries: {},
   phraseEntries: {},
+  visualFields: {},
 });
 
-/** Which module a given error belongs to (drives the nav error dot + jump-to). */
+/** Which module a given error belongs to (drives the nav error dot + jump-to) — read off the descriptor. */
 function moduleHasError(key: ModuleKey): boolean {
-  if (key === 'text') {
-    return (
-      !!errors.persona ||
-      Object.keys(errors.dictionaryEntries).length > 0 ||
-      Object.keys(errors.phraseEntries).length > 0
-    );
-  }
-  if (key === 'task_execution') return !!errors.tools;
-  if (key === 'knowledge') return !!errors.knowledge || Object.keys(errors.knowledgeEntries).length > 0;
-  return false;
+  const meta = MODULES.find((m) => m.key === key);
+  if (!meta) return false;
+  if ((meta.errorFields ?? []).some((field) => !!errors[field])) return true;
+  return (meta.errorGroups ?? []).some((group) => Object.keys(errors[group]).length > 0);
 }
 
 /** Focus the first module that carries an error (name lives in the always-visible band). */
@@ -235,9 +352,11 @@ function validate(): boolean {
   errors.persona = null;
   errors.tools = null;
   errors.knowledge = null;
+  errors.visual = null;
   errors.knowledgeEntries = {};
   errors.dictionaryEntries = {};
   errors.phraseEntries = {};
+  errors.visualFields = {};
   let ok = true;
   if (!form.name.trim()) {
     errors.name = t('bots.editor.validation.nameRequired');
@@ -254,7 +373,36 @@ function validate(): boolean {
 // --- Submit ---------------------------------------------------------------
 const saving = ref(false);
 
-function buildPayload(): BotWritePayload {
+/** A visual write override — today only "clear the approval", which is a plain field write. */
+interface VisualOverrides {
+  canonicalFileId?: string | null;
+}
+
+/**
+ * The visual module as it must go on the wire: the user's TEXT merged with the SERVER's current file
+ * pointers. Reading the pointers from `visualServer` (never from a snapshot taken when the drawer
+ * opened) is what stops a save from deleting a candidate a background generation just filed.
+ */
+function buildVisual(overrides?: VisualOverrides): BotVisualIdentity {
+  const server = visualServer.value;
+  const text = (value: string): string | null => value.trim() || null;
+  return {
+    enabled: form.visualEnabled,
+    descriptor: text(form.visual.descriptor),
+    aesthetic: text(form.visual.aesthetic),
+    wardrobe: text(form.visual.wardrobe),
+    prohibitions: form.visual.prohibitions.map((p) => p.trim()).filter((p) => p !== ''),
+    reference_file_id: server?.reference_file_id ?? null,
+    candidates: server?.candidates ?? [],
+    canonical_file_id:
+      overrides && 'canonicalFileId' in overrides
+        ? (overrides.canonicalFileId ?? null)
+        : (server?.canonical_file_id ?? null),
+    prompt: server?.prompt ?? null,
+  };
+}
+
+function buildPayload(overrides?: VisualOverrides): BotWritePayload {
   // task_execution is sent as the nested object whenever the user enabled it OR
   // selected any tools; otherwise null (the module is off).
   const hasTaskConfig = form.taskExecutionEnabled || form.tools.length > 0;
@@ -282,7 +430,9 @@ function buildPayload(): BotWritePayload {
       enabled: form.knowledgeEnabled,
       entries: form.knowledge.map((k) => ({ title: (k.title ?? '').trim(), content: (k.content ?? '').trim() })),
     },
-    // visual / audio are NOT writable (placeholders) → never sent.
+    // Visual module: sent WHOLE, and only when the editor actually holds the module (otherwise the key
+    // is omitted and the server leaves it alone). `audio` is not writable (placeholder) → never sent.
+    ...(seeded.value ? { visual: buildVisual(overrides) } : {}),
   };
 }
 
@@ -301,11 +451,29 @@ function applyServerErrors(err: unknown): void {
   // `knowledge.entries.<i>.(title|content)`.
   const knowledgeBag = bag['knowledge.entries'] ?? bag.knowledge;
   if (knowledgeBag?.length) errors.knowledge = knowledgeBag[0];
+
+  // Visual: the module-level bag (a rejected file id / a malformed module) lands on the section, the
+  // per-field ones on their fields. `visual.prohibitions.<i>` collapses onto the list as a whole — the
+  // StringListInput has no per-row error slot, and the list is short enough to scan.
+  const visualBag =
+    bag.visual ?? bag['visual.candidates'] ?? bag['visual.canonical_file_id'] ?? bag['visual.reference_file_id'];
+  if (visualBag?.length) errors.visual = visualBag[0];
+  const visualFieldErrors: Record<string, string> = {};
+  (['descriptor', 'wardrobe', 'aesthetic', 'prohibitions'] as const).forEach((field) => {
+    const msgs = bag[`visual.${field}`];
+    if (msgs?.length) visualFieldErrors[field] = msgs[0];
+  });
+
   const entryErrors: Record<number, { title?: string; content?: string }> = {};
   const dictErrors: Record<number, Record<string, string>> = {};
   const phraseErrors: Record<number, Record<string, string>> = {};
   Object.entries(bag).forEach(([key, msgs]) => {
     if (!msgs.length) return;
+    // visual.prohibitions.<i> → one message on the whole list
+    if (/^visual\.prohibitions\.\d+$/.test(key) && !visualFieldErrors.prohibitions) {
+      visualFieldErrors.prohibitions = msgs[0];
+      return;
+    }
     // knowledge.entries.<i>.(title|content)
     const km = key.match(/^knowledge\.entries\.(\d+)\.(title|content)$/);
     if (km) {
@@ -330,27 +498,52 @@ function applyServerErrors(err: unknown): void {
   errors.knowledgeEntries = entryErrors;
   errors.dictionaryEntries = dictErrors;
   errors.phraseEntries = phraseErrors;
+  errors.visualFields = visualFieldErrors;
   jumpToFirstError();
 }
 
-async function onSubmit(): Promise<void> {
-  if (saving.value) return;
-  if (!validate()) return;
+/**
+ * Persist the bot and re-baseline. Returns the fresh bot, or null when the save was refused (the field
+ * errors + toast are already on screen). Shared by the footer's Save and by the visual panel, which must
+ * AWAIT a save before it may spend provider budget.
+ */
+async function persist(overrides?: VisualOverrides): Promise<BotDetail | null> {
+  if (saving.value) return null;
+  if (!validate()) return null;
   saving.value = true;
-  const payload = buildPayload();
+  const payload = buildPayload(overrides);
   try {
     const result =
       isEdit.value && props.botId
         ? await store.updateBot(props.botId, payload)
         : await store.createBot(payload);
-    toast.success(t(isEdit.value ? 'bots.editor.toasts.updated' : 'bots.editor.toasts.created'));
-    emit('saved', result);
+    applySynced(result);
+    savedSnapshot.value = formSnapshot();
+    return result;
   } catch (err: unknown) {
     applyServerErrors(err);
     toast.danger(t('bots.editor.toasts.error'));
+    return null;
   } finally {
     saving.value = false;
   }
+}
+
+/**
+ * Re-mirror the server's visual file pointers from a fresh bot. Called after EVERY server response the
+ * editor sees (save / generate-settled refetch / approve / delete) — the one place `visualServer` moves.
+ * The text fields are deliberately NOT re-seeded: they are the user's, and a background sync must never
+ * overwrite what they are typing.
+ */
+function applySynced(bot: BotDetail): void {
+  visualServer.value = bot.visual;
+}
+
+async function onSubmit(): Promise<void> {
+  const result = await persist();
+  if (!result) return;
+  toast.success(t(isEdit.value ? 'bots.editor.toasts.updated' : 'bots.editor.toasts.created'));
+  emit('saved', result);
 }
 
 function onCancel(): void {
@@ -367,9 +560,16 @@ function onCancel(): void {
       </h2>
     </header>
 
-    <!-- Deep-link without a prefetched detail → a clear error (no blank form). -->
+    <!-- A deep link the store hadn't cached: fetching. Skeletons MIMIC the form they replace. -->
+    <div v-if="loadingDetail" class="flex flex-col gap-next-4 p-next-4" role="status" :aria-label="t('common.loading')">
+      <Skeleton variant="rect" height="2.5rem" radius="md" />
+      <Skeleton variant="rect" height="4rem" radius="md" />
+      <Skeleton variant="rect" height="10rem" radius="md" />
+    </div>
+
+    <!-- The bot could not be loaded at all → a clear error (no blank form). -->
     <EmptyState
-      v-if="detailError"
+      v-else-if="detailError"
       variant="error"
       class="m-next-4"
       :title="t('bots.editor.editTitle')"
@@ -708,19 +908,45 @@ function onCancel(): void {
             </div>
           </section>
 
-          <!-- 4. VISUAL — placeholder (coming soon). -->
+          <!-- 4. VISUAL MODULE ("Wygląd") — the likeness. Deliberately NOT dimmed when off: the
+               toggle gates USE in sessions, not authoring (BotVisualPanel's warning says so). -->
           <section v-show="activeModule === 'visual'" class="flex flex-col gap-next-4">
-            <div class="flex items-start justify-between gap-next-3">
-              <div>
-                <h3 class="text-next-base font-next-semibold text-next-fg">{{ t('bots.modules.visual') }}</h3>
-                <p class="text-next-xs text-next-muted-foreground">{{ t('bots.editor.visualHint') }}</p>
-              </div>
-              <Badge variant="neutral" tone="subtle" size="sm">{{ t('bots.detail.comingSoon') }}</Badge>
+            <div class="flex items-center justify-between gap-next-3">
+              <h3 class="text-next-base font-next-semibold text-next-fg">{{ t('bots.modules.visual') }}</h3>
+              <span
+                class="flex shrink-0 items-center gap-next-1 text-next-xs font-next-medium"
+                :class="form.visualEnabled ? 'text-next-primary' : 'text-next-muted-foreground'"
+              >
+                <span
+                  class="h-2 w-2 rounded-full"
+                  :class="form.visualEnabled ? 'bg-next-primary' : 'bg-next-muted-foreground/40'"
+                  aria-hidden="true"
+                />
+                {{ form.visualEnabled ? t('bots.modules.state.on') : t('bots.modules.state.off') }}
+              </span>
             </div>
-            <div class="rounded-next-lg border border-dashed border-next-border bg-next-muted/40 p-next-6 text-center" aria-disabled="true">
-              <Icon name="palette" class="mx-auto mb-next-2 text-next-muted-foreground" aria-hidden="true" />
-              <p class="text-next-sm text-next-muted-foreground">{{ t('bots.editor.visualPlaceholder') }}</p>
-            </div>
+
+            <Alert v-if="errors.visual" variant="danger" size="sm">{{ errors.visual }}</Alert>
+
+            <BotVisualPanel
+              v-model:descriptor="form.visual.descriptor"
+              v-model:wardrobe="form.visual.wardrobe"
+              v-model:aesthetic="form.visual.aesthetic"
+              v-model:prohibitions="form.visual.prohibitions"
+              :bot-id="botId"
+              :bot-name="form.name"
+              :enabled="form.visualEnabled"
+              :server="visualServer"
+              :dirty="dirty"
+              :errors="{
+                descriptor: errors.visualFields.descriptor,
+                wardrobe: errors.visualFields.wardrobe,
+                aesthetic: errors.visualFields.aesthetic,
+                prohibitions: errors.visualFields.prohibitions,
+              }"
+              :save="persist"
+              @sync="applySynced"
+            />
           </section>
 
           <!-- 5. AUDIO — placeholder (coming soon). -->

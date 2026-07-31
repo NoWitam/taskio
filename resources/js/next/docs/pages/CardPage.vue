@@ -23,6 +23,7 @@ const propRows: ApiRow[] = [
   { name: 'disabled', type: 'boolean', default: 'false', description: 'Dim + make inert (also disables the interactive action).' },
   { name: 'loading', type: 'boolean', default: 'false', description: 'Show a skeleton in the body region; sets aria-busy.' },
   { name: 'empty', type: 'boolean', default: 'false', description: 'Render the empty-state placeholder (or #empty slot) instead of the body.' },
+  { name: 'bodyCollapsed', type: 'boolean', default: 'false', description: 'The host collapsed the body itself (v-show, children stay mounted): drops the body padding + the header divider so no empty band remains. Card never hides content on its own.' },
   { name: 'as', type: "'a' | 'button'", default: "'button'*", description: 'Element for the whole-card action when interactive (* default when interactive).' },
   { name: 'href', type: 'string', default: '—', description: 'Href for the whole-card link (forces an <a> + makes the card interactive).' },
   { name: 'target', type: 'string', default: '—', description: 'Anchor target; `_blank` adds rel="noopener noreferrer".' },

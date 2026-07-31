@@ -237,6 +237,59 @@ class CreativeDirectionNormalizerTest extends TestCase
         $this->assertStringNotContainsString('--- BEGIN', $anchor);
     }
 
+    // ---- the subject override (the character visual-identity seam) ----------------
+
+    public function test_a_subject_override_replaces_only_the_subject_line_and_states_that_it_wins(): void
+    {
+        $direction = CreativeDirection::fromArray($this->full());
+        $anchor = (string) $direction?->forImage('A red-haired illustrator. Wearing: a green dress.');
+
+        // The derived subject is GONE, the configured character is in its place...
+        $this->assertStringNotContainsString('A nervous beginner in a red apron', $anchor);
+        $this->assertStringContainsString('Recurring subject, identical in every frame: A red-haired illustrator. Wearing: a green dress.', $anchor);
+        // ...and the line settles the disagreement it creates with the rest of the prompt.
+        $this->assertStringContainsString('THIS description wins', $anchor);
+
+        // The world the frames are drawn in is untouched — a character changes WHO, not WHERE.
+        $this->assertStringContainsString('Consistent art direction across all frames: medium — photoreal', $anchor);
+        $this->assertStringContainsString('Continuity: The same red apron', $anchor);
+    }
+
+    public function test_the_override_is_emitted_even_when_the_direction_inferred_no_subject(): void
+    {
+        // A run whose direction carries only a palette must still anchor the character.
+        $direction = CreativeDirection::fromArray(['visual_style' => ['medium' => 'flat vector']]);
+
+        $anchor = (string) $direction?->forImage('A red-haired illustrator.');
+
+        $this->assertStringContainsString('Recurring subject, identical in every frame: A red-haired illustrator.', $anchor);
+        $this->assertStringContainsString('medium — flat vector', $anchor);
+    }
+
+    public function test_a_null_or_blank_override_leaves_the_image_projection_byte_identical(): void
+    {
+        $direction = CreativeDirection::fromArray($this->full());
+
+        $this->assertSame((string) $direction?->forImage(), (string) $direction?->forImage(null));
+        $this->assertSame((string) $direction?->forImage(), (string) $direction?->forImage(''));
+    }
+
+    /**
+     * The standalone anchor (used when a run has no direction at all) is the SAME line the projection
+     * substitutes — one authority for the wording, so a character-anchored prompt reads identically whether
+     * or not a direction happened to be derived.
+     */
+    public function test_the_standalone_subject_anchor_matches_the_substituted_line(): void
+    {
+        $subject = 'A red-haired illustrator.';
+        $line = CreativeDirection::imageSubjectAnchor($subject);
+
+        $this->assertStringContainsString(
+            $line,
+            (string) CreativeDirection::fromArray($this->full())?->forImage($subject),
+        );
+    }
+
     public function test_the_tone_is_dropped_from_the_text_and_shot_list_projections_when_a_voice_is_active(): void
     {
         $direction = CreativeDirection::fromArray($this->full());

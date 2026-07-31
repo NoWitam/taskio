@@ -42,6 +42,11 @@ function addButton(wrapper: ReturnType<typeof mountPart>, label: string) {
   return wrapper.findAll('button').find((b) => b.text().trim() === label)!;
 }
 
+/** The CHARACTER select (the part has several selects — find it by its accessible name). */
+function characterSelect(wrapper: ReturnType<typeof mountPart>) {
+  return wrapper.findAllComponents(Select).find((s) => s.props('ariaLabel') === 'Character')!;
+}
+
 describe('TemplateImagePlanPart', () => {
   beforeEach(() => {
     setLocale('en');
@@ -136,6 +141,39 @@ describe('TemplateImagePlanPart', () => {
     // The base rode through untouched.
     expect(plan.base).toEqual({ kind: 'from_slot', slot: 'hero' });
 
+    wrapper.unmount();
+  });
+
+  // --- Character (whether a delegated session's creator may appear in THIS image) --------------
+  // `auto` IS the absence of the key on the wire (the same convention as a storyboard's `max_shots`):
+  // an unauthored plan means "whatever the run has", so writing `'auto'` would turn a default into a
+  // stored decision. Only the deliberate `never` is persisted.
+  it('defaults to `auto` and OMITS the key; `never` is written out explicitly', async () => {
+    const wrapper = mountPart({ base: { kind: 'ai_generate', prompt: 'x' }, filters: [] });
+    expect(characterSelect(wrapper).props('modelValue')).toBe('auto');
+
+    characterSelect(wrapper).vm.$emit('update:modelValue', 'never');
+    await nextTick();
+    expect(lastEmit(wrapper).character).toBe('never');
+
+    // …and choosing `auto` again REMOVES the key rather than storing the default.
+    await wrapper.setProps({ modelValue: lastEmit(wrapper) });
+    characterSelect(wrapper).vm.$emit('update:modelValue', 'auto');
+    await nextTick();
+    expect('character' in lastEmit(wrapper)).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('carries an authored `never` through UNRELATED edits (a filter add must not drop it)', async () => {
+    const wrapper = mountPart(
+      { base: { kind: 'ai_generate', prompt: 'x' }, filters: [], character: 'never' },
+      [],
+    );
+    await addButton(wrapper, 'Add filter').trigger('click');
+
+    const plan = lastEmit(wrapper);
+    expect(plan.character).toBe('never');
+    expect(plan.filters).toEqual([{ kind: 'pixel', op: 'grayscale' }]);
     wrapper.unmount();
   });
 

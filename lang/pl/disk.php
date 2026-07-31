@@ -14,6 +14,9 @@ return [
     'ai' => [
         'failed' => 'Edycja przez AI nie powiodła się. Spróbuj ponownie.',
         'budget' => 'Osiągnięto dzienny limit edycji AI. Spróbuj ponownie jutro.',
+        // Dostawca wyrenderował obraz i odmówił jego wydania (własna moderacja). Mówimy, co się
+        // naprawdę stało i co użytkownik może zrobić — ponowna próba niczego nie zmieni.
+        'safety' => 'Dostawca odrzucił tę treść ze względów bezpieczeństwa. Zmień opis lub strój i spróbuj ponownie.',
     ],
 
     'drafts' => [

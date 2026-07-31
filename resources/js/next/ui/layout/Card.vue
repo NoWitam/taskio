@@ -35,6 +35,14 @@ const props = withDefaults(
     loading?: boolean;
     /** Show the empty-state placeholder slot instead of the body. */
     empty?: boolean;
+    /**
+     * The host has COLLAPSED the body itself (typically `v-show` on its own wrapper, so the body
+     * children stay MOUNTED and any `aria-controls` target keeps resolving). The body region still
+     * renders — it just drops its padding, and the header drops its divider, so a collapsed card is a
+     * clean header (+ footer) instead of a header over an empty padded band. Purely presentational:
+     * Card never hides anything itself.
+     */
+    bodyCollapsed?: boolean;
 
     // --- Interactive (whole-card action) ---
     /** Element for the whole-card action when interactive: anchor or button. */
@@ -55,6 +63,7 @@ const props = withDefaults(
     disabled: false,
     loading: false,
     empty: false,
+    bodyCollapsed: false,
   },
 );
 
@@ -134,7 +143,7 @@ const hasHeader = computed(() => !!slots.header);
       :class="[
         'next-card__header flex items-start justify-between gap-next-3',
         padded ? 'p-next-4' : '',
-        loading || empty || $slots.default ? 'border-b border-next-border' : '',
+        (loading || empty || $slots.default) && !bodyCollapsed ? 'border-b border-next-border' : '',
       ]"
     >
       <component
@@ -165,10 +174,11 @@ const hasHeader = computed(() => !!slots.header);
 
     <!-- Body region: loading skeleton, empty placeholder, or default content.
          Skipped entirely when there is no body content (so header-only / footer-only
-         cards don't render an empty padded band). -->
+         cards don't render an empty padded band). `bodyCollapsed` keeps the region
+         (and its mounted children) but drops the padding for the same reason. -->
     <div
       v-if="loading || empty || $slots.default"
-      :class="['next-card__body min-w-0', padded ? 'p-next-4' : '']"
+      :class="['next-card__body min-w-0', padded && !bodyCollapsed ? 'p-next-4' : '']"
     >
       <template v-if="loading">
         <div class="flex flex-col gap-next-3" aria-hidden="true">

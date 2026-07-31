@@ -183,6 +183,66 @@ class GeneratorAgentContractTest extends TestCase
         $this->assertLessThan($contract, $direction);
     }
 
+    // ---- ShotListAgent: the on-screen creator (the visual-identity phase) ----------
+
+    /**
+     * The BYTE pin. Without a character the contract block is what it always was — asserted as a literal
+     * region rather than by substring, because the change here EDITS that block (it interpolates the shot
+     * shape and splices a bullet in), and a substring check would happily pass on a stray blank line or a
+     * shifted bullet that every non-delegated run would then carry to the provider forever.
+     */
+    public function test_without_a_character_the_output_contract_is_unchanged_byte_for_byte(): void
+    {
+        $instructions = (string) (new ShotListAgent(null, 8))->instructions();
+
+        $this->assertStringContainsString(
+            "STRICT OUTPUT CONTRACT:\n"
+            . "- Return ONLY a single JSON OBJECT, with NO prose, NO explanation, NO markdown code fences, NO labels.\n"
+            . "- The exact shape is:\n"
+            . '  {"hook": string, "shots": [{"visual": string, "voiceover": string, "seconds": integer}], "cta": string}' . "\n"
+            . '- "visual" is a concrete description of what is shown on screen (a scene to draw), not a camera note.' . "\n"
+            . '- "seconds" is a whole number of seconds for that shot.' . "\n"
+            . "- Write in the SAME language as the brief.\n",
+            $instructions,
+        );
+
+        $this->assertStringNotContainsString('features_character', $instructions);
+        $this->assertStringNotContainsString('ON-SCREEN CREATOR', $instructions);
+    }
+
+    /** A null descriptor is the SAME instruction as not passing one — the parameter is purely additive. */
+    public function test_a_null_character_descriptor_is_identical_to_the_pre_feature_agent(): void
+    {
+        $this->assertSame(
+            (string) (new ShotListAgent('VOICE', 8, true))->instructions(),
+            (string) (new ShotListAgent('VOICE', 8, true, null))->instructions(),
+        );
+    }
+
+    public function test_a_character_adds_exactly_the_creator_clause_and_the_per_shot_key(): void
+    {
+        $instructions = (string) (new ShotListAgent(null, 8, false, 'A red-haired illustrator. Wearing: a green dress.'))->instructions();
+
+        // The creator is named as DATA, ahead of the contract (the same placement as the voice clause).
+        $this->assertStringContainsString('ON-SCREEN CREATOR', $instructions);
+        $this->assertStringContainsString('A red-haired illustrator. Wearing: a green dress.', $instructions);
+        $this->assertLessThan(
+            strpos($instructions, 'STRICT OUTPUT CONTRACT'),
+            strpos($instructions, 'ON-SCREEN CREATOR'),
+        );
+
+        // The shape gains ONE key, and the rule that decides it is stated next to the shape.
+        $this->assertStringContainsString(
+            '  {"hook": string, "shots": [{"visual": string, "voiceover": string, "seconds": integer, "features_character": boolean}], "cta": string}' . "\n"
+            . '- "visual" is a concrete description of what is shown on screen (a scene to draw), not a camera note.' . "\n"
+            . '- "seconds" is a whole number of seconds for that shot.' . "\n"
+            . '- "features_character" is true ONLY when the creator described above is VISIBLE in that shot\'s '
+            . "frame; false for product-only, screen-only, text-only, b-roll and empty-environment shots.\n"
+            . "- Write in the SAME language as the brief.\n",
+            $instructions,
+        );
+    }
+
     // ---- CreativeDirectionAgent ---------------------------------------------------
 
     public function test_the_direction_agent_is_content_type_aware_and_extracts_before_it_invents(): void
@@ -215,8 +275,56 @@ class GeneratorAgentContractTest extends TestCase
             $instructions,
         );
 
-        // Derivation is ANALYSIS: the agent takes no voice parameter at all, so a delegated bot's persona
-        // can never distort the extraction (it colors the content agents instead).
-        $this->assertSame(1, (new \ReflectionClass(CreativeDirectionAgent::class))->getConstructor()->getNumberOfParameters());
+        // Derivation is ANALYSIS: the agent takes no VOICE parameter, so a delegated bot's persona can
+        // never distort the extraction (it colors the content agents instead). Asserted on the parameter
+        // NAMES rather than their count — the count would also break on a harmless addition, and it did:
+        // `language` was added as a language TIE-BREAKER. What must stay true is the absence of a voice.
+        $params = array_map(
+            fn (\ReflectionParameter $p): string => $p->getName(),
+            (new \ReflectionClass(CreativeDirectionAgent::class))->getConstructor()->getParameters(),
+        );
+
+        $this->assertSame(['contentType', 'language'], $params);
+    }
+
+    // ---- CreativeDirectionAgent: LANGUAGE -----------------------------------------
+
+    /**
+     * The owner's report: the direction card rendered in ENGLISH in a Polish workspace, on a recipe whose
+     * slot values were plainly Polish. The old rule was one weak line ("Write every value in the SAME
+     * language as the recipe") competing against an all-English instruction and an all-English key schema,
+     * and it lost. The rule is now imperative, names the recipe AND the filled-in values as the authority,
+     * and explicitly neutralizes the English-schema pull.
+     */
+    public function test_the_language_rule_follows_the_recipe_and_neutralizes_the_english_schema(): void
+    {
+        $instructions = (string) (new CreativeDirectionAgent('post', 'pl'))->instructions();
+
+        $this->assertStringContainsString('dominant natural language of the RECIPE', $instructions);
+        $this->assertStringContainsString('must NOT pull your answer toward English', $instructions);
+        // visual_style / continuity_notes used to survive in English even when the rest turned over.
+        $this->assertStringContainsString('do NOT leave a subset in English', $instructions);
+
+        // The old, too-weak single line is gone (it is what the model was ignoring).
+        $this->assertStringNotContainsString('Write every value in the SAME language as the recipe.', $instructions);
+    }
+
+    /**
+     * The workspace language is a TIE-BREAKER, never an override: a recipe written in another language must
+     * still yield a direction in THAT language, because the direction is injected as steering data into the
+     * content prompts. So the clause is explicitly conditional, and absent when no language is supplied.
+     */
+    public function test_the_workspace_language_is_only_a_tie_breaker(): void
+    {
+        $pl = (string) (new CreativeDirectionAgent('post', 'pl'))->instructions();
+        $en = (string) (new CreativeDirectionAgent('post', 'en'))->instructions();
+        $none = (string) (new CreativeDirectionAgent('post'))->instructions();
+
+        $this->assertStringContainsString('ONLY if the recipe is too short or too mixed', $pl);
+        $this->assertStringContainsString('default to Polish', $pl);
+        $this->assertStringContainsString('default to English', $en);
+
+        // No language supplied ⇒ no fallback sentence at all, leaving the pure follow-the-recipe rule.
+        $this->assertStringNotContainsString('default to', $none);
     }
 }

@@ -124,10 +124,13 @@ class GeneratorAutomationSeamTest extends TestCase
         $this->assertSame($template->content_type, $session->content_type);
         $this->assertSame(GenerationSessionStatus::Draft, $session->status);
         $this->assertSame(['topic' => 'launch'], $session->slot_values);
+        // `author_voices` is the frozen per-block `@[ai-text]` author map — empty here (this recipe names
+        // no author), but always present: the snapshot is the authority for a run's voices too.
         $this->assertSame([
             'content_type' => $template->content_type,
             'slots' => $template->slots,
             'content' => $template->content,
+            'author_voices' => [],
         ], $session->recipe_snapshot);
         $this->assertSame($this->workspace->id, $session->workspace_id);
     }

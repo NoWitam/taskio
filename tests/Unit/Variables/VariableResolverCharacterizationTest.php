@@ -35,12 +35,12 @@ class VariableResolverCharacterizationTest extends TestCase
     {
         return new class implements AiTextGenerator
         {
-            /** @var array<int, array{prompt: string, personaId: ?string}> */
+            /** @var array<int, array{prompt: string, personaId: ?string, authorId: ?string}> */
             public array $seen = [];
 
-            public function generate(string $prompt, ?string $personaId): string
+            public function generate(string $prompt, ?string $personaId, ?string $authorId): string
             {
-                $this->seen[] = ['prompt' => $prompt, 'personaId' => $personaId];
+                $this->seen[] = ['prompt' => $prompt, 'personaId' => $personaId, 'authorId' => $authorId];
 
                 return 'GEN(' . $prompt . ')';
             }
@@ -115,12 +115,15 @@ class VariableResolverCharacterizationTest extends TestCase
     }
 
     /** An `@[ai-text]("…")` directive encoded exactly as the editor does. */
-    private function aiText(string $prompt, ?string $personaId = null): string
+    private function aiText(string $prompt, ?string $personaId = null, ?string $authorId = null): string
     {
-        $payload = json_encode([
-            'v' => 1,
-            'data' => ['id' => 'ai_1', 'personaId' => $personaId, 'prompt' => $prompt, 'labels' => []],
-        ]);
+        $data = ['id' => 'ai_1', 'personaId' => $personaId, 'prompt' => $prompt, 'labels' => []];
+
+        if ($authorId !== null) {
+            $data['authorId'] = $authorId;
+        }
+
+        $payload = json_encode(['v' => 1, 'data' => $data]);
 
         return '@[ai-text]("' . str_replace('"', '\\"', $payload) . '")';
     }
@@ -179,8 +182,9 @@ class VariableResolverCharacterizationTest extends TestCase
         ], $resolved);
 
         // The ai-text prompt reached the generator FULLY resolved (the embedded variable substituted),
-        // and the persona id rode through as the plain contract `?string`.
-        $this->assertSame([['prompt' => 'draft launch', 'personaId' => 'formal']], $ai->seen);
+        // and the persona id rode through as the plain contract `?string`. A block with NO author yields
+        // a null authorId — the pre-author byte-shape.
+        $this->assertSame([['prompt' => 'draft launch', 'personaId' => 'formal', 'authorId' => null]], $ai->seen);
 
         // The STRUCTURED value-or-variable pipeline path (used by step services for non-text slots):
         // 'Taskio' -> text_lowercase -> 'taskio', coerced to the field's expected type.
@@ -190,6 +194,37 @@ class VariableResolverCharacterizationTest extends TestCase
             'pipeline' => [['op' => 'text_lowercase']],
         ];
         $this->assertSame('taskio', $resolver->resolveValueOrVariable($structured, $context, VariableType::TEXT));
+    }
+
+    /**
+     * The per-block AUTHOR rides the SAME seam as the persona: the resolver decodes it off the payload and
+     * hands it to the generator UNTOUCHED — it never looks up, validates or interprets an author (that is
+     * the upper layer's job through the AuthorVoiceResolver seam). Tolerance is identical to the persona's:
+     * a non-string author (or none at all) decodes to null, so a malformed payload key can never break a
+     * generation, it only means "no author for this block".
+     */
+    public function test_the_block_author_id_is_passed_through_to_the_generator_untouched(): void
+    {
+        $ai = $this->fakeAi();
+        $resolver = new VariableResolver(new OperationExecutor, $ai);
+
+        $author = 'a1b2c3d4-0000-4000-8000-000000000001';
+
+        $this->assertSame(
+            'GEN(draft launch)',
+            $resolver->resolve($this->aiText('draft ' . $this->directive('trigger.fields.topic'), 'formal', $author), $this->context(), $this->typeMap()),
+        );
+        $this->assertSame([['prompt' => 'draft launch', 'personaId' => 'formal', 'authorId' => $author]], $ai->seen);
+
+        // A non-string author decodes to null (the persona's tolerance), and the generation still runs.
+        $broken = '@[ai-text]("' . str_replace('"', '\\"', (string) json_encode([
+            'v' => 1,
+            'data' => ['id' => 'ai_1', 'personaId' => null, 'authorId' => ['nope'], 'prompt' => 'plain', 'labels' => []],
+        ])) . '")';
+
+        $ai2 = $this->fakeAi();
+        $this->assertSame('GEN(plain)', (new VariableResolver(new OperationExecutor, $ai2))->resolve($broken, $this->context()));
+        $this->assertSame([['prompt' => 'plain', 'personaId' => null, 'authorId' => null]], $ai2->seen);
     }
 
     public function test_the_slots_root_is_inert_for_a_workflow_context(): void

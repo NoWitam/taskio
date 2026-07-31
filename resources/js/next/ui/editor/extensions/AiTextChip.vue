@@ -1,14 +1,22 @@
 <script setup lang="ts">
 // AiTextChip — inline atomic NodeView for an `aiText` node: a chip marking
-// AI-generated / AI-insertable text. Shows "AI <persona|label summary>" as one
-// selectable, deletable unit; clicking opens the Modal edit panel (persona +
-// nested-MarkdownEditor prompt + labels).
+// AI-generated / AI-insertable text. Clicking opens the Modal edit panel (author +
+// nested-MarkdownEditor prompt).
+//
+// The chip SUMMARIZES the block, in this priority: AUTHOR (the voice — the strongest
+// signal about how the text will read) → LEGACY TONE → a prompt fragment → a fallback.
+// Knowledge labels dropped out of that chain along with their (now hidden) field, so a
+// block that only carried labels now shows its prompt fragment instead.
+//
+// It NEVER issues a request of its own: it renders the stored `authorName` snapshot and,
+// when the panel has already resolved that id, the fresher directory entry.
 import { computed, ref } from 'vue';
 import { NodeViewWrapper } from '@tiptap/vue-3';
 import type { Editor } from '@tiptap/vue-3';
 import Icon from '../../primitives/Icon.vue';
 import AiTextPanel from './AiTextPanel.vue';
 import { useI18n } from '../../../app/i18n';
+import { useBotDirectoryStore } from '../../../app/stores/botDirectory';
 import type {
   AiLabelOption,
   AiPersona,
@@ -26,6 +34,7 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
+const directory = useBotDirectoryStore();
 
 const open = ref(false);
 
@@ -62,21 +71,70 @@ const nestedVariables = computed<VariableFeatureConfig | undefined>(() => {
 });
 const nestedIfBlocks = computed(() => Boolean(props.editor.storage?.ifBlock));
 
+// --- Summary ----------------------------------------------------------------
+const authorId = computed(() => props.node.attrs.authorId ?? null);
+const authorEntry = computed(() => directory.entry(authorId.value));
+/** Definitive "gone" only — an unverified id keeps rendering as a normal author. */
+const authorMissing = computed(
+  () => !!authorId.value && authorEntry.value?.state === 'missing',
+);
+/** Resolved name wins over the stored snapshot; a bare id is never shown. */
+const authorLabel = computed(() => {
+  if (!authorId.value) return null;
+  const entry = authorEntry.value;
+  const resolved = entry?.state === 'resolved' ? entry.name : null;
+  return resolved ?? props.node.attrs.authorName ?? t('editor.aiText.authorUnknownName', 'Unknown author');
+});
+
+const legacyToneLabel = computed(() => {
+  const id = props.node.attrs.personaId;
+  if (!id) return null;
+  const fromCatalog = personas.value.find((p) => p.id === id)?.label;
+  if (fromCatalog) return fromCatalog;
+  const key = `editor.aiText.tone.${id}`;
+  const translated = t(key);
+  return translated === key ? t('editor.aiText.tone.unknown', 'Unknown tone') : translated;
+});
+
+function truncate(value: string): string {
+  return value.length > 18 ? `${value.slice(0, 18)}…` : value;
+}
+
 const summary = computed(() => {
-  const personaId = props.node.attrs.personaId;
-  if (personaId) {
-    const p = personas.value.find((x) => x.id === personaId);
-    if (p) return p.label;
-  }
-  const labels = props.node.attrs.labels ?? [];
-  if (labels.length) {
-    const opt = labelsCatalog.value.find((l) => l.id === labels[0]);
-    return opt?.name ?? labels[0];
-  }
+  if (authorLabel.value) return truncate(authorLabel.value);
+  if (legacyToneLabel.value) return legacyToneLabel.value;
   const prompt = (props.node.attrs.prompt ?? '').trim();
-  return prompt
-    ? prompt.slice(0, 18) + (prompt.length > 18 ? '…' : '')
-    : t('editor.aiText.chipFallback', 'AI text');
+  return prompt ? truncate(prompt) : t('editor.aiText.chipFallback', 'AI text');
+});
+
+/** The glyph that names WHAT the summary is (never color alone). */
+const summaryIcon = computed<'sparkles' | 'clock' | null>(() => {
+  if (authorLabel.value) return 'sparkles';
+  if (legacyToneLabel.value) return 'clock';
+  return null;
+});
+
+/** A block with an author carries the app-wide "bot" surface. */
+const hasAuthor = computed(() => !!authorId.value);
+
+const ariaLabel = computed(() => {
+  if (authorMissing.value) {
+    return t(
+      'editor.aiText.chipAria.missingAuthor',
+      'AI text. The chosen author no longer exists — the default tone will be used. Open editor.',
+    );
+  }
+  if (authorLabel.value) {
+    return t('editor.aiText.chipAria.withAuthor', 'AI text, author: {name}. Open editor.', {
+      name: authorLabel.value,
+    });
+  }
+  if (legacyToneLabel.value) {
+    return t('editor.aiText.chipAria.withTone', 'AI text, legacy tone: {tone}. Open editor.', {
+      tone: legacyToneLabel.value,
+    });
+  }
+  return t('editor.aiText.chipAria.plain', 'AI text. Open editor.');
 });
 
 function onSave(attrs: AiTextNodeAttrs): void {
@@ -100,14 +158,29 @@ function onKeydown(event: KeyboardEvent): void {
     <button
       type="button"
       class="next-ai-chip"
-      :class="selected ? 'is-selected' : ''"
+      :class="[selected ? 'is-selected' : '', hasAuthor ? 'has-author' : '']"
       :aria-expanded="open"
+      :aria-label="ariaLabel"
       aria-haspopup="dialog"
       @click="open = true"
       @keydown="onKeydown"
     >
       <Icon name="sparkles" class="next-ai-chip__icon" aria-hidden="true" />
       <span class="next-ai-chip__badge" aria-hidden="true">AI</span>
+      <!-- A missing author is a DEGRADED block, not a broken one: the warning glyph adds
+           information, it does not replace the name. -->
+      <Icon
+        v-if="authorMissing"
+        name="alert-triangle"
+        class="next-ai-chip__icon"
+        aria-hidden="true"
+      />
+      <Icon
+        v-else-if="summaryIcon"
+        :name="summaryIcon"
+        class="next-ai-chip__icon"
+        aria-hidden="true"
+      />
       <span class="next-ai-chip__label">{{ summary }}</span>
     </button>
 
@@ -143,6 +216,13 @@ function onKeydown(event: KeyboardEvent): void {
   line-height: 1.4;
   white-space: nowrap;
   cursor: pointer;
+}
+/* A block written by a bot joins the app-wide "bot" surface family. A block whose
+   author is MISSING stays here too — it is degraded, not broken; the warning glyph
+   and the name carry that meaning. */
+.next-ai-chip.has-author {
+  background-color: var(--color-next-primary-subtle);
+  color: var(--color-next-primary-subtle-foreground);
 }
 .next-ai-chip.is-selected {
   box-shadow: 0 0 0 2px var(--color-next-ring);

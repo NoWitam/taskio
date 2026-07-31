@@ -349,6 +349,20 @@ class TaskService
     }
 
     /**
+     * Bot-driven transition to DONE. Bypasses canSetOn (bot, not user), the sibling of
+     * botSubmitToTest for the case where NO approval pipeline is attached: there is no
+     * review step to hand the work to, so parking it in IN_TEST would leave it waiting
+     * for a human to click "done" for no reason. The caller owns that decision (see
+     * BotTaskInteractionService::finish()).
+     */
+    public function botComplete(Task $task): Task
+    {
+        $task->update(['status' => TaskStatus::DONE]);
+
+        return $task;
+    }
+
+    /**
      * Start the approval process for a task entering IN_TEST and reassign it to the
      * first (User) stage approver. Shared by the human (changeStatus) and bot
      * (botSubmitToTest) paths so the behavior is identical.

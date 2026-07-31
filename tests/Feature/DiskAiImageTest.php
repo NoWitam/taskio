@@ -182,10 +182,13 @@ class DiskAiImageTest extends TestCase
         Storage::assertMissing($maskPath);
 
         // The provider got a multipart images/edits call carrying the image + prompt + mask.
+        // `input_fidelity` is PINNED: it is what keeps the source's faces/detail, it was documented
+        // but silently absent from the payload once, and nothing else would catch it going missing.
         Http::assertSent(fn ($request) => str_contains($request->url(), '/images/edits')
             && $request->isMultipart()
             && str_contains($request->body(), 'name="image"')
             && str_contains($request->body(), 'name="mask"')
+            && str_contains($request->body(), 'name="input_fidelity"')
             && str_contains($request->body(), 'Remove the person'));
     }
 

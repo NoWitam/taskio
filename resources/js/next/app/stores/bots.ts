@@ -31,10 +31,14 @@ import type {
   BotFilters,
   BotListItem,
   BotListResponse,
-  BotStatus,
   BotStatusPayload,
+  BotVisualGeneratePayload,
+  BotVisualGenerateResponse,
   BotWritePayload,
 } from '../../pages/bots/types';
+// The status enum lives in `ui/data/botStatus` with its presentation map (the design system's
+// BotSelect needs it and may not import from `pages/**`).
+import type { BotStatus } from '../../ui/data/botStatus';
 
 /** Optional flags for a fetch (reset clears the list + cursor first). */
 interface FetchOptions {
@@ -90,6 +94,11 @@ export const useBotsStore = defineStore('next-bots', () => {
    * Project a full BotDetail (from a create/update/restore response) onto the
    * lighter LIST item shape so the grid row stays consistent — the list resource
    * carries the compact module flags, not the full module payloads.
+   *
+   * EVERY compact flag the list resource emits must be derived here. A flag left out silently
+   * REGRESSES the card the moment the bot is edited (the fresh detail replaces the row with an
+   * `undefined` where the list had a boolean), which is invisible until a user saves — hence the
+   * per-flag spec pin.
    */
   function toListItem(bot: BotDetail): BotListItem {
     return {
@@ -100,6 +109,10 @@ export const useBotsStore = defineStore('next-bots', () => {
       icon: bot.icon,
       has_text_module: true,
       task_execution_enabled: bot.task_execution?.enabled ?? false,
+      // The visual module's two at-a-glance flags — mirrors BotListResource: the toggle, and whether an
+      // approved likeness EXISTS (the two are independent; a bot can have one with the module off).
+      visual_enabled: bot.visual?.enabled ?? false,
+      visual_has_image: !!bot.visual?.canonical_file_id,
       is_owner: bot.is_owner,
       created_at: bot.created_at,
     };
@@ -286,6 +299,50 @@ export const useBotsStore = defineStore('next-bots', () => {
     return restored;
   }
 
+  // --- Visual module ("Wygląd") --------------------------------------------
+  /**
+   * Queue ONE likeness generation (`POST /bots/{id}/visual/generate`). Returns the 202 status row's id —
+   * the caller follows it on the Disk's shared `/disk/ai/image/{id}` endpoint (see `useAiImageJob`) and
+   * REFETCHES the bot when it settles, because the produced candidate is filed server-side.
+   *
+   * The body is `multipart/form-data`: a fresh upload rides as a real File, a Disk pick as an id. The
+   * identity itself is NOT sent — the server composes the prompt from the SAVED module, which is why the
+   * editor saves first.
+   *
+   * A 403 (not the creator) / 422 (nothing to draw / bad reference) / 429 (throttle · daily cap · monthly
+   * $ budget) bubbles up for the caller to discriminate.
+   */
+  async function generateVisual(id: string, payload: BotVisualGeneratePayload): Promise<string> {
+    const form = new FormData();
+    form.append('mode', payload.mode);
+    if (payload.reference) form.append('reference', payload.reference);
+    if (payload.reference_file_id) form.append('reference_file_id', payload.reference_file_id);
+    if (payload.instruction) form.append('instruction', payload.instruction);
+    const res = await api.post<BotVisualGenerateResponse>(`/bots/${id}/visual/generate`, form);
+    return res.data.id;
+  }
+
+  /** Promote a candidate to the APPROVED likeness (`POST …/visual/approve`). Reconciles detail + list. */
+  async function approveVisualCandidate(id: string, fileId: string): Promise<BotDetail> {
+    const res = await api.post<BotDetailResponse>(`/bots/${id}/visual/approve`, { file_id: fileId });
+    const updated = res.data;
+    replaceInList(updated);
+    if (detail.value && detail.value.id === id) detail.value = updated;
+    return updated;
+  }
+
+  /**
+   * Delete a candidate and its bytes (`DELETE …/visual/candidates/{file}`). The APPROVED likeness is
+   * refused server-side (422) — clear the approval with a normal save first. Reconciles detail + list.
+   */
+  async function deleteVisualCandidate(id: string, fileId: string): Promise<BotDetail> {
+    const res = await api.delete<BotDetailResponse>(`/bots/${id}/visual/candidates/${fileId}`);
+    const updated = res.data;
+    replaceInList(updated);
+    if (detail.value && detail.value.id === id) detail.value = updated;
+    return updated;
+  }
+
   return {
     // list state
     items,
@@ -316,5 +373,9 @@ export const useBotsStore = defineStore('next-bots', () => {
     setStatus,
     deleteBot,
     restoreBot,
+    // visual module
+    generateVisual,
+    approveVisualCandidate,
+    deleteVisualCandidate,
   };
 });

@@ -19,7 +19,7 @@ import ModuleTabs from '../../ui/layout/ModuleTabs.vue';
 import StatusBadge from '../../ui/data/StatusBadge.vue';
 import Drawer from '../../ui/overlay/Drawer.vue';
 import BotEditorDrawer from './BotEditorDrawer.vue';
-import { botStatusMap } from './botStatus';
+import { botStatusMap } from '../../ui/data/botStatus';
 import { useBotsStore } from '../../app/stores/bots';
 import { useI18n } from '../../app/i18n';
 import { setPageContextLabel } from '../../app/lib/pageContext';
@@ -119,10 +119,13 @@ function dropQuery(keys: string[]): void {
   void router.replace({ query });
 }
 
+// `botModule` is the editor's DEEP-LINK companion (`?bot=<id>&botModule=visual`, used e.g. from a
+// generator session's "bot appearance" action). It is dropped WITH the editor so re-opening the drawer
+// from the list lands on the default module instead of a module the user never asked for.
 const editorOpen = computed<boolean>({
   get: () => botParam.value !== null,
   set: (open) => {
-    if (!open) dropQuery(['bot']);
+    if (!open) dropQuery(['bot', 'botModule']);
   },
 });
 

@@ -15,6 +15,7 @@ import { computed } from 'vue';
 import Card from '../../../ui/layout/Card.vue';
 import Button, { type ButtonMenuItem } from '../../../ui/primitives/Button.vue';
 import Icon from '../../../ui/primitives/Icon.vue';
+import Skeleton from '../../../ui/data/Skeleton.vue';
 import MarkdownViewer from '../../../ui/editor/MarkdownViewer.vue';
 import SessionPartImage from './SessionPartImage.vue';
 import { SESSION_CAPABILITIES } from './sessionGating';
@@ -31,6 +32,12 @@ const props = defineProps<{
   sessionId: string;
   /** The session name — seeds the default file name of a Save-to-Disk. */
   sessionName?: string;
+  /**
+   * The session draws its images from a frozen CHARACTER likeness. In this compact artifact the marker
+   * is a text suffix on the shot heading ("Ujęcie 3 · z postacią"), not a badge — the assembled post is
+   * a reading surface, and a row of chips would compete with the content it is presenting.
+   */
+  hasCharacterImage?: boolean;
 }>();
 
 const emit = defineEmits<{ (e: 'save', request: SaveImageRequest): void }>();
@@ -52,6 +59,13 @@ function partLabel(part: ContentTypePart): string {
 }
 function isText(part: ContentTypePart): boolean {
   return part.kind === 'text_body' || part.kind === 'script';
+}
+
+/** "Ujęcie 3" — plus "· z postacią" when this beat is drawn from the session's frozen character. */
+function shotHeading(shot: StoryboardShot): string {
+  const title = t('generator.sessions.result.shot', '', { n: shot.index + 1 });
+  const features = props.hasCharacterImage === true && shot.features_character === true;
+  return features ? `${title} · ${t('generator.sessions.character.shotSuffix')}` : title;
 }
 
 // --- Save-to-Disk (2c) ------------------------------------------------------
@@ -184,7 +198,7 @@ const saveMenu = computed<ButtonMenuItem[]>(() =>
             class="flex flex-col gap-next-1_5 rounded-next-md border border-next-border bg-next-card p-next-3"
           >
             <span class="text-next-2xs font-next-medium text-next-muted-foreground">
-              {{ t('generator.sessions.result.shot', '', { n: shot.index + 1 }) }}
+              {{ shotHeading(shot) }}
             </span>
             <p v-if="shot.visual" class="text-next-xs text-next-muted-foreground">{{ shot.visual }}</p>
             <SessionPartImage
@@ -194,6 +208,19 @@ const saveMenu = computed<ButtonMenuItem[]>(() =>
               :image="shot.image"
               :alt="t('generator.sessions.result.shotImageAlt', '', { n: shot.index + 1 })"
             />
+            <!-- A storyboard frame still being rendered by its own queue job (a reload mid-run reads
+                 the session with partial results) — a placeholder of the same geometry, not a hole. -->
+            <div
+              v-else-if="shot.image_status === 'pending' || shot.image_status === 'rendering'"
+              class="flex flex-col items-center gap-next-1 overflow-hidden rounded-next-lg border border-next-border bg-next-muted/40 p-next-1"
+              data-test="final-frame-pending"
+              role="status"
+            >
+              <Skeleton variant="rect" width="100%" height="10rem" radius="md" />
+              <span class="pb-next-1 text-next-xs text-next-muted-foreground">
+                {{ t('generator.sessions.result.framePending') }}
+              </span>
+            </div>
             <p v-else-if="shot.image_status === 'failed'" class="text-next-sm text-next-danger">
               {{ shot.image_error || t('generator.sessions.result.imageFailed') }}
             </p>

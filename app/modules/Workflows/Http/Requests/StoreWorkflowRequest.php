@@ -5,6 +5,7 @@ namespace App\Modules\Workflows\Http\Requests;
 use App\Modules\Approvals\Models\ApprovalPipeline;
 use App\Modules\Disk\Models\Folder;
 use App\Modules\Forms\Models\Form;
+use App\Modules\Generator\Contracts\SessionAuthorIdentityResolver;
 use App\Modules\Generator\Models\Template;
 use App\Modules\Labels\Models\Label;
 use App\Modules\Tasks\Enums\TaskPriority;
@@ -19,6 +20,7 @@ use App\Modules\Workflows\Services\WorkflowConditionTreeValidator;
 use App\Modules\Workflows\Services\WorkflowScheduleRulesValidator;
 use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
 use App\Rules\ScopedExists;
+use App\Tenancy\TenantContext;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Arr;
@@ -722,7 +724,8 @@ class StoreWorkflowRequest extends FormRequest
      * generate_content config: template_id (required, workspace-scoped Template uuid), slots (a map of the
      * template's DECLARED slot names to a literal or a variable union), folder_id (nullable, workspace-
      * scoped Disk Folder uuid — where the produced images are exported), name (nullable string, the
-     * session's display name; defaults to the template's).
+     * session's display name; defaults to the template's), bot_id (nullable, workspace-scoped author uuid —
+     * the bot the generated session is delegated to; see {@see validateAuthorId}).
      *
      * The template is RESOLVED here so the slot map can be checked against the recipe the author actually
      * picked. Two granular, per-slot rules:
@@ -760,6 +763,7 @@ class StoreWorkflowRequest extends FormRequest
         }
 
         $this->validateScopedUuid($validator, $prefix . '.folder_id', $config['folder_id'] ?? null, Folder::class);
+        $this->validateAuthorId($validator, $prefix . '.bot_id', $config['bot_id'] ?? null);
 
         $slots = $config['slots'] ?? null;
 
@@ -774,6 +778,54 @@ class StoreWorkflowRequest extends FormRequest
         }
 
         $this->validateTemplateSlotMapping($validator, $prefix, $template, is_array($slots) ? $slots : [], $refCtx);
+    }
+
+    /**
+     * The generate_content step's optional AUTHOR: the bot whose voice and face the produced session is
+     * generated in. Null/absent means "no author" (the pre-existing behavior, byte for byte).
+     *
+     * WHY THIS IS NOT A `ScopedExists` RULE — the one place in this class that departs from it. Every other
+     * scoped reference here names its model directly, but an AUTHOR belongs to the Bot module, and Workflows
+     * may not name a peer module (pinned, module-wide, by
+     * {@see \Tests\Feature\WorkflowsGeneratorBoundaryTest::test_no_workflows_file_ever_names_bot}). So the
+     * check is delegated to the same inverted seam the STEP itself will use at run time — the Generator's
+     * {@see SessionAuthorIdentityResolver} — which applies the identical workspace predicate a
+     * `ScopedExists` would, from the module that is allowed to know what an author is.
+     *
+     * Asking the RUN-TIME authority is also what makes the two verdicts impossible to drift apart: a save
+     * cannot accept an id the run would then refuse (a definition that always fails is worse than a 422),
+     * and it cannot reject one the run would have accepted.
+     *
+     * IT ASKS THE EXISTENCE QUESTION, NOT THE IDENTITY ONE. `knowsAuthor` is that seam's cheap probe — the
+     * same id + workspace predicate, and nothing after it. This used to call `identityFor`, which COMPOSES
+     * the whole author (voice, frozen look, and the likeness bytes read out of Storage) and then folds every
+     * failure, infrastructure included, into one `null`. That is the right posture for a RUN — it refuses to
+     * publish under an author it could not assemble — but as a write-side check it made a save do two things
+     * it must not: pay for bytes it has no use for (the run composes its own, later, from the world as it is
+     * THEN), and, when that composition failed for any reason, tell the author "this bot is not available in
+     * this workspace" about a bot that was perfectly fine. A save now only ever says that when it is true;
+     * a broken database surfaces as a broken database, not as a rejected author.
+     *
+     * THE WORKSPACE IS PINNED EXPLICITLY, and it is null in own-database mode ON PURPOSE. The seam's
+     * predicate is a `workspace_id` column that tenant tables DO NOT HAVE — there the dedicated connection
+     * is the boundary — so handing it the ambient workspace id in that mode would query a column that does
+     * not exist. `isOwn()` is the same mode test `TenantAware` routes connections by.
+     */
+    private function validateAuthorId(Validator $validator, string $key, mixed $value): void
+    {
+        if ($value === null || $value === '') {
+            return;
+        }
+
+        $tenant = app(TenantContext::class);
+
+        if (!$this->isUuid($value)
+            || !app(SessionAuthorIdentityResolver::class)->knowsAuthor(
+                (string) $value,
+                $tenant->isOwn() ? null : $tenant->id(),
+            )) {
+            $validator->errors()->add($key, __('workflows.steps.generate_content.bot_invalid'));
+        }
     }
 
     /**
@@ -1278,7 +1330,7 @@ class StoreWorkflowRequest extends FormRequest
             // names, not a fixed vocabulary) — the shallowest-key guard therefore allows it wholesale, and
             // its keys are checked against the template's declarations instead (validateTemplateSlotMapping).
             WorkflowStepType::GENERATE_CONTENT => [
-                'template_id', 'slots', 'folder_id', 'name',
+                'template_id', 'slots', 'folder_id', 'name', 'bot_id',
             ],
         };
     }

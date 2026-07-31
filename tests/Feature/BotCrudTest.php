@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Modules\Bot\Enums\BotStatus;
 use App\Modules\Bot\Models\Bot;
 use App\Modules\Workspaces\Models\Workspace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -161,6 +162,44 @@ class BotCrudTest extends TestCase
             ->assertOk()
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.name', 'Alpha Bot');
+    }
+
+    /**
+     * `can_execute_tasks=1` narrows the list to bots that can actually RUN a task — the
+     * SQL mirror of Bot::canExecuteTasks(). The task-assignee pickers rely on it, so a
+     * bot missing EITHER half (active status / task_execution.enabled) must be excluded.
+     */
+    public function test_index_can_be_narrowed_to_task_executing_bots(): void
+    {
+        $user = User::factory()->create();
+        Bot::factory()->executesTasks()->create(['creator_id' => $user->id, 'name' => 'Runner']);
+        // Module on, but the bot is not active.
+        Bot::factory()->create([
+            'creator_id' => $user->id,
+            'name' => 'Paused',
+            'status' => BotStatus::INACTIVE,
+            'task_execution' => ['enabled' => true, 'tools' => []],
+        ]);
+        // Active, module explicitly off.
+        Bot::factory()->active()->create([
+            'creator_id' => $user->id,
+            'name' => 'Off',
+            'task_execution' => ['enabled' => false, 'tools' => []],
+        ]);
+        // Active, module never configured (NULL column).
+        Bot::factory()->active()->create(['creator_id' => $user->id, 'name' => 'Unconfigured']);
+
+        $this->actingAs($user)
+            ->getJson('/api/bots?can_execute_tasks=1')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.name', 'Runner');
+
+        // Unfiltered listing is untouched.
+        $this->actingAs($user)
+            ->getJson('/api/bots')
+            ->assertOk()
+            ->assertJsonCount(4, 'data');
     }
 
     public function test_can_soft_delete_and_restore_bot(): void

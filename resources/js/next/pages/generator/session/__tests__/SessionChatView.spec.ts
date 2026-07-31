@@ -80,6 +80,7 @@ const base: Session = {
   can_be_deleted: true,
   bot_author: { id: 'b1', name: 'Marketing Bot', icon: null },
   is_delegated: true,
+  has_character_image: false,
   can_delegate: false,
   can_undo_delegation: true,
   unfilled_required_slots: [],
@@ -369,5 +370,53 @@ describe('SessionChatView — AI budget gating', () => {
     expect(h.toast.danger).toHaveBeenCalledWith('AI budget reached — generation paused');
 
     wrapper.unmount();
+  });
+});
+
+// --- Character likeness chip (R2 sub-stage 3) --------------------------------
+// A delegated session that froze a LIKENESS draws the SAME person on every image. That is a different
+// statement from "a bot wrote this" (the author chip), and without it a reader has no way to know why the
+// pictures show a recurring face — so it rides right after the author chip, with a title that says it.
+describe('SessionChatView — the character likeness chip', () => {
+  beforeEach(() => {
+    setLocale('en');
+    installBrowserMocks();
+    vi.clearAllMocks();
+    h.store.fetchContentTypes.mockResolvedValue([]);
+    h.store.fetchSourceTemplate.mockResolvedValue({ slots: [] });
+    h.settle.waitForSettle.mockResolvedValue({ session: null, settled: true });
+  });
+  afterEach(() => {
+    document.body.innerHTML = '';
+    restoreBrowserMocks();
+  });
+
+  /** The header chips carrying the character glyph (StatusBadge / BotAuthorChip are their own stubs). */
+  function characterChips(wrapper: ReturnType<typeof mountView>) {
+    return wrapper.findAll('badge-stub').filter((b) => b.attributes('icon') === 'user');
+  }
+
+  it('shows the chip for a delegated session that froze a likeness', async () => {
+    const wrapper = mountView({ ...base, has_character_image: true });
+    await flush();
+    expect(characterChips(wrapper)).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('stays quiet without a likeness — and a stale flag cannot resurrect it on an undelegated session', async () => {
+    const noLikeness = mountView({ ...base, has_character_image: false });
+    await flush();
+    expect(characterChips(noLikeness)).toHaveLength(0);
+    noLikeness.unmount();
+
+    const undelegated = mountView({
+      ...base,
+      is_delegated: false,
+      bot_author: null,
+      has_character_image: true,
+    });
+    await flush();
+    expect(characterChips(undelegated)).toHaveLength(0);
+    undelegated.unmount();
   });
 });

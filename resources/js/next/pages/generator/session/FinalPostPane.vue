@@ -17,6 +17,8 @@ defineProps<{
   status: SessionStatus;
   sessionId: string;
   sessionName?: string;
+  /** The session draws its images from a frozen character likeness (marks the per-shot suffix). */
+  hasCharacterImage?: boolean;
 }>();
 
 // Forward the produced-image save request up to the page (which owns the ONE save dialog).
@@ -32,6 +34,7 @@ defineEmits<{ (e: 'save', request: SaveImageRequest): void }>();
         :status="status"
         :session-id="sessionId"
         :session-name="sessionName"
+        :has-character-image="hasCharacterImage"
         @save="(request) => $emit('save', request)"
       />
     </div>

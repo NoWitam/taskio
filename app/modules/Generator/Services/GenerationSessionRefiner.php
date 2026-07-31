@@ -6,6 +6,7 @@ use App\Modules\Generator\Enums\GenerationSessionStatus;
 use App\Modules\Generator\Enums\PartKind;
 use App\Modules\Generator\Models\GenerationSession;
 use App\Modules\Generator\Support\ContentTypePart;
+use App\Modules\Generator\Support\StoryboardFrame;
 use App\Modules\Variables\Services\VariableResolver;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\Response;
@@ -333,19 +334,21 @@ class GenerationSessionRefiner
      * flip it to `image_status:'ok'` with the new image + part_key, preserving the shot's descriptive fields
      * (index/visual/voiceover/seconds) and clearing any prior `image_error`.
      *
+     * Delegates to the SHARED terminal-shot shape ({@see StoryboardFrame::settledOk}) so a shot settled by a
+     * refine and a shot settled by a frame job are indistinguishable — including dropping any in-flight
+     * frame bookkeeping, which a refine should never be able to leave behind on a shot it rewrote.
+     *
      * @param  array<string, mixed>|null  $current
      * @param  array<string, mixed>  $new
      * @return array<string, mixed>
      */
     private function mergeShotImage(?array $current, array $new, string $partKey): array
     {
-        $shot = is_array($current) ? $current : [];
-        $shot['image_status'] = 'ok';
-        $shot['image'] = is_array($new['image'] ?? null) ? $new['image'] : [];
-        $shot['part_key'] = $partKey;
-        unset($shot['image_error']);
-
-        return $shot;
+        return StoryboardFrame::settledOk(
+            is_array($current) ? $current : [],
+            is_array($new['image'] ?? null) ? $new['image'] : [],
+            $partKey,
+        );
     }
 
     /**

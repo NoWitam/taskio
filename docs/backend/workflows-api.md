@@ -1055,6 +1055,25 @@ optional time-of-day window, and an `exclusions` skip filter ("oprócz weekendó
 list the model is instructed to report honestly): a rolling interval the wall-clock grids cannot
 express (e.g. "dokładnie co 90 minut", "co 2,5 godziny" — the grids are modulo-N, not phased from
 an arbitrary start), "every N weeks" (no such axis), one-off single dates, and sub-minute cadences.
+That list is **exhaustive**: the VOCABULARY is the only thing that may make a request infeasible.
+
+**Under-specified is NOT infeasible.** A request the descriptor expresses fine but which the user
+did not pin down — a vague time of day ("rano", "po południu", "wieczorem"), no time at all
+("codziennie"), a fuzzy count ("kilka razy dziennie") — is answered `feasible:true` with concrete
+values CHOSEN by the model and NAMED in `explanation`, so the author sees them and can adjust them
+in the builder. Disclosure is what separates this from silently substituting a different schedule:
+an approximated *pattern* still only ever lands in `alternative` with `feasible:false`.
+
+**Calendar knowledge is used, not refused.** There is no "public holiday" axis and there will not
+be one (jurisdiction-specific, moves yearly, would need a data feed) — but holidays ARE expressible
+as concrete `exclusions.dates`, so the agent enumerates them from its own knowledge instead of
+reporting "no holiday support". "Dni wolne od pracy" therefore compiles to weekdays `[1..5]` (or
+`exclusions.weekdays [0,6]`) plus the dated public holidays, capped at `EXCLUSIONS_DATES_MAX` (50).
+The service passes **today's date in the caller's `tz`** to the agent for exactly this reason:
+without that anchor the enumerated year is whatever the model's training suggests, producing a
+config that validates and compiles cleanly while excluding the wrong days. The date list is fixed,
+not a live feed — the agent states which years it covered in `explanation`. When no date can be
+resolved, the agent is instructed to emit no dated exclusions at all rather than guess a year.
 
 **Body**
 
@@ -2592,12 +2611,63 @@ naturally resets every run; it bounds how much a SINGLE run can fan out into AI 
 independent of the run-budget cost caps below (`max_runs_per_month` etc.), which meter the NUMBER
 of runs, not AI calls within one.
 
-**Personas — a closed set of TONES, not the bot system.** `App\Modules\Variables\Enums\AiPersona`:
-`neutral` (default) | `friendly` | `formal` | `concise` — each folds a short English style instruction into
-the agent's system prompt (steering TONE only; the agent is always told to write in the language
-of the resolved prompt, so the English tone line never forces English output). This is
-DELIBERATELY NOT the Bot/Character system — see ADR-0013 for the alternatives considered and why
-a bot-as-persona idea was left for a possible future, not built now.
+**Personas — a closed set of TONES, legacy and read-only as of R2 (ADR-0040).** `App\Modules\Variables\
+Enums\AiPersona`: `neutral` (default) | `friendly` | `formal` | `concise` — each folds a short English style
+instruction into the agent's system prompt (steering TONE only; the agent is always told to write in the
+language of the resolved prompt, so the English tone line never forces English output). ADR-0013 originally
+rejected the Bot/Character system as this seam's persona and left "write like Bot X" as a possible future.
+That future was built (see "Per-block AUTHOR" immediately below) — but as an ADDITIVE picker, not a rename of
+this enum: `personaId`, `AiPersona::fromNullable()`, and the `ai_personas` catalog key below are all
+UNCHANGED and still fully functional at runtime for a block saved before that feature. The EDITOR no longer
+offers this persona Select for a new pick — see ADR-0013 §4's appended amendment.
+
+**Per-block AUTHOR (R2, ADR-0040) — the picker that replaced the persona Select.** An `@[ai-text]` block's
+JSON payload gains two OPTIONAL keys, EMIT-OR-OMIT: `authorId` (a workspace Bot id) and `authorName` (a
+display-only snapshot, never authoritative — the backend reads `authorId` only, no alias). The bot named
+contributes its VOICE — persona/style/dictionary/phrases/prohibitions, composed by `Bot\Services\
+BotVoiceComposer` — never its knowledge or its tools; no task execution happens from this seam. A block
+already carrying a legacy `personaId` renders, in the editor, as a READ-ONLY "legacy tone" bar rather than a
+pickable Select.
+
+**Resolved LIVE, once per RUN PASS — never frozen (unlike the Generator's `recipe_snapshot.author_voices`,
+`docs/backend/generator-sessions-api.md`).** A workflow run has no snapshot object to freeze author voices
+into — a run always executes the DEFINITION as it stands. `WorkflowStepRunner::run()` therefore scans the
+WHOLE step definition for every `@[ai-text]` `authorId` it names (via the shared `VariableResolver::
+collectAiTextAuthorIds()` scanner — nested prompts and if-block branches included), resolves them in ONE
+batch lookup (`AuthorVoiceResolver::voicesFor()`) pinned to the run's own `workspace_id` (a queued run has no
+ambient active workspace — an unpinned lookup would be unconstrained), and installs the map on the ambient
+`Variables\Support\AiVoiceContext` for that pass — SAVED/RESTORED (not merely set/cleared), the identical
+idiom the run context and the per-run `@[ai-text]` budget already use, so a re-triggered CHILD run executing
+in-process inside a step neither loses nor pollutes its PARENT's author map.
+
+**Consequence for a SUSPENDED, later-resumed run (ADR-0039).** Because the map is rebuilt on every pass
+rather than carried in `waiting_on`, a resumed pass re-enters `run()` and resolves the CURRENT state of every
+named bot — so editing (or deleting) a bot's voice WHILE a run is parked changes what every step still ahead
+of the resume point produces, even though the step that originally triggered the suspension already saw the
+OLD map on its first pass. A step that already succeeded before the suspension is unaffected (steps never
+re-run). This is a deliberate consequence of "a run always reads live state," not a bug — see ADR-0040 D3 for
+the full reasoning and its contrast with the Generator's snapshot-and-freeze posture.
+
+**Precedence — one function decides it, the block's own author wins.**
+`AiVoiceContext::effectiveDirective(?string $authorId)` is asked by the SAME shared `AiTextGenerationService::
+generate()` this section already describes: a block's own author (if it resolves) wins; a workflow run never
+sets a run-wide voice of its own (that concept exists only on the Generator side, ADR-0036), so with no
+resolvable block author the legacy `personaId` tone applies, defaulting to `neutral`. An author that cannot be
+resolved (deleted bot, foreign workspace, malformed id) is FAIL-SAFE, never fail-closed: it is simply absent
+from the map, so the block falls through to the next tone in the chain and still renders — it is never left
+blank and never fails the step.
+
+**Cost attribution is UNCHANGED — for the per-BLOCK author.** A block naming a bot as its author does not
+re-attribute that block's `ai_text` spend to the named bot — the run's own actor (`HasCreator`'s
+polymorphic union) still pays, identically to every other spend this run makes. **The STEP-level
+`generate_content.bot_id` is deliberately the opposite**: it DELEGATES the whole created session, so every
+spend of that session attributes to the BOT (`GenerationSession::meterActor()` — the same semantics as a
+manual delegation; see "Author delegation (`bot_id`)" above). The line between the two is authorship
+granularity: a block-level voice is a styling choice inside someone else's run and must not move spend off
+that someone's cap, while a session-level delegation makes the bot the author of record for the whole
+artifact. See `docs/decisions/ADR-0040-per-block-ai-text-author.md`
+for the full design record (the Variables-side `AuthorVoiceResolver` contract, the Bot-side inversion of
+dependency, and every alternative considered).
 
 **Prompt-injection posture (accepted, bounded risk).** The resolved prompt embeds values taken
 from user-submitted forms (untrusted input). `App\Modules\Variables\Agents\AiTextAgent`'s instructions frame
@@ -3015,7 +3085,8 @@ Runs a Generator **Template** (`docs/backend/generator-api.md`) and publishes th
 the ONLY step type in this module that **suspends**: it starts a real, budgeted generation on the
 Generator's own queue and does not resolve `context.steps.<key>` until much later, when a fresh job
 resumes the run. See "Suspend/resume engine" below for the mechanism; this section covers the step's
-own config/output/error contract. Full design record: **ADR-0039**.
+own config/output/error contract. Full design record: **ADR-0039** (amended 2026-07-31 — see its
+Addendum for the `bot_id` author-delegation contract).
 
 `App\Modules\Workflows\Steps\GenerateContentStep implements SuspendableWorkflowStep`. The
 `Workflows → Generator` edge is crossed in exactly this one class, and strictly one-way — it calls
@@ -3030,8 +3101,9 @@ anywhere (pinned by `GeneratorModuleBoundaryTest` + `WorkflowsGeneratorBoundaryT
 | `slots`               | no       | map of the template's DECLARED slot name → a literal or a `{kind}` value-or-variable union, typed at the SLOT's own type | Only declared slot names are accepted (an unknown name → `422`); a value's pipeline is type-flowed to the slot's own type. |
 | `folder_id`               | no       | literal uuid (workspace-scoped Disk `Folder`) | Where the produced images are exported. `null`/omitted = the Disk root. A folder deleted mid-wait DEGRADES to the Disk root at resume time (see "Operational notes" below) rather than losing the already-paid-for content. |
 | `name`                        | no       | literal string                                | The session's display name. Defaults to the template's own name when omitted/blank. |
+| `bot_id`                         | no       | literal uuid (workspace-scoped `Bot`)         | Delegates the created session to this bot — the SAME author overlay (voice + frozen look) an interactive delegation stamps. `null`/omitted/blank = no author (generates in the house voice). Unresolvable → `422` at save (`bot_invalid`) and a hard run-time refusal (`bot_unavailable`) if one slips through anyway. See "Author delegation" below. |
 
-**Config allow-list is exactly these four keys** (`StoreWorkflowRequest::allowedStepKeys()`) — `slots`
+**Config allow-list is exactly these five keys** (`StoreWorkflowRequest::allowedStepKeys()`) — `slots`
 is the one FREE-FORM map (its keys are the chosen template's own slot names, not a fixed vocabulary),
 so it is allowed wholesale at the top level and checked against the template's own declarations
 (`validateTemplateSlotMapping()`) instead.
@@ -3055,12 +3127,26 @@ can highlight the exact row:
 |------|--------------------------------------|----------------------------------------------------------------------------|
 | 422  | `steps.<i>.config.template_id`          | Missing, not a uuid, or not a template in this workspace. |
 | 422  | `steps.<i>.config.folder_id`                | Not a uuid, or not a Disk folder in this workspace. |
+| 422  | `steps.<i>.config.bot_id`                       | Not a uuid, or unknown to the SAME `SessionAuthorIdentityResolver` seam the run itself uses — via its cheap existence probe `knowsAuthor()` (`validateAuthorId()`), never the full composition, so a storage/composition fault can no longer masquerade as "bot not available" (the save succeeds; a DB fault inside the probe itself is an honest 500). Deliberately not a `ScopedExists` rule, because Workflows may not name the Bot module directly. Message key `bot_invalid`. |
 | 422  | `steps.<i>.config.name`                         | Present but not a string. |
 | 422  | `steps.<i>.config.slots.<name>`                    | A REQUIRED slot left unmapped, OR mapped to `null`/`''` (`descriptor.nullable !== true` — a descriptor has no separate `required` key). |
 | 422  | `steps.<i>.config.slots.<name>`                       | A mapped name the template does NOT declare (almost always a typo — reported alongside the unmapped-required error the SAME typo usually also causes). |
 | 422  | `steps.<i>.config.slots.<name>`                          | A mapped value's `{kind:'variable'}` pipeline does not type-flow to the slot's own accepted terminal(s) — its own type, or, for an ARRAYED slot, its own type OR the plain element type (see "Arrayed-slot pipeline terminals" below). |
 | 422  | `steps.<i>.config.slots.<name>`                             | **The composite-slot refusal** — a REQUIRED `object`-base slot (any shape), or a REQUIRED `array:true` + base `file` slot, is refused outright (the template "cannot be driven by a workflow at all"); the SAME shapes are refused when a NULLABLE slot is explicitly mapped (leaving it unmapped to generate empty is fine). A SCALAR `file` slot is **not** refused — see "The composite-slot refusal" below. |
 | 422  | `steps.<i>.type`                                               | A 3rd (or later) `generate_content` step in the same workflow — the cap is **2** (`validateGenerateContentBudget()`). |
+
+**Author delegation (`bot_id`).** When the step names a bot, the created session is delegated to it
+EXACTLY as an interactive delegation would — the SAME `SessionDelegationService::applyDelegation()`
+overlay `BotSessionDelegationController` stamps, composed by the SAME `BotDelegationIdentityComposer`
+(`docs/decisions/ADR-0036-bot-delegation-generation-sessions.md`, `docs/decisions/
+ADR-0042-character-visual-identity.md`): a VOICE, and — when the bot's visual module is on and it has an
+approved likeness — a frozen LOOK (the character's reference bytes, copied once). The workflow's own
+`slots` mapping stays the ONLY source of the session's inputs: unlike the interactive delegation's
+optional `fill_mode`/`auto_generate` autonomous fill, the bot never fills a `generate_content` session's
+slots itself. Bot STATUS is not a filter — a paused/inactive bot is still a legal author, since naming
+one is authored configuration, not an execution capability. See "Run-time flow" below for exactly when
+the identity is resolved and stamped, and **ADR-0039**'s 2026-07-31 addendum for the full design record
+(the write-time seam, the refusal-before-creation invariant, and why a resume never re-delegates).
 
 **The composite-slot refusal, and the scalar-`file` divergence from the Bot module's blanket
 refusal.** `StoreWorkflowRequest::isUnsuppliableSlot()` refuses two shapes at AUTHORING time, before any
@@ -3106,22 +3192,30 @@ composite-slot refusal above rejects them first.
 1. `run()` resolves `template_id` through the tenant-scoped `Template` model (a workspace boundary
    check the automation seam itself does not perform); a missing/foreign/deleted id hard-fails the step
    (`RuntimeException`, run stops).
-2. Each declared slot the config maps is resolved through the SAME value-or-variable union
+2. The optional AUTHOR (`bot_id`) is resolved through the Generator's `SessionAuthorIdentityResolver`
+   contract — **BEFORE the session exists**. Absent/`null`/blank means no author (generates anonymously,
+   unchanged). A NAMED but unresolvable bot (deleted, foreign-workspace, or a malformed id that slipped
+   past the write-time check) HARD-FAILS the step with `bot_unavailable` — and because this happens
+   before `createFromTemplate` runs, the refusal leaves no draft session behind at all (contrast step 5
+   below).
+3. Each declared slot the config maps is resolved through the SAME value-or-variable union
    `create_task`'s fields use, at the slot's OWN type (recovered from its stored descriptor).
-3. An EMPTY session is created (`SessionAutomationService::createFromTemplate`, snapshot-authoritative
-   per ADR-0034 D1), then FILLED under `SlotScopePolicy::Automation`
+4. An EMPTY session is created (`SessionAutomationService::createFromTemplate`, snapshot-authoritative
+   per ADR-0034 D1). When step 2 resolved an author, the SAME `SessionDelegationService::applyDelegation()`
+   overlay an interactive delegation stamps is applied NOW, before anything fills the session — then the
+   session is FILLED under `SlotScopePolicy::Automation`
    (`SessionDelegationService::applySlotValues`), which re-validates every value against its descriptor
    and reports what it filled/skipped/left unfilled.
-4. A required slot the fill report still lists as unfilled HARD-FAILS the step BEFORE any spend,
+5. A required slot the fill report still lists as unfilled HARD-FAILS the step BEFORE any spend,
    naming the offending slot(s) — see "Operational notes" for what happens to the session it already
    created.
-5. The session is claimed and dispatched on the REAL queue connection
+6. The session is claimed and dispatched on the REAL queue connection
    (`GenerationSessionRunManager::claimAndDispatch`, through `RealQueueConnection`) — the SAME
    budget-gated, atomically-claimed choke point a manual "Generuj" click or a bot `auto_generate` uses,
    so the pre-run `429 ai_budget_exceeded` gate (`docs/backend/workspace-ai-usage-api.md`) applies
    unchanged; an over-cap workspace is refused BEFORE the session is claimed and nothing is billed.
-6. The step throws `StepSuspended` and the run parks `waiting`.
-7. On resume, `terminalStatusFor(sessionId)`: `null` (session gone/purged) and `failed` are TERMINAL
+7. The step throws `StepSuspended` and the run parks `waiting`.
+8. On resume, `terminalStatusFor(sessionId)`: `null` (session gone/purged) and `failed` are TERMINAL
    failures (a vanished or failed session can never settle, so the step fails the run with the real
    cause rather than waiting out the timeout and reporting a misleading one); `generating`/`draft`
    RE-SUSPEND on the SAME correlation key (idempotent — the next settle event or sweep resumes it);
@@ -3129,7 +3223,9 @@ composite-slot refusal above rejects them first.
    `GeneratedImageExporter::saveToDiskIfPresent()` exports EVERY produced image to Disk — done in the
    RESUME phase, inside the run, so `HasCreator` stamps every exported file `uploader_type='workflow_run'`
    (exporting inside the generation worker instead would run with no run context and usually no
-   authenticated user, leaving a NULL uploader — see ADR-0039 D7).
+   authenticated user, leaving a NULL uploader — see ADR-0039 D7). **`bot_id` in the replayed config is
+   NEVER re-read here** — the author was resolved and stamped once, at steps 2/4; a resume collects, it
+   does not re-author (pinned by `WorkflowGenerateContentBotTest`).
 
 **The run lifecycle, author-visible.** A workflow with a `generate_content` step visits
 `running → waiting → running → completed | failed` — the middle `waiting` hop being the whole point of
@@ -3142,15 +3238,20 @@ this feature. See "Suspend/resume engine" below for the columns/mechanics, and
   (ids only, never content) — the content is already paid for by the time resume runs, so losing it to a
   404 on a now-missing folder would be strictly worse than filing it at the root instead.
 - **A required-slot failure leaves an ORPHAN `draft` session behind.** The step deliberately does NOT
-  delete the session it just created before hard-failing (step 4 above) — it shows the workflow author
+  delete the session it just created before hard-failing (step 5 above) — it shows the workflow author
   exactly what the automation managed to fill, for debugging. The Generator's own idle/stale-draft
   lifecycle reaper (`generator:reap-sessions`, `docs/backend/generator-sessions-api.md`) eventually
-  cleans it up like any other abandoned draft.
+  cleans it up like any other abandoned draft. Contrast an unresolvable AUTHOR (step 2 above), which
+  fails BEFORE any session exists and so leaves nothing behind at all.
 - **Attribution.** The session is created INSIDE the run, so `HasCreator` stamps it
   `creator_type='workflow_run', creator_id=<run id>` — the executor then reads that back as the explicit
   METER ACTOR, so every AI event the generation makes carries `actor_type='workflow_run'`,
   `actor_id=<run id>`, and the session id — WITHOUT needing `WorkflowRunContext` to survive into the
-  generation worker (it does not; the worker is a different job on the real queue).
+  generation worker (it does not; the worker is a different job on the real queue). **When the step
+  named an author, this is OVERRIDDEN**: `GenerationSession::meterActor()` reports the bot instead
+  (`['bot', bot_author_id]`) whenever the session is delegated, so a delegated automated generation's
+  spend attributes to the bot — exactly like an interactively-delegated session, with no new attribution
+  code (the pre-existing R2 sub-stage 4 mechanism already reads whichever overlay is stamped).
 
 ---
 
@@ -4177,10 +4278,16 @@ These are documented, reviewed trade-offs — not a TODO list.
 - **Per-part granular `generate_content` outputs.** The step publishes ONE assembled `content` string
   and one `image_file_ids` list — a later step cannot address one specific part's text/image
   individually the way a session's own chat UI can. Would need a richer output shape.
-- **A bot delegating a workflow-driven generation.** ADR-0036's bot-delegation overlay
+- ~~**A bot delegating a workflow-driven generation.** ADR-0036's bot-delegation overlay
   (`SlotScopePolicy::Bot`) and this feature's automation seam (`SlotScopePolicy::Automation`) are
   sibling trust boundaries today, not composed — a `generate_content` step cannot hand its session to a
-  bot mid-run.
+  bot mid-run.~~ — **DONE (2026-07-31, ADR-0039 addendum), no longer deferred.** The step's `bot_id`
+  config field (see the `generate_content` section above) names the author before the run starts, not
+  mid-run: the bot is resolved and the SAME delegation overlay (`SessionDelegationService::
+  applyDelegation()`) is stamped the moment the session is created, before the slot fill.
+  `SlotScopePolicy::Automation` (the slots) and the bot overlay (the voice/look) now compose on the SAME
+  session — the workflow's own `slots` mapping still supplies every input; the bot never fills a slot
+  itself. Kept struck through so a reader of an older snapshot understands the change.
 - **More than 2 `generate_content` steps per workflow.** A deliberate cap
   (`StoreWorkflowRequest::GENERATE_CONTENT_MAX`) bounding a single run's worst-case AI fan-out and total
   wait time, not a technical ceiling of the engine — an author who needs more splits the work across

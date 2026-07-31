@@ -3,6 +3,7 @@
 namespace App\Modules\Workflows\Steps;
 
 use App\Modules\Disk\Models\Folder;
+use App\Modules\Generator\Contracts\SessionAuthorIdentityResolver;
 use App\Modules\Generator\Enums\GenerationRunMode;
 use App\Modules\Generator\Enums\SlotScopePolicy;
 use App\Modules\Generator\Exceptions\GenerationBudgetExceeded;
@@ -34,6 +35,7 @@ use RuntimeException;
  * Workflows class anywhere (pinned by GeneratorModuleBoundaryTest + WorkflowsGeneratorBoundaryTest). The
  * seams used, in order, are exactly the ones that seam documents:
  *   CREATE   {@see SessionAutomationService::createFromTemplate}   (snapshot-authoritative)
+ *   AUTHOR   {@see SessionDelegationService::applyDelegation}      the optional `bot_id` delegation overlay
  *   FILL     {@see SessionDelegationService::applySlotValues}      under {@see SlotScopePolicy::Automation}
  *   RUN      {@see GenerationSessionRunManager::claimAndDispatch}  the single budget-gated claim point
  *   WAIT     {@see SessionAutomationService::terminalStatusFor}    a plain status string, nothing else
@@ -43,14 +45,25 @@ use RuntimeException;
  *   1. resolve `template_id` through the TENANT-SCOPED {@see Template} model. `createFromTemplate` validates
  *      neither the workspace nor liveness BY DESIGN (it takes a model), so the workspace boundary is THIS
  *      lookup: a missing / foreign / deleted id HARD-FAILS the step.
- *   2. resolve each DECLARED slot the config maps, through the same value-or-variable union CreateTaskStep
+ *   2. resolve the optional AUTHOR (`bot_id`) through the Generator's
+ *      {@see SessionAuthorIdentityResolver} contract — see {@see requireAuthorIdentity}. Unresolvable is a
+ *      HARD FAIL, and it happens before anything is created.
+ *   3. resolve each DECLARED slot the config maps, through the same value-or-variable union CreateTaskStep
  *      uses, at the slot's OWN type (recovered from its descriptor).
- *   3. create the session, then FILL it under the AUTOMATION scope, which re-validates every value against
- *      its descriptor (and resolves a FILE reference through the tenant-scoped File model) and REPORTS what
- *      it dropped.
- *   4. HARD-FAIL when the fill report leaves ANY required slot unfilled — naming the slots. Generating from
+ *   4. create the session, DELEGATE it to the resolved author (when one was named), then FILL it under the
+ *      AUTOMATION scope, which re-validates every value against its descriptor (and resolves a FILE
+ *      reference through the tenant-scoped File model) and REPORTS what it dropped.
+ *   5. HARD-FAIL when the fill report leaves ANY required slot unfilled — naming the slots. Generating from
  *      a half-filled recipe would spend AI money on content the author did not ask for.
- *   5. claim + dispatch on the REAL queue connection ({@see RealQueueConnection}) and SUSPEND.
+ *   6. claim + dispatch on the REAL queue connection ({@see RealQueueConnection}) and SUSPEND.
+ *
+ * ── THE AUTHOR IS THE WORKFLOW AUTHOR'S CHOICE, THE SLOTS ARE TOO ──────────────────────────────────────
+ * A delegated session gains a VOICE and a FACE — never a will. The bot does NOT fill this session's slots:
+ * the workflow's own `slots` mapping is the single source of the recipe's inputs, resolved from the run's
+ * variables under {@see SlotScopePolicy::Automation}. (The interactive delegation additionally offers an
+ * autonomous slot-fill, which is a HUMAN's click-time choice about a draft they can inspect; an unattended
+ * run has nobody to inspect it, and letting a model invent inputs the workflow did not map would make what
+ * an automation publishes unpredictable from its definition.)
  *
  * ── resume() ───────────────────────────────────────────────────────────────────────────────────────────
  *   `null` (gone) and `failed` are TERMINAL FAILURES — a vanished session can never settle, so "keep
@@ -91,6 +104,7 @@ class GenerateContentStep implements SuspendableWorkflowStep
         private SessionContentProjector $projector,
         private GeneratedImageExporter $images,
         private RealQueueConnection $realQueue,
+        private SessionAuthorIdentityResolver $identities,
     ) {}
 
     public function type(): WorkflowStepType
@@ -141,11 +155,20 @@ class GenerateContentStep implements SuspendableWorkflowStep
 
         $template = $this->requireTemplate($config);
 
+        // BEFORE the session exists, for the same reason the queue hatch is asserted first: an author the
+        // step cannot resolve is a refusal, and a refusal that costs nothing leaves no orphan draft behind.
+        $identity = $this->requireAuthorIdentity($config, $run);
+
         // The session is created EMPTY and filled through the AUTOMATION scope, never seeded with the raw
         // resolved map: createFromTemplate stores what it is given AS GIVEN (the lenient human-draft
         // posture), so seeding first would persist untrusted values that the fill path then refuses. One
         // write path, one validation authority.
         $session = $this->automation->createFromTemplate($template, [], $this->literalString($config, 'name'));
+
+        // STAMPED BEFORE THE FILL, exactly like the interactive delegation. The overlay's
+        // `slot_values_before` snapshot is what an undo restores, so it must capture the session as it was
+        // before anything filled it — here that is empty, which is the truth for a session no human touched.
+        $this->applyAuthorIdentity($session, $identity);
 
         $report = $this->delegation->applySlotValues(
             $session,
@@ -197,6 +220,15 @@ class GenerateContentStep implements SuspendableWorkflowStep
      * Collect the settled generation. $config is the config PERSISTED AT SUSPEND (the engine replays
      * `waiting_on.config` rather than re-resolving it), so it is the very config the session was started
      * with — which is what makes reading `folder_id` here correct.
+     *
+     * IT ALSO CARRIES `bot_id`, AND THIS PHASE DELIBERATELY IGNORES IT. The delegation was stamped ONCE, at
+     * create time, and the session has been snapshot-authoritative about its author ever since. Re-resolving
+     * on resume would (a) re-read a bot that may have been edited, re-approved or deleted while the run
+     * waited, i.e. re-open exactly the drift the snapshot exists to close, (b) re-freeze the character bytes
+     * over a session that has already rendered with the originals, and (c) re-snapshot `slot_values_before`
+     * over the FILLED values, so an undo would "restore" the automation's own fills instead of the empty
+     * pre-fill state. A resume collects; it does not re-author. Pinned by a test that fails if the resolver
+     * is touched at all on this path.
      */
     public function resume(array $config, WorkflowRun $run, array $context, array $wait): array
     {
@@ -285,6 +317,104 @@ class GenerateContentStep implements SuspendableWorkflowStep
         }
 
         return $template;
+    }
+
+    /**
+     * The AUTHOR IDENTITY this step's session is delegated to, or null when the step names no author.
+     *
+     * WHAT IT BUYS. A generated post has a voice and (with the visual module on) a face. A human picks those
+     * by delegating the session to a bot; a workflow picks them by naming one here, and the result is the
+     * SAME overlay stamped by the SAME Generator seam — so an automated post is not a second-class one.
+     *
+     * BOUNDARY. The author is ordered through the Generator's
+     * {@see SessionAuthorIdentityResolver} CONTRACT and the step never learns what an author is. Naming the
+     * module that owns authors here — the obvious shortcut — would couple two peer modules that may only
+     * meet through a lower layer (pinned by WorkflowsGeneratorBoundaryTest).
+     *
+     * TENANCY IS EXPLICIT: the RUN's own `workspace_id` is passed, never the ambient scope, because this
+     * executes on a queue where {@see \App\Models\Scopes\WorkspaceScope} is a documented NO-OP and an
+     * ambient-only lookup would resolve a FOREIGN author. It is null in own-database mode, where the
+     * dedicated connection is the boundary — the contract's documented meaning for a null.
+     *
+     * AN UNRESOLVABLE AUTHOR HARD-FAILS THE STEP, matching {@see requireTemplate} rather than the fail-SAFE
+     * posture of the per-block ai-text author. The difference is what is at stake: a missing BLOCK author
+     * costs a paragraph its tone, while a missing SESSION author means the run publishes content in nobody's
+     * name and (silently) without the face the workflow was built around. Automation must not decide on its
+     * own that anonymous is close enough — so the run stops and says so, in the run's own locale, with prose
+     * that names no ids.
+     *
+     * @return array{voice: string, author: array<string, mixed>, bot_id: string, visual: array<string, mixed>|null, bytes: string|null}|null
+     */
+    private function requireAuthorIdentity(array $config, WorkflowRun $run): ?array
+    {
+        $raw = $config['bot_id'] ?? null;
+
+        // NO AUTHOR: absent, null, or a cleared field. Only these three mean "generate anonymously".
+        if ($raw === null || (is_string($raw) && trim($raw) === '')) {
+            return null;
+        }
+
+        $botId = $this->literalString($config, 'bot_id');
+
+        // PRESENT BUT UNUSABLE (a number, a list, an object — reachable only in a hand-written or imported
+        // definition; the write-side validator refuses all of them). Treated as an unresolvable author
+        // rather than as "no author", because the step's whole posture is that automation must not decide
+        // on its own that anonymous is close enough — and a definition that MEANT to name an author is
+        // exactly the case where silently dropping it would be worst.
+        if ($botId === null) {
+            throw new RuntimeException(__('workflows.steps.generate_content.bot_unavailable'));
+        }
+
+        $identity = $this->identities->identityFor($botId, $run->workspace_id);
+
+        $author = is_array($identity['author'] ?? null) ? $identity['author'] : [];
+        $resolvedId = $author['id'] ?? null;
+
+        // The author id is re-read from the RESOLVED snapshot rather than from the config: it is what the
+        // delegation is stamped and METERED under, and what the frozen character bytes are keyed by, so it
+        // must be the id the resolver actually matched (a uuid column matches case-insensitively). An
+        // identity too incomplete to carry one cannot be stamped coherently, so it counts as "no identity".
+        if (!is_string($resolvedId) || $resolvedId === '') {
+            throw new RuntimeException(__('workflows.steps.generate_content.bot_unavailable'));
+        }
+
+        return [
+            // A null voice is a legal contract answer (an author with no written material); the Generator
+            // seam takes a string, and an EMPTY one reads back as "no directive" — i.e. the run renders in
+            // the plain house voice while the authorship stamp still holds. Degrading, never crashing.
+            'voice' => is_string($identity['voice'] ?? null) ? $identity['voice'] : '',
+            'author' => $author,
+            'bot_id' => $resolvedId,
+            'visual' => is_array($identity['visual'] ?? null) ? $identity['visual'] : null,
+            'bytes' => is_string($identity['character_image_bytes'] ?? null) ? $identity['character_image_bytes'] : null,
+        ];
+    }
+
+    /**
+     * Stamp the resolved identity onto the freshly created session — the WHOLE overlay in one all-or-nothing
+     * save (author + voice + frozen look + the character's reference bytes), through the same primitives-only
+     * Generator seam the interactive delegation uses.
+     *
+     * From here on the session is SNAPSHOT-AUTHORITATIVE about its author: editing, re-approving or deleting
+     * the bot while the run waits cannot change what this run produces. That is also why nothing about the
+     * author is re-read on resume — see {@see resume}.
+     *
+     * @param  array{voice: string, author: array<string, mixed>, bot_id: string, visual: array<string, mixed>|null, bytes: string|null}|null  $identity
+     */
+    private function applyAuthorIdentity(GenerationSession $session, ?array $identity): void
+    {
+        if ($identity === null) {
+            return;
+        }
+
+        $this->delegation->applyDelegation(
+            $session,
+            $identity['voice'],
+            $identity['author'],
+            $identity['bot_id'],
+            $identity['visual'],
+            $identity['bytes'],
+        );
     }
 
     /**

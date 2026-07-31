@@ -219,7 +219,7 @@ class AiCostMeterTest extends TestCase
         {
             public bool $called = false;
 
-            public function edit(string $image, string $prompt, ?string $mask = null): array
+            public function edit(string $image, string $prompt, ?string $mask = null, string $size = 'auto'): array
             {
                 $this->called = true;
 

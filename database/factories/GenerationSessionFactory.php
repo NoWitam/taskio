@@ -47,6 +47,24 @@ class GenerationSessionFactory extends Factory
         ]);
     }
 
+    /**
+     * FROZEN per-block `@[ai-text]` author voices on the snapshot — what
+     * {@see \App\Modules\Generator\Services\RecipeAuthorVoiceSnapshotter} captures at creation. Applied as a
+     * state so a test can drive the EXECUTOR's voice wiring without going through the create path (and so a
+     * snapshot WITHOUT the key keeps modelling a pre-feature session).
+     *
+     * @param  array<string, string>  $voices  authorId => opaque voice
+     */
+    public function authorVoices(array $voices): static
+    {
+        return $this->state(fn (array $attributes): array => [
+            'recipe_snapshot' => array_merge(
+                is_array($attributes['recipe_snapshot'] ?? null) ? $attributes['recipe_snapshot'] : [],
+                ['author_voices' => $voices],
+            ),
+        ]);
+    }
+
     /** Force the session status (e.g. generating / ready / failed). */
     public function status(GenerationSessionStatus $status): static
     {

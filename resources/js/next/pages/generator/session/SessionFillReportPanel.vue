@@ -12,10 +12,11 @@
 // AI call and spent nothing — the panel says exactly that instead of rendering a misleading "filled 0 inputs"
 // summary, and points at the "propose everything fresh" mode. The MODE that ran is always surfaced, so a
 // human who picked "only the empty inputs" understands why little (or nothing) changed.
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import Card from '../../../ui/layout/Card.vue';
 import Button from '../../../ui/primitives/Button.vue';
 import Icon from '../../../ui/primitives/Icon.vue';
+import { nextId } from '../../../ui/forms/formField';
 import { useI18n } from '../../../app/i18n';
 import type { SlotFillMode, SlotFillReport, SlotSkipReason } from '../sessionTypes';
 import type { TemplateSlot } from '../types';
@@ -65,10 +66,31 @@ function isFileSlot(name: string): boolean {
 function reasonLabel(reason: SlotSkipReason): string {
   return t(`generator.sessions.delegate.report.reason.${reason}`, reason);
 }
+
+// --- Collapse (owner note #2): the same show/hide chevron every other turn card carries -------------
+// EXPANDED by default — the report is the outcome of an action the human just took. Hidden with v-show
+// (never v-if) so `aria-controls` keeps resolving, exactly like the other cards. The DISMISS control
+// stays visible while collapsed: hiding is not discarding, and the two must not be confusable.
+const expanded = ref(true);
+function toggleExpanded(): void {
+  expanded.value = !expanded.value;
+}
+const bodyId = nextId('next-fill-report');
+
+/** Collapsed one-liner: what still needs the human, else how much the bot filled. */
+const collapsedTeaser = computed(() => {
+  if (nothingToFill.value) return '';
+  return hasUnfilled.value
+    ? t('generator.sessions.delegate.report.unfilled')
+    : t('generator.sessions.delegate.report.filledSummary', '', {
+        name: props.botName,
+        count: filledCount.value,
+      });
+});
 </script>
 
 <template>
-  <Card variant="default">
+  <Card variant="default" :body-collapsed="!expanded">
     <template #header>
       <div class="flex min-w-0 flex-1 items-center gap-next-2">
         <span
@@ -84,21 +106,40 @@ function reasonLabel(reason: SlotSkipReason): string {
               : t('generator.sessions.delegate.report.title', '', { name: botName })
           }}
         </h3>
+        <!-- Collapsed teaser: the one line that matters (what is still needed / how much was filled). -->
+        <span
+          v-if="!expanded && collapsedTeaser"
+          class="min-w-0 flex-1 truncate text-next-xs text-next-muted-foreground"
+        >
+          {{ collapsedTeaser }}
+        </span>
       </div>
     </template>
 
     <template #headerActions>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        :aria-label="t('generator.sessions.delegate.report.dismiss')"
-        @click="emit('dismiss')"
-      >
-        <Icon name="x" />
-      </Button>
+      <div class="flex items-center gap-next-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          :leading-icon="expanded ? 'chevron-up' : 'chevron-down'"
+          :aria-expanded="expanded ? 'true' : 'false'"
+          :aria-controls="bodyId"
+          @click="toggleExpanded"
+        >
+          {{ expanded ? t('generator.sessions.toggle.collapse') : t('generator.sessions.toggle.expand') }}
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          :aria-label="t('generator.sessions.delegate.report.dismiss')"
+          @click="emit('dismiss')"
+        >
+          <Icon name="x" />
+        </Button>
+      </div>
     </template>
 
-    <div class="flex flex-col gap-next-3">
+    <div v-show="expanded" :id="bodyId" class="flex flex-col gap-next-3">
       <!-- Which mode actually ran — explains WHY little (or nothing) changed. -->
       <span
         v-if="modeLine"

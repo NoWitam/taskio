@@ -24,8 +24,9 @@ use Illuminate\Support\Str;
  *   - {@see introspectSlots}      the IN-SCOPE typed slot descriptors + current values a filler may fill,
  *   - {@see applySlotValues}      re-validate proposed values per descriptor + scope, drop the rest, persist,
  *   - {@see applyBotSlotValues}   the BOT-scoped wrapper over applySlotValues (R2 sub-stage 3),
- *   - {@see applyDelegation}      stamp the WHOLE overlay (bot author + snapshotted voice), all-or-nothing,
- *   - {@see clearDelegation}      null the WHOLE overlay (undo → the human voice).
+ *   - {@see applyDelegation}      stamp the WHOLE overlay (bot author + snapshotted voice + the frozen LOOK),
+ *                                 all-or-nothing,
+ *   - {@see clearDelegation}      null the WHOLE overlay + drop the frozen look (undo → the human voice).
  *
  * NEVER logs voice / slot values / bot content (security.md) — these methods surface only structured facts
  * (a per-slot fill report), never the values themselves.
@@ -35,6 +36,7 @@ class SessionDelegationService
     public function __construct(
         private ConstantTypeValidator $descriptors,
         private TenantContext $tenant,
+        private SessionIdentityImageStore $identityImages,
     ) {}
 
     /**
@@ -192,22 +194,79 @@ class SessionDelegationService
      * snapshots whatever is there when the CURRENT delegation begins (a prior bot's residue if never undone) —
      * undo then reverts to that, which is correct. NEVER logged (slot values are content).
      *
+     * FROZEN LOOK (the visual identity phase): the SAME stamp optionally captures how the author LOOKS —
+     * `visual = {enabled, descriptor, aesthetic, wardrobe, prohibitions, has_character_image, source_file_id,
+     * snapshot_at}` in this one save, and the character's reference IMAGE bytes into
+     * {@see SessionIdentityImageStore}. Exactly the voice's contract, applied to the picture: a later edit,
+     * re-approval or DELETE of the likeness cannot change what an already-delegated session draws, and
+     * `source_file_id` is kept as PROVENANCE only (never re-read at render time). `enabled` is frozen WITH
+     * the rest for the same reason — the caller resolves the live toggle once, here, and the run obeys the
+     * snapshot.
+     *
+     * ORDER, and why it is this one. The new bytes are written BEFORE the row, so a failure to store them
+     * cannot leave the overlay claiming an image that does not exist. The PREVIOUS author's file is dropped
+     * only AFTER the row commits: the store is keyed per character (`<botId>.png`), so the new write cannot
+     * overwrite it anyway, which means letting go of it early buys nothing and — if the freeze or the save
+     * then fails — destroys the likeness the session is still, correctly, naming. Sweeping afterwards leaves
+     * at worst an unreferenced file (collected by the next delegation or the purge) instead of a session
+     * pointing at bytes that are gone. Both arguments are null for an author with no (enabled) visual
+     * module — the pre-existing behavior, byte for byte.
+     *
+     * BOUNDARY: this stays PRIMITIVES-ONLY. It names no author class and no file class — the caller resolves
+     * the module, reads the bytes and hands over plain strings, which is what keeps the edge one-way.
+     *
      * @param  array<string, mixed>  $authorSnapshot  the denormalized {id, name, icon} bot snapshot
+     * @param  array<string, mixed>|null  $visual  the normalized visual identity TEXT fields, or null
+     * @param  string|null  $characterImageBytes  the character's reference image bytes, or null
      */
-    public function applyDelegation(GenerationSession $session, string $voice, array $authorSnapshot, string $botAuthorId): void
-    {
+    public function applyDelegation(
+        GenerationSession $session,
+        string $voice,
+        array $authorSnapshot,
+        string $botAuthorId,
+        ?array $visual = null,
+        ?string $characterImageBytes = null,
+    ): void {
         if (!$session->status->isEditable()) {
             return;
         }
+
+        $hasImage = $characterImageBytes !== null && $characterImageBytes !== '';
+
+        if ($hasImage) {
+            $this->identityImages->put($session->id, $botAuthorId, (string) $characterImageBytes);
+        }
+
+        $snapshotAt = now()->toISOString();
 
         $session->bot_author_id = $botAuthorId;
         $session->bot_delegation = [
             'author' => $authorSnapshot,
             'voice' => $voice,
-            'snapshot_at' => now()->toISOString(),
+            'snapshot_at' => $snapshotAt,
             'slot_values_before' => is_array($session->slot_values) ? $session->slot_values : [],
         ];
+
+        // Only ADD the key when there is a look to freeze, so a delegation without one stores exactly the
+        // overlay it always did.
+        if ($visual !== null) {
+            $session->bot_delegation = $session->bot_delegation + ['visual' => [
+                'enabled' => true,
+                'descriptor' => $this->visualText($visual['descriptor'] ?? null),
+                'aesthetic' => $this->visualText($visual['aesthetic'] ?? null),
+                'wardrobe' => $this->visualText($visual['wardrobe'] ?? null),
+                'prohibitions' => $this->visualList($visual['prohibitions'] ?? null),
+                'has_character_image' => $hasImage,
+                'source_file_id' => $this->visualText($visual['source_file_id'] ?? null),
+                'snapshot_at' => $snapshotAt,
+            ]];
+        }
+
         $session->save();
+
+        // RE-DELEGATION, now that the new overlay is the committed truth: reclaim whatever a PREVIOUS author
+        // froze here. Keyed per character, so this names the survivor rather than wiping and re-writing.
+        $this->identityImages->clearSessionExcept($session->id, $hasImage ? $botAuthorId : null);
     }
 
     /**
@@ -218,6 +277,12 @@ class SessionDelegationService
      * the `creator` (owner) is untouched. NOT status-guarded here — a `failed` (non-editable) session must still
      * be able to undo (the controller only blocks a `generating` one); the restore is the whole point of
      * reversible delegation. NEVER logged (slot values are content).
+     *
+     * The FROZEN CHARACTER BYTES go with it: undo means the author stops authoring, so its likeness must
+     * stop being drawable AND must not linger as orphaned bytes the purge would only reach weeks later.
+     * Storage is not transactional, so the delete runs AFTER the row is saved — an undo that fails to
+     * persist must not have already destroyed the reference the session still names. Idempotent (no frozen
+     * bytes → a no-op).
      */
     public function clearDelegation(GenerationSession $session): void
     {
@@ -230,6 +295,8 @@ class SessionDelegationService
         $session->bot_author_id = null;
         $session->bot_delegation = null;
         $session->save();
+
+        $this->identityImages->clearSession($session->id);
     }
 
     /**
@@ -246,6 +313,36 @@ class SessionDelegationService
     }
 
     // ---- internals -------------------------------------------------------------
+
+    /**
+     * One frozen visual TEXT field as it is PERSISTED: a non-blank string, or null. Deliberately shallow —
+     * the prompt-facing normalization (control characters, length caps, fence scrubbing) belongs to the
+     * consumer that composes the prompt ({@see \App\Modules\Generator\Support\SessionVisualIdentity}, the
+     * security boundary), exactly as `creative_direction` is re-normalized on the way OUT rather than
+     * trusted on the way in. Storing it raw also keeps a hand-fixed column honest.
+     */
+    private function visualText(mixed $value): ?string
+    {
+        return is_string($value) && trim($value) !== '' ? $value : null;
+    }
+
+    /**
+     * A frozen visual LIST (the prohibitions) as persisted: the non-blank strings, re-indexed. Non-strings
+     * are dropped rather than cast — an object in a "never show" list was never a prohibition.
+     *
+     * @return array<int, string>
+     */
+    private function visualList(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $value,
+            fn (mixed $entry): bool => is_string($entry) && trim($entry) !== '',
+        ));
+    }
 
     /**
      * Type-check ONE value against a slot descriptor via the shared authority (which also rejects NUL

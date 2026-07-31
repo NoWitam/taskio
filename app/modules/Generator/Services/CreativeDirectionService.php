@@ -53,6 +53,20 @@ class CreativeDirectionService
     ) {}
 
     /**
+     * The workspace's UI language, handed to the agent as a LANGUAGE TIE-BREAKER (never an override — the
+     * recipe always wins). Read from the app locale, the same source the schedule assist uses; the derivation
+     * runs inside the queued run job, where that resolves to the configured `APP_LOCALE` rather than any
+     * per-request locale. Anything other than the two catalogs we ship yields null, which leaves the agent
+     * with the pure follow-the-recipe rule.
+     */
+    private function language(): ?string
+    {
+        $locale = app()->getLocale();
+
+        return in_array($locale, ['pl', 'en'], true) ? $locale : null;
+    }
+
+    /**
      * Derive the run's creative direction, or null when there is nothing to derive from, the model returned
      * nothing usable, or anything at all went wrong. A null input costs NO provider call (and therefore no
      * spend); a failed call is already fail-closed to '' by the shared generator.
@@ -67,7 +81,7 @@ class CreativeDirectionService
             }
 
             $raw = $this->generator->generateWith(
-                new CreativeDirectionAgent((string) $session->content_type),
+                new CreativeDirectionAgent((string) $session->content_type, $this->language()),
                 $input,
                 (int) config('generator.direction.max_chars', 4000),
                 (int) config('ai.direction_timeout', 30),

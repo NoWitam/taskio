@@ -337,6 +337,10 @@ describe('next i18n', () => {
       'workflows.step.generate_content.drift.removed',
       'workflows.step.generate_content.drift.added',
       'workflows.step.generate_content.drift.removeUnknown',
+      // The AUTHOR (bot) sub-field: its own "this bot is gone" verdict. NOT the ai-text panel's
+      // `editor.aiText.authorMissing`, which promises a neutral-tone fallback that does not exist
+      // here — a workflow step with a dead author is refused at save and fails at run.
+      'workflows.step.generate_content.botMissing',
       'workflows.step.generate_content.nameLabel',
       'workflows.step.generate_content.nameHint',
       'workflows.step.generate_content.namePlaceholder',

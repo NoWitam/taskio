@@ -15,12 +15,23 @@ return [
         'resume_without_wait' => 'Nie dało się kontynuować tego przebiegu, ponieważ brakuje zapisu o tym, na co czekał.',
     ],
 
-    // Kroki workflowu — teksty, które krok ZAPISUJE w domenie (nie komunikaty błędów).
+    // Kroki workflowu — teksty, które krok ZAPISUJE w domenie, oraz WŁASNE komunikaty odmowy kroku
+    // (komunikaty silnika są wyżej, w `runs`). Z założenia NIE-tajne: bez identyfikatorów i treści kroku.
     'steps' => [
         'generate_content' => [
             // Nazwa pliku, pod którą krok zapisuje wygenerowany obraz na Dysku; do nazwy dopisywany jest
             // klucz części, więc receptura z wieloma obrazami nie tworzy pliku o tej samej nazwie.
             'image_name' => 'Wygenerowany obraz',
+
+            // CZAS PRZEBIEGU: krok wskazuje autora (`bot_id`), którego nie da się już odnaleźć w tej
+            // przestrzeni, więc generowanie zostało odmówione. To odmowa, nie degradacja — opublikowanie
+            // treści bez niczyjego głosu i bez zamówionego wizerunku nie jest gorszą wersją tego, o co
+            // poproszono. Trafia do `workflow_runs.error`.
+            'bot_unavailable' => 'Bot, w imieniu którego ten krok tworzy treść, nie jest już dostępny w tej przestrzeni, więc nic nie zostało wygenerowane. Wskaż w kroku innego bota albo usuń to ustawienie.',
+
+            // CZAS EDYCJI: ta sama weryfikacja przy zapisie workflowu, żeby definicja nie mogła zostać
+            // zapisana w stanie, w którym każdy przebieg kończyłby się błędem.
+            'bot_invalid' => 'Wybrany bot nie jest dostępny w tej przestrzeni.',
         ],
     ],
 

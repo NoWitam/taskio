@@ -19,8 +19,9 @@ use App\Modules\Variables\Support\AiVoiceContext;
  * (see {@see ShotListAgent}) — the strict JSON contract is baked into the agent instruction and this parser is
  * the belt-and-suspenders the contract requires either way. It:
  *   - strips a ```json … ``` fence if present, then balance-scans for the FIRST top-level JSON object,
- *   - decodes + coerces: hook→string, cta→string, shots→list of {visual:string, voiceover:string, seconds:int>=0}
- *     (malformed shot entries dropped), CLAMPED to the run's EFFECTIVE shot cap (passed in by the executor —
+ *   - decodes + coerces: hook→string, cta→string, shots→list of {visual:string, voiceover:string, seconds:int>=0,
+ *     features_character:bool} (malformed shot entries dropped), CLAMPED to the run's EFFECTIVE shot cap
+ *     (passed in by the executor —
  *     min(authored `content.storyboard.max_shots`, the `generator.storyboard_max_shots` platform ceiling)),
  *   - flattens a readable `text` (the `parts.shot_list` contribution + the FE display body).
  *
@@ -47,12 +48,14 @@ class ShotListRenderer
      * the agent's instructed bound, this parse clamp and the storyboard fan-out cannot drift.
      * $direction is the run's derived creative direction (B2) or null; its shot-list projection rides the
      * USER message as a fenced DATA block (never the system instruction — D7).
+     * $characterDescriptor is the FROZEN on-screen creator of a delegated session (or null), which adds the
+     * per-shot `features_character` key to the contract.
      *
-     * @return array{hook: string, shots: array<int, array{visual: string, voiceover: string, seconds: int}>, cta: string, text: string, parse_ok: bool}|null
+     * @return array{hook: string, shots: array<int, array{visual: string, voiceover: string, seconds: int, features_character: bool}>, cta: string, text: string, parse_ok: bool}|null
      */
-    public function generate(string $brief, int $maxShots, ?CreativeDirection $direction = null): ?array
+    public function generate(string $brief, int $maxShots, ?CreativeDirection $direction = null, ?string $characterDescriptor = null): ?array
     {
-        return $this->call("Write the shot list for this creative brief.\n\nCREATIVE BRIEF:\n" . $brief, $maxShots, $direction);
+        return $this->call("Write the shot list for this creative brief.\n\nCREATIVE BRIEF:\n" . $brief, $maxShots, $direction, $characterDescriptor);
     }
 
     /**
@@ -61,26 +64,38 @@ class ShotListRenderer
      * Null when the model returns blank (a failed no-op the refiner preserves the current list for).
      *
      * @param  array{hook?: mixed, shots?: mixed, cta?: mixed, text?: mixed}  $current  the current shot_list result
-     * @return array{hook: string, shots: array<int, array{visual: string, voiceover: string, seconds: int}>, cta: string, text: string, parse_ok: bool}|null
+     * @return array{hook: string, shots: array<int, array{visual: string, voiceover: string, seconds: int, features_character: bool}>, cta: string, text: string, parse_ok: bool}|null
      */
-    public function revise(array $current, string $instruction, int $maxShots, ?CreativeDirection $direction = null): ?array
+    public function revise(array $current, string $instruction, int $maxShots, ?CreativeDirection $direction = null, ?string $characterDescriptor = null): ?array
     {
-        return $this->call($this->revisePrompt($current, $instruction), $maxShots, $direction);
+        return $this->call($this->revisePrompt($current, $instruction), $maxShots, $direction, $characterDescriptor);
     }
 
     /**
      * Make the one structured call and parse the result. A blank reply → null (fail-soft); otherwise the
      * defensively-parsed normalized shape.
      *
-     * @return array{hook: string, shots: array<int, array{visual: string, voiceover: string, seconds: int}>, cta: string, text: string, parse_ok: bool}|null
+     * NO PER-BLOCK AUTHOR HERE, DELIBERATELY. A per-block author is a property of an `@[ai-text]` BLOCK, and
+     * a shot_list part has none to speak of: it is authored as a creative BRIEF and rendered by a structured
+     * JSON agent, not by an ai-text block. (A block nested INSIDE the brief markdown does carry its author —
+     * but it resolves earlier, through the ai-text seam, and its author already colored the text it
+     * contributed; re-using it for the whole shot list would be an invented attribution.) So the SESSION
+     * voice is the only one that can apply, and asking {@see AiVoiceContext::effectiveDirective} with a null
+     * author says exactly that in the shared vocabulary — identical in value to the session directive, while
+     * keeping ONE precedence authority for every consumer. Should a shot_list part ever grow its own author
+     * box, that id is the only thing this needs.
+     *
+     * @return array{hook: string, shots: array<int, array{visual: string, voiceover: string, seconds: int, features_character: bool}>, cta: string, text: string, parse_ok: bool}|null
      */
-    private function call(string $prompt, int $maxShots, ?CreativeDirection $direction): ?array
+    private function call(string $prompt, int $maxShots, ?CreativeDirection $direction, ?string $characterDescriptor = null): ?array
     {
+        $voice = $this->voice->effectiveDirective(null);
+
         // The shot-list PROJECTION of the run's direction, as a fenced DATA section prefixing the USER
         // message — or null when there is no direction (or it carries nothing this consumer uses, e.g. a
         // visual-only direction). Then the prompt is BYTE-IDENTICAL to the pre-direction composition.
         // TONE is dropped while a bot VOICE is active: the delegated voice wins on tone.
-        $section = $direction?->forShotList($this->voice->directive() === null);
+        $section = $direction?->forShotList($voice === null);
 
         // VOICE (R2 sub-stage 3): a delegated run sets the ambient voice, which the agent folds in as a
         // scoped tone clause (the JSON contract stays authoritative). Null on every non-delegated run, so
@@ -88,7 +103,10 @@ class ShotListRenderer
         // (the CALLER builds the voice-aware agent), so the meter path is unchanged.
         // DIRECTION (B2): only the FACT that a direction block ACTUALLY rides the prompt reaches the agent —
         // a trusted, content-free framing flag. The block's content stays in the USER message (D7).
-        $agent = new ShotListAgent($this->voice->directive(), $maxShots, $section !== null);
+        // CHARACTER (the visual-identity phase): a frozen on-screen creator adds the per-shot
+        // `features_character` key to the contract. Null on every other run, so the agent + this parse stay
+        // byte-identical to before.
+        $agent = new ShotListAgent($voice, $maxShots, $section !== null, $characterDescriptor);
 
         $raw = $this->aiText->generateWith($agent, $section === null ? $prompt : $section . "\n\n" . $prompt);
 
@@ -156,12 +174,18 @@ class ShotListRenderer
     }
 
     /**
-     * Coerce the model's shots to a clean ordered list of {visual, voiceover, seconds}. A shot missing a
-     * string visual/voiceover is DROPPED (malformed); seconds is coerced to a non-negative int (0 when
-     * absent/invalid). The list is CLAMPED to the run's EFFECTIVE shot cap so a runaway model can't inflate
-     * the cost (the storyboard iterates the SAME cap — one source, threaded in by the executor).
+     * Coerce the model's shots to a clean ordered list of {visual, voiceover, seconds, features_character}. A
+     * shot missing a string visual/voiceover is DROPPED (malformed); seconds is coerced to a non-negative int
+     * (0 when absent/invalid). The list is CLAMPED to the run's EFFECTIVE shot cap so a runaway model can't
+     * inflate the cost (the storyboard iterates the SAME cap — one source, threaded in by the executor).
      *
-     * @return array<int, array{visual: string, voiceover: string, seconds: int}>
+     * `features_character` is emitted ALWAYS (an additive key), and defaults to FALSE whenever it is absent
+     * or not a real boolean — which covers the model omitting it, a run that never asked for it, and every
+     * shot list stored before the key existed. False is the safe default in BOTH directions: it renders the
+     * frame from text alone, exactly as every pre-feature run did, whereas defaulting true would insert a
+     * person into product shots and pay a reference edit to do it.
+     *
+     * @return array<int, array{visual: string, voiceover: string, seconds: int, features_character: bool}>
      */
     private function normalizeShots(mixed $shots, int $maxShots): array
     {
@@ -192,10 +216,27 @@ class ShotListRenderer
                 'visual' => $visual,
                 'voiceover' => $voiceover,
                 'seconds' => $this->coerceSeconds($shot['seconds'] ?? null),
+                'features_character' => $this->coerceFlag($shot['features_character'] ?? null),
             ];
         }
 
         return $out;
+    }
+
+    /**
+     * A shot's `features_character` as a real boolean. A true boolean answers for itself; a scalar the model
+     * substituted for one (`"true"`, `1`, `"yes"`) is read the way it plainly means, because losing the flag
+     * to a formatting deviation would silently drop the likeness from every frame. EVERYTHING else — an
+     * absent key, null, an object, an unrecognized word — is FALSE: the pre-feature rendering, which is the
+     * cheap mistake of the two.
+     */
+    private function coerceFlag(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return (is_string($value) || is_int($value)) && filter_var($value, FILTER_VALIDATE_BOOLEAN);
     }
 
     /** A shot's seconds as a non-negative int (a numeric string / float rounds; anything else → 0). */

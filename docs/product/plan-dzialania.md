@@ -478,9 +478,11 @@ kierunku kreatywnego. **To jest ostatni podetap R2** — zamyka rozdział „Gen
 Świadomie POZA zakresem: anulowanie oczekującego biegu (`WorkflowRunState::CANCELLED` nadal
 zarezerwowany), żywy push na stronie szczegółów biegu (panel oczekiwania to uczciwy snapshot z
 momentu odczytu + jawny Refresh, bez websocketu — inaczej niż czat generatora), granularne wyjścia
-per-część (dziś jeden zmontowany `content` + jedna lista `image_file_ids`), bot delegujący generację
+per-część (dziś jeden zmontowany `content` + jedna lista `image_file_ids`); ~~bot delegujący generację
 uruchomioną przez workflow (`SlotScopePolicy::Bot` i `SlotScopePolicy::Automation` to siostrzane
-granice zaufania, nieskomponowane).
+granice zaufania, nieskomponowane)~~ — **ZREALIZOWANE 2026-07-31**: krok `generate_content` przyjął
+opcjonalny `bot_id` (ta sama bramka delegacji co ręczna — głos + wizerunek; sloty nadal od autora
+workflow), patrz aneks ADR-0039.
 
 Patrz **ADR-0039** (pełny zapis decyzji: wybór genuine suspend/resume nad synchronicznym inline'em
 i alternatywami, sygnał przez throw, replay configu, idiom świeżego joba, skorelowany claim,
@@ -494,12 +496,139 @@ sub-stage 5)"). In-app dokumentacja: `resources/js/next/docs/pages/WorkflowsPage
 
 **CAŁY ROZDZIAŁ R2 „Generator treści + Templatki" (Etap 7) JEST TERAZ UKOŃCZONY** — podetapy 1–6
 wszystkie ✅, na branchu `feat/r2-generator-templatki`, niezacommitowane. Świadomie odłożone na
-później (nie część R2): anulowanie/redo, granularne wyjścia per-część, kompozycja bot+workflow,
-usage history/trend + estymacja kosztu przed uruchomieniem, rozszerzenie bramki 429 na Workflows/Disk,
+później (nie część R2): anulowanie/redo, granularne wyjścia per-część, ~~kompozycja bot+workflow~~
+(**ZREALIZOWANE 2026-07-31**, patrz wyżej i aneks ADR-0039), usage history/trend + estymacja kosztu
+przed uruchomieniem, rozszerzenie bramki 429 na Workflows/Disk,
 typ treści tworzony przez użytkownika, nowy `PartKind`, native structured output dla `shot_list`,
 łańcuchowanie image-to-image dla spójności twarzy między klatkami — pełne listy w „Planned / deferred"
 odpowiednich dokumentów backendowych. Następny krok w roadmapie: commit stosu (właściciel decyduje
 kiedy), potem R3 Kalendarz.
+
+**Cały stos R2 ZACOMMITOWANY** (`ff95b0d`, po zakończeniu powyższych podetapów). Poniższy podetap
+buduje NA TYM commicie.
+
+### Status R2 — autor per blok w dyrektywie `@[ai-text]`, zastępujący wybór persony (rework nad podetapami 1+3, UKOŃCZONY, niezacommitowany na wierzchu `ff95b0d`)
+
+ADR-0013 (Etap 5.1) świadomie ODRZUCIŁ system Bot/Character jako „personę" `@[ai-text]` — zostawiony
+jako możliwa przyszłość, niezbudowany. Podetap 3 (ADR-0036) zbudował dokładnie to, ale wyłącznie na
+poziomie CAŁEJ sesji (delegacja). Ten rework generalizuje ten sam mechanizm o jeden poziom niżej — do
+POJEDYNCZEGO bloku `@[ai-text]` — i, ponieważ stary picker persony i nowy picker autora zajmują to samo
+miejsce w UI i odpowiadają na to samo pytanie („czyim głosem pisany jest ten tekst?"), właściciel
+zdecydował o USUNIĘCIU pickera persony z edytora zamiast trzymać oba obok siebie.
+
+- **Kontraktowy szew, odwrócenie zależności:** `App\Modules\Variables\Contracts\AuthorVoiceResolver`
+  (batch `voicesFor(authorIds[], workspaceId)`, jawny workspace, fail-SAFE — nierozwiązany id jest po
+  prostu NIEOBECNY w mapie) zadeklarowany w module `Variables`, zaimplementowany jako
+  `Bot\Services\BotAuthorVoiceResolver` (bindowany w providerze modułu Bot, nadpisuje domyślny
+  `NullAuthorVoiceResolver`). `App\Modules\Bot` dopisany do listy zakazanych importów w
+  `VariablesModuleBoundaryTest` obok już istniejących testów granicznych Workflows/Generator.
+- **`AiVoiceContext` niesie teraz DWA źródła głosu** — dyrektywę sesji/runu (istniejącą od podetapu 3) i
+  mapę per-autor (`authorId → opaque voice`) — a `effectiveDirective(authorId)` jest JEDYNYM miejscem
+  pierwszeństwa: własny autor bloku > głos sesji/runu (delegacja) > legacy `personaId` > neutralny.
+  „Delegowany bot pisze wszystko, co nie ma przypisanego własnego autora" — delegacja jest FALLBACKIEM,
+  nigdy silniejszym roszczeniem niż jawny wybór na poziomie bloku.
+- **Generator ZAMRAŻA, Workflows rozwiązuje NA ŻYWO** — świadoma asymetria, nie przeoczenie.
+  `GenerationSessionService::create()` skanuje `recipe_snapshot.content` (współdzielony skaner
+  `VariableResolver::collectAiTextAuthorIds()`), rozwiązuje WSZYSTKICH autorów w JEDNYM zapytaniu
+  wsadowym i zapisuje `recipe_snapshot.author_voices` — klucz WYŁĄCZNIE serwerowy, nigdy niewyświetlany
+  na żadnym zasobie. Edycja/usunięcie bota po utworzeniu sesji nigdy nie zmienia jej renderu — ten sam
+  niezmiennik co reszta `recipe_snapshot` (ADR-0034 D1). `WorkflowStepRunner::run()` nie ma czego
+  zamrozić (bieg zawsze wykonuje definicję TAKĄ, JAKA JEST TERAZ) — rozwiązuje autorów NA ŻYWO, raz na
+  przebieg, w tym samym idiomie zapisz/przywróć co kontekst biegu i budżet `@[ai-text]`. Konsekwencja dla
+  biegu ZAWIESZONEGO i wznowionego (ADR-0039): wznowiony przebieg ponownie rozwiązuje mapę na żywo, więc
+  edycja głosu bota W TRAKCIE oczekiwania dociera do WSZYSTKICH kroków jeszcze przed nim — krok już
+  wykonany zachowuje to, co już wygenerował.
+- **Atrybucja kosztu BEZ ZMIAN:** autor bloku nie przenosi wydatku `ai_text` na wskazanego bota — płaci
+  nadal aktor sesji/runu. Re-atrybucja per blok byłaby furtką do obejścia miesięcznego limitu $
+  (ADR-0037) przez samo nazwanie innego aktora w polu tekstowym.
+- **Kierunek kreatywny (ADR-0038) rozszerzony na blok:** `GeneratorAiTextService::withDirection()` pyta
+  teraz `effectiveDirective(authorId)` zamiast wyłącznie głosu sesji — TON kierunku kreatywnego jest
+  tłumiony dla KAŻDEGO bloku ze skutecznym głosem, także w runie niezdelegowanym (wcześniej tłumiła to
+  tylko delegacja całej sesji).
+- **UI:** picker persony ZNIKNĄŁ z panelu `@[ai-text]` (Generator i kroki workflow) — zastąpiony
+  Author `BotSelect` (bot wnosi GŁOS, nigdy wiedzę/narzędzia). Blok z zastanym `personaId` pokazuje
+  READ-ONLY pasek „ton zastany" z akcją wyczyszczenia; `personaId`/`ai_personas` działają bez zmian w
+  runtime. Pole „Etykiety wiedzy" ukryte (dekodowane i wyrzucane przez runtime — nigdy nie działało;
+  dane `labels` w istniejących dokumentach zachowane). Nowy store `app/stores/botDirectory.ts`
+  (id→{name,status}, deduplikowany) rozwiązuje `authorId` do wyświetlenia w chipie. `BotSelect` zyskał
+  `statusBadge` + przepustki slotów `#empty`/`#value`; `Select` zyskał addytywny slot `#empty`.
+  **Uboczna naprawa całej aplikacji:** `Select` rejestruje się teraz w stosie nakładek, więc Escape przy
+  otwartej liście zamyka listę, a nie cały Modal/Drawer (wcześniej kasowało to niezapisane zmiany) — dotyczy
+  KAŻDEGO Selecta w overlayu.
+- **Wire:** `@[ai-text]` zyskał opcjonalne `authorId`/`authorName` (snapshot wyświetleniowy, nigdy
+  autorytet), kodowanie EMIT-OR-OMIT — blok bez autora serializuje się bajt w bajt jak dotąd. Backend nie
+  ma aliasu dla `authorId` (w przeciwieństwie do `personaId`/`persona`).
+
+Patrz **ADR-0040** (pełny zapis decyzji: szew kontraktowy, zamrożenie-vs-na-żywo, pierwszeństwo,
+fail-SAFE zamiast fail-CLOSED, decyzja o NIE zmienianiu atrybucji kosztów, usunięcie persony z UI przy
+zachowaniu runtime) — amenduje **ADR-0013 §4** (dopisany aneks, historia decyzji niezmieniona) i
+rozszerza **ADR-0038** (tłumienie tonu kierunku kreatywnego per blok). Pełny kontrakt:
+`docs/backend/generator-sessions-api.md` (sekcja „Per-block AI-text authors"),
+`docs/backend/generator-api.md`, `docs/backend/workflows-api.md` (sekcja c, `@[ai-text]`),
+`resources/js/next/ui/editor/README.md` (kontrakt dyrektywy). In-app dokumentacja:
+`resources/js/next/docs/pages/GeneratorPage.vue` (§6, §20, §21) i
+`resources/js/next/docs/pages/WorkflowsPage.vue` (sekcja SB2 + „Planned/deferred").
+
+### Status R2 — silnik rozproszonych kadrów storyboardu + moduł „Wygląd" bota (rework nad podetapem 2/Faza B + warstwą kierunku kreatywnego, UKOŃCZONY, niezacommitowany na wierzchu `ff95b0d`)
+
+Nie nowy podetap R2 — dwie sprzężone naprawy nad już zbudowanym silnikiem `storyboard` (Faza B) i warstwą
+kierunku kreatywnego. Spike GO/NO-GO PRZED implementacją zmierzył koszt: edycja z referencją ~57,8 s
+(mediana) vs. generacja tekst→obraz ~33 s — osiem kadrów z choćby jedną edycją nie mieści się w
+nienaruszalnym oknie 300 s `RunGenerationSessionJob`, więc właściciel zdecydował: osobne joby, równolegle
+(nie większy timeout).
+
+- **Silnik rozproszonych kadrów** (`ADR-0041`). `storyboard` już nie renderuje obrazów inline —
+  ANONSUJE każdy kadr (`pending`) i osobny `RenderStoryboardFrameJob` (240 s, `tries=1`) go renderuje,
+  wielu równolegle na wielu workerach. Skorelowany claim TOKENEM per DOSTAWA (nie per kadr) —
+  `pending → rendering` pod `lockForUpdate()`. Budżet obrazu (`ai_generate_calls`/`ai_edit_calls`)
+  przeniesiony z liczników instancji na DWIE utrwalone kolumny + jedna atomowa gwardowana `UPDATE` na
+  rezerwację (migracje central+tenant) — liczniki instancji przestały cokolwiek ograniczać, gdy jeden run
+  stał się wieloma jobami. Ostatni rozliczony kadr flipuje sesję + JEDEN broadcast (kontrakt FE
+  niezmieniony). Reaper kadrów (`frame_stale_after`, domyślnie 900 s) biegnie PRZED reaperem sesji w
+  każdym przebiegu. **Blokujący defekt złapany przez przegląd adwersarialny**: token identyfikował KADR,
+  nie DOSTAWĘ — redelivery pod `tries=1` mogło rozliczyć żywy, opłacany kadr, przedwcześnie zamknąć run i
+  zamrozić resztę kadrów; naprawa głębsza niż rekomendacja, zastosowana RÓWNIEŻ retroaktywnie do
+  ISTNIEJĄCEGO joba całej sesji (identyczna luka tam już istniała). Konsekwencja jednego workera: kadry
+  RÓWNOLEGLE między workerami, SEKWENCYJNIE na jednym (~58 s/kadr z referencją).
+- **Moduł „Wygląd" bota — tożsamość obrazowa postaci** (`ADR-0042`). Pierwsza prawdziwa logika za kolumną
+  `bots.visual` (placeholder od migracji początkowej). Właściciel: tożsamość OBRAZOWA (zdjęcie referencyjne),
+  nie tekstowa — opisany tekstem charakter nie rysuje się jako ta sama osoba dwa razy. Dwie ścieżki
+  tworzenia (z referencji = edycja / z opisu = generacja) na ISTNIEJĄCEJ asynchronicznej maszynerii Dysku
+  (`DiskAiEdit` — ten sam dzienny limit, ta sama bramka $, ten sam poll/broadcast) — nowa jednokierunkowa
+  krawędź **Bot → Disk** (Disk nigdy nie nazywa Bota), przypięta testami w obie strony. Wygenerowane bajty =
+  plik NALEŻĄCY DO BOTA (`fileable_type='bot'`, niewidoczny w przeglądarce Dysku). Delegacja sesji zamraża
+  WYGLĄD tak samo jak GŁOS (ADR-0036): opisowe pola do `bot_delegation.visual`, bajty zatwierdzonego
+  wizerunku do `SessionIdentityImageStore`, per POSTAĆ (nie per sesja — otwarcie na wiele postaci),
+  celowo POZA katalogiem czyszczonym przy pełnym re-runie. Kontrakt shot-listy: `features_character` per
+  ujęcie (decyzja MODELU, nie autora — default false); dla pojedynczego `image_plan` autor dostaje jawny
+  przełącznik `character: 'auto'|'never'` (default auto — bez `'always'`). Kadr z flagą → baza generowana Z
+  REFERENCJI zamiast czystej generacji: REZERWUJE licznik GENERACJI (to nadal baza kadru), ROZLICZA kanał
+  EDIT (to realny koszt) — inaczej storyboard z autorskim filtrem traciłby ogon kadrów na współdzielonym
+  budżecie edycji. `subject` kierunku kreatywnego PODMIENIONY opisem postaci TYLKO w kadrach z flagą
+  (człowiek-skonfigurowany wygrywa z domysłem modelu); estetyka+strój+zakazy jako proza BEZ ogrodzenia
+  (obraz nie ma kanału systemowego — ogrodzenie po prostu by się narysowało). Moderacja: `wardrobe` jako
+  osobne pole — sukienka przechodzi, strój kąpielowy dla TEJ SAMEJ postaci odrzucany `[sexual]` (odkrycie
+  spike'u) — kod `image_safety`/`safety_rejected`, STORED-ONLY (drut: `failed` + addytywny `error_code`).
+  Kill switch `generator.visual_identity.enabled` gate'uje TYLKO konsumpcję, nigdy zamrożenia przy
+  delegacji. **Dwa defekty WYSOKIE złapane przez przegląd i naprawione**: re-billing przy rzucającym hooku
+  materializacji (`ImageAiService::process()` rozbity na PŁATNĄ połowę `produce()`, która utrwala
+  `result_image` PRZED hookiem — retry wznawia, nigdy nie płaci drugi raz; korzysta z tego KAŻDY wywołujący
+  współdzielonej maszynerii, nie tylko bot) oraz tożsamość tylko-wizerunek (bez żadnego opisanego pola)
+  gubiąca referencję na obrazach AUTORSKICH (naprawione: referencja rozwiązywana NIEZALEŻNIE od tego, czy
+  jest tekst do dołączenia). **Naprawiony defekt ze spike'u**: `input_fidelity` — komentarz twierdził, że
+  wysyłane do dostawcy, payload nigdy go nie zawierał; naprawa dotyczy KAŻDEJ edycji obrazu na Dysku, nie
+  tylko wizerunków bota.
+
+Wszystko domyślnie WYŁĄCZONE/FALSE — sesja bez postaci i storyboard bez kadrów-w-osobnych-jobach (gdy pusty)
+komponują się bajt w bajt jak przed tymi zmianami (przypięte testami). Patrz **ADR-0041** i **ADR-0042**
+(pełne zapisy decyzji, w tym odrzucone warianty: żywa referencja zamiast kopii bajtów, własny magazyn w
+module Bot, bezwarunkowa podmiana `subject`, ogólne łańcuchowanie image-to-image jako v2-path ADR-0038 —
+ten rework rozwiązuje węższy, inny przypadek i NIE zamyka ogólnej luki). Pełny kontrakt:
+`docs/backend/generator-sessions-api.md` (sekcje „Distributed storyboard frames" i „Frozen character visual
+identity"), `docs/backend/bots-api.md` (sekcja „Visual identity module ('Wygląd')"),
+`docs/backend/disk-api.md` (poll `error_code`/`safety_rejected`, resume-on-retry, `input_fidelity`). In-app
+dokumentacja: `resources/js/next/docs/pages/GeneratorPage.vue` (§22, §23) i
+`resources/js/next/docs/pages/BotsPage.vue` (§12).
 
 ---
 
@@ -588,8 +717,13 @@ kampanię) — zdefiniować własność: kampania zarządza swoim workflow jako 
   stylu; podgląd zmian stylu przed/po.
 - **Kryteria jakości:** definiowalne wytyczne jakości treści per workspace/kampania,
   używane przez AI-recenzenta w akceptacjach (stąd nazwa „custom quality").
-- **Moduły wizualny i głosowy bota:** zdjęcie placeholderów — generowanie wyglądu
-  (warianty), głos (ElevenLabs) — *albo tutaj, albo osobny rozdział; decyzja na planowaniu.*
+- ~~**Moduł wizualny bota:** zdjęcie placeholdera — generowanie wyglądu (warianty).~~ —
+  **ZBUDOWANE WCZEŚNIEJ niż planowano**, w R2 zamiast tutaj: moduł „Wygląd" (tożsamość obrazowa,
+  spójność obraz-do-obrazu dla sesji delegowanych do bota) — patrz sekcja R2 „silnik rozproszonych
+  kadrów storyboardu + moduł »Wygląd« bota" wyżej, `ADR-0042`. Kept struck through so a reader of an
+  older snapshot understands the change.
+- **Moduł głosowy bota:** zdjęcie placeholdera — głos (ElevenLabs). Wciąż w R7 — *albo tutaj, albo
+  osobny rozdział; decyzja na planowaniu.*
 
 ---
 

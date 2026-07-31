@@ -4,6 +4,8 @@ namespace App\Modules\Bot\Http\Requests;
 
 use App\Modules\Bot\Enums\BotTool;
 use App\Modules\Bot\Models\Bot;
+use App\Modules\Bot\Rules\BotVisualFile;
+use App\Modules\Bot\Services\BotVisualIdentityService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -55,6 +57,45 @@ class StoreBotRequest extends FormRequest
             'knowledge.entries' => ['nullable', 'array', 'max:50'],
             'knowledge.entries.*.title' => ['required', 'string', 'max:255'],
             'knowledge.entries.*.content' => ['required', 'string', 'max:5000'],
+
+            // Visual module: the bot's LOOK. Like `knowledge` it is an explicitly-enabled module —
+            // and like `task_execution` an ABSENT key leaves the stored module untouched (see
+            // BotDTO::normalizeVisual), so a client that knows nothing about `visual` can PUT a bot
+            // without wiping the identity the async generator files onto it.
+            'visual' => ['nullable', 'array'],
+            'visual.enabled' => ['nullable', 'boolean'],
+            // Deliberately SHORT: it is one line of a composed subject, not a second persona.
+            'visual.descriptor' => ['nullable', 'string', 'max:240'],
+            'visual.aesthetic' => ['nullable', 'string', 'max:2000'],
+            // The steerable outfit — the only real defense against the provider's output-side
+            // moderation wall, so it is its own field rather than prose inside `aesthetic`.
+            'visual.wardrobe' => ['nullable', 'string', 'max:500'],
+            'visual.prohibitions' => ['nullable', 'array', 'max:50'],
+            'visual.prohibitions.*' => ['string', 'max:255'],
+            // File ids are validated for OWNERSHIP, not shape: candidates and the approved likeness
+            // must belong to THIS bot; the (re)generation source may also be a disk-native file the
+            // user picked from their Disk. See BotVisualFile.
+            'visual.reference_file_id' => ['nullable', 'string', new BotVisualFile($this->visualBot(), allowDiskNative: true)],
+            'visual.candidates' => ['nullable', 'array', 'max:' . BotVisualIdentityService::MAX_CANDIDATES],
+            'visual.candidates.*' => ['string', new BotVisualFile($this->visualBot())],
+            // MEMBERSHIP, not just ownership: the approved likeness must be one of the submitted
+            // candidates — the same rule the approve endpoint enforces. Without it a hand-crafted PUT
+            // could store a canonical the strip does not show (no legitimate flow produces that state:
+            // eviction never removes the canonical and its DELETE is refused), and the two write paths
+            // would disagree about what an "approved likeness" is.
+            'visual.canonical_file_id' => ['nullable', 'string', 'in_array:visual.candidates.*', new BotVisualFile($this->visualBot())],
+            'visual.prompt' => ['nullable', 'string', 'max:2000'],
         ];
+    }
+
+    /**
+     * The bot the visual file ids must belong to — the route's bot on update, NULL on create
+     * (nothing can be owned by a bot that does not exist yet).
+     */
+    private function visualBot(): ?Bot
+    {
+        $bot = $this->route('bot');
+
+        return $bot instanceof Bot ? $bot : null;
     }
 }

@@ -26,6 +26,7 @@ import Icon, { type IconName } from '../../ui/primitives/Icon.vue';
 import PageHeader from '../../ui/patterns/PageHeader.vue';
 import BotActionTimeline from './BotActionTimeline.vue';
 import BotInbox from './BotInbox.vue';
+import BotVisualImage from './BotVisualImage.vue';
 import { toolIcon, toolLabel, isKnownTool } from './botToolMeta';
 import { useBotsStore } from '../../app/stores/bots';
 import { useToast } from '../../app/composables/useToast';
@@ -96,6 +97,13 @@ const tools = computed(() => taskExecution.value?.tools ?? []);
 // entries. Mirrors BotResource's `knowledge: { enabled, entries }` object.
 const knowledgeEnabled = computed(() => bot.value?.knowledge?.enabled === true);
 const knowledge = computed(() => bot.value?.knowledge?.entries ?? []);
+// Visual module ("Wygląd"): null when it was never configured (a bot older than the module) — that is a
+// different statement from "configured but empty", so the card says so in one line rather than showing
+// four blank fields.
+const visual = computed(() => bot.value?.visual ?? null);
+const visualEnabled = computed(() => visual.value?.enabled === true);
+const visualCanonicalId = computed(() => visual.value?.canonical_file_id ?? null);
+const visualProhibitions = computed(() => visual.value?.prohibitions ?? []);
 
 const canEdit = computed(() => bot.value?.can_be_edited === true);
 
@@ -269,6 +277,92 @@ function onBack(): void {
         </div>
       </Surface>
 
+      <!-- VISUAL MODULE ("Wygląd") — read-only: the approved likeness beside the written identity.
+           Placed right after Text because both describe WHO the bot is; execution comes after. -->
+      <Surface bg="card" border elevation="sm" radius="lg" class="flex flex-col gap-next-4 p-next-6">
+        <header class="flex items-center justify-between gap-next-3">
+          <div class="flex items-center gap-next-2">
+            <span
+              class="flex h-8 w-8 items-center justify-center rounded-next-md bg-next-accent text-next-accent-foreground"
+              aria-hidden="true"
+            >
+              <Icon name="palette" />
+            </span>
+            <h2 class="text-next-base font-next-semibold text-next-fg">{{ t('bots.modules.visual') }}</h2>
+          </div>
+          <Badge
+            v-if="visual"
+            :variant="visualEnabled ? 'primary' : 'neutral'"
+            tone="subtle"
+            size="sm"
+            :icon="visualEnabled ? 'check-circle' : 'circle'"
+          >
+            {{ visualEnabled ? t('bots.detail.enabled') : t('bots.detail.disabled') }}
+          </Badge>
+        </header>
+
+        <p v-if="!visual" class="text-next-sm text-next-muted-foreground">
+          {{ t('bots.detail.visualNotConfigured') }}
+        </p>
+
+        <template v-else>
+          <div class="flex flex-col gap-next-4 next-sm:flex-row">
+            <!-- The approved likeness — the one thing a reader wants to see first. -->
+            <div class="w-full shrink-0 next-sm:w-40">
+              <div
+                v-if="visualCanonicalId"
+                class="aspect-square overflow-hidden rounded-next-md border border-next-border bg-next-muted/40"
+              >
+                <BotVisualImage
+                  :file-id="visualCanonicalId"
+                  :alt="t('bots.detail.visualImageAlt', '', { name: bot.name })"
+                  fit="cover"
+                />
+              </div>
+              <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.visualNoImage') }}</p>
+            </div>
+
+            <div class="flex min-w-0 flex-1 flex-col gap-next-3">
+              <div class="flex flex-col gap-next-1">
+                <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+                  {{ t('bots.detail.visualDescriptor') }}
+                </h3>
+                <p class="whitespace-pre-wrap text-next-sm text-next-fg">
+                  {{ visual.descriptor || t('bots.detail.emptyList') }}
+                </p>
+              </div>
+              <div class="flex flex-col gap-next-1">
+                <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+                  {{ t('bots.detail.visualWardrobe') }}
+                </h3>
+                <p class="whitespace-pre-wrap text-next-sm text-next-fg">
+                  {{ visual.wardrobe || t('bots.detail.emptyList') }}
+                </p>
+              </div>
+              <div class="flex flex-col gap-next-1">
+                <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+                  {{ t('bots.detail.visualAesthetic') }}
+                </h3>
+                <p class="whitespace-pre-wrap text-next-sm text-next-fg">
+                  {{ visual.aesthetic || t('bots.detail.emptyList') }}
+                </p>
+              </div>
+              <div class="flex flex-col gap-next-2">
+                <h3 class="text-next-xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+                  {{ t('bots.detail.visualProhibitions') }}
+                </h3>
+                <div v-if="visualProhibitions.length" class="flex flex-wrap gap-next-1">
+                  <Badge v-for="word in visualProhibitions" :key="word" variant="danger" tone="subtle" size="sm">
+                    {{ word }}
+                  </Badge>
+                </div>
+                <p v-else class="text-next-xs text-next-muted-foreground">{{ t('bots.detail.emptyList') }}</p>
+              </div>
+            </div>
+          </div>
+        </template>
+      </Surface>
+
       <!-- TASK-EXECUTION MODULE. -->
       <Surface bg="card" border elevation="sm" radius="lg" class="flex flex-col gap-next-4 p-next-6">
         <header class="flex items-center justify-between gap-next-3">
@@ -352,42 +446,24 @@ function onBack(): void {
         <p v-else class="text-next-sm text-next-muted-foreground">{{ t('bots.detail.noKnowledge') }}</p>
       </Surface>
 
-      <!-- VISUAL / AUDIO — disabled "coming soon" placeholder cards. -->
-      <div class="grid grid-cols-1 gap-next-4 next-md:grid-cols-2">
-        <Surface
-          bg="muted"
-          border
-          radius="lg"
-          class="flex flex-col gap-next-2 p-next-6 opacity-70"
-          aria-disabled="true"
-        >
-          <header class="flex items-center justify-between gap-next-2">
-            <div class="flex items-center gap-next-2">
-              <Icon name="palette" class="text-next-muted-foreground" aria-hidden="true" />
-              <h2 class="text-next-base font-next-semibold text-next-fg">{{ t('bots.modules.visual') }}</h2>
-            </div>
-            <Badge variant="neutral" tone="subtle" size="sm">{{ t('bots.detail.comingSoon') }}</Badge>
-          </header>
-          <p class="text-next-sm text-next-muted-foreground">{{ t('bots.detail.visualPlaceholder') }}</p>
-        </Surface>
-
-        <Surface
-          bg="muted"
-          border
-          radius="lg"
-          class="flex flex-col gap-next-2 p-next-6 opacity-70"
-          aria-disabled="true"
-        >
-          <header class="flex items-center justify-between gap-next-2">
-            <div class="flex items-center gap-next-2">
-              <Icon name="bell" class="text-next-muted-foreground" aria-hidden="true" />
-              <h2 class="text-next-base font-next-semibold text-next-fg">{{ t('bots.modules.audio') }}</h2>
-            </div>
-            <Badge variant="neutral" tone="subtle" size="sm">{{ t('bots.detail.comingSoon') }}</Badge>
-          </header>
-          <p class="text-next-sm text-next-muted-foreground">{{ t('bots.detail.audioPlaceholder') }}</p>
-        </Surface>
-      </div>
+      <!-- AUDIO — the last not-yet-built module. FULL WIDTH on purpose: a lone tile in a two-column
+           grid reads as a rendering bug, not as "one module is still coming". -->
+      <Surface
+        bg="muted"
+        border
+        radius="lg"
+        class="flex flex-col gap-next-2 p-next-6 opacity-70"
+        aria-disabled="true"
+      >
+        <header class="flex items-center justify-between gap-next-2">
+          <div class="flex items-center gap-next-2">
+            <Icon name="bell" class="text-next-muted-foreground" aria-hidden="true" />
+            <h2 class="text-next-base font-next-semibold text-next-fg">{{ t('bots.modules.audio') }}</h2>
+          </div>
+          <Badge variant="neutral" tone="subtle" size="sm">{{ t('bots.detail.comingSoon') }}</Badge>
+        </header>
+        <p class="text-next-sm text-next-muted-foreground">{{ t('bots.detail.audioPlaceholder') }}</p>
+      </Surface>
         </div>
       </template>
     </template>

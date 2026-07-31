@@ -38,6 +38,8 @@ function listItem(overrides: Partial<BotListItem> = {}): BotListItem {
     icon: null,
     has_text_module: true,
     task_execution_enabled: false,
+    visual_enabled: false,
+    visual_has_image: false,
     is_owner: true,
     created_at: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -234,6 +236,119 @@ describe('next bots store', () => {
     expect(store.items[0].name).toBe('Renamed');
     expect(store.items[0].status).toBe('active');
     expect(store.detail?.name).toBe('Renamed');
+  });
+
+  // A reconciled row is projected from the FULL detail, so every compact flag the list resource emits
+  // has to be derived. One left out reads `undefined` on the card the moment a bot is edited — the chip
+  // silently disappears, and nothing else fails. Hence a flag-by-flag pin.
+  it('toListItem derives the VISUAL flags when projecting a detail onto a list row', async () => {
+    const store = useBotsStore();
+    apiMock.get.mockResolvedValueOnce({
+      data: [listItem({ id: 'b1', visual_enabled: false, visual_has_image: false })],
+      meta: { next_cursor: null },
+    });
+    await store.fetchBots();
+
+    apiMock.put.mockResolvedValueOnce({
+      data: detail({
+        id: 'b1',
+        visual: {
+          enabled: true,
+          descriptor: null,
+          aesthetic: null,
+          wardrobe: null,
+          prohibitions: [],
+          reference_file_id: null,
+          candidates: ['c1'],
+          canonical_file_id: 'c1',
+          prompt: null,
+        },
+      }),
+    });
+    await store.updateBot('b1', { name: 'Ada', persona: 'p' });
+
+    expect(store.items[0].visual_enabled).toBe(true);
+    expect(store.items[0].visual_has_image).toBe(true);
+  });
+
+  it('toListItem reads both visual flags as false for a bot whose module was never configured', async () => {
+    const store = useBotsStore();
+    apiMock.get.mockResolvedValueOnce({
+      data: [listItem({ id: 'b1', visual_enabled: true, visual_has_image: true })],
+      meta: { next_cursor: null },
+    });
+    await store.fetchBots();
+
+    apiMock.put.mockResolvedValueOnce({ data: detail({ id: 'b1', visual: null }) });
+    await store.updateBot('b1', { name: 'Ada', persona: 'p' });
+
+    expect(store.items[0].visual_enabled).toBe(false);
+    expect(store.items[0].visual_has_image).toBe(false);
+  });
+
+  // --- The visual module's three endpoints ---------------------------------
+  it('generateVisual posts multipart (mode + the chosen source) and returns the job id to follow', async () => {
+    const store = useBotsStore();
+    apiMock.post.mockResolvedValueOnce({ data: { id: 'edit-1', status: 'queued' } });
+
+    const id = await store.generateVisual('b1', {
+      mode: 'reference',
+      reference_file_id: 'disk-9',
+      instruction: 'waist-up',
+    });
+
+    expect(id).toBe('edit-1');
+    const [url, body] = apiMock.post.mock.calls[0];
+    expect(url).toBe('/bots/b1/visual/generate');
+    expect(body).toBeInstanceOf(FormData);
+    const form = body as FormData;
+    expect(form.get('mode')).toBe('reference');
+    expect(form.get('reference_file_id')).toBe('disk-9');
+    expect(form.get('instruction')).toBe('waist-up');
+    // The identity itself is NOT sent — the server composes the prompt from the saved module.
+    expect(form.get('descriptor')).toBeNull();
+  });
+
+  it('approveVisualCandidate reconciles both the detail cache and the list row', async () => {
+    const store = useBotsStore();
+    apiMock.get.mockResolvedValueOnce({ data: [listItem({ id: 'b1' })], meta: { next_cursor: null } });
+    await store.fetchBots();
+    apiMock.get.mockResolvedValueOnce({ data: detail({ id: 'b1' }) });
+    await store.fetchBot('b1');
+
+    apiMock.post.mockResolvedValueOnce({
+      data: detail({
+        id: 'b1',
+        visual: {
+          enabled: true,
+          descriptor: null,
+          aesthetic: null,
+          wardrobe: null,
+          prohibitions: [],
+          reference_file_id: null,
+          candidates: ['c1'],
+          canonical_file_id: 'c1',
+          prompt: null,
+        },
+      }),
+    });
+    await store.approveVisualCandidate('b1', 'c1');
+
+    expect(apiMock.post).toHaveBeenLastCalledWith('/bots/b1/visual/approve', { file_id: 'c1' });
+    expect(store.detail?.visual?.canonical_file_id).toBe('c1');
+    expect(store.items[0].visual_has_image).toBe(true);
+  });
+
+  it('deleteVisualCandidate calls the scoped endpoint and reconciles from the returned bot', async () => {
+    const store = useBotsStore();
+    apiMock.get.mockResolvedValueOnce({ data: [listItem({ id: 'b1' })], meta: { next_cursor: null } });
+    await store.fetchBots();
+
+    apiMock.delete.mockResolvedValueOnce({ data: detail({ id: 'b1' }) });
+    await store.deleteVisualCandidate('b1', 'c1');
+
+    expect(apiMock.delete).toHaveBeenCalledWith('/bots/b1/visual/candidates/c1');
+    expect(store.items[0].visual_has_image).toBe(false);
   });
 
   it('deleteBot removes the row from the list', async () => {

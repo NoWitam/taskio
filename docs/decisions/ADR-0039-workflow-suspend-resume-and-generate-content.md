@@ -374,8 +374,9 @@ run-count budgets, which count RUNS, not steps within one.
   honest snapshot-as-of-last-read plus an explicit Refresh, not a websocket subscription — unlike the
   Generator chat's own `useSessionSettle`); per-part granular `generate_content` outputs (today the step
   publishes one assembled `content` string and one `image_file_ids` list, not a per-part breakdown a later
-  step could address individually); a bot delegating a workflow-driven generation (ADR-0036's delegation
-  overlay and this ADR's automation seam are SIBLING trust boundaries today, not composed).
+  step could address individually); ~~a bot delegating a workflow-driven generation (ADR-0036's
+  delegation overlay and this ADR's automation seam are SIBLING trust boundaries today, not
+  composed)~~ — **DONE, see the Addendum (2026-07-31) below.**
 
 ## Amendment to ADR-0036
 
@@ -389,6 +390,89 @@ model) — `SlotScopePolicy::Bot`'s refusal is unchanged and still absolute for 
 scope" bullet listing "the `generate_content` workflow step (R2 sub-stage 5 … the next sub-stage in the same
 roadmap chapter)" is superseded by this ADR — that step is now built.
 
+## Addendum (2026-07-31) — `generate_content` gains an optional author (`bot_id`)
+
+Closes this ADR's own "Deferred scope" bullet above and the equivalent entries in
+`docs/backend/workflows-api.md` and `docs/backend/generator-sessions-api.md` → "Planned / deferred": a
+`generate_content` step now accepts an optional `bot_id`, and the session it creates is delegated to
+that bot at creation — the SAME author overlay (voice + frozen look) an interactive delegation
+(ADR-0036, and ADR-0042's visual extension of it) stamps, through the SAME
+`SessionDelegationService::applyDelegation()` call, composed by the SAME
+`Bot\Services\BotDelegationIdentityComposer`. `GenerateContentStep` gained one new constructor
+dependency, `Generator\Contracts\SessionAuthorIdentityResolver`, and
+`StoreWorkflowRequest::validateAuthorId()` is the new write-time gate. Full behavioral pin:
+`tests/Feature/WorkflowGenerateContentBotTest.php`.
+
+- **The lookup contract is INVERTED and lives in the Generator, not named directly — and this is
+  deliberately NOT a `ScopedExists` rule.** `SessionAuthorIdentityResolver` (`App\Modules\Generator\
+  Contracts`) is the exact mirror, one layer up, of `Variables\Contracts\AuthorVoiceResolver`
+  (ADR-0036/ADR-0040's per-block author picker): the Generator declares the contract and never names
+  Bot; the Bot module binds the concrete (`BotSessionIdentityResolver`, an UNCONDITIONAL `bind()`, over
+  the Generator's own `bindIf()` null-object default — the same two-sided, order-independent discipline
+  ADR-0036 established, pinned by `BotModuleBoundaryTest::
+  test_the_session_identity_resolver_implements_the_generator_contract_over_bots` and
+  `::test_the_session_author_seam_resolves_to_the_bot_concrete_whichever_provider_registers_last`). A
+  `ScopedExists` write-time rule would have to name `Bot\Models\Bot` directly from
+  `StoreWorkflowRequest` — forbidden, module-wide, by
+  `WorkflowsGeneratorBoundaryTest::test_no_workflows_file_ever_names_bot`. So the save validator asks the
+  SAME inverted seam the runtime step will later use (`validateAuthorId()` → `SessionAuthorIdentityResolver::
+  knowsAuthor()`, the seam's cheap existence probe), from the Generator side — which is what makes the two
+  verdicts impossible to drift apart: both methods answer from ONE shared lookup
+  (`BotSessionIdentityResolver::locate()` — uuid guard + refusal-not-widen + workspace predicate, written
+  once), so a save can never accept an id the run would then refuse, and can never reject one the run would
+  have accepted.
+- **The refusal happens BEFORE the session is created — a different failure shape than the pre-existing
+  required-slot hard-fail.** `GenerateContentStep::requireAuthorIdentity()` runs immediately after
+  `requireTemplate()`, before `SessionAutomationService::createFromTemplate()` — so an unresolvable
+  author (deleted, foreign-workspace, or a malformed `bot_id` that slipped past the write-time check —
+  reachable only via a hand-written/API-authored/imported definition) throws
+  `RuntimeException(__('workflows.steps.generate_content.bot_unavailable'))` with **no draft session left
+  behind at all**, unlike the required-slot failure (this ADR's own D15/"Operational notes"), which fails
+  AFTER the session exists and deliberately leaves an orphan `draft` for debugging. `bot_unavailable` is
+  fail-CLOSED by the contract's own posture (the mirror of `AuthorVoiceResolver`'s fail-SAFE one, see the
+  contract's own docblock): an unresolvable SESSION author means the automation would publish in nobody's
+  name and nobody's face, which is not a degraded version of what the workflow was configured to do — so
+  the run stops rather than silently generating anonymous content in a delegated step's place.
+- **No slot-fill in automation — the workflow's own `slots` mapping is the only source of the recipe's
+  inputs.** Unlike the interactive delegation's optional `fill_mode` (`gaps`/`fresh`) autonomous fill
+  (ADR-0036), the bot named by a `generate_content` step never fills that session's slots itself. A
+  delegated session gains a voice and (with the visual module on) a face — never a will
+  (`GenerateContentStep`'s own docblock): an unattended run has nobody to review a model-proposed value
+  before it is spent on, the way a human reviewing a draft before clicking "Generate" can.
+- **Attribution needed no new code.** `GenerationSession::meterActor()` (R2 sub-stage 4, ADR-0037) already
+  reports `['bot', bot_author_id]` for ANY delegated session, interactive or automated — the workflow step
+  reaches it "for free" by stamping the identical `bot_delegation` overlay `meterActor()` already reads,
+  so a workflow-delegated generation's `ai_text`/`ai_image_generate`/`ai_image_edit` spend attributes to
+  the bot rather than the run.
+- **Bot STATUS is not a filter**, matching the interactive picker and `AuthorVoiceResolver`: a
+  paused/inactive bot is still a legal `bot_id` (authored configuration, not an execution capability) —
+  `BotSessionIdentityResolver::identityFor()` applies no status predicate.
+- **A resume never re-delegates.** The identity is resolved and stamped exactly once, in `run()`;
+  `resume()` receives `bot_id` back in the replayed `waiting_on.config` (D3) and deliberately ignores it —
+  re-reading would reopen the exact drift the snapshot exists to close (a bot edited/deleted while the run
+  waited, a re-frozen likeness over a session that already rendered, a `slot_values_before` re-snapshotted
+  over the FILLED values). Pinned by a test that fails if the resolver is consulted at all on the resume
+  path.
+- **The visual half rides ADR-0042 unchanged.** When the named bot's "Wygląd" module is on and it has an
+  approved likeness, the SAME overlay also freezes the character's reference bytes
+  (`Generator\Services\SessionIdentityImageStore`) — nothing new was built for this; the workflow step
+  composes through the identical `BotDelegationIdentityComposer::compose()` primitive-out call ADR-0042
+  built for the interactive path, so a workflow-delegated session's images can show the bot's face too.
+- **The write-time cost was first accepted, then removed — because the review showed it also LIED.**
+  The initial cut had `validateAuthorId()` call `identityFor()` — a yes/no question answered by composing
+  the FULL identity, including reading the likeness bytes off storage. Bounded (the 2-step cap, D16), but
+  the gate review proved the real problem was not cost: `identityFor()` is deliberately fail-closed, so a
+  storage/DB fault during a SAVE collapsed into the same `null` as a nonexistent bot and surfaced as 422
+  "the selected bot is not available" — an infrastructure outage dressed up as the author's mistake, with
+  no way to save the workflow at all. The contract therefore grew `knowsAuthor()`: an existence-only probe
+  (no composition, no storage) that — unlike `identityFor()` — MAY throw, because on the write path an
+  honest 500 beats a fabricated author refusal. Fail-closed remains exactly right where it started: on the
+  RUN, where stopping loudly (`bot_unavailable`) is the honest outcome.
+
+See `docs/backend/workflows-api.md` → "`generate_content`" ("Author delegation (`bot_id`)" and "Run-time
+flow") for the shipped wire contract, and `docs/decisions/ADR-0042-character-visual-identity.md` for the
+frozen-look half of the overlay this addendum's `bot_id` also carries.
+
 ---
 
 See `docs/backend/workflows-api.md` for the full `generate_content` config/output/error contract and the
@@ -397,4 +481,6 @@ generator-sessions-api.md` for the automation seam (`SessionAutomationService`, 
 `GeneratedImageExporter`, `SlotScopePolicy`) and the automation-session lifecycle; `docs/decisions/
 ADR-0034-generation-sessions.md` for the session engine this step drives unchanged; `docs/decisions/
 ADR-0036-bot-delegation-generation-sessions.md` for the sibling trust boundary `SlotScopePolicy::Bot` occupies;
-`docs/decisions/ADR-0037-ai-cost-limits.md` for the $ gate this step's claim goes through unchanged.
+`docs/decisions/ADR-0037-ai-cost-limits.md` for the $ gate this step's claim goes through unchanged;
+`docs/decisions/ADR-0042-character-visual-identity.md` for the frozen-look half of the overlay this ADR's
+2026-07-31 addendum's `bot_id` delegation also carries.

@@ -8,12 +8,15 @@ use App\Modules\Generator\Models\GenerationSession;
 use App\Modules\Generator\Support\ContentTypePart;
 use App\Modules\Generator\Support\CreativeDirection;
 use App\Modules\Generator\Support\CreativeDirectionContext;
+use App\Modules\Generator\Support\SessionVisualIdentity;
+use App\Modules\Generator\Support\StoryboardFrame;
 use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Variables\Exceptions\AiBudgetExceededException;
 use App\Modules\Variables\Services\VariableResolver;
 use App\Modules\Variables\Support\AiVoiceContext;
 use App\Modules\Variables\Support\MeterContext;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Throwable;
 
 /**
@@ -36,6 +39,13 @@ use Throwable;
  * the current image). The per-part history push / undo bookkeeping lives in {@see GenerationSessionRefiner};
  * this class only RENDERS + stamps each result's version (text: prior+1 from the current result; image: the
  * store's next version), and stores image blobs versioned.
+ *
+ * DISTRIBUTED STORYBOARD FRAMES: a `storyboard` part is the ONE kind this class no longer renders to
+ * completion. Its shot list is text and is produced here as always, but each shot's IMAGE is announced as a
+ * `pending` frame ({@see StoryboardFrame}) and rendered by its OWN queue job, because N slow provider calls
+ * cannot fit the session job's inviolate 300s window. The frame job re-enters through
+ * {@see renderPartFromSnapshot} with the shot's `storyboard.<i>` key, so there is exactly ONE per-shot render
+ * path shared by the whole run and the per-shot refine ops.
  *
  * SNAPSHOT-AUTHORITATIVE: it reads ONLY `recipe_snapshot` (+ the session's `slot_values`), never the live
  * template — so a later template edit/delete cannot change a session's output. The exec context + typeMap
@@ -61,6 +71,18 @@ use Throwable;
  * as an EXPLICIT parameter. `generator.direction.enabled=false` disables the
  * whole layer: nothing is derived, nothing is read, and every composed prompt is byte-identical to a
  * direction-less run.
+ *
+ * CHARACTER VISUAL IDENTITY (the bot-look phase): a session DELEGATED to an author with a visual identity
+ * carries a FROZEN copy of it — the written identity in the `bot_delegation.visual` overlay, the approved
+ * likeness's bytes in {@see SessionIdentityImageStore} — and this class draws from it:
+ *   - the SHOT LIST is told who the on-screen creator is, and returns a per-shot `features_character` flag;
+ *   - a flagged storyboard frame (and, unless the part says `character: 'never'`, an authored image) is
+ *     produced by EDITING that likeness rather than generating from text, so the same person appears twice;
+ *   - the character's aesthetic + prohibitions ride EVERY image of the session, flagged or not.
+ * Read through ONE gate ({@see visualIdentityFor}) that honours the `generator.visual_identity.enabled` kill
+ * switch AND the `enabled` frozen in the overlay (never the live author), and that requires a frozen IMAGE —
+ * so a non-delegated run, a delegation without a likeness, and a disabled layer are all byte-identical to a
+ * run from before this layer existed.
  */
 class GenerationSessionExecutor
 {
@@ -76,6 +98,8 @@ class GenerationSessionExecutor
         private ShotListRenderer $shotList,
         private CreativeDirectionContext $directionContext,
         private CreativeDirectionService $direction,
+        private SessionImageBudget $budget,
+        private SessionIdentityImageStore $identityImages,
     ) {}
 
     /**
@@ -97,6 +121,16 @@ class GenerationSessionExecutor
         // voiceover in the bot's SNAPSHOTTED voice; an undelegated one sets null (no change). Cleared in
         // the SAME finally as the meter tag (leak-proof — a later non-delegated spend sees no voice).
         $this->voiceContext->setDirective($session->botVoice());
+        // PER-BLOCK AUTHORS: the recipe's authors were resolved ONCE and FROZEN into the snapshot at
+        // CREATION, so this is a pure read — no lookup, no live bot, nothing a later bot edit could change.
+        // AiVoiceContext ranks a block's own author ABOVE this session voice; a block with no author (every
+        // pre-feature recipe) is unaffected. Cleared by the SAME finally — clear() resets BOTH fields.
+        $this->voiceContext->setAuthorVoices($session->authorVoices());
+        // IMAGE BUDGET: bind the run's PERSISTED `ai_generate`/`ai_edit` ledger for this whole scope. Since a
+        // storyboard run is now MANY jobs, an in-process counter could no longer bound it (each frame job
+        // would start at zero), so the ceilings are charged against the session row — see SessionImageBudget.
+        // Cleared in the SAME finally as the meter/voice/direction tags.
+        $this->budget->bind($session->id);
 
         try {
             // DIRECTION: derived ONCE per full run (or reused if this run already stored one — a redelivery),
@@ -109,6 +143,7 @@ class GenerationSessionExecutor
             $this->meterContext->clearActor();
             $this->voiceContext->clear();
             $this->directionContext->clear();
+            $this->budget->clear();
         }
     }
 
@@ -132,6 +167,16 @@ class GenerationSessionExecutor
         // voiceover in the bot's SNAPSHOTTED voice; an undelegated one sets null (no change). Cleared in
         // the SAME finally as the meter tag (leak-proof — a later non-delegated spend sees no voice).
         $this->voiceContext->setDirective($session->botVoice());
+        // PER-BLOCK AUTHORS: the recipe's authors were resolved ONCE and FROZEN into the snapshot at
+        // CREATION, so this is a pure read — no lookup, no live bot, nothing a later bot edit could change.
+        // AiVoiceContext ranks a block's own author ABOVE this session voice; a block with no author (every
+        // pre-feature recipe) is unaffected. Cleared by the SAME finally — clear() resets BOTH fields.
+        $this->voiceContext->setAuthorVoices($session->authorVoices());
+        // IMAGE BUDGET: bind the run's PERSISTED `ai_generate`/`ai_edit` ledger for this whole scope. Since a
+        // storyboard run is now MANY jobs, an in-process counter could no longer bound it (each frame job
+        // would start at zero), so the ceilings are charged against the session row — see SessionImageBudget.
+        // Cleared in the SAME finally as the meter/voice/direction tags.
+        $this->budget->bind($session->id);
 
         try {
             // DIRECTION: an isolated op READS the run's stored direction — it never derives (no extra spend,
@@ -176,6 +221,7 @@ class GenerationSessionExecutor
             $this->meterContext->clearActor();
             $this->voiceContext->clear();
             $this->directionContext->clear();
+            $this->budget->clear();
         }
     }
 
@@ -201,6 +247,16 @@ class GenerationSessionExecutor
         // voiceover in the bot's SNAPSHOTTED voice; an undelegated one sets null (no change). Cleared in
         // the SAME finally as the meter tag (leak-proof — a later non-delegated spend sees no voice).
         $this->voiceContext->setDirective($session->botVoice());
+        // PER-BLOCK AUTHORS: the recipe's authors were resolved ONCE and FROZEN into the snapshot at
+        // CREATION, so this is a pure read — no lookup, no live bot, nothing a later bot edit could change.
+        // AiVoiceContext ranks a block's own author ABOVE this session voice; a block with no author (every
+        // pre-feature recipe) is unaffected. Cleared by the SAME finally — clear() resets BOTH fields.
+        $this->voiceContext->setAuthorVoices($session->authorVoices());
+        // IMAGE BUDGET: bind the run's PERSISTED `ai_generate`/`ai_edit` ledger for this whole scope. Since a
+        // storyboard run is now MANY jobs, an in-process counter could no longer bound it (each frame job
+        // would start at zero), so the ceilings are charged against the session row — see SessionImageBudget.
+        // Cleared in the SAME finally as the meter/voice/direction tags.
+        $this->budget->bind($session->id);
 
         try {
             // DIRECTION: read-only, exactly like the regenerate path — a refine never derives.
@@ -225,7 +281,7 @@ class GenerationSessionExecutor
             }
 
             return match ($part->kind) {
-                PartKind::TEXT_BODY, PartKind::SCRIPT => $this->refineTextPart($session, $part, $instruction, $ctx['resolvePrompt']),
+                PartKind::TEXT_BODY, PartKind::SCRIPT => $this->refineTextPart($session, $part, $instruction, $ctx['resolvePrompt'], $this->partAuthorId($ctx['content'][$part->key] ?? null)),
                 PartKind::IMAGE_PLAN => $this->editImageAt($session, $partKey, $instruction, $ctx['resolvePrompt']),
                 PartKind::SHOT_LIST => $this->refineShotList($session, $part, $instruction, $ctx['resolvePrompt'], $ctx['shotCap'], $ctx['direction']),
                 // A bare scene_plan / storyboard is a multi-item composite — free-text refine is rejected at the
@@ -237,6 +293,7 @@ class GenerationSessionExecutor
             $this->meterContext->clearActor();
             $this->voiceContext->clear();
             $this->directionContext->clear();
+            $this->budget->clear();
         }
     }
 
@@ -480,7 +537,14 @@ class GenerationSessionExecutor
     /**
      * The keys of the parts declared STRICTLY EARLIER than $targetPartKey in the SNAPSHOT's ordered parts (the
      * cross-part seed scope for an isolated per-part op). A null target (the whole-session loop) or a target
-     * not in the parts list (a `storyboard.<i>` sub-key) yields an empty list.
+     * that names no snapshot part yields an empty list.
+     *
+     * A NESTED `<storyboardKey>.<i>` target scopes to its BASE part. This matters now that every storyboard
+     * image renders through the nested path: in a whole run the storyboard's authored style resolved against
+     * the parts accumulated BEFORE it (its sibling shot_list among them), so scoping a frame to nothing would
+     * silently resolve an authored `parts.shot_list` reference to empty and change what the run draws.
+     * Reducing the sub-key to its base makes the frame's seed IDENTICAL to what the inline loop had — and
+     * fixes the same latent gap in the per-shot regenerate op, which shares this path.
      *
      * @param  array<int, ContentTypePart>  $parts
      * @return array<int, string>
@@ -490,6 +554,9 @@ class GenerationSessionExecutor
         if ($targetPartKey === null) {
             return [];
         }
+
+        $shotRef = $this->storyboardShotRef($parts, $targetPartKey);
+        $targetPartKey = $shotRef['key'] ?? $targetPartKey;
 
         $keys = array_map(fn (ContentTypePart $part): string => $part->key, $parts);
         $index = array_search($targetPartKey, $keys, true);
@@ -637,8 +704,8 @@ class GenerationSessionExecutor
     private function executeImagePart(GenerationSession $session, ContentTypePart $part, string $partKey, mixed $content, array $slotValues, callable $resolvePrompt, ?CreativeDirection $direction): array
     {
         try {
-            ['plan' => $plan, 'resolve' => $resolve] = $this->directedImagePlan(is_array($content) ? $content : [], $direction, $resolvePrompt);
-            $image = $this->produceImage($session, $partKey, $plan, $slotValues, $resolve);
+            ['plan' => $plan, 'resolve' => $resolve, 'reference' => $reference] = $this->directedImagePlan($session, is_array($content) ? $content : [], $direction, $resolvePrompt);
+            $image = $this->produceImage($session, $partKey, $plan, $slotValues, $resolve, $reference);
 
             return ['kind' => $part->kind->value, 'status' => 'ok', 'image' => $image, 'version' => $image['version']];
         } catch (ImageChainException $e) {
@@ -646,7 +713,7 @@ class GenerationSessionExecutor
             // clear localized messageKey for the user; log it too (class + which key) so the trail shows WHICH.
             $this->logPartFailure('image_chain', $session, $partKey, $e);
 
-            return ['kind' => $part->kind->value, 'status' => 'failed', 'error' => __($e->messageKey())];
+            return ['kind' => $part->kind->value, 'status' => 'failed', 'error' => __($e->messageKey())] + $this->errorCodeOf($e, 'error_code');
         } catch (AiBudgetExceededException $e) {
             // A workspace monthly $ cost-cap stop (from the metered ai_generate/ai_edit gate-before-spend) is a
             // BUDGET failure, not a bad base/filters — surface the budget message, not the generic image_failed
@@ -703,14 +770,14 @@ class GenerationSessionExecutor
         }
 
         try {
-            ['plan' => $directed, 'resolve' => $resolve] = $this->directedImagePlan(is_array($plan) ? $plan : [], $direction, $resolvePrompt);
-            $image = $this->produceImage($session, $partKey, $directed, $slotValues, $resolve);
+            ['plan' => $directed, 'resolve' => $resolve, 'reference' => $reference] = $this->directedImagePlan($session, is_array($plan) ? $plan : [], $direction, $resolvePrompt);
+            $image = $this->produceImage($session, $partKey, $directed, $slotValues, $resolve, $reference);
 
             return ['image_status' => 'ok', 'image' => $image, 'part_key' => $partKey];
         } catch (ImageChainException $e) {
             $this->logPartFailure('scene_image_chain', $session, $partKey, $e);
 
-            return ['image_status' => 'failed', 'image_error' => __($e->messageKey())];
+            return ['image_status' => 'failed', 'image_error' => __($e->messageKey())] + $this->errorCodeOf($e, 'image_error_code');
         } catch (AiBudgetExceededException $e) {
             // An over-cap BUDGET stop (not a bad base/filters) — surface the budget message, mirroring
             // executeImagePart / refineImagePart. Fail-soft: this scene's image fails, the others still run.
@@ -736,7 +803,7 @@ class GenerationSessionExecutor
     {
         try {
             $brief = $resolvePrompt($this->briefMarkdownOf($content));
-            $shotList = $this->shotList->generate($brief, $shotCap, $direction);
+            $shotList = $this->shotList->generate($brief, $shotCap, $direction, $this->characterDescriptorFor($session));
 
             if ($shotList === null) {
                 return ['kind' => $part->kind->value, 'status' => 'failed', 'error' => __('generator.sessions.part_failed')];
@@ -764,7 +831,7 @@ class GenerationSessionExecutor
         try {
             $results = is_array($session->results) ? $session->results : [];
             $current = is_array($results[$part->key] ?? null) ? $results[$part->key] : [];
-            $revised = $this->shotList->revise($current, $resolvePrompt($instruction), $shotCap, $direction);
+            $revised = $this->shotList->revise($current, $resolvePrompt($instruction), $shotCap, $direction, $this->characterDescriptorFor($session));
 
             if ($revised === null || $revised['parse_ok'] === false) {
                 return ['kind' => $part->kind->value, 'status' => 'failed', 'error' => __('generator.sessions.part_failed')];
@@ -800,9 +867,21 @@ class GenerationSessionExecutor
 
     /**
      * Execute a storyboard part (Phase B): read the sibling shot_list's STRUCTURED shots (the in-progress
-     * whole-run map preferred, else the STORED result) and produce ONE AI image PER shot, NESTED under
-     * `storyboard.<i>` exactly like `scene_plan.<i>`. Per-shot FAIL-SOFT — a bad shot image never sinks the
-     * others; the part itself stays `ok`. No shots (missing/empty/failed shot_list) → `{status:'ok', shots:[]}`.
+     * whole-run map preferred, else the STORED result) and ANNOUNCE one frame PER shot, NESTED under
+     * `storyboard.<i>` exactly like `scene_plan.<i>`. No shots (missing/empty/failed shot_list) →
+     * `{status:'ok', shots:[]}`, which settles the run immediately.
+     *
+     * THE IMAGES ARE NOT PRODUCED HERE ANY MORE (the distributed-frames stage). Each shot's image is a slow,
+     * independent provider call — measured at ~33s to generate and ~58s to edit with a reference — and the
+     * session job's SIGALRM window is 300s and INVIOLATE (the whole lock/reaper chain is ordered on top of
+     * it). Eight shots therefore could not fit, and even the generate-only case was already at the edge
+     * BEFORE the text parts and the direction derivation were paid for. So this method now emits each shot as
+     * a `pending` frame carrying a correlation token ({@see StoryboardFrame}), the run manager queues one job
+     * per frame once these results are persisted, and each frame gets a whole job's budget to itself. Frames
+     * then render in PARALLEL across workers, and one failing frame burns its own job instead of the run's.
+     *
+     * The per-shot rendering machinery is NOT duplicated: a frame job renders through the very same
+     * {@see renderStoryboardShotFromSnapshot} path the per-shot regenerate op already used.
      *
      * @param  array<int, ContentTypePart>  $definitionParts
      * @param  array<string, mixed>  $slotValues
@@ -812,58 +891,43 @@ class GenerationSessionExecutor
      */
     private function executeStoryboardPart(GenerationSession $session, ContentTypePart $part, mixed $content, array $slotValues, callable $resolvePrompt, array $definitionParts, array $priorResults, int $shotCap, ?CreativeDirection $direction): array
     {
-        $content = is_array($content) ? $content : [];
         $shotListKey = $this->firstShotListKeyBefore($definitionParts, $part->key);
         $shots = $shotListKey === null ? [] : $this->resolveShotListShots($session, $priorResults, $shotListKey, $shotCap);
 
-        $rendered = [];
-        $total = count($shots);
+        $announced = [];
 
         foreach (array_values($shots) as $i => $shot) {
-            $rendered[] = $this->renderStoryboardShot($session, $i, $total, is_array($shot) ? $shot : [], $content, $slotValues, $resolvePrompt, $direction);
+            $announced[] = StoryboardFrame::pending(
+                $this->storyboardShotMeta($i, is_array($shot) ? $shot : []),
+                $part->key . '.' . $i,
+                (string) Str::uuid(),
+            );
         }
 
-        return ['kind' => $part->kind->value, 'status' => 'ok', 'shots' => $rendered];
+        return ['kind' => $part->kind->value, 'status' => 'ok', 'shots' => $announced];
     }
 
     /**
-     * Produce ONE storyboard shot's image, NESTED under `storyboard.<i>`, per-shot fail-soft. On success →
-     * `{index, visual, voiceover, seconds, image_status:'ok', image:{…,version}, part_key}` (part_key lets the
-     * chat build the serve URL). A failure carries a localized, non-secret `image_error` (the SAME per-kind
-     * catch as {@see renderSceneImage}). The descriptive shot fields (visual/voiceover/seconds) ride the entry
-     * even on failure so the FE can still show the beat.
+     * The DESCRIPTIVE fields of one storyboard shot ({index, visual, voiceover, seconds, features_character})
+     * — what the FE shows for a beat whether or not its image exists yet, so they ride the entry from
+     * announcement through to either terminal state.
      *
-     * @param  array<string, mixed>  $shot  a normalized shot_list shot ({visual, voiceover, seconds})
-     * @param  array<string, mixed>  $storyboardContent  the authored `{style?, filters?}`
-     * @param  array<string, mixed>  $slotValues
-     * @param  callable(string): string  $resolvePrompt
+     * `features_character` is carried here (not only on the shot_list result) because it describes THIS
+     * frame: it is why a frame took the reference path, and it is what a surface showing the storyboard needs
+     * in order to say so. Absent on a shot list written before the flag existed → false.
+     *
+     * @param  array<string, mixed>  $shot  a normalized shot_list shot ({visual, voiceover, seconds, …})
      * @return array<string, mixed>
      */
-    private function renderStoryboardShot(GenerationSession $session, int $i, int $total, array $shot, array $storyboardContent, array $slotValues, callable $resolvePrompt, ?CreativeDirection $direction): array
+    private function storyboardShotMeta(int $i, array $shot): array
     {
-        $meta = [
+        return [
             'index' => $i,
             'visual' => is_string($shot['visual'] ?? null) ? $shot['visual'] : '',
             'voiceover' => is_string($shot['voiceover'] ?? null) ? $shot['voiceover'] : '',
             'seconds' => is_int($shot['seconds'] ?? null) ? $shot['seconds'] : 0,
+            'features_character' => ($shot['features_character'] ?? null) === true,
         ];
-        $partKey = 'storyboard.' . $i;
-
-        try {
-            $image = $this->produceStoryboardShotImage($session, $partKey, $i, $total, $meta['visual'], $storyboardContent, $slotValues, $resolvePrompt, $direction);
-
-            return $meta + ['image_status' => 'ok', 'image' => $image, 'part_key' => $partKey];
-        } catch (ImageChainException $e) {
-            $this->logPartFailure('storyboard_image_chain', $session, $partKey, $e);
-
-            return $meta + ['image_status' => 'failed', 'image_error' => __($e->messageKey())];
-        } catch (AiBudgetExceededException $e) {
-            return $meta + ['image_status' => 'failed', 'image_error' => __('generator.sessions.image_budget')];
-        } catch (Throwable $e) {
-            $this->logPartFailure('storyboard_image', $session, $partKey, $e);
-
-            return $meta + ['image_status' => 'failed', 'image_error' => __('generator.sessions.image_failed')];
-        }
     }
 
     /**
@@ -889,16 +953,21 @@ class GenerationSessionExecutor
 
         $content = is_array($ctx['content'][$storyboardKey] ?? null) ? $ctx['content'][$storyboardKey] : [];
 
+        // WHETHER THIS BEAT SHOWS THE CREATOR — read off the stored shot the same way its `visual` is, so a
+        // regenerate of frame i draws the same KIND of frame the run originally announced. A shot list
+        // written before the flag existed (or by a model that omitted it) simply reads false.
+        $featuresCharacter = ($shot['features_character'] ?? null) === true;
+
         try {
             // The regenerated frame keeps its place in the SAME set (frame i of N), so its continuity clause
             // and direction anchor match the frames around it — a re-shot beat must not drift in style.
-            $image = $this->produceStoryboardShotImage($session, $partKey, $i, count($shots), $visual, $content, $ctx['slotValues'], $ctx['resolvePrompt'], $ctx['direction']);
+            $image = $this->produceStoryboardShotImage($session, $partKey, $i, count($shots), $visual, $content, $ctx['slotValues'], $ctx['resolvePrompt'], $ctx['direction'], $featuresCharacter);
 
             return ['kind' => 'image_plan', 'status' => 'ok', 'image' => $image, 'version' => $image['version']];
         } catch (ImageChainException $e) {
             $this->logPartFailure('storyboard_image_chain', $session, $partKey, $e);
 
-            return ['kind' => 'image_plan', 'status' => 'failed', 'error' => __($e->messageKey())];
+            return ['kind' => 'image_plan', 'status' => 'failed', 'error' => __($e->messageKey())] + $this->errorCodeOf($e, 'error_code');
         } catch (AiBudgetExceededException $e) {
             return ['kind' => 'image_plan', 'status' => 'failed', 'error' => __('generator.sessions.image_budget')];
         } catch (Throwable $e) {
@@ -916,14 +985,25 @@ class GenerationSessionExecutor
      *      shots from looking like five different films (the owner's complaint). App-authored, trusted text.
      *   2. the run's DIRECTION anchor ({@see CreativeDirection::forImage}: art direction + the recurring
      *      subject + continuity notes) when the run has one — the shared world every frame is drawn in.
-     *   3. the resolved authored STYLE (the template's own art direction, which therefore comes LAST of the
+     *   3. the frozen CHARACTER's guardrails (aesthetic + prohibitions) when the session has one.
+     *   4. the resolved authored STYLE (the template's own art direction, which therefore comes LAST of the
      *      framing and can override the derived anchor above it).
-     *   4. the shot's VISUAL — what THIS frame shows.
+     *   5. the shot's VISUAL — what THIS frame shows.
+     *
+     * THE CHARACTER slots into (2) and (3): when the run has a frozen character AND this beat is flagged as
+     * showing it, the anchor's SUBJECT becomes the character's own description (the derived subject is what a
+     * model guessed from the recipe; the character is what the human configured, and a frame has only one
+     * recurring subject), and the character's reference BYTES are handed to the chain so the base is drawn
+     * FROM that likeness. The character's aesthetic + prohibitions ride EVERY frame of the session, flagged
+     * or not — a set made for one creator has to look like one set, and "never show alcohol" is about the
+     * picture, not about who is in it.
      *
      * The visual is the shot_list AI's own output and the direction anchor is likewise model-derived — both
      * are DATA to draw, NEVER re-interpreted as directives (injection invariant). So the chain resolver is
      * IDENTITY for this WHOLE already-composed base string (the closure compares against the FINAL $composed,
      * whatever it contains), while authored FILTER prompts still resolve through the real session resolver.
+     * The identity pieces are composed INTO that final string and therefore never round-trip the directive
+     * resolver either — a descriptor containing `@[ai-text]{…}` is drawn, never executed.
      * An over-budget generate / provider failure throws for the caller's per-shot fail-soft catch.
      *
      * @param  array<string, mixed>  $storyboardContent
@@ -931,13 +1011,17 @@ class GenerationSessionExecutor
      * @param  callable(string): string  $resolvePrompt
      * @return array{mime: string, width: int, height: int, version: int}
      */
-    private function produceStoryboardShotImage(GenerationSession $session, string $partKey, int $index, int $total, string $visual, array $storyboardContent, array $slotValues, callable $resolvePrompt, ?CreativeDirection $direction): array
+    private function produceStoryboardShotImage(GenerationSession $session, string $partKey, int $index, int $total, string $visual, array $storyboardContent, array $slotValues, callable $resolvePrompt, ?CreativeDirection $direction, bool $featuresCharacter = false): array
     {
         $style = trim($resolvePrompt($this->styleMarkdownOf($storyboardContent)));
 
+        $identity = $this->visualIdentityFor($session);
+        $drawsCharacter = $identity !== null && $featuresCharacter;
+
         $composed = implode("\n\n", array_values(array_filter([
             $this->continuityClause($index, $total),
-            $direction?->forImage(),
+            $this->imageAnchor($direction, $drawsCharacter ? $identity?->subjectDescription() : null),
+            $identity?->guardrails(),
             $style,
             $visual,
         ], fn (?string $piece): bool => $piece !== null && $piece !== '')));
@@ -951,7 +1035,106 @@ class GenerationSessionExecutor
             'filters' => is_array($storyboardContent['filters'] ?? null) ? $storyboardContent['filters'] : [],
         ];
 
-        return $this->produceImage($session, $partKey, $plan, $slotValues, $chainResolve);
+        return $this->produceImage(
+            $session,
+            $partKey,
+            $plan,
+            $slotValues,
+            $chainResolve,
+            $drawsCharacter ? $this->characterReferenceFor($session, $identity) : null,
+        );
+    }
+
+    /**
+     * The session's FROZEN character identity, or null when this run has no character to draw.
+     *
+     * A PURE read of the already-hydrated row (plus one config check) — no query, no provider call — which is
+     * why it is resolved at each point of use rather than threaded through the render context the way the
+     * creative DIRECTION is. The direction is threaded because deriving it costs a provider call and must
+     * happen exactly once; this costs nothing, and keeping it out of eleven signatures is worth more than the
+     * symmetry.
+     *
+     * THREE gates, and each rules out a different mistake:
+     *   1. the KILL SWITCH, so the whole layer can be turned off without touching a session;
+     *   2. `enabled` as FROZEN IN THE OVERLAY ({@see SessionVisualIdentity::fromOverlay}) — never the live
+     *      author's toggle, which may have been flipped after this session was delegated and half-rendered;
+     *   3. a frozen character IMAGE. Without one there is nothing to draw the person FROM, so injecting the
+     *      written identity would change every prompt in exchange for a likeness we cannot deliver — and
+     *      would break the guarantee that delegating a bot with no approved likeness renders exactly as it
+     *      did before this layer existed.
+     */
+    private function visualIdentityFor(GenerationSession $session): ?SessionVisualIdentity
+    {
+        if (!(bool) config('generator.visual_identity.enabled', true)) {
+            return null;
+        }
+
+        $identity = SessionVisualIdentity::fromOverlay($session->botVisualIdentity());
+
+        return $identity !== null && $identity->hasCharacterImage() ? $identity : null;
+    }
+
+    /**
+     * The frozen character's reference BYTES for this session, or null when the layer does not apply here.
+     * Read from the identity store — deliberately a DIFFERENT prefix from the produced images, so a full
+     * re-run (which wipes the produced-image prefix) can never destroy the reference it is about to draw
+     * from.
+     *
+     * MISSING BYTES ARE LOGGED, not silently absorbed. The identity only exists at all once the overlay says
+     * a likeness was frozen ({@see visualIdentityFor}), so a store that then has nothing means the two halves
+     * of the snapshot disagree — a half-committed delegation, a storage outage, an operator deleting the
+     * prefix. The render still degrades gracefully (it generates from text rather than failing the part),
+     * but that degradation is expensive and invisible in the output, so it leaves a trail. The FACT only:
+     * the session and the character KEY, never the bytes, the prompt or a word of the identity.
+     */
+    private function characterReferenceFor(GenerationSession $session, ?SessionVisualIdentity $identity): ?string
+    {
+        if ($identity === null) {
+            return null;
+        }
+
+        $reference = $this->identityImages->forSession($session);
+
+        if ($reference === null) {
+            Log::warning('Generation session claims a frozen character image but its bytes are missing; drawing without the reference.', [
+                'session_id' => $session->id,
+                'character_key' => $session->characterImageKey(),
+            ]);
+        }
+
+        return $reference;
+    }
+
+    /**
+     * The written description of this run's on-screen creator for the SHOT-LIST writer, or null.
+     *
+     * It is what makes the per-shot `features_character` flag answerable: the model can only say which beats
+     * show the person if it knows who the person is. Null on every run without a drawable character, which is
+     * what keeps the shot-list instruction byte-identical to the pre-feature one.
+     */
+    private function characterDescriptorFor(GenerationSession $session): ?string
+    {
+        return $this->visualIdentityFor($session)?->subjectDescription();
+    }
+
+    /**
+     * The IMAGE ANCHOR for one image: the run's direction projection with the character substituted in as the
+     * recurring subject, or — when there is no direction, or its direction carries no visual guidance at all
+     * — the character's subject line on its own. Null when neither has anything to say.
+     *
+     * Both paths go through {@see CreativeDirection}, which owns the wording of that line (including the
+     * precedence sentence that settles a disagreement between the anchor and the shot's own visual text), so
+     * a character-anchored prompt reads identically whether or not the run happened to derive a direction.
+     */
+    private function imageAnchor(?CreativeDirection $direction, ?string $subjectOverride): ?string
+    {
+        $anchor = $direction?->forImage($subjectOverride);
+
+        if ($anchor !== null || $subjectOverride === null || $subjectOverride === '') {
+            return $anchor;
+        }
+
+        return CreativeDirection::imageSubjectAnchor($subjectOverride);
     }
 
     /**
@@ -1043,6 +1226,54 @@ class GenerationSessionExecutor
         return null;
     }
 
+    /**
+     * The `@[ai-text]` AUTHOR that owns a part's authored content, or null when it names none — the voice a
+     * REFINE of that part must keep speaking in. Every string leaf of the (nested) part content is scanned
+     * through the SHARED {@see VariableResolver::collectAiTextAuthorIds}, the same scanner the snapshot was
+     * frozen with, so a refine can never look up an author the freeze did not capture.
+     *
+     * EXACTLY ONE AUTHOR, OR NONE. A refine is ONE revision of the part's WHOLE current output, so it has
+     * exactly one voice to speak in — and when the part's blocks name SEVERAL DIFFERENT authors, no single
+     * one of them is that voice. Handing the part to whichever author the walk reached FIRST would rewrite
+     * another author's text in a stranger's tone with nothing in the UI hinting at it, so an AMBIGUOUS part
+     * returns null and the voice holder falls back to the run-wide session voice and then the persona —
+     * the same ladder an unresolvable author already takes (fail-SAFE, identical to a fresh render).
+     *
+     * DELIBERATE LIMITATION worth naming: the shared scanner reports only the authors that ARE named, so a
+     * part mixing ONE authored block with author-LESS ones counts as unambiguous and refines in that one
+     * author's voice. Distinguishing "one author + plain blocks" from "one author only" would mean threading
+     * a per-BLOCK sink through {@see VariableResolver}'s whole scan walk — a much wider change to the most
+     * delicate shared code for a materially rarer case than two competing authors.
+     */
+    private function partAuthorId(mixed $content): ?string
+    {
+        $ids = array_values(array_unique($this->authorIdsIn($content)));
+
+        return count($ids) === 1 ? $ids[0] : null;
+    }
+
+    /**
+     * Every author id named anywhere in a (possibly nested) authored content value, in walk order.
+     *
+     * @return array<int, string>
+     */
+    private function authorIdsIn(mixed $content): array
+    {
+        if (is_array($content)) {
+            $ids = [];
+
+            foreach ($content as $value) {
+                foreach ($this->authorIdsIn($value) as $id) {
+                    $ids[] = $id;
+                }
+            }
+
+            return $ids;
+        }
+
+        return is_string($content) && $content !== '' ? $this->resolver->collectAiTextAuthorIds($content) : [];
+    }
+
     /** The `{brief:{markdown}}` creative brief of a shot_list part, coerced to a string (absent/malformed → ''). */
     private function briefMarkdownOf(mixed $content): string
     {
@@ -1065,14 +1296,19 @@ class GenerationSessionExecutor
      * (metered, session-tagged, injection-hardened). Fail-soft to a localized non-secret message. The `ok`
      * result carries the next version.
      *
+     * $authorId is the PART's own `@[ai-text]` author ({@see partAuthorId}). Without it a refine of an
+     * author-written part would silently drop back to the persona/session tone — the text would stop
+     * sounding like its author the moment anyone touched it, which is the one thing a per-block author must
+     * survive. A part with no author passes null, exactly as before.
+     *
      * @param  callable(string): string  $resolvePrompt
      * @return array<string, mixed>
      */
-    private function refineTextPart(GenerationSession $session, ContentTypePart $part, string $instruction, callable $resolvePrompt): array
+    private function refineTextPart(GenerationSession $session, ContentTypePart $part, string $instruction, callable $resolvePrompt, ?string $authorId = null): array
     {
         try {
             $current = $this->currentTextOf($session, $part->key);
-            $revised = $this->aiText->generate($this->revisionPrompt($resolvePrompt($instruction), $current), null);
+            $revised = $this->aiText->generate($this->revisionPrompt($resolvePrompt($instruction), $current), null, $authorId);
 
             // A BLANK revision is the ai-text generator's FAIL-CLOSED signal (any provider/transport/over-cap
             // error resolves to '', never throws). Treat it as a FAILED op so applyPartOp no-ops and the
@@ -1120,7 +1356,7 @@ class GenerationSessionExecutor
         } catch (ImageChainException $e) {
             $this->logPartFailure('image_refine_chain', $session, $partKey, $e);
 
-            return ['kind' => 'image_plan', 'status' => 'failed', 'error' => __($e->messageKey())];
+            return ['kind' => 'image_plan', 'status' => 'failed', 'error' => __($e->messageKey())] + $this->errorCodeOf($e, 'error_code');
         } catch (AiBudgetExceededException $e) {
             // A workspace monthly $ cost-cap stop is a BUDGET failure, not a bad base/filters — surface the
             // budget message (aligned with the ImageChainExecutor per-session budget path), not image_failed.
@@ -1175,35 +1411,65 @@ class GenerationSessionExecutor
     }
 
     /**
-     * Compose the run's DIRECTION anchor into an AUTHORED image plan — the plain-image counterpart of
-     * {@see produceStoryboardShotImage}'s composition, shared by an `image_plan` part and a scene's image.
+     * Compose the run's DIRECTION anchor + the session's frozen CHARACTER into an AUTHORED image plan — the
+     * plain-image counterpart of {@see produceStoryboardShotImage}'s composition, shared by an `image_plan`
+     * part and a scene's image.
      *
-     * Only an `ai_generate` base is touched (a `disk_file` / `from_slot` base has no prompt to anchor), and
-     * only when the run HAS a direction with visual guidance. The authored prompt is resolved FIRST (its
-     * slots/directives must still expand), then the anchor is placed AHEAD of it — so the author's own prompt
-     * comes last and still has the final word, exactly as the storyboard orders style vs. anchor.
+     * Only an `ai_generate` base is touched: a `disk_file` / `from_slot` base has no prompt to anchor and
+     * already HAS its image, so there is nothing for a character reference to substitute either.
      *
-     * The returned resolver is IDENTITY for the FINAL composed string (the anchor is model-derived content:
-     * DATA to draw, never round-tripped through the directive resolver) and the REAL resolver for everything
-     * else, so the authored `ai_edit` filter prompts still resolve normally. With no direction / no anchor /
-     * a non-ai_generate base, BOTH the plan and the resolver are returned UNCHANGED — a direction-less run is
-     * byte-identical.
+     * WHETHER THE CHARACTER APPEARS. A storyboard knows per shot (the shot list says so); a single authored
+     * image has no such signal, so the default is that a delegated session's image DOES show its creator —
+     * which is what "generate my post image" means when the whole session was handed to a persona. The
+     * author overrides that per part with `character: 'never'` ({@see ImagePlanValidator}), for the product
+     * shot / logo / chart case. There is no `always`: nothing to force, since auto already means yes.
+     *
+     * The authored prompt is resolved FIRST (its slots/directives must still expand), then the anchor +
+     * guardrails are placed AHEAD of it — so the author's own prompt comes last and still has the final word,
+     * exactly as the storyboard orders style vs. anchor.
+     *
+     * The returned resolver is IDENTITY for the FINAL composed string (the anchor is model-derived content
+     * and the identity is frozen human content: both are DATA to draw, never round-tripped through the
+     * directive resolver) and the REAL resolver for everything else, so the authored `ai_edit` filter prompts
+     * still resolve normally. With no direction, no character and a non-ai_generate base, BOTH the plan and
+     * the resolver are returned UNCHANGED and no reference is produced — such a run is byte-identical.
+     *
+     * The REFERENCE is independent of all of that: it follows only from whether the character is drawn (see
+     * the note at the early exit).
      *
      * @param  array<string, mixed>  $plan
      * @param  callable(string): string  $resolvePrompt
-     * @return array{plan: array<string, mixed>, resolve: callable(string): string}
+     * @return array{plan: array<string, mixed>, resolve: callable(string): string, reference: string|null}
      */
-    private function directedImagePlan(array $plan, ?CreativeDirection $direction, callable $resolvePrompt): array
+    private function directedImagePlan(GenerationSession $session, array $plan, ?CreativeDirection $direction, callable $resolvePrompt): array
     {
-        $anchor = $direction?->forImage();
         $base = is_array($plan['base'] ?? null) ? $plan['base'] : null;
+        $isGenerated = $base !== null && ($base['kind'] ?? null) === 'ai_generate';
 
-        if ($anchor === null || $base === null || ($base['kind'] ?? null) !== 'ai_generate') {
-            return ['plan' => $plan, 'resolve' => $resolvePrompt];
+        $identity = $isGenerated ? $this->visualIdentityFor($session) : null;
+        $drawsCharacter = $identity !== null && ($plan['character'] ?? 'auto') !== 'never';
+
+        $anchor = $this->imageAnchor($direction, $drawsCharacter ? $identity?->subjectDescription() : null);
+        $guardrails = $identity?->guardrails();
+
+        // The REFERENCE is decided by whether the character is DRAWN, never by whether there was any text to
+        // prepend. A likeness-only identity (generated from a one-off instruction, every written field left
+        // blank) has no subject line and no guardrail to compose, yet the picture is then the WHOLE
+        // description — so the early exit below must still hand the frozen bytes over, exactly as the
+        // storyboard path does. Resolving it BEFORE the exit is what keeps the two paths honest; with no
+        // character it stays null and such a run is byte-identical.
+        $reference = $drawsCharacter ? $this->characterReferenceFor($session, $identity) : null;
+
+        if (!$isGenerated || ($anchor === null && $guardrails === null)) {
+            return ['plan' => $plan, 'resolve' => $resolvePrompt, 'reference' => $reference];
         }
 
         $authored = trim($resolvePrompt(is_string($base['prompt'] ?? null) ? $base['prompt'] : ''));
-        $composed = $authored === '' ? $anchor : $anchor . "\n\n" . $authored;
+
+        $composed = implode("\n\n", array_values(array_filter(
+            [$anchor, $guardrails, $authored],
+            fn (?string $piece): bool => $piece !== null && $piece !== '',
+        )));
 
         $base['prompt'] = $composed;
         $plan['base'] = $base;
@@ -1211,23 +1477,25 @@ class GenerationSessionExecutor
         return [
             'plan' => $plan,
             'resolve' => fn (string $markdown): string => $markdown === $composed ? $composed : $resolvePrompt($markdown),
+            'reference' => $reference,
         ];
     }
 
     /**
      * Run the chain for one image plan and store the produced bytes as a new VERSION under $partKey, returning
      * the wire image meta (`{mime,width,height,version}`) — the shared body of {@see executeImagePart} +
-     * {@see renderSceneImage}. The plan/resolver it receives are already direction-composed by the caller
-     * (see {@see directedImagePlan}), so this stays a pure "run it and store it" seam.
+     * {@see renderSceneImage}. The plan/resolver it receives are already direction- and character-composed by
+     * the caller (see {@see directedImagePlan}), so this stays a pure "run it and store it" seam.
      *
      * @param  array<string, mixed>  $plan
      * @param  array<string, mixed>  $slotValues
      * @param  callable(string): string  $resolvePrompt
+     * @param  string|null  $characterReference  the frozen likeness the base is drawn FROM, or null
      * @return array{mime: string, width: int, height: int, version: int}
      */
-    private function produceImage(GenerationSession $session, string $partKey, array $plan, array $slotValues, callable $resolvePrompt): array
+    private function produceImage(GenerationSession $session, string $partKey, array $plan, array $slotValues, callable $resolvePrompt, ?string $characterReference = null): array
     {
-        $produced = $this->imageChain->execute($plan, $slotValues, $resolvePrompt);
+        $produced = $this->imageChain->execute($plan, $slotValues, $resolvePrompt, $characterReference);
         $version = $this->images->storeVersion($session->id, $partKey, $produced['bytes']);
 
         return ['mime' => $produced['mime'], 'width' => $produced['width'], 'height' => $produced['height'], 'version' => $version];
@@ -1250,6 +1518,23 @@ class GenerationSessionExecutor
 
             return '';
         }
+    }
+
+    /**
+     * The optional MACHINE-readable reason of a chain failure, as a fragment to merge into the result — an
+     * empty array when the failure has none ({@see ImageChainException::errorCode}). Union-merged rather
+     * than assigned so the key is genuinely ABSENT for every failure that has nothing specific to say, which
+     * is what lets a consumer treat "has a code" as meaningful. $key is the result shape's own name for it:
+     * a part result says `error_code` beside `error`, a per-item image says `image_error_code` beside
+     * `image_error`.
+     *
+     * @return array<string, string>
+     */
+    private function errorCodeOf(ImageChainException $e, string $key): array
+    {
+        $code = $e->errorCode();
+
+        return $code === null ? [] : [$key => $code];
     }
 
     /**

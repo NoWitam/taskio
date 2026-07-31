@@ -10,6 +10,7 @@
 // like `VariableChip` / `IfBranchView`. These assertions fail against the pre-fix (frozen) read.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
 import { nextTick, ref } from 'vue';
 import AiTextChip from '../extensions/AiTextChip.vue';
 import AiTextPanel from '../extensions/AiTextPanel.vue';
@@ -44,7 +45,16 @@ function mountChip(source: () => VariableSourceVar[]) {
     attachTo: document.body,
     props: {
       editor: fakeEditor(source),
-      node: { attrs: { id: 'ai1', personaId: null, prompt: '', labels: [] } },
+      node: {
+        attrs: {
+          id: 'ai1',
+          personaId: null,
+          authorId: null,
+          authorName: null,
+          prompt: '',
+          labels: [],
+        },
+      },
       updateAttributes: () => {},
       deleteNode: () => {},
     },
@@ -53,6 +63,8 @@ function mountChip(source: () => VariableSourceVar[]) {
 
 describe('the @[ai-text] nested prompt editor gets the LIVE variable feed (slots), not the frozen array', () => {
   beforeEach(() => {
+    // The panel resolves its author through the `botDirectory` Pinia store.
+    setActivePinia(createPinia());
     setLocale('en');
     installBrowserMocks();
   });

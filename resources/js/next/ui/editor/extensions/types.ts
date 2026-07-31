@@ -365,9 +365,33 @@ export interface AiPersona {
 
 export interface AiTextNodeAttrs {
   id: string;
+  /**
+   * LEGACY tone id. READ-ONLY since the per-block AUTHOR landed: the panel still parses it (and the
+   * `persona` alias) and lets the author CLEAR it, but never writes a new one. Kept on the wire so a
+   * document saved with an old tone keeps working.
+   */
   personaId: string | null;
+  /**
+   * The block's per-block AUTHOR — an opaque id the backend resolves to a VOICE (tone, style,
+   * vocabulary). Deliberately NOT named `botId`: the `Variables` module decodes this directive and
+   * must not name concepts owned by higher modules. The UI offers BOTS behind the label "Author".
+   * Emit-or-omit: `null` is NOT serialized, so an author-less block stays byte-identical to a
+   * pre-author document.
+   */
+  authorId: string | null;
+  /**
+   * DISPLAY-ONLY snapshot of the author's name at authoring time. Never used for authorization or
+   * generation — it only lets the chip/trigger name a still-unresolved (or since-deleted) author.
+   * Emit-or-omit, like `authorId`.
+   */
+  authorName: string | null;
   /** Markdown (may itself contain inline directives + if-blocks). */
   prompt: string;
+  /**
+   * Knowledge labels. The field is NO LONGER RENDERED (the author decision: a bot brings its voice,
+   * not its knowledge), but the value is still loaded and re-emitted UNCHANGED on save so editing an
+   * existing block never silently drops authored content.
+   */
   labels: string[];
 }
 

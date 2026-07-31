@@ -723,7 +723,7 @@ so the editor labels/arranges it as a scenario rather than a post body. **`scrip
 LEGACY** — see "Legacy `script` / `scene_plan`" below: no content type declares it today, so this shape is
 reachable only through an existing pre-rework session's snapshot, not through this write/preview endpoint.
 
-### `image_plan` — `{ "base": {...}|null, "filters": [...] }`
+### `image_plan` — `{ "base": {...}|null, "filters": [...], "character"?: 'auto'|'never' }`
 
 A DECLARED media plan for one image — the config of a `post_with_image`'s `image` part, and of a scene's
 optional image (see "Scene plan" below). Mirrors the shape of a Variables pipeline: a `base` (where the
@@ -746,6 +746,24 @@ produces a resolved-prompt PLAN SUMMARY (no image is ever produced by this API).
 |------------------|---------------------------------------|-------------------------------------------------------------------------|
 | `pixel`            | `{ kind: 'pixel', op: <op>, params?: {...} }` | A deterministic pixel/geometry op — see the table below.        |
 | `ai_edit`              | `{ kind: 'ai_edit', prompt: <markdown>, mask?: <id\|object> }` | A provider image-edit prompt (directive-validated like a body) + an OPTIONAL mask reference. Reuses `Disk\Services\ImageAiService::edit(image, prompt, mask?)`, called at EXECUTION by a generation Session (sub-stage 2c, now implemented); this PREVIEW endpoint never calls it. |
+
+**`character`** (optional; the character visual-identity phase, `docs/decisions/
+ADR-0042-character-visual-identity.md`) — whether a DELEGATED session's frozen creator may appear in THIS
+image. Authoring-only, like the rest of this shape: nothing here decides whether the session actually HAS a
+character, only whether this particular image is allowed to show one.
+
+| `character` value | Meaning |
+|---|---|
+| absent, or `'auto'` (the default) | Draw the creator when the session has one. This is the default because handing a whole session to a persona implies its face appears — it does not need opting into. |
+| `'never'` | This image never shows the creator, whoever the session belongs to — the product shot, the logo, the chart: cases where a person would be both wrong and billed. |
+
+There is deliberately no `'always'` — `'auto'` already means "yes, when the session has one," and forcing a
+character onto a session with none would be a promise the write layer cannot keep. An unrecognized value is
+REFUSED at write (`422` under `content.<key>.character`), never silently defaulted
+(`ImagePlanValidator::CHARACTER_MODES`). This field has NO bearing on a `storyboard` shot — a storyboard's
+per-shot character decision is made by the MODEL at run time (`features_character`, one per shot list entry),
+never authored; see `docs/backend/generator-sessions-api.md` → "Frozen character visual identity" for how
+both mechanisms are consumed.
 
 **Pixel ops** (`ImagePlanValidator::PIXEL_OPS` — mirrors the `imageOps.ts` op set the Disk image editor
 also uses; this rework REUSES the pure functions, not the Disk editor itself — the filter chain is a NEW
@@ -940,13 +958,19 @@ author previewing a recipe SEES exactly where an `@[ai-text]` block lands and ag
 prompt. A genuinely blank prompt still returns `''`. No real AI call runs; this is purely a preview
 affordance.
 
-**Voice is a SESSION-run concept, not a template-authoring one.** A template's authored `@[ai-text]`/
-`shot_list` content carries no persona/voice — that only applies once a real Session RUNS it. When a session
-is delegated to a bot (R2 sub-stage 3, "Boty w generatorze"), every real `@[ai-text]` call AND the
-`shot_list`'s structured call render in the bot's snapshotted, opaque voice directive instead of the
-resolved `AiPersona` — see "Bot-author delegation overlay" in `docs/backend/generator-sessions-api.md` and
-`docs/decisions/ADR-0036-bot-delegation-generation-sessions.md`. The `storyboard` IMAGE prompt is
-unaffected — it stays the authored `style` only.
+**The RESOLVED voice is a SESSION-run concept; the AUTHOR CHOICE is authored in the template (R2, ADR-0040).**
+An `@[ai-text]` block's `authorId` (which bot should write it — the picker that replaced the legacy persona
+Select, see "AI-text personas" above) IS part of the template's authored `content`, exactly like `personaId`
+always was. What is NOT authored at the template level is the actual opaque VOICE STRING that id resolves
+to — that only exists once a real Session RUNS it: `GenerationSessionService::create()` resolves every
+authored `authorId` into `recipe_snapshot.author_voices`, frozen at session creation (see "Per-block AI-text
+authors" in `docs/backend/generator-sessions-api.md`). Independently, when a WHOLE session is delegated to a
+bot (R2 sub-stage 3, "Boty w generatorze"), every `@[ai-text]` call/`shot_list` call with no MORE SPECIFIC
+block-level author renders in the delegated bot's snapshotted, opaque voice directive instead of the resolved
+`AiPersona` — see "Bot-author delegation overlay" and "Per-block AI-text authors" in
+`docs/backend/generator-sessions-api.md`, `docs/decisions/ADR-0036-bot-delegation-generation-sessions.md`,
+and `docs/decisions/ADR-0040-per-block-ai-text-author.md`. The `storyboard` IMAGE prompt is unaffected by
+either — it stays the authored `style` only.
 
 **DECLARE vs EXECUTE — the boundary the TEMPLATE endpoints sit behind.** Authoring a Template — its content
 type, its slots, its per-part content including an image plan's base + filter chain — is a pure DECLARATION

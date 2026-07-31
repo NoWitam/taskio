@@ -218,6 +218,19 @@ sibling key (mirroring the existing label-less `operations` catalog pattern). `d
 workflows-api.md` documents the full contract including the fail-closed table and the
 injection-posture note.
 
+**Amendment (ADR-0040, R2) — the "left as a possible future" alternative above was built, but as an
+ADDITIVE per-block AUTHOR, not a rename of this persona set.** `docs/decisions/
+ADR-0040-per-block-ai-text-author.md` lets a single `@[ai-text]` block name one of the workspace's Bots as
+its author (an opaque, composed voice — persona/style/dictionary/phrases/prohibitions — that REPLACES this
+decision's tone line when present, ranked above a session/run-wide bot voice and above `personaId`). The
+concerns this decision raised about coupling a workflow definition to a specific Bot's lifecycle are handled
+fail-SAFE (an author that no longer resolves silently degrades to this decision's tone, never breaks the
+block — see ADR-0040 D5), not by avoiding the coupling. The persona picker documented above is REMOVED from
+the editor UI as of ADR-0040 (superseded by the author picker occupying the same panel slot); `personaId`
+itself, `AiPersona::fromNullable()`, and the `ai_personas` catalog keys below are all UNCHANGED and remain
+fully functional at runtime for any block that already carries a legacy tone — this decision's contract is
+not rewritten, only no longer reachable from the editor for a NEW pick.
+
 ---
 
 ### 5. Value-or-variable pipelines ARE write-validated; markdown directive pipelines are NOT (and cannot be, without a new parser)

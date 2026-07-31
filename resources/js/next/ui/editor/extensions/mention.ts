@@ -19,6 +19,7 @@ import MentionChip from './MentionChip.vue';
 import MentionSuggest from './MentionSuggest.vue';
 import {
   createSuggestionStore,
+  createSuggestionOverlay,
   type SuggestionStore,
   type SuggestionRow,
 } from './suggestionStore';
@@ -126,7 +127,12 @@ export function createMention(options: MentionOptions) {
         store.loading = false;
         store.query = '';
         store.rect = null;
+        overlay.release();
       };
+      // The active popup is a real overlay: it joins the shared stack so Escape closes IT and not
+      // the Modal/Drawer around the editor (see `createSuggestionOverlay`). Declared after `close`
+      // because the stack needs it as the dismiss callback; it only runs after setup.
+      const overlay = createSuggestionOverlay(close);
       store.onClose = close;
 
       const caretRect = (view: EditorView, pos: number): DOMRect => {
@@ -279,6 +285,7 @@ export function createMention(options: MentionOptions) {
                   store.rect = caretRect(view, state.range!.from);
                   if (!prev.active) {
                     store.active = true;
+                    overlay.acquire();
                     store.activeIndex = 0;
                     store.query = state.query;
                     void runFetch(state.query);

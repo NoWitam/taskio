@@ -113,7 +113,50 @@ class StoreTasksRequest extends FormRequest
             }
 
             (new ScopedExists($modelClass))->validate($attribute, $value, $fail);
+
+            if ($type === 'bot') {
+                $this->failWhenBotCannotExecute($value, $fail);
+            }
         };
+    }
+
+    /**
+     * A bot assignee must be able to EXECUTE tasks (active + the task-execution module
+     * enabled — see Bot::canExecuteTasks()). Assigning any other bot is a silent no-op:
+     * BotTaskRunManager::dispatch() refuses to claim a run, so the task sits in to_do
+     * forever with nothing recorded anywhere to explain why.
+     *
+     * Only a CHANGE of assignee is validated. A task already sitting on a bot whose
+     * module was switched off afterwards stays editable (title, labels, deadline…) —
+     * otherwise deactivating one bot would freeze every task it holds.
+     */
+    private function failWhenBotCannotExecute(mixed $value, Closure $fail): void
+    {
+        if (!$this->assigneeChanges((string) $value)) {
+            return;
+        }
+
+        $bot = Bot::query()->find($value);
+
+        if ($bot === null) {
+            return; // ScopedExists already reported it (missing / other workspace).
+        }
+
+        if (!$bot->canExecuteTasks()) {
+            $fail(__('tasks.validation.bot_cannot_execute'));
+        }
+    }
+
+    /** Whether this write actually moves the task onto a DIFFERENT bot (always true on create). */
+    private function assigneeChanges(string $botId): bool
+    {
+        $task = $this->route('task');
+
+        if (!$task instanceof Task) {
+            return true;
+        }
+
+        return !($task->assignee_type === 'bot' && (string) $task->assignee_id === $botId);
     }
 
     public function messages(): array

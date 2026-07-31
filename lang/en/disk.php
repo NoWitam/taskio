@@ -14,6 +14,9 @@ return [
     'ai' => [
         'failed' => 'The AI edit failed. Please try again.',
         'budget' => "You have reached today's AI image limit. Try again tomorrow.",
+        // The provider rendered the image and then refused to return it (its own moderation).
+        // Says what actually happened and what the user can do — retrying changes nothing.
+        'safety' => 'The provider refused this content for safety reasons. Adjust the description or the outfit and try again.',
     ],
 
     'drafts' => [

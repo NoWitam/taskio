@@ -115,6 +115,13 @@ watch(open, async (isOpen) => {
 
 function onKeydown(event: KeyboardEvent): void {
   // Escape dismisses an open tooltip without affecting other overlays.
+  //
+  // DELIBERATELY NOT in `useOverlayStack`, even though `OverlayKind` has a 'tooltip' slot. A tooltip
+  // is a passive hint: it never traps focus, it holds nothing interactive, and hover alone can open
+  // it. Registering would make it the TOPMOST overlay and swallow the user's Escape from the modal or
+  // options list underneath — the exact inversion the stack exists to prevent. It also does not need
+  // the stack to be reachable: this handler is bound to the trigger, which is where focus sits while
+  // the hint is up, and any blur/leave closes it anyway.
   if (event.key === 'Escape' && open.value) {
     hideNow();
   }

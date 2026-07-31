@@ -254,9 +254,38 @@ class VariableResolver
     public function collectReferenceIds(string $markdown): array
     {
         $ids = [];
-        $this->scanForReferenceIds($markdown, $ids, 0);
+        $authorIds = [];
+        $this->scanForReferenceIds($markdown, $ids, $authorIds, 0);
 
         return array_values(array_unique($ids));
+    }
+
+    /**
+     * Collect every AUTHOR id the markdown's `@[ai-text]` blocks name — the per-block authors an upper layer
+     * pre-resolves to opaque voices (ONE batch lookup per execution) before handing them to the ai-text seam.
+     *
+     * It runs the EXACT SAME walk as {@see collectReferenceIds} — same ai-text payload extraction, same
+     * `data` unwrapping, same if-block descent, same ai-text DEPTH CAP — and only reads a different field off
+     * each decoded payload. Sharing the walk is the point: a second ai-text parser would be free to drift
+     * from the one the resolver actually executes, and would then either miss an author (a block silently
+     * losing its voice) or resolve one for a block the resolver never reaches. A block PAST the depth cap is
+     * never generated, so its author is deliberately NOT collected.
+     *
+     * Returns the DE-DUPLICATED ids (order-stable), with empty ones dropped. Nothing here validates that an
+     * id EXISTS — or even that it is SHAPED like one: a payload may carry arbitrary bytes, and this reports
+     * what the content SAYS. Validating before a lookup is the {@see AuthorVoiceResolver} contract's stated
+     * duty ({@see \App\Modules\Variables\Contracts\AuthorVoiceResolver}), and an id that fails it is simply
+     * absent from the voice map (fail-SAFE).
+     *
+     * @return array<int, string>
+     */
+    public function collectAiTextAuthorIds(string $markdown): array
+    {
+        $ids = [];
+        $authorIds = [];
+        $this->scanForReferenceIds($markdown, $ids, $authorIds, 0);
+
+        return array_values(array_unique($authorIds));
     }
 
     /**
@@ -992,18 +1021,23 @@ class VariableResolver
         $resolvedPrompt = $this->resolveStringAt($directive['prompt'], $context, $typeMap, $thisDepth);
         $resolvedPrompt = is_string($resolvedPrompt) ? $resolvedPrompt : $this->stringify($resolvedPrompt);
 
-        // The persona id rides as a plain `?string` — the AiTextGenerator maps it to its own vocabulary,
-        // so this shared resolver names no upper-module enum (keeping the dependency one-way).
-        return $this->ai->generate($resolvedPrompt, $directive['personaId']);
+        // The persona and author ids ride as plain `?string`s — the AiTextGenerator maps them to its own
+        // vocabulary (a persona enum, an opaque author voice), so this shared resolver names no
+        // upper-module type (keeping the dependency one-way).
+        return $this->ai->generate($resolvedPrompt, $directive['personaId'], $directive['authorId']);
     }
 
     /**
-     * Decode an ai-text payload to `{ prompt, personaId }`, tolerating malformed JSON (null). The
+     * Decode an ai-text payload to `{ prompt, personaId, authorId }`, tolerating malformed JSON (null). The
      * payload is the same byte-format as a variable directive (inner JSON with `"`→`\"`); after
      * json_decode the `prompt` carries any nested `@[variable]("…")` in its normal single-escaped
      * form the reference passes expect. `labels` is intentionally not consumed by the runtime.
      *
-     * @return array{prompt: string, personaId: ?string}|null
+     * `authorId` (the per-block AUTHOR) is read with the SAME tolerance as `personaId`: anything that is
+     * not a string — absent, null, a number, an object — becomes null, i.e. "this block has no author",
+     * which the generator degrades to the session voice / persona tone rather than failing.
+     *
+     * @return array{prompt: string, personaId: ?string, authorId: ?string}|null
      */
     private function decodeAiTextDirective(string $payload): ?array
     {
@@ -1022,6 +1056,7 @@ class VariableResolver
         return [
             'prompt' => is_string($data['prompt'] ?? null) ? $data['prompt'] : '',
             'personaId' => is_string($data['personaId'] ?? null) ? $data['personaId'] : null,
+            'authorId' => is_string($data['authorId'] ?? null) ? $data['authorId'] : null,
         ];
     }
 
@@ -1312,15 +1347,21 @@ class VariableResolver
      * resolution does, so the depth cap bites identically (a ref only the resolver would never reach beyond
      * the cap is never collected).
      *
+     * TWO SINKS, ONE WALK: $ids gathers referenced VARIABLE ids, $authorIds the per-block ai-text AUTHOR ids.
+     * They are collected together rather than by two walks so the ai-text/if-block parsing can never diverge
+     * between them; each public entry point ({@see collectReferenceIds}, {@see collectAiTextAuthorIds}) simply
+     * keeps the sink it cares about.
+     *
      * @param  array<int, string>  $ids
+     * @param  array<int, string>  $authorIds
      */
-    private function scanForReferenceIds(string $value, array &$ids, int $aiDepth): void
+    private function scanForReferenceIds(string $value, array &$ids, array &$authorIds, int $aiDepth): void
     {
         if (str_contains($value, '```if-block')) {
-            $value = $this->scanIfBlocks($value, $ids, $aiDepth, 1);
+            $value = $this->scanIfBlocks($value, $ids, $authorIds, $aiDepth, 1);
         }
 
-        $this->scanInline($value, $ids, $aiDepth);
+        $this->scanInline($value, $ids, $authorIds, $aiDepth);
     }
 
     /**
@@ -1329,8 +1370,9 @@ class VariableResolver
      * Mirrors {@see resolveIfBlocks}' line/fence-depth scan (reusing {@see collectIfBlockBody}).
      *
      * @param  array<int, string>  $ids
+     * @param  array<int, string>  $authorIds
      */
-    private function scanIfBlocks(string $value, array &$ids, int $aiDepth, int $depth): string
+    private function scanIfBlocks(string $value, array &$ids, array &$authorIds, int $aiDepth, int $depth): string
     {
         $lines = explode("\n", $value);
         $out = [];
@@ -1340,7 +1382,7 @@ class VariableResolver
         while ($i < $n) {
             if (preg_match('/^\s*```if-block\b/', $lines[$i]) === 1) {
                 [$body, $next] = $this->collectIfBlockBody($lines, $i + 1, $n);
-                $this->scanOneIfBlock($body, $ids, $aiDepth, $depth);
+                $this->scanOneIfBlock($body, $ids, $authorIds, $aiDepth, $depth);
                 $i = $next;
 
                 continue;
@@ -1360,8 +1402,9 @@ class VariableResolver
      *
      * @param  array<int, string>  $bodyLines
      * @param  array<int, string>  $ids
+     * @param  array<int, string>  $authorIds
      */
-    private function scanOneIfBlock(array $bodyLines, array &$ids, int $aiDepth, int $depth): void
+    private function scanOneIfBlock(array $bodyLines, array &$ids, array &$authorIds, int $aiDepth, int $depth): void
     {
         if ($depth > self::IF_BLOCK_MAX_DEPTH) {
             return;
@@ -1379,10 +1422,10 @@ class VariableResolver
             }
 
             if (str_contains($body, '```if-block')) {
-                $body = $this->scanIfBlocks($body, $ids, $aiDepth, $depth + 1);
+                $body = $this->scanIfBlocks($body, $ids, $authorIds, $aiDepth, $depth + 1);
             }
 
-            $this->scanInline($body, $ids, $aiDepth);
+            $this->scanInline($body, $ids, $authorIds, $aiDepth);
         }
     }
 
@@ -1414,11 +1457,12 @@ class VariableResolver
      * while a live flat token in the field's own text is collected exactly as the resolver resolves it.
      *
      * @param  array<int, string>  $ids
+     * @param  array<int, string>  $authorIds
      */
-    private function scanInline(string $value, array &$ids, int $aiDepth): void
+    private function scanInline(string $value, array &$ids, array &$authorIds, int $aiDepth): void
     {
         if (str_contains($value, self::AI_TEXT_OPEN)) {
-            $value = $this->scanAiText($value, $ids, $aiDepth);
+            $value = $this->scanAiText($value, $ids, $authorIds, $aiDepth);
         }
 
         $value = $this->scanDirectiveRefs($value, $ids);
@@ -1427,13 +1471,15 @@ class VariableResolver
     }
 
     /**
-     * Collect references from every `@[ai-text]` payload's nested `prompt` (recursively), returning the text
-     * with those spans REMOVED. Mirrors {@see maskAiTextDirectives}' candidate-terminator scan (reusing
-     * {@see extractAiTextPayload}), so a nested directive inside a prompt cannot end the span early.
+     * Collect references from every `@[ai-text]` payload's nested `prompt` (recursively) AND each payload's
+     * own AUTHOR id, returning the text with those spans REMOVED. Mirrors {@see maskAiTextDirectives}'
+     * candidate-terminator scan (reusing {@see extractAiTextPayload}), so a nested directive inside a prompt
+     * cannot end the span early — and so an author is read from exactly the payloads the resolver executes.
      *
      * @param  array<int, string>  $ids
+     * @param  array<int, string>  $authorIds
      */
-    private function scanAiText(string $value, array &$ids, int $aiDepth): string
+    private function scanAiText(string $value, array &$ids, array &$authorIds, int $aiDepth): string
     {
         $out = '';
         $cursor = 0;
@@ -1456,18 +1502,20 @@ class VariableResolver
             }
 
             $out .= substr($value, $cursor, $start - $cursor);
-            $this->scanAiTextPrompt($extracted['payload'], $ids, $aiDepth);
+            $this->scanAiTextPrompt($extracted['payload'], $ids, $authorIds, $aiDepth);
             $cursor = $extracted['nextIndex'];
         }
     }
 
     /**
-     * Collect references from one ai-text payload's `prompt`, one ai-depth deeper — honoring the SAME cap
-     * {@see resolveAiText} enforces (beyond it the prompt is never resolved, so its refs never matter).
+     * Collect one ai-text payload's AUTHOR id plus the references in its `prompt`, one ai-depth deeper —
+     * honoring the SAME cap {@see resolveAiText} enforces. Beyond the cap the block is never generated, so
+     * neither its refs NOR its author matter (the early return covers both, exactly as resolution does).
      *
      * @param  array<int, string>  $ids
+     * @param  array<int, string>  $authorIds
      */
-    private function scanAiTextPrompt(string $payload, array &$ids, int $aiDepth): void
+    private function scanAiTextPrompt(string $payload, array &$ids, array &$authorIds, int $aiDepth): void
     {
         $thisDepth = $aiDepth + 1;
 
@@ -1481,7 +1529,11 @@ class VariableResolver
             return;
         }
 
-        $this->scanForReferenceIds($directive['prompt'], $ids, $thisDepth);
+        if ($directive['authorId'] !== null && $directive['authorId'] !== '') {
+            $authorIds[] = $directive['authorId'];
+        }
+
+        $this->scanForReferenceIds($directive['prompt'], $ids, $authorIds, $thisDepth);
     }
 
     /**

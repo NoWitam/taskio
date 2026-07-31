@@ -13,11 +13,18 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Lifecycle reaper (scheduled) for generation SESSIONS (R2 sub-stage 2d). One pass applies three windows
- * ({@see GenerationSessionLifecycleService}): recover sessions stranded in `generating` by a dead worker
- * (SIGKILL/OOM bypasses the job's failed() hook), then TRASH non-archived sessions idle past the trash
- * window, then PURGE trashed non-archived sessions past the purge window (force-delete + produced-image
- * blob GC). Archived sessions are exempt from trash + purge.
+ * Lifecycle reaper (scheduled) for generation SESSIONS (R2 sub-stage 2d). One pass applies the lifecycle
+ * windows ({@see GenerationSessionLifecycleService}): first fail storyboard FRAMES claimed but never settled
+ * (a dead frame worker, which would otherwise hold an almost-finished run open) so their run can settle, then
+ * recover sessions stranded in `generating` by a dead worker (SIGKILL/OOM bypasses the job's failed() hook),
+ * then TRASH non-archived sessions idle past the trash window, then PURGE trashed non-archived sessions past
+ * the purge window (force-delete + produced-image blob GC). Archived sessions are exempt from every step —
+ * with ONE narrow carve-out that runs last: a long-trashed archived session gives up its frozen character
+ * LIKENESS (never its row, never its content), because that copy of a real face is only ever readable by a
+ * run the row can no longer have.
+ *
+ * ORDER MATTERS between the first two: the frame sweep is the finer-grained recovery, so it runs first and a
+ * run it rescues never reaches the whole-session window in the same pass.
  *
  * `generation_sessions` lives in the shared database AND in each own-database workspace, so this runs once
  * on the default connection (WorkspaceScope self-disables with no active workspace → every shared row) and
@@ -32,16 +39,20 @@ class ReapGenerationSessionsCommand extends Command
 
     public function handle(GenerationSessionLifecycleService $lifecycle, TenantContext $context, TenantManager $tenants): int
     {
+        $frames = 0;
         $reaped = 0;
         $trashed = 0;
         $purged = 0;
+        $likenesses = 0;
 
         // Shared-mode workspaces all live in the default connection: one unscoped pass covers them.
         $context->clear();
         $tenants->forget();
+        $frames += $lifecycle->reapStaleFrames();
         $reaped += $lifecycle->reapStale();
         $trashed += $lifecycle->trashStale();
         $purged += $lifecycle->purgeTrashed();
+        $likenesses += $lifecycle->purgeArchivedIdentityImages();
 
         // Each own-database workspace has its own generation_sessions table: activate its context so the
         // tenant-aware model routes to the dedicated connection, then reap there. Only READY tenants have a
@@ -57,9 +68,11 @@ class ReapGenerationSessionsCommand extends Command
             try {
                 $context->set($workspace);
                 $tenants->configure($workspace);
+                $frames += $lifecycle->reapStaleFrames();
                 $reaped += $lifecycle->reapStale();
                 $trashed += $lifecycle->trashStale();
                 $purged += $lifecycle->purgeTrashed();
+                $likenesses += $lifecycle->purgeArchivedIdentityImages();
             } catch (Throwable $e) {
                 Log::error('Generation session reaper failed for workspace; continuing with remaining workspaces.', [
                     'workspace_id' => $workspace->id,
@@ -71,7 +84,7 @@ class ReapGenerationSessionsCommand extends Command
         $context->clear();
         $tenants->forget();
 
-        $this->info("Reaped {$reaped} stale session(s); trashed {$trashed}; purged {$purged}.");
+        $this->info("Failed {$frames} lost storyboard frame(s); reaped {$reaped} stale session(s); trashed {$trashed}; purged {$purged}; released {$likenesses} archived likeness(es).");
 
         return self::SUCCESS;
     }

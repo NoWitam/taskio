@@ -27,7 +27,7 @@ language as the rest of the `next` form controls.
 | `extensions/VariablePipelineEditor.vue` + `operationHelpers.ts` | The **shared** operations-pipeline editor (add-operation dropdown filtered by the current running type → steps → per-arg inputs → computed `resultType`) + its pure type-flow helpers. Used by BOTH the VariablePanel and the IF condition editor (DRY). |
 | `extensions/PipelineArgLiteralInput.vue` | The literal control for EVERY pipeline-operation argument kind — value (text/number/boolean/date) AND option/map/rules (select/sourceOption/sourceOptions/sourceMap/choiceRules/choiceFallback) — extracted verbatim from `VariablePipelineEditor`'s previous inline controls (Workflows variable-typesystem Phase 4; widened to the option/map/rules controls in a later "Phase 4b" batch) — rendered both as the editor's own literal fallback and inside a host's `argVariable` slot's value mode, so the two always look/behave identically. |
 | `extensions/VariableTypeIcon.vue` | Shared type-icon glyph + `nullable` ("?") / `array` ("[]") modifier markers (title + sr-only text), and an optional sr-only `typeLabel` prop. Used by `VariableChip` here and by the Workflows module's value-or-variable token, picker-tree rows, and operations-modal header, so a variable's type reads with the same glyph everywhere. |
-| `extensions/aiText.ts` + `AiTextChip.vue` + `AiTextPanel.vue` | AI-text node + **Modal** (persona Select + a nested `MarkdownEditor` for the prompt + labels multi-select). |
+| `extensions/aiText.ts` + `AiTextChip.vue` + `AiTextPanel.vue` | AI-text node + **Modal** (an Author `BotSelect` — replaces the retired persona Select, R2 ADR-0040 — + a nested `MarkdownEditor` for the prompt; the legacy persona tone, when present, shows read-only; the labels field is retired). |
 | `extensions/ifBlock.ts` + `IfBlockView.vue` + `IfBranchView.vue` + `IfConditionPanel.vue` | Conditional `if-block` **container** node + `ifBranch` child nodes with **inline-editable bodies** (real editor regions via `contentDOM`), boolean-condition editing (Modal), and a depth cap. |
 | `__tests__/markdown.spec.ts` | Round-trip + fidelity tests for the base serializer. |
 | `__tests__/directives.spec.ts` | PART 2 round-trip + degradation tests (directive bytes + structure). |
@@ -95,7 +95,11 @@ the **PART 2 feature configs** (all OFF by default):
   (`maxDepth` defaults to **3**). Inserted via the toolbar git-branch button
   (disabled at the depth cap).
 - `aiText?: boolean | { personas?; labelsEnabled?; labelsCatalog? }` — inserted
-  via the toolbar sparkles button.
+  via the toolbar sparkles button. The panel's picker edits the block's **author** (a Bot, via
+  `BotSelect` — contributes a VOICE, never knowledge or tools; R2, ADR-0040), not `personas`
+  anymore: that prop is now only the LABEL SOURCE for a legacy tone a block was saved with
+  (rendered read-only, clearable). `labelsEnabled`/`labelsCatalog` are retired — the labels UI
+  is gone, though any stored `labels` data is carried through untouched on save.
 
 There is **no variable toolbar button** — variables are trigger-only.
 Model: `v-model` (markdown string). Exposes `{ editor }` via `defineExpose`.
@@ -262,8 +266,19 @@ the legacy editor so content is **portable both ways**.
 | --- | --- |
 | **Mention** | `@[mention]("{\"v\":1,\"data\":{\"id\":\"u_1\",\"name\":\"Alice\",\"avatar\":\"/a.png\"}}")` |
 | **Variable** | `@[variable]("{\"v\":1,\"data\":{\"id\":\"total\",\"name\":\"Order total\",\"type\":\"number\",\"locked\":false,\"pipeline\":[…],\"resultType\":\"number\"}}")` |
-| **AI text** | `@[ai-text]("{\"v\":1,\"data\":{\"id\":\"ai_1\",\"personaId\":null,\"prompt\":\"…md…\",\"labels\":[…]}}")` |
+| **AI text** | `@[ai-text]("{\"v\":1,\"data\":{\"id\":\"ai_1\",\"personaId\":null,\"prompt\":\"…md…\",\"labels\":[…]}}")` (no author) — with an author (R2, ADR-0040): `@[ai-text]("{\"v\":1,\"data\":{\"id\":\"ai_1\",\"personaId\":null,\"authorId\":\"bot_1\",\"authorName\":\"Support Bot\",\"prompt\":\"…md…\",\"labels\":[…]}}")` |
 | **If-block** | fenced container (below) |
+
+**`authorId` / `authorName` (R2, ADR-0040) — EMIT-OR-OMIT, no alias.** The two AUTHOR keys on an `ai-text`
+node's `data` are written to the wire ONLY when the block actually has an author: with none, `encodeAiTextDirective()`
+omits both keys entirely, so an author-less block (every block saved before this feature, and every block
+whose author was never set) serializes to the EXACT SAME bytes as before — the `directives.spec.ts` round-trip
+tests pin this. `authorName` additionally never travels without a real `authorId` alongside it (clearing the
+author drops its display snapshot too). `authorId` has **no alias**: the backend's `VariableResolver` decodes
+this key and only this key — unlike `personaId`, which the inline-directive parser also accepts under the
+legacy bare key `persona`, `authorId` written under any other name would silently degrade the block to the
+default neutral tone rather than resolve. `authorName` is DISPLAY-ONLY on both ends — a snapshot the editor
+shows on the trigger before/without a live lookup, never an authority the backend trusts for anything.
 
 ```text
 ```if-block {"id":"if_1","v":1}

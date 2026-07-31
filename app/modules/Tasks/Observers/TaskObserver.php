@@ -29,9 +29,10 @@ class TaskObserver
      * is being worked on, so its submission stays a draft until the task is
      * finished — reaching DONE confirms it.
      *
-     * Covers both ways a task reaches DONE: the manual status change
-     * (TaskService::changeStatus) and approval-pipeline completion
-     * (Task::onApprovalCompleted), since both persist the status via update().
+     * Covers every way a task reaches DONE: the manual status change
+     * (TaskService::changeStatus), approval-pipeline completion
+     * (Task::onApprovalCompleted) and a bot completing its run
+     * (TaskService::botComplete), since all persist the status via update().
      */
     public function updated(Task $task): void
     {
@@ -43,7 +44,13 @@ class TaskObserver
             return;
         }
 
-        $task->formSubmission?->approve();
+        // Read the submission from the DB rather than the relation CACHE. A caller may hold
+        // a Task instance whose `formSubmission` was eager-loaded as null before the
+        // submission existed — that is exactly a bot run (BotTaskContextBuilder loads it up
+        // front, then fill_form creates it on the same instance). Trusting the cache there
+        // silently left the submission a draft, so the form_submitted workflow trigger
+        // never fired even though the task was done.
+        $task->formSubmission()->first()?->approve();
     }
 
     /**

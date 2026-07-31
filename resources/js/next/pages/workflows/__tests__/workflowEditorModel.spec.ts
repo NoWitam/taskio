@@ -358,12 +358,14 @@ function gcStep(config: Record<string, unknown>): StepDraft {
 }
 
 describe('emptyStepConfig — generate_content', () => {
-  it('seeds template_id/slots/folder_id/name and NOTHING else', () => {
+  it('seeds template_id/slots/folder_id/name/bot_id and NOTHING else', () => {
     expect(emptyStepConfig('generate_content')).toEqual({
       template_id: null,
       slots: {},
       folder_id: null,
       name: '',
+      // The optional session AUTHOR — null = no author (the run generates in the house voice).
+      bot_id: null,
     });
   });
 });
@@ -377,11 +379,14 @@ describe('suggestStepKey — generate_content', () => {
 
 describe('buildStepConfig — generate_content wire', () => {
   it('emits ONLY the allow-listed keys, omitting empty optionals', () => {
-    const out = buildStepConfig(gcStep({ template_id: 'tpl-1', slots: {}, folder_id: null, name: '   ' }));
+    const out = buildStepConfig(
+      gcStep({ template_id: 'tpl-1', slots: {}, folder_id: null, name: '   ', bot_id: null }),
+    );
     expect(out).toEqual({ template_id: 'tpl-1' });
     expect(Object.keys(out)).not.toContain('folder_id');
     expect(Object.keys(out)).not.toContain('name');
     expect(Object.keys(out)).not.toContain('slots');
+    expect(Object.keys(out)).not.toContain('bot_id');
   });
 
   it('emits folder_id + a trimmed name when set', () => {
@@ -463,5 +468,25 @@ describe('buildStepConfig — generate_content wire', () => {
 
   it('emits an EMPTY template_id (never omits it) so the required 422 lands on the field', () => {
     expect(buildStepConfig(gcStep({ template_id: null, slots: {} }))).toEqual({ template_id: '' });
+  });
+
+  // --- the optional session AUTHOR (bot_id) ---------------------------------
+  // The backend reads null / absent / '' identically as "no author", but anything else it cannot
+  // parse as a workspace uuid is a 422 on `steps.<i>.config.bot_id`. So the ONLY two shapes this
+  // builder may ever produce are "the key with a real id" and "no key at all".
+
+  it('emits bot_id when an author is chosen', () => {
+    expect(buildStepConfig(gcStep({ template_id: 'tpl-1', slots: {}, bot_id: 'bot-7' }))).toEqual({
+      template_id: 'tpl-1',
+      bot_id: 'bot-7',
+    });
+  });
+
+  it('OMITS bot_id for every "no author" shape (cleared picker / never set / blank)', () => {
+    for (const bot of [null, undefined, '', '   ']) {
+      const out = buildStepConfig(gcStep({ template_id: 'tpl-1', slots: {}, bot_id: bot }));
+      expect(out).toEqual({ template_id: 'tpl-1' });
+      expect('bot_id' in out).toBe(false);
+    }
   });
 });

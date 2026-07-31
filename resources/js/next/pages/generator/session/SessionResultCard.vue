@@ -20,15 +20,27 @@
 // (regenerate / refine / undo). A bare scene_plan / storyboard is NOT top-level refinable (its refine lives
 // per shot); both are still whole-part regenerable. A shot_list IS refinable. Every generative affordance
 // disables while the session is `generating`. The FE never interpolates — the server produced these parts.
+//
+// COLLAPSE (owner note #2): the card carries the same show/hide chevron as every other turn card, but starts
+// EXPANDED — this is the artifact the user came for. Two rules make the collapse safe:
+//   • the body is hidden with `v-show`, NEVER `v-if` — `SessionPartImage` owns an IntersectionObserver and a
+//     blob object-URL per image, so unmounting would re-fetch every image on each collapse and would leave
+//     `aria-controls` pointing at nothing;
+//   • the whole-part action row lives in the card FOOTER and stays visible while collapsed, so collapsing
+//     never buries the only entry to refine / regenerate / undo / save-to-Disk. (A storyboard's PER-SHOT
+//     rows are inside the body — they are affordances ON a shot, meaningless without the shot in view.)
 import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import Card from '../../../ui/layout/Card.vue';
 import Button from '../../../ui/primitives/Button.vue';
 import Badge from '../../../ui/primitives/Badge.vue';
 import Icon from '../../../ui/primitives/Icon.vue';
 import Tooltip from '../../../ui/overlay/Tooltip.vue';
 import Alert from '../../../ui/feedback/Alert.vue';
+import Skeleton from '../../../ui/data/Skeleton.vue';
 import MarkdownViewer from '../../../ui/editor/MarkdownViewer.vue';
 import SessionPartImage from './SessionPartImage.vue';
+import { nextId } from '../../../ui/forms/formField';
 import { partKindIcon } from '../templateMeta';
 import { SESSION_CAPABILITIES } from './sessionGating';
 import { pngFileName, type SaveImageRequest } from './sessionImages';
@@ -71,6 +83,14 @@ const props = defineProps<{
    * spins; every other shot's affordances stay disabled (the whole session is `generating` mid-op).
    */
   busyPartKey?: string | null;
+  /**
+   * This session froze a CHARACTER likeness — its images are drawn from the author's approved face.
+   * Gates the per-shot "with character" marker AND the "bot appearance" repair action: without a
+   * character, `features_character` is meaningless and the appearance page is not the fix.
+   */
+  hasCharacterImage?: boolean;
+  /** The bot author's id — the "bot appearance" action deep-links into its visual module. */
+  botAuthorId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -82,6 +102,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const toast = useToast();
+const router = useRouter();
 
 const caps = SESSION_CAPABILITIES;
 
@@ -129,6 +150,48 @@ const cardLabel = computed(() => t('generator.sessions.result.aria', '', { label
 
 // --- Stale hint (Phase A cross-part coherence) ------------------------------
 const isStale = computed(() => props.result?.stale === true);
+
+// --- Collapse (owner note #2) ------------------------------------------------
+// EXPANDED by default: a result is the artifact, not context. The body stays mounted (v-show) — see the
+// file header for why that is not optional here.
+const expanded = ref(true);
+function toggleExpanded(): void {
+  expanded.value = !expanded.value;
+}
+const bodyId = nextId('next-result');
+
+/** First non-blank line of a text, with a leading markdown heading marker dropped. */
+function firstLine(source: string): string {
+  const line = source.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  return line.replace(/^#{1,6}\s*/, '');
+}
+
+/**
+ * The collapsed one-line teaser — built ONLY from what the card already holds (no extra request, no image
+ * thumbnail): the error, the hook / shot count, the first line of the produced text, or an "image ready"
+ * marker. Rendered as plain text, like every other model-derived value in this view.
+ */
+const collapsedTeaser = computed<string>(() => {
+  if (failed.value) return props.result?.error || t('generator.sessions.result.failed');
+  if (isShotList.value && parseOk.value) {
+    if (hook.value) return hook.value;
+    if (shotListShots.value.length) {
+      return t('generator.sessions.result.previewShots', '', { count: shotListShots.value.length });
+    }
+  }
+  if (isStoryboard.value) {
+    return storyboardShots.value.length
+      ? t('generator.sessions.result.previewShots', '', { count: storyboardShots.value.length })
+      : t('generator.sessions.result.storyboardEmpty');
+  }
+  if (isScene.value) {
+    const narration = scenes.value[0]?.narration;
+    if (typeof narration === 'string' && narration.trim()) return firstLine(narration);
+  }
+  if (text.value.trim()) return firstLine(text.value);
+  if (hasImage.value) return t('generator.sessions.result.previewImage');
+  return t('generator.sessions.result.previewEmpty');
+});
 
 // --- Version display ("Wersja N") + undo gating (R2 sub-stage 2d) -----------
 const version = computed(() => props.result?.version ?? null);
@@ -279,10 +342,53 @@ function saveShot(shot: StoryboardShot): void {
   if (!caps.saveToDisk || shot.image_status !== 'ok' || !shot.part_key) return;
   emit('save', { partKey: shot.part_key, name: defaultName(shotTitle(shot.index)) });
 }
+
+// --- Character signals (R2 sub-stage 3) -------------------------------------
+/**
+ * Whether a shot is drawn FROM the session's frozen character. Both halves must hold: the session has a
+ * likeness at all, and the model flagged this particular beat as showing the creator. Absent = false, so
+ * a run without a character (and a shot list written before the flag existed) shows nothing.
+ */
+function featuresCharacter(shot: { features_character?: boolean }): boolean {
+  return props.hasCharacterImage === true && shot.features_character === true;
+}
+
+/**
+ * A shot whose IMAGE failed while it was supposed to show the character. The extra repair action is
+ * gated on the CONTEXT, not on the error text: the provider's wording is not a contract, and a
+ * character shot that failed for any reason is still worth checking the appearance for.
+ */
+function canOpenAppearance(shot: StoryboardShot): boolean {
+  return !!props.botAuthorId && featuresCharacter(shot) && shot.image_status === 'failed';
+}
+
+/**
+ * A failed frame's message. When the server classified the failure as MODERATION we say so in our own
+ * words — the generic "the image could not be produced" actively misleads, because the fix is the
+ * character's description or wardrobe, not the plan. Absent code → the server's own prose.
+ */
+function shotImageError(shot: StoryboardShot): string {
+  // NOTE the key: per-SHOT codes ride as `image_error_code` (namespaced like `image_error`), while a
+  // whole-part failure carries `error_code` — reading the part key here would silently kill the promotion.
+  if (shot.image_error_code === 'image_safety') return t('generator.sessions.character.safetyFailed');
+  return shot.image_error || t('generator.sessions.result.imageFailed');
+}
+
+/** The same promotion for a whole-part failure (an image_plan / storyboard part). */
+const partError = computed(() => {
+  if (props.result?.error_code === 'image_safety') return t('generator.sessions.character.safetyFailed');
+  return props.result?.error || t('generator.sessions.result.imageFailed');
+});
+
+/** Deep-link into the bot's "Wygląd" module, where the description + wardrobe live. */
+function openAppearance(): void {
+  if (!props.botAuthorId) return;
+  void router.push({ name: 'next.bots', query: { bot: props.botAuthorId, botModule: 'visual' } });
+}
 </script>
 
 <template>
-  <Card variant="default" :aria-label="cardLabel" role="article">
+  <Card variant="default" :aria-label="cardLabel" role="article" :body-collapsed="!expanded">
     <template #header>
       <div class="flex min-w-0 flex-1 flex-wrap items-center gap-next-2">
         <Icon :name="partKindIcon(part.kind)" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
@@ -297,268 +403,347 @@ function saveShot(shot: StoryboardShot): void {
             {{ t('generator.sessions.result.stale') }}
           </Badge>
         </Tooltip>
+        <!-- Collapsed teaser: one clipped line of what the card is hiding. -->
+        <span
+          v-if="!expanded"
+          class="min-w-0 flex-1 truncate text-next-xs text-next-muted-foreground"
+        >
+          {{ collapsedTeaser }}
+        </span>
       </div>
     </template>
 
-    <!-- Body by kind -->
-    <!-- text_body / script -->
-    <template v-if="isText">
-      <Alert v-if="failed" variant="danger" size="sm">
-        {{ result?.error || t('generator.sessions.result.failed') }}
-      </Alert>
-      <MarkdownViewer v-else :source="text" :aria-label="partLabel" />
+    <template #headerActions>
+      <Button
+        variant="ghost"
+        size="sm"
+        :leading-icon="expanded ? 'chevron-up' : 'chevron-down'"
+        :aria-expanded="expanded ? 'true' : 'false'"
+        :aria-controls="bodyId"
+        @click="toggleExpanded"
+      >
+        {{ expanded ? t('generator.sessions.toggle.collapse') : t('generator.sessions.toggle.expand') }}
+      </Button>
     </template>
 
-    <!-- image_plan -->
-    <div v-else-if="isImage" class="flex flex-col gap-next-2">
-      <Alert v-if="failed" variant="danger" size="sm">
-        {{ result?.error || t('generator.sessions.result.imageFailed') }}
-      </Alert>
-      <SessionPartImage
-        v-else-if="hasImage"
-        :session-id="sessionId"
-        :part-key="part.key"
-        :image="producedImage"
-        :alt="t('generator.sessions.result.imageAlt', '', { label: partLabel })"
-      />
-      <!-- Defensive fallback: a `deferred` image should not occur post-2c. -->
-      <div
-        v-else
-        class="flex min-h-[8rem] flex-col items-center justify-center gap-next-2 rounded-next-lg border border-next-border bg-next-muted/40 p-next-6 text-center text-next-muted-foreground"
-      >
-        <Icon name="image" class="text-next-2xl" aria-hidden="true" />
-        <p class="text-next-sm">{{ t('generator.sessions.result.deferred') }}</p>
-      </div>
-    </div>
-
-    <!-- scene_plan (legacy snapshot) -->
-    <div v-else-if="isScene" class="flex flex-col gap-next-2">
-      <div
-        v-if="scenes.length === 0"
-        class="flex min-h-[8rem] flex-col items-center justify-center gap-next-2 rounded-next-lg border border-next-border bg-next-muted/40 p-next-6 text-center text-next-muted-foreground"
-      >
-        <Icon name="list-ordered" class="text-next-2xl" aria-hidden="true" />
-        <p class="text-next-sm">{{ t('generator.sessions.result.deferred') }}</p>
-      </div>
-      <div
-        v-for="(scene, index) in scenes"
-        :key="index"
-        class="flex flex-col gap-next-2 rounded-next-lg border border-next-border bg-next-card p-next-3"
-      >
-        <span class="text-next-xs font-next-medium text-next-muted-foreground">{{ sceneTitle(index) }}</span>
-        <MarkdownViewer :source="scene.narration" :aria-label="t('generator.templates.editor.scene.narration')" />
-        <SessionPartImage
-          v-if="scene.image_status === 'ok' && scene.part_key"
-          :session-id="sessionId"
-          :part-key="scene.part_key"
-          :image="scene.image"
-          :alt="t('generator.sessions.result.sceneImageAlt', '', { n: index + 1 })"
-        />
-        <Alert v-else-if="scene.image_status === 'failed'" variant="danger" size="sm">
-          {{ scene.image_error || t('generator.sessions.result.imageFailed') }}
+    <!-- Body by kind. ONE v-show wrapper: hidden, never unmounted (images + aria-controls). -->
+    <div v-show="expanded" :id="bodyId">
+      <!-- text_body / script -->
+      <template v-if="isText">
+        <Alert v-if="failed" variant="danger" size="sm">
+          {{ result?.error || t('generator.sessions.result.failed') }}
         </Alert>
-        <div v-if="scene.image_status === 'ok' && scene.part_key" class="flex">
-          <Button
-            variant="ghost"
-            size="sm"
-            leading-icon="folder"
-            :disabled="!caps.saveToDisk"
-            @click="saveScene(index)"
-          >
-            {{ t('generator.sessions.result.saveToDisk') }}
-          </Button>
-        </div>
-      </div>
-    </div>
-
-    <!-- shot_list (structured script) -->
-    <div v-else-if="isShotList" class="flex flex-col gap-next-3">
-      <Alert v-if="failed" variant="danger" size="sm">
-        {{ result?.error || t('generator.sessions.result.failed') }}
-      </Alert>
-
-      <!-- parse_ok:false — the model returned non-JSON; show the raw text + a subtle note. -->
-      <template v-else-if="!parseOk">
-        <Alert variant="info" size="sm">{{ t('generator.sessions.result.parseFallback') }}</Alert>
-        <MarkdownViewer :source="text" :aria-label="partLabel" />
+        <MarkdownViewer v-else :source="text" :aria-label="partLabel" />
       </template>
 
-      <!-- Structured: HOOK → ordered SHOTS → CTA. -->
-      <template v-else>
-        <div v-if="hook" class="flex flex-col gap-next-1 rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <span class="text-next-2xs font-next-semibold uppercase tracking-next-wide text-next-muted-foreground">
-            {{ t('generator.sessions.result.hook') }}
-          </span>
-          <p class="text-next-sm text-next-fg">{{ hook }}</p>
+      <!-- image_plan -->
+      <div v-else-if="isImage" class="flex flex-col gap-next-2">
+        <!-- A moderation refusal is promoted over the generic prose (see `partError`). -->
+        <Alert v-if="failed" variant="danger" size="sm">
+          {{ partError }}
+        </Alert>
+        <SessionPartImage
+          v-else-if="hasImage"
+          :session-id="sessionId"
+          :part-key="part.key"
+          :image="producedImage"
+          :alt="t('generator.sessions.result.imageAlt', '', { label: partLabel })"
+        />
+        <!-- Defensive fallback: a `deferred` image should not occur post-2c. -->
+        <div
+          v-else
+          class="flex min-h-[8rem] flex-col items-center justify-center gap-next-2 rounded-next-lg border border-next-border bg-next-muted/40 p-next-6 text-center text-next-muted-foreground"
+        >
+          <Icon name="image" class="text-next-2xl" aria-hidden="true" />
+          <p class="text-next-sm">{{ t('generator.sessions.result.deferred') }}</p>
         </div>
-
-        <ol v-if="shotListShots.length > 0" class="flex flex-col gap-next-2">
-          <li
-            v-for="(shot, index) in shotListShots"
-            :key="index"
-            class="flex flex-col gap-next-1_5 rounded-next-lg border border-next-border bg-next-card p-next-3"
-          >
-            <div class="flex items-center gap-next-2">
-              <span class="text-next-xs font-next-semibold text-next-fg">{{ shotTitle(index) }}</span>
-              <Badge v-if="shot.seconds > 0" variant="neutral" tone="subtle" size="sm" icon="clock">
-                {{ t('generator.sessions.result.seconds', '', { n: shot.seconds }) }}
-              </Badge>
-            </div>
-            <div v-if="shot.visual" class="flex flex-col gap-next-0_5">
-              <span class="text-next-2xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
-                {{ t('generator.sessions.result.visual') }}
-              </span>
-              <p class="text-next-sm text-next-fg">{{ shot.visual }}</p>
-            </div>
-            <div v-if="shot.voiceover" class="flex flex-col gap-next-0_5">
-              <span class="text-next-2xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
-                {{ t('generator.sessions.result.voiceover') }}
-              </span>
-              <p class="text-next-sm text-next-muted-foreground">{{ shot.voiceover }}</p>
-            </div>
-          </li>
-        </ol>
-
-        <div v-if="cta" class="flex flex-col gap-next-1 rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <span class="text-next-2xs font-next-semibold uppercase tracking-next-wide text-next-muted-foreground">
-            {{ t('generator.sessions.result.cta') }}
-          </span>
-          <p class="text-next-sm text-next-fg">{{ cta }}</p>
-        </div>
-      </template>
-    </div>
-
-    <!-- storyboard (per-shot images + per-shot ops) -->
-    <div v-else-if="isStoryboard" class="flex flex-col gap-next-3">
-      <Alert v-if="failed" variant="danger" size="sm">
-        {{ result?.error || t('generator.sessions.result.imageFailed') }}
-      </Alert>
-
-      <div
-        v-else-if="storyboardShots.length === 0"
-        class="flex min-h-[8rem] flex-col items-center justify-center gap-next-2 rounded-next-lg border border-next-border bg-next-muted/40 p-next-6 text-center text-next-muted-foreground"
-      >
-        <Icon name="layout-dashboard" class="text-next-2xl" aria-hidden="true" />
-        <p class="text-next-sm">{{ t('generator.sessions.result.storyboardEmpty') }}</p>
       </div>
 
-      <div
-        v-for="shot in storyboardShots"
-        v-else
-        :key="shot.index"
-        class="flex flex-col gap-next-2 rounded-next-lg border border-next-border bg-next-card p-next-3"
-      >
-        <div class="flex flex-wrap items-center gap-next-2">
-          <span class="text-next-xs font-next-semibold text-next-fg">{{ shotTitle(shot.index) }}</span>
-          <Badge v-if="shot.seconds > 0" variant="neutral" tone="subtle" size="sm" icon="clock">
-            {{ t('generator.sessions.result.seconds', '', { n: shot.seconds }) }}
-          </Badge>
-          <Badge v-if="showShotVersion(shot)" variant="neutral" tone="subtle" size="sm" icon="clock">
-            {{ shotVersionLabel(shot) }}
-          </Badge>
+      <!-- scene_plan (legacy snapshot) -->
+      <div v-else-if="isScene" class="flex flex-col gap-next-2">
+        <div
+          v-if="scenes.length === 0"
+          class="flex min-h-[8rem] flex-col items-center justify-center gap-next-2 rounded-next-lg border border-next-border bg-next-muted/40 p-next-6 text-center text-next-muted-foreground"
+        >
+          <Icon name="list-ordered" class="text-next-2xl" aria-hidden="true" />
+          <p class="text-next-sm">{{ t('generator.sessions.result.deferred') }}</p>
         </div>
-
-        <!-- The beat (small, muted). -->
-        <p v-if="shot.visual" class="text-next-sm text-next-fg">{{ shot.visual }}</p>
-        <p v-if="shot.voiceover" class="text-next-xs text-next-muted-foreground">{{ shot.voiceover }}</p>
-
-        <!-- Produced image or per-shot error. -->
-        <SessionPartImage
-          v-if="shot.image_status === 'ok' && shot.part_key"
-          :session-id="sessionId"
-          :part-key="shot.part_key"
-          :image="shot.image"
-          :alt="t('generator.sessions.result.shotImageAlt', '', { n: shot.index + 1 })"
-        />
-        <Alert v-else-if="shot.image_status === 'failed'" variant="danger" size="sm">
-          {{ shot.image_error || t('generator.sessions.result.imageFailed') }}
-        </Alert>
-
-        <!-- Per-shot action row (rides the SAME per-part op contract with `storyboard.<i>`). -->
-        <div class="flex flex-col gap-next-2">
-          <div class="flex flex-wrap items-center gap-next-1">
-            <Tooltip :label="generating ? busyTooltip : blocked ? blockedTooltip : regenerateLabel">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                leading-icon="rotate-ccw"
-                :loading="isBusyFor(shotKey(shot))"
-                :disabled="!canShotRegenerate(shot)"
-                :aria-label="t('generator.sessions.regenerate')"
-                @click="regenerateShot(shot)"
-              />
-            </Tooltip>
-            <!-- Refine (AI image-edit) revises the CURRENT image — offered only for a produced (`ok`)
-                 shot, mirroring the top-level `isRefinable` rule and the per-shot Save gate. A failed
-                 shot has no image to refine (regenerate retries it instead). -->
-            <Tooltip
-              v-if="shot.image_status === 'ok'"
-              :label="generating ? busyTooltip : blocked ? blockedTooltip : t('generator.sessions.result.refine')"
+        <div
+          v-for="(scene, index) in scenes"
+          :key="index"
+          class="flex flex-col gap-next-2 rounded-next-lg border border-next-border bg-next-card p-next-3"
+        >
+          <span class="text-next-xs font-next-medium text-next-muted-foreground">{{ sceneTitle(index) }}</span>
+          <MarkdownViewer :source="scene.narration" :aria-label="t('generator.templates.editor.scene.narration')" />
+          <SessionPartImage
+            v-if="scene.image_status === 'ok' && scene.part_key"
+            :session-id="sessionId"
+            :part-key="scene.part_key"
+            :image="scene.image"
+            :alt="t('generator.sessions.result.sceneImageAlt', '', { n: index + 1 })"
+          />
+          <!-- Same moderation promotion as the shot/part arms: a scene image CAN be character-drawn
+               (directedImagePlan hands scenes the same reference bytes), so its refusal deserves the
+               same actionable wording instead of the generic prose. -->
+          <Alert v-else-if="scene.image_status === 'failed'" variant="danger" size="sm">
+            {{ scene.image_error_code === 'image_safety'
+              ? t('generator.sessions.character.safetyFailed')
+              : (scene.image_error || t('generator.sessions.result.imageFailed')) }}
+          </Alert>
+          <div v-if="scene.image_status === 'ok' && scene.part_key" class="flex">
+            <Button
+              variant="ghost"
+              size="sm"
+              leading-icon="folder"
+              :disabled="!caps.saveToDisk"
+              @click="saveScene(index)"
             >
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                leading-icon="pencil"
-                :disabled="!canRefineKey(shotKey(shot))"
-                :aria-label="t('generator.sessions.result.refine')"
-                :aria-expanded="refineKey === shotKey(shot) ? 'true' : 'false'"
-                @click="toggleRefine(shotKey(shot))"
-              />
-            </Tooltip>
-            <Tooltip :label="shotUndoTooltip(shot)">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                leading-icon="undo"
-                :disabled="!canShotUndo(shot)"
-                :aria-label="t('generator.sessions.result.undo')"
-                @click="undoShot(shot)"
-              />
-            </Tooltip>
-            <Tooltip v-if="shot.image_status === 'ok'" :label="t('generator.sessions.result.saveToDisk')">
-              <Button
-                variant="ghost"
-                size="sm"
-                leading-icon="folder"
-                :disabled="!caps.saveToDisk"
-                @click="saveShot(shot)"
-              >
-                {{ t('generator.sessions.result.saveToDisk') }}
-              </Button>
-            </Tooltip>
+              {{ t('generator.sessions.result.saveToDisk') }}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <!-- shot_list (structured script) -->
+      <div v-else-if="isShotList" class="flex flex-col gap-next-3">
+        <Alert v-if="failed" variant="danger" size="sm">
+          {{ result?.error || t('generator.sessions.result.failed') }}
+        </Alert>
+
+        <!-- parse_ok:false — the model returned non-JSON; show the raw text + a subtle note. -->
+        <template v-else-if="!parseOk">
+          <Alert variant="info" size="sm">{{ t('generator.sessions.result.parseFallback') }}</Alert>
+          <MarkdownViewer :source="text" :aria-label="partLabel" />
+        </template>
+
+        <!-- Structured: HOOK → ordered SHOTS → CTA. -->
+        <template v-else>
+          <div v-if="hook" class="flex flex-col gap-next-1 rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <span class="text-next-2xs font-next-semibold uppercase tracking-next-wide text-next-muted-foreground">
+              {{ t('generator.sessions.result.hook') }}
+            </span>
+            <p class="text-next-sm text-next-fg">{{ hook }}</p>
           </div>
 
-          <!-- Inline per-shot refine composer (an AI edit instruction). -->
+          <ol v-if="shotListShots.length > 0" class="flex flex-col gap-next-2">
+            <li
+              v-for="(shot, index) in shotListShots"
+              :key="index"
+              class="flex flex-col gap-next-1_5 rounded-next-lg border border-next-border bg-next-card p-next-3"
+            >
+              <div class="flex flex-wrap items-center gap-next-2">
+                <span class="text-next-xs font-next-semibold text-next-fg">{{ shotTitle(index) }}</span>
+                <Badge v-if="shot.seconds > 0" variant="neutral" tone="subtle" size="sm" icon="clock">
+                  {{ t('generator.sessions.result.seconds', '', { n: shot.seconds }) }}
+                </Badge>
+                <!-- The shot list already knows which beats show the creator — say so here too, so the
+                     storyboard's markers are not a surprise. -->
+                <Badge
+                  v-if="featuresCharacter(shot)"
+                  variant="neutral"
+                  tone="subtle"
+                  size="sm"
+                  icon="user"
+                  :title="t('generator.sessions.character.shotBadgeTitle')"
+                >
+                  {{ t('generator.sessions.character.shotBadge') }}
+                </Badge>
+              </div>
+              <div v-if="shot.visual" class="flex flex-col gap-next-0_5">
+                <span class="text-next-2xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+                  {{ t('generator.sessions.result.visual') }}
+                </span>
+                <p class="text-next-sm text-next-fg">{{ shot.visual }}</p>
+              </div>
+              <div v-if="shot.voiceover" class="flex flex-col gap-next-0_5">
+                <span class="text-next-2xs font-next-medium uppercase tracking-next-wide text-next-muted-foreground">
+                  {{ t('generator.sessions.result.voiceover') }}
+                </span>
+                <p class="text-next-sm text-next-muted-foreground">{{ shot.voiceover }}</p>
+              </div>
+            </li>
+          </ol>
+
+          <div v-if="cta" class="flex flex-col gap-next-1 rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <span class="text-next-2xs font-next-semibold uppercase tracking-next-wide text-next-muted-foreground">
+              {{ t('generator.sessions.result.cta') }}
+            </span>
+            <p class="text-next-sm text-next-fg">{{ cta }}</p>
+          </div>
+        </template>
+      </div>
+
+      <!-- storyboard (per-shot images + per-shot ops) -->
+      <div v-else-if="isStoryboard" class="flex flex-col gap-next-3">
+        <Alert v-if="failed" variant="danger" size="sm">
+          {{ partError }}
+        </Alert>
+
+        <div
+          v-else-if="storyboardShots.length === 0"
+          class="flex min-h-[8rem] flex-col items-center justify-center gap-next-2 rounded-next-lg border border-next-border bg-next-muted/40 p-next-6 text-center text-next-muted-foreground"
+        >
+          <Icon name="layout-dashboard" class="text-next-2xl" aria-hidden="true" />
+          <p class="text-next-sm">{{ t('generator.sessions.result.storyboardEmpty') }}</p>
+        </div>
+
+        <div
+          v-for="shot in storyboardShots"
+          v-else
+          :key="shot.index"
+          class="flex flex-col gap-next-2 rounded-next-lg border border-next-border bg-next-card p-next-3"
+        >
+          <div class="flex flex-wrap items-center gap-next-2">
+            <span class="text-next-xs font-next-semibold text-next-fg">{{ shotTitle(shot.index) }}</span>
+            <Badge v-if="shot.seconds > 0" variant="neutral" tone="subtle" size="sm" icon="clock">
+              {{ t('generator.sessions.result.seconds', '', { n: shot.seconds }) }}
+            </Badge>
+            <Badge v-if="showShotVersion(shot)" variant="neutral" tone="subtle" size="sm" icon="clock">
+              {{ shotVersionLabel(shot) }}
+            </Badge>
+            <!-- This beat is drawn from the session's frozen character. -->
+            <Badge
+              v-if="featuresCharacter(shot)"
+              variant="neutral"
+              tone="subtle"
+              size="sm"
+              icon="user"
+              :title="t('generator.sessions.character.shotBadgeTitle')"
+            >
+              {{ t('generator.sessions.character.shotBadge') }}
+            </Badge>
+          </div>
+
+          <!-- The beat (small, muted). -->
+          <p v-if="shot.visual" class="text-next-sm text-next-fg">{{ shot.visual }}</p>
+          <p v-if="shot.voiceover" class="text-next-xs text-next-muted-foreground">{{ shot.voiceover }}</p>
+
+          <!-- Produced image, the frame still being rendered, or a per-shot error. The frames of a
+               storyboard are rendered by SEPARATE queue jobs, so a session fetched mid-run legitimately
+               carries `pending` / `rendering` shots — without this arm they were an empty hole. -->
+          <SessionPartImage
+            v-if="shot.image_status === 'ok' && shot.part_key"
+            :session-id="sessionId"
+            :part-key="shot.part_key"
+            :image="shot.image"
+            :alt="t('generator.sessions.result.shotImageAlt', '', { n: shot.index + 1 })"
+          />
           <div
-            v-if="refineKey === shotKey(shot)"
-            class="flex flex-col gap-next-2 rounded-next-lg border border-next-border bg-next-muted/30 p-next-3"
+            v-else-if="shot.image_status === 'pending' || shot.image_status === 'rendering'"
+            class="flex flex-col items-center justify-center gap-next-2 overflow-hidden rounded-next-lg border border-next-border bg-next-muted/40 p-next-1"
+            data-test="shot-frame-pending"
+            role="status"
           >
-            <label :for="`refine-${shotKey(shot)}`" class="text-next-xs font-next-medium text-next-muted-foreground">
-              {{ t('generator.sessions.result.refineLabel') }}
-            </label>
-            <textarea
-              :id="`refine-${shotKey(shot)}`"
-              v-model="refineDraft"
-              rows="2"
-              :disabled="!canRefineKey(shotKey(shot))"
-              :placeholder="t('generator.sessions.result.refinePlaceholder')"
-              :aria-label="t('generator.sessions.result.refineLabel')"
-              class="w-full resize-none rounded-next-md border border-next-input bg-next-bg px-next-3 py-next-2 text-next-sm text-next-fg placeholder:text-next-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-next-ring disabled:cursor-not-allowed disabled:opacity-60"
-              @keydown="(e) => onRefineKeydown(e, shotKey(shot))"
-            />
-            <div class="flex items-center justify-end gap-next-2">
-              <Button variant="ghost" size="sm" @click="toggleRefine(shotKey(shot))">
-                {{ t('common.cancel', 'Cancel') }}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                leading-icon="arrow-up"
-                :disabled="!canRefineKey(shotKey(shot)) || !refineDraft.trim()"
-                @click="submitRefine(shotKey(shot))"
+            <Skeleton variant="rect" width="100%" height="12rem" radius="md" />
+            <span class="pb-next-1 text-next-xs text-next-muted-foreground">
+              {{ t('generator.sessions.result.framePending') }}
+            </span>
+          </div>
+          <Alert v-else-if="shot.image_status === 'failed'" variant="danger" size="sm">
+            <div class="flex flex-col gap-next-2">
+              <span>{{ shotImageError(shot) }}</span>
+              <!-- A character shot that failed: the fix usually lives in the bot's appearance (its
+                   description / wardrobe decide whether the provider hands the image over). -->
+              <div v-if="canOpenAppearance(shot)">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leading-icon="palette"
+                  :title="t('generator.sessions.character.openAppearanceTitle')"
+                  @click="openAppearance"
+                >
+                  {{ t('generator.sessions.character.openAppearance') }}
+                </Button>
+              </div>
+            </div>
+          </Alert>
+
+          <!-- Per-shot action row (rides the SAME per-part op contract with `storyboard.<i>`). -->
+          <div class="flex flex-col gap-next-2">
+            <div class="flex flex-wrap items-center gap-next-1">
+              <Tooltip :label="generating ? busyTooltip : blocked ? blockedTooltip : regenerateLabel">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  leading-icon="rotate-ccw"
+                  :loading="isBusyFor(shotKey(shot))"
+                  :disabled="!canShotRegenerate(shot)"
+                  :aria-label="t('generator.sessions.regenerate')"
+                  @click="regenerateShot(shot)"
+                />
+              </Tooltip>
+              <!-- Refine (AI image-edit) revises the CURRENT image — offered only for a produced (`ok`)
+                   shot, mirroring the top-level `isRefinable` rule and the per-shot Save gate. A failed
+                   shot has no image to refine (regenerate retries it instead). -->
+              <Tooltip
+                v-if="shot.image_status === 'ok'"
+                :label="generating ? busyTooltip : blocked ? blockedTooltip : t('generator.sessions.result.refine')"
               >
-                {{ t('generator.sessions.result.refine') }}
-              </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  leading-icon="pencil"
+                  :disabled="!canRefineKey(shotKey(shot))"
+                  :aria-label="t('generator.sessions.result.refine')"
+                  :aria-expanded="refineKey === shotKey(shot) ? 'true' : 'false'"
+                  @click="toggleRefine(shotKey(shot))"
+                />
+              </Tooltip>
+              <Tooltip :label="shotUndoTooltip(shot)">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  leading-icon="undo"
+                  :disabled="!canShotUndo(shot)"
+                  :aria-label="t('generator.sessions.result.undo')"
+                  @click="undoShot(shot)"
+                />
+              </Tooltip>
+              <Tooltip v-if="shot.image_status === 'ok'" :label="t('generator.sessions.result.saveToDisk')">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leading-icon="folder"
+                  :disabled="!caps.saveToDisk"
+                  @click="saveShot(shot)"
+                >
+                  {{ t('generator.sessions.result.saveToDisk') }}
+                </Button>
+              </Tooltip>
+            </div>
+
+            <!-- Inline per-shot refine composer (an AI edit instruction). -->
+            <div
+              v-if="refineKey === shotKey(shot)"
+              class="flex flex-col gap-next-2 rounded-next-lg border border-next-border bg-next-muted/30 p-next-3"
+            >
+              <label :for="`refine-${shotKey(shot)}`" class="text-next-xs font-next-medium text-next-muted-foreground">
+                {{ t('generator.sessions.result.refineLabel') }}
+              </label>
+              <textarea
+                :id="`refine-${shotKey(shot)}`"
+                v-model="refineDraft"
+                rows="2"
+                :disabled="!canRefineKey(shotKey(shot))"
+                :placeholder="t('generator.sessions.result.refinePlaceholder')"
+                :aria-label="t('generator.sessions.result.refineLabel')"
+                class="w-full resize-none rounded-next-md border border-next-input bg-next-bg px-next-3 py-next-2 text-next-sm text-next-fg placeholder:text-next-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-next-ring disabled:cursor-not-allowed disabled:opacity-60"
+                @keydown="(e) => onRefineKeydown(e, shotKey(shot))"
+              />
+              <div class="flex items-center justify-end gap-next-2">
+                <Button variant="ghost" size="sm" @click="toggleRefine(shotKey(shot))">
+                  {{ t('common.cancel', 'Cancel') }}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  leading-icon="arrow-up"
+                  :disabled="!canRefineKey(shotKey(shot)) || !refineDraft.trim()"
+                  @click="submitRefine(shotKey(shot))"
+                >
+                  {{ t('generator.sessions.result.refine') }}
+                </Button>
+              </div>
             </div>
           </div>
         </div>

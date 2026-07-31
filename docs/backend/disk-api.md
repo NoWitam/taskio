@@ -382,12 +382,23 @@ file row.
   `{ "data": { "id": "uuid", "status": "queued" } }`.
 - Its own tight `disk-ai` throttle bucket (10/min) — long, provider-billed calls.
 
-**GET /{id} — poll.** `{ "data": { "id", "status", "image"?, "mime"?, "error"? } }` — one resource
-shape covers both the dispatch response and every subsequent poll. `status` is
+**GET /{id} — poll.** `{ "data": { "id", "status", "image"?, "mime"?, "error"?, "error_code"? } }` —
+one resource shape covers both the dispatch response and every subsequent poll. `status` is
 `queued | processing | done | failed`; `image` (base64 PNG) + `mime` appear only once `done`,
 `error` only once `failed`. Tenant-scoped like every disk id (`WorkspaceScope` + route-model
 binding — a foreign id 404s; a missing `X-Workspace-Id` → `400`, refused before the binding even
 resolves). `disk-read` throttle bucket (a poll loop hammers it like a thumbnail grid).
+
+- **`error_code` (additive) — the machine-readable reason a failed edit produced no image.** Present
+  only once, today only value `safety_rejected`: the provider RENDERED the image and then refused to
+  hand it over because its own output-side moderation refused the content (deterministic — retrying
+  buys the same refusal). Internally this is its own STORED status
+  (`DiskAiEditStatus::SafetyRejected`), split from `Failed` because a client should not have to match
+  on a translated sentence to tell "the provider's safety system refused this" apart from "the
+  provider broke" — but `status` on the wire is ALWAYS `failed` for both
+  (`DiskAiEditStatus::wireStatus()`): the `queued|processing|done|failed` vocabulary every poll/
+  broadcast consumer already branches on is never widened, and the distinction rides `error_code`
+  instead, absent whenever there is nothing specific to say.
 
 - **Realtime push, preferred over polling.** When a queued edit reaches a terminal state
   (`done`/`failed`) the worker also broadcasts a lightweight `{ id, status, error? }` payload —
@@ -405,13 +416,36 @@ resolves). `disk-read` throttle bucket (a poll loop hammers it like a thumbnail 
   to support masked `images/edits`). 3 tries, backoff `30s / 120s / 300s`; when retries are
   exhausted the job's `failed()` hook records a localized, non-secret `disk.ai.failed` message
   (never the raw provider body) and drops the persisted inputs.
+- **A retry never re-buys a delivered image.** `process()` is split into a PAID half
+  (`produce()` — the actual provider call) and everything after it (materializing/storing the
+  result, the `done` write, the broadcast, dropping the inputs). `produce()` persists the
+  provider's `result_image` onto the row the INSTANT it returns, before anything that can still
+  throw — so a retry entering `process()` again first checks whether the row already carries a
+  result and, if so, RESUMES from there instead of calling the provider a second time. Without this
+  split, any failure downstream of a successful provider call (a broken broadcast, a storage
+  hiccup, or — for a caller riding this seam with its own materialization hook, see below — a
+  throwing hook) sent the queue's retry back through the billed call itself, and the workspace paid
+  for the same edit again on every subsequent try.
 - **Request tuning** — beyond the mask, `OpenAiImageEditClient` also sends `input_fidelity`,
   `quality`, and `background` to `images/edits` (any of the three may be blanked to `''` to omit
   it from the request). `background=opaque` stops an object-removal edit from cutting a
   transparent hole where the mask was (the provider's own `auto` default can leave the region
   transparent, which then shows through as a washed patch once composited over the original);
   `quality=high` reconstructs real detail in the repainted region instead of the flatter patch the
-  provider's own `medium` default produces.
+  provider's own `medium` default produces. `input_fidelity` is sent on **every** edit this client
+  makes, gpt-image-1-specific — pointing `ai.disk_image_model` at another model needs the parameter
+  to go with it, or the provider rejects the request outright.
+- **Reused by the Bot module's visual-identity generator, not forked.** `ImageAiService::prepare()`
+  (everything `dispatch()` does except queueing the job) and `process()`'s `$onResult` hook (runs
+  with the finished image BEFORE the row is marked `done`, so a caller can materialize its OWN
+  result — e.g. file it as a bot's candidate — while the client is still waiting on the poll/
+  broadcast) exist specifically so another module can ride this exact machinery — same row, same
+  daily cap, same $ meter gate, same poll/broadcast contract, same reaper — while owning the JOB
+  that runs afterwards. `prepare()` also accepts a `null` image (text→image GENERATION rather than
+  an edit, metered on the separate `ai_image_generate` channel) — unreachable through THIS
+  endpoint's own `POST` (its `image` field is required), but exercised by that other caller. See
+  `docs/backend/bots-api.md` → "Visual identity module ('Wygląd')" and `docs/decisions/
+  ADR-0042-character-visual-identity.md`.
 - **Reaper** — `disk:reap-stale-ai-edits`, scheduled `everyFiveMinutes()` + `withoutOverlapping()`
   (`routes/console.php`): fails edits stranded in `queued`/`processing` past
   `config('ai.disk_image_edit_timeout')` (900s — a worker killed mid-run, e.g. SIGKILL/OOM, never
@@ -705,3 +739,11 @@ All under `/api/disk/folders`.
   `tests/Feature/DiskAiImageTest.php`, `tests/Feature/DiskAiTextTest.php`,
   `tests/Feature/DiskAiBroadcastTest.php`, `tests/Feature/DiskThumbnailTest.php`,
   `tests/Feature/DiskDraftTest.php`
+
+**Reused (not forked) by the Bot module's visual-identity generator** (`docs/backend/bots-api.md` →
+"Visual identity module ('Wygląd')", `docs/decisions/ADR-0042-character-visual-identity.md`) — the same
+`prepare()`/`process()`/reaper/poll/broadcast machinery documented above, ridden by a second caller:
+
+- `app/modules/Bot/Jobs/GenerateBotVisualJob.php` — the worker; supplies `process()`'s materialization hook
+- `app/modules/Bot/Services/BotVisualIdentityService.php` — calls `ImageAiService::prepare()` directly (no HTTP hop through this module's own controller)
+- `tests/Feature/BotVisualIdentityTest.php` — the resumable-retry + throwing-hook hardening exercised through that second caller

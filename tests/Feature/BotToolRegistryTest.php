@@ -516,8 +516,9 @@ class BotToolRegistryTest extends TestCase
         $this->assertDatabaseHas('bot_actions', [
             'task_id' => $taskId, 'type' => BotActionType::ToolUsed->value,
         ]);
+        // No approval pipeline on this task, so finish completes it outright.
         $this->assertDatabaseHas('bot_actions', [
-            'task_id' => $taskId, 'type' => BotActionType::SubmittedToTest->value,
+            'task_id' => $taskId, 'type' => BotActionType::MarkedDone->value,
         ]);
     }
 }

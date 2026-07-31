@@ -23,6 +23,11 @@ interface AiTextGenerator
     /**
      * Generate the text for one resolved ai-text prompt, or '' (fail-closed) on a blank prompt, an
      * exhausted budget, or any generation failure. $personaId colors the tone only (null = default).
+     *
+     * $authorId is the block's own AUTHOR (a plain `?string`, resolved to an opaque voice through the
+     * {@see AuthorVoiceResolver} seam — again no upper-module type crosses the boundary). It colors the
+     * tone as well, ranking ABOVE the persona and above a delegated session's voice; an id that resolves
+     * to nothing simply falls back, so null — every block without an author — behaves exactly as before.
      */
-    public function generate(string $prompt, ?string $personaId): string;
+    public function generate(string $prompt, ?string $personaId, ?string $authorId): string;
 }

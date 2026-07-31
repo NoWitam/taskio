@@ -2,15 +2,19 @@
 
 namespace App\Modules\Generator;
 
+use App\Modules\Generator\Contracts\SessionAuthorIdentityResolver;
 use App\Modules\Generator\Models\GenerationSession;
 use App\Modules\Generator\Models\Template;
 use App\Modules\Generator\Policies\GenerationSessionPolicy;
 use App\Modules\Generator\Policies\TemplatePolicy;
 use App\Modules\Generator\Services\GenerationSessionExecutor;
 use App\Modules\Generator\Services\GeneratorAiTextService;
+use App\Modules\Generator\Services\RecipeAuthorVoiceSnapshotter;
+use App\Modules\Generator\Services\SessionImageBudget;
 use App\Modules\Generator\Services\TemplateRenderService;
 use App\Modules\Generator\Support\CreativeDirectionContext;
 use App\Modules\Generator\Support\NoOpAiTextGenerator;
+use App\Modules\Generator\Support\NullSessionAuthorIdentityResolver;
 use App\Modules\Variables\Services\OperationExecutor;
 use App\Modules\Variables\Services\OperationResolver;
 use App\Modules\Variables\Services\VariableResolver;
@@ -53,6 +57,19 @@ class GeneratorModuleServiceProvider extends ServiceProvider
             \App\Modules\Generator\Console\ReapGenerationSessionsCommand::class,
         ]);
 
+        // The SESSION-AUTHOR seam: an automation may order its generation session DELEGATED to an author,
+        // and this module must not learn what an author is. The DEFAULT is the null object (nothing ever
+        // resolves, so an installation without the author module refuses to generate a delegated session
+        // rather than quietly publishing an anonymous one); the module that owns authors binds the real
+        // resolver over it.
+        //
+        // bindIf — NOT bind — ON PURPOSE, and with TODAY'S provider order this is the LOAD-BEARING half:
+        // bootstrap/providers.php registers Bot BEFORE Generator, so the concrete is already bound when this
+        // runs and only `bindIf` leaves it alone. The unconditional bind on the Bot side is what makes the
+        // REVERSE order equally safe, so the file order in bootstrap/providers.php stays a free choice
+        // rather than a silent, load-bearing dependency. Both halves are pinned by BotModuleBoundaryTest.
+        $this->app->bindIf(SessionAuthorIdentityResolver::class, NullSessionAuthorIdentityResolver::class);
+
         // The AMBIENT CREATIVE-DIRECTION context (the direction layer), bound with the SAME container
         // posture as the Variables MeterContext / AiVoiceContext: a shared instance the session executor
         // sets around a run and clears in the same finally, which the DEEP `@[ai-text]` seam
@@ -60,8 +77,27 @@ class GeneratorModuleServiceProvider extends ServiceProvider
         // that never sets it, so behavior is byte-preserved when the layer is off.
         $this->app->singleton(CreativeDirectionContext::class);
 
+        // The RUN's image-call ledger, bound with the SAME ambient posture as the contexts above: the session
+        // executor binds it around a render and the DEEP image seam (ImageChainExecutor, unreachable by
+        // parameter from the executor) reads it. It MUST be a singleton — the two collaborators are resolved
+        // independently, and two instances would leave the chain executor permanently unbound, silently
+        // falling back to per-instance counters. That failure mode is invisible in a single-job run and
+        // catastrophic in a fanned-out one: every frame job would get its own full image budget.
+        $this->app->singleton(SessionImageBudget::class);
+
         // Template PREVIEW: inert `@[ai-text]` (a labeled placeholder, no real AI).
         $this->app->when(TemplateRenderService::class)
+            ->needs(VariableResolver::class)
+            ->give(fn ($app) => new VariableResolver(
+                $app->make(OperationExecutor::class),
+                new NoOpAiTextGenerator,
+                $app->make(OperationResolver::class),
+            ));
+
+        // Recipe AUTHOR-VOICE snapshot: a pure SCAN of the recipe's strings, never a generation. Bound with
+        // the same NO-OP generator the preview uses, so freezing the authors of a recipe can never make (or
+        // bill) an AI call — not even if the shared walk grew a resolving path.
+        $this->app->when(RecipeAuthorVoiceSnapshotter::class)
             ->needs(VariableResolver::class)
             ->give(fn ($app) => new VariableResolver(
                 $app->make(OperationExecutor::class),

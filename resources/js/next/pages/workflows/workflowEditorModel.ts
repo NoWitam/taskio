@@ -11,7 +11,8 @@
 // seeds each type's editable draft shape and `buildStepConfig` projects a draft onto the
 // EXACT backend `config` wire (empty-string optionals STRIPPED; value-or-variable unions
 // passed through untouched; assignee emitted both-or-neither; the generate_content SLOT
-// MAP emitted entry-by-entry with empty entries dropped so "unmapped" stays unmapped).
+// MAP emitted entry-by-entry with empty entries dropped so "unmapped" stays unmapped, and its
+// optional `bot_id` AUTHOR omitted when unset rather than sent as null/'').
 //
 // The trigger side is now the typed 5.1 world too (B7d): a `FormTriggerDraft`
 // ({form_id, source, anonymous}) + the schedule builder's `ScheduleDraft`
@@ -117,11 +118,15 @@ export function emptyStepConfig(type: WorkflowStepType): Record<string, unknown>
       // value-or-variable). It is only ever populated once a template is picked, and it
       // is NEVER auto-reset from under the author on hydration (template drift is WARNED
       // about, not silently overwritten).
+      //
+      // `bot_id` is the optional session AUTHOR (the bot the produced session is delegated to —
+      // its voice in the copy, its likeness on the images). Null = no author.
       return {
         template_id: null,
         slots: {},
         folder_id: null,
         name: '',
+        bot_id: null,
       };
     default:
       return {};
@@ -352,10 +357,14 @@ export function buildStepConfig(step: StepDraft): Record<string, unknown> {
       // `steps.<i>.config.template_id` error rather than a silently absent key).
       out.template_id = idOrOmit(c.template_id) ?? '';
       put(out, 'slots', slotMapOrOmit(c.slots));
-      // Both optionals are emit-or-OMIT: never `""`, never `null` — an absent folder_id
-      // means the Disk root, an absent name means "use the template's".
+      // All three optionals are emit-or-OMIT: never `""`, never `null` — an absent folder_id
+      // means the Disk root, an absent name means "use the template's", and an absent bot_id
+      // means NO AUTHOR (the run generates in the house voice, with no character on the images).
+      // A cleared author picker must therefore drop the key entirely: the backend reads
+      // null/absent/'' identically, but anything else it can't parse as a uuid is a 422.
       put(out, 'folder_id', idOrOmit(c.folder_id));
       put(out, 'name', trimmedOrOmit(c.name));
+      put(out, 'bot_id', idOrOmit(c.bot_id));
       return out;
     }
     default:

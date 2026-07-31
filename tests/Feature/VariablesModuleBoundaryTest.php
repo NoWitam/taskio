@@ -28,6 +28,11 @@ class VariablesModuleBoundaryTest extends TestCase
      * covers the R2 PR-1a arrivals too (the relocated resolver, the shared catalog, the ai-text
      * contract + generator + cost meter), since they live under this root; it also pins the Disk and
      * Generator edges — currently clean — so a future stray import fails loudly.
+     *
+     * BOT joins the forbidden list with the per-block ai-text AUTHOR seam: Variables defines the
+     * AuthorVoiceResolver CONTRACT and the Bot module binds the concrete that knows an author is a bot.
+     * That inversion is the whole reason the feature can live in the lower layer, so a Variables file
+     * naming a Bot class would collapse it.
      */
     public function test_variables_module_imports_no_sibling_module(): void
     {
@@ -35,7 +40,7 @@ class VariablesModuleBoundaryTest extends TestCase
         $this->assertDirectoryExists($root);
 
         // Every module that DEPENDS ON Variables — none may be named from inside it (the one-way edge).
-        $forbidden = ['App\\Modules\\Workflows', 'App\\Modules\\Disk', 'App\\Modules\\Generator'];
+        $forbidden = ['App\\Modules\\Workflows', 'App\\Modules\\Disk', 'App\\Modules\\Generator', 'App\\Modules\\Bot'];
 
         $scanned = 0;
 

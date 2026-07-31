@@ -45,6 +45,12 @@ class RunGenerationSessionJob implements ShouldQueue
 
     public int $tries = 1;
 
+    /**
+     * Whether THIS object actually entered the unit of work. Live-instance state only (never meaningful
+     * after serialization); the production discriminator is the attempt check in {@see mayFailRun}.
+     */
+    private bool $ran = false;
+
     // The run may make up to config('generator.ai_text_max_calls_per_session') ai-text provider calls
     // (a single text part can carry several inline @[ai-text] blocks), each up to ai.text_timeout (60s),
     // PLUS exactly ONE creative-direction derivation bounded by the tighter ai.direction_timeout (30s).
@@ -54,8 +60,9 @@ class RunGenerationSessionJob implements ShouldQueue
     // ai.direction_timeout. With the default budget 4: 300s > 4 x 60 + 30 = 270s (30s headroom). This
     // timeout is deliberately UNCHANGED by the direction layer — the derivation was given its own
     // tighter per-call ceiling precisely so the 300s window (and the lock/reaper windows ordered on top
-    // of it) did not have to move. The queue's retry_after is left at the app default (below $timeout);
-    // WithoutOverlapping below makes a duplicate delivery safe regardless. Raise this AND
+    // of it) did not have to move. The queue's retry_after is left at the app default (below $timeout),
+    // so a long run IS redelivered: WithoutOverlapping keeps the redelivery from RUNNING, and
+    // {@see mayFailRun} keeps its failed() hook from killing the live run. Raise this AND
     // config('generator.ai_text_max_calls_per_session') together to grow the fan-out.
     public int $timeout = 300;
 
@@ -71,6 +78,10 @@ class RunGenerationSessionJob implements ShouldQueue
      * One run at a time per session. At-least-once delivery (a visibility-timeout re-reservation) must
      * never double-run the BILLED ai-text, so a duplicate is released rather than run; the lock keys on
      * the session and self-expires well past the timeout so a killed worker never wedges it.
+     *
+     * The lock protects the RUN, not the failed() hook: `markJobAsFailedIfAlreadyExceedsMaxAttempts` runs
+     * BEFORE fire(), so a redelivery under `tries = 1` is failed without ever reaching this middleware.
+     * That is what {@see mayFailRun} guards.
      *
      * @return array<int, object>
      */
@@ -90,6 +101,8 @@ class RunGenerationSessionJob implements ShouldQueue
             'part_key' => $this->partKey,
             'has_instruction' => $this->instruction !== null,
         ]);
+
+        $this->ran = true;
 
         try {
             $manager->run(
@@ -118,22 +131,49 @@ class RunGenerationSessionJob implements ShouldQueue
     }
 
     /**
-     * A thrown run (or exhausted retries): mark the session failed. Restores tenancy first — failed() can
-     * run after QueueTenancy has already popped this job's context.
+     * A thrown run (or exhausted retries): mark the session failed — but ONLY for the delivery that
+     * actually ran it ({@see mayFailRun}). Restores tenancy first — failed() can run after QueueTenancy has
+     * already popped this job's context.
      */
     public function failed(Throwable $e): void
     {
         $this->activateTenant();
 
-        Log::error('Generation session run FAILED (marking session failed)', [
+        $owns = $this->mayFailRun();
+
+        Log::error('Generation session run job FAILED', [
             'session_id' => $this->sessionId,
             'mode' => $this->mode,
             'part_key' => $this->partKey,
             'exception' => $e::class,
             'message' => $e->getMessage(),
+            'failing_the_session' => $owns,
+            'attempt' => $this->job?->attempts(),
         ]);
 
+        if (!$owns) {
+            return;
+        }
+
         app(GenerationSessionRunManager::class)->fail($this->sessionId);
+    }
+
+    /**
+     * Whether the delivery being failed is the one that was RUNNING — the same delivery-vs-payload guard the
+     * frame job carries, and for the same reason: this job's 300s window sits well above the queue's 90s
+     * retry_after, so the SAME payload is redelivered while the original is still rendering, and under
+     * `tries = 1` that duplicate is failed BEFORE fire() (so WithoutOverlapping never sees it) with failed()
+     * invoked on a FRESH command instance. Unguarded, that duplicate marks a LIVE run `failed`, pushes the
+     * terminal broadcast the FE settles on, and — for a fanned-out run — freezes every remaining frame,
+     * since a frame may only be claimed while its session is still `generating`.
+     *
+     * Attempt 1 is the only delivery that can have entered handle() under `tries = 1`, so it is the genuine
+     * SIGALRM/kill case and must still fail the session; anything later provably did not run. Fails CLOSED
+     * with no queue Job attached — the stale-session reaper is the backstop for a run left `generating`.
+     */
+    private function mayFailRun(): bool
+    {
+        return $this->ran || ($this->job !== null && $this->job->attempts() <= 1);
     }
 
     /**

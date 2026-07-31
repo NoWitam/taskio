@@ -1001,6 +1001,7 @@ function goToApprovals(): void {
               v-else
               v-model="editState.assignee_id"
               :seed="botSeed"
+              executable-only
               :readonly="readonly"
               :aria-invalid="!!fieldErrors.assignee_id"
               :placeholder="t('tasks.form.botAssigneePlaceholder')"

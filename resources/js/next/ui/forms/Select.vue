@@ -38,7 +38,8 @@
 //   Enter      single: select+close · multi: toggle active
 //   Space      single: select+close · multi: toggle active (open when closed)
 //   Backspace  multi, empty search: remove the last chip
-//   Esc        close, keep selection, return focus to trigger
+//   Esc        close, keep selection, return focus to trigger (topmost-overlay
+//              scoped: inside a Modal the first Esc closes THIS list, not the modal)
 //   type-ahead (static, non-searchable) matches option labels by prefix
 //   Tab        closes the popover (focus leaves naturally)
 // ARIA: trigger has role="combobox", aria-expanded, aria-controls,
@@ -58,6 +59,10 @@ import ChipOverflow from './ChipOverflow.vue';
 import FieldShell from './FieldShell.vue';
 import { useFormField, nextId } from './formField';
 import { useOutsideClick } from '../../app/composables/useOutsideClick';
+import {
+  useOverlayStack,
+  type OverlayHandle,
+} from '../../app/composables/useOverlayStack';
 import { useChipOverflow } from '../../app/composables/useChipOverflow';
 import { useAnchoredPosition } from '../../app/composables/useAnchoredPosition';
 import { useTheme } from '../../app/lib/theme';
@@ -447,9 +452,27 @@ function nextEnabled(from: number, dir: 1 | -1): number {
   return from;
 }
 
+// The open popover registers with the shared overlay stack, exactly like Popover /
+// DropdownMenu. WHY IT MATTERS: the stack's Escape listener runs in the CAPTURE phase
+// on `document`, so a Select opened INSIDE a Modal used to lose the race — Escape closed
+// the MODAL (discarding unsaved work) before this component's own bubble-phase handler
+// ever ran, and its `stopPropagation()` came too late. Registering makes the open list
+// the TOPMOST overlay, so the first Escape closes the list and the second the modal.
+let overlay: OverlayHandle | null = null;
+function registerOverlay(): void {
+  if (overlay) return;
+  overlay = useOverlayStack({ kind: 'popover', close: () => closeList() });
+}
+function releaseOverlay(): void {
+  overlay?.release();
+  overlay = null;
+}
+onBeforeUnmount(releaseOverlay);
+
 function openList(): void {
   if (disabled.value || readonly.value) return;
   open.value = true;
+  registerOverlay();
   emit('open');
   // Release any prior width lock so this open re-measures the natural width.
   lockedWidth.value = null;
@@ -483,6 +506,7 @@ function openList(): void {
 function closeList(returnFocus = true): void {
   if (!open.value) return;
   open.value = false;
+  releaseOverlay();
   activeIndex.value = -1;
   lockedWidth.value = null;
   widthLocked = false;
@@ -817,6 +841,15 @@ const headerSlotProps = computed(() => ({
   /** True while a page is being fetched. */
   loading: fetching.value,
 }));
+
+// Payload for the #empty slot. `query` is what distinguishes "no options at all"
+// from "the search matched nothing"; `setQuery('')` lets the slot clear the search
+// and `refetch()` lets it retry — the two actions an empty state can offer.
+const emptySlotProps = computed(() => ({
+  query: query.value,
+  setQuery,
+  refetch,
+}));
 </script>
 
 <template>
@@ -1118,12 +1151,16 @@ const headerSlotProps = computed(() => ({
           </button>
         </div>
 
-        <!-- Empty -->
+        <!-- Empty. The #empty scoped slot lets a consumer tell "there is NOTHING to
+             pick" apart from "the SEARCH matched nothing" — a distinction Select
+             itself cannot express (one `isEmpty`, one `emptyText`, and `query` lives
+             in here). It receives { query, setQuery, refetch }; with no slot the
+             default text renders exactly as before. -->
         <div
           v-else-if="isEmpty"
           class="px-next-3 py-next-3 text-next-sm text-next-muted-foreground"
         >
-          {{ emptyTextResolved }}
+          <slot name="empty" v-bind="emptySlotProps">{{ emptyTextResolved }}</slot>
         </div>
 
         <!-- Options -->

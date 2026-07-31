@@ -85,6 +85,42 @@ class WorkflowScheduleAssistTest extends TestCase
             ->assertJsonPath('data.config.tz', 'Europe/Warsaw');
     }
 
+    /**
+     * The agent must be ANCHORED on today's date in the caller's zone. Without it, a request like
+     * "codziennie z wyjątkiem dni wolnych od pracy" — which is answered with concrete
+     * `exclusions.dates` — would have its holidays enumerated for whatever year the model's training
+     * suggests: a config that validates and compiles cleanly while silently excluding the wrong days.
+     * The zone rides along so the model can tell WHICH country's holidays are meant.
+     */
+    public function test_the_agent_is_anchored_on_todays_date_and_the_callers_zone(): void
+    {
+        $user = User::factory()->create();
+
+        $this->fakeAssist(json_encode([
+            'feasible' => true,
+            'config' => ['time' => ['mode' => 'at', 'at' => ['09:00']]],
+            'unsupported' => [],
+            'alternative' => null,
+            'explanation' => 'ok',
+        ]));
+
+        $this->actingAs($user)
+            ->postJson(self::ENDPOINT, [
+                'prompt' => 'codziennie z wyjątkiem dni wolnych od pracy',
+                'tz' => 'Europe/Warsaw',
+            ])
+            ->assertOk();
+
+        $today = now('Europe/Warsaw')->toDateString();
+
+        ScheduleAssistAgent::assertPrompted(function ($prompt) use ($today): bool {
+            $instructions = (string) $prompt->agent->instructions();
+
+            return str_contains($instructions, 'Today is ' . $today)
+                && str_contains($instructions, 'The caller\'s timezone is "Europe/Warsaw"');
+        });
+    }
+
     public function test_hallucinated_mode_is_downgraded(): void
     {
         $user = User::factory()->create();

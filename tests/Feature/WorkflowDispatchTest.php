@@ -3,8 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Modules\Bot\Models\Bot;
 use App\Modules\Forms\Models\Form;
 use App\Modules\Forms\Models\FormSubmission;
+use App\Modules\Tasks\Enums\TaskStatus;
 use App\Modules\Tasks\Models\Task;
 use App\Modules\Variables\Models\Constant;
 use App\Modules\Workflows\Enums\WorkflowRunOrigin;
@@ -135,6 +137,52 @@ class WorkflowDispatchTest extends TestCase
         $this->assertSame('task', $run->trigger_payload['source']);
         $this->assertSame($task->id, $run->trigger_payload['task']['id']);
         $this->assertSame('Parent', $run->trigger_payload['task']['title']);
+    }
+
+    /**
+     * The bot path, end to end. A task's form submission is a DRAFT while the task is worked
+     * on and is confirmed when the task reaches done (TaskObserver) — that approval is what
+     * fires this trigger. A bot completing its run must confirm the submission exactly like a
+     * human completing the task, otherwise the form the bot filled silently never "submits"
+     * and the workflow behind it never runs.
+     */
+    public function test_a_bot_completing_a_task_confirms_its_form_and_fires_form_submitted(): void
+    {
+        $owner = User::factory()->create();
+        $this->actingAs($owner);
+
+        $form = Form::factory()->enabled()->create(['creator_id' => $owner->id]);
+        $workflow = $this->formSubmittedWorkflow($owner, config: ['form_id' => $form->id]);
+        $bot = Bot::factory()->executesTasks()->create(['creator_id' => $owner->id]);
+
+        $this->scriptBotRun([
+            ['fill_form', ['answers' => ['subject' => 'Bot answer']]],
+            ['finish'],
+        ]);
+
+        // No approval pipeline, so finish completes the task outright — see
+        // BotTaskInteractionService::finish().
+        $taskId = $this->postJson('/api/tasks', [
+            'title' => 'Bot task with a form',
+            'priority' => 'medium',
+            'assignee_type' => 'bot',
+            'assignee_id' => $bot->id,
+            'form_id' => $form->id,
+        ])->assertCreated()->json('data.id');
+
+        $this->assertSame(TaskStatus::DONE, Task::findOrFail($taskId)->status);
+
+        $submission = FormSubmission::where('submittable_id', $taskId)->firstOrFail();
+        $this->assertTrue(
+            $submission->isApproved(),
+            'Completing the task must confirm the form submission the bot filled.'
+        );
+
+        $run = $this->runsFor($workflow)->first();
+        $this->assertNotNull($run, 'The confirmed submission must fire the form_submitted trigger.');
+        $this->assertSame(WorkflowRunState::COMPLETED, $run->state);
+        $this->assertSame('task', $run->trigger_payload['source']);
+        $this->assertSame($taskId, $run->trigger_payload['task']['id']);
     }
 
     public function test_draft_form_submission_does_not_fire(): void

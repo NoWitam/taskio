@@ -16,6 +16,13 @@ return [
         'image_budget' => 'This image has too many AI edits to generate in one run. Reduce the number of AI edits and try again.',
         'image_generate_budget' => 'This recipe generates too many AI images in one run. Reduce the number of AI-generated images and try again.',
         'ai_generate_unsupported' => 'Generating an image from a text prompt is not available yet.',
+        // The provider rendered the image and then refused to hand it over (its own moderation). Its own
+        // message because it is the one image failure the USER can fix, and pointing them at "the base and
+        // filters" would be actively wrong — the fix is the character's description or wardrobe.
+        'image_safety' => 'The AI refused to deliver this image because of its content policy. Adjust the character description or wardrobe and try again.',
+        // A storyboard frame whose render was interrupted (its worker died) and which the reaper gave up on.
+        // Non-secret and actionable: the other frames are intact, so regenerating just this one is the fix.
+        'frame_lost' => 'This frame could not be finished. Regenerate it to try again.',
         'saved_image_name' => 'Generated image',
         'deleted' => 'Session deleted successfully.',
         // Refine loop (R2 sub-stage 2d) — localized, NON-SECRET conflict / capability messages.

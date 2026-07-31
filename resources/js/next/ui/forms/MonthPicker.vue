@@ -150,6 +150,9 @@ function chooseYear(year: number): void {
   activeYear.value = year;
   panelView.value = 'months';
 }
+// NOT an overlay dismissal, so there is nothing to register in `useOverlayStack`: Escape here steps
+// the year grid BACK to the months view inside the already-open panel. Dismissing the panel itself
+// is FieldPopover's job (see its own Escape note).
 function onYearGridKeydown(e: KeyboardEvent): void {
   let next: number | null = null;
   switch (e.key) {

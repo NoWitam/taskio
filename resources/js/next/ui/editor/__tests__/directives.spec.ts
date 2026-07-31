@@ -280,6 +280,94 @@ describe('ai-text directive', () => {
     expect(node?.attrs?.personaId).toBe('friendly');
     expect(roundTrip(md)).toBe(md);
   });
+
+  // ── per-block AUTHOR ──────────────────────────────────────────────────────
+  // The wire key is `authorId` (+ a display-only `authorName`). The backend has NO
+  // alias for it, so any other name silently degrades the block to the default tone.
+
+  it('omits BOTH author keys when the block has no author (byte parity with pre-author docs)', () => {
+    const doc: MarkdownDoc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'aiText',
+              attrs: { ...ATTRS, authorId: null, authorName: null },
+            },
+          ],
+        },
+      ],
+    };
+    const md = ser(doc);
+    expect(md).not.toContain('authorId');
+    expect(md).not.toContain('authorName');
+    // …and it is byte-identical to the same node written WITHOUT the author attrs at all.
+    expect(md).toBe(
+      ser({
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'aiText', attrs: ATTRS }] }],
+      } as MarkdownDoc),
+    );
+  });
+
+  it('serializes + parses + round-trips the per-block author', () => {
+    const attrs = {
+      id: 'ai_2',
+      personaId: null,
+      authorId: 'bot_9',
+      authorName: 'Marketing Maven',
+      prompt: 'Write it.',
+      labels: [] as string[],
+    };
+    const md =
+      '@[ai-text]("' + JSON.stringify({ v: 1, data: attrs }).replace(/"/g, '\\"') + '")';
+
+    expect(
+      ser({
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'aiText', attrs }] }],
+      } as MarkdownDoc),
+    ).toBe(md);
+    expect(firstInline(md, 'aiText')?.attrs).toMatchObject({
+      authorId: 'bot_9',
+      authorName: 'Marketing Maven',
+    });
+    expect(roundTrip(md)).toBe(md);
+  });
+
+  it('drops the display snapshot when there is no author id (a name alone is meaningless)', () => {
+    const md = ser({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [
+            {
+              type: 'aiText',
+              attrs: { ...ATTRS, authorId: null, authorName: 'Orphan name' },
+            },
+          ],
+        },
+      ],
+    } as MarkdownDoc);
+    expect(md).not.toContain('Orphan name');
+  });
+
+  it('still parses the LEGACY `persona` alias, and leaves the author unset', () => {
+    const md =
+      '@[ai-text]("' +
+      JSON.stringify({
+        v: 1,
+        data: { id: 'ai_3', persona: 'formal', prompt: 'x', labels: [] },
+      }).replace(/"/g, '\\"') +
+      '")';
+    const node = firstInline(md, 'aiText');
+    expect(node?.attrs?.personaId).toBe('formal');
+    expect(node?.attrs?.authorId).toBeNull();
+    expect(node?.attrs?.authorName).toBeNull();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

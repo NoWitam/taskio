@@ -11,9 +11,9 @@
 //
 // The shell contract is fixed: `dirty`, `applyAi`, `aiBusy`, `load`, `toBlob`, `markSaved` — the
 // ImageStage emits/expose and the DiskPreview save/guard depend on them.
-import { computed, ref, watch, type Ref } from 'vue';
-import { api, WORKSPACE_KEY } from '../../../app/lib/api';
-import { subscribePrivate, whenConnectionFails } from '../../../app/lib/echo';
+import { computed, ref, type Ref } from 'vue';
+import { api } from '../../../app/lib/api';
+import { useAiImageJob } from '../../../app/composables/useAiImageJob';
 import {
   applyAdjustments,
   applyFilter,
@@ -665,106 +665,24 @@ export function useImageEditor(file: Ref<DiskFile | null>) {
     return blob ? { blob, mime, ext } : null;
   }
 
-  /** Cancel an in-flight AI edit's polling (the queued job still runs server-side; we stop waiting). */
-  const aiAbort = ref(false);
-  function cancelAi(): void {
-    aiAbort.value = true;
-  }
-
-  /** Poll a queued edit until it is done (→ the base64 image) or failed/timed out (→ throws). */
-  async function pollAiEdit(id: string): Promise<string> {
-    const deadline = Date.now() + 180_000;
-    while (Date.now() < deadline) {
-      if (aiAbort.value) throw new Error('cancelled');
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-      if (aiAbort.value) throw new Error('cancelled');
-      const res = await api.get<{ data: { status: string; image?: string; error?: string } }>(`/disk/ai/image/${id}`);
-      if (aiAbort.value) throw new Error('cancelled'); // cancelled while this poll was in flight
-      if (res.data.status === 'done' && res.data.image) return res.data.image;
-      if (res.data.status === 'failed') throw new Error(res.data.error || 'AI edit failed');
-    }
-    throw new Error('AI edit timed out');
-  }
-
-  /** The active workspace id (the Reverb channel scope), read where the api singleton stores it. */
-  function currentWorkspaceId(): string | null {
-    try {
-      return localStorage.getItem(WORKSPACE_KEY);
-    } catch {
-      return null;
-    }
-  }
-
-  /** Fetch an edit's current status (+ image when done) — one GET, used by the realtime path. */
-  async function fetchAiStatus(id: string): Promise<{ status: string; image?: string; error?: string }> {
-    const res = await api.get<{ data: { status: string; image?: string; error?: string } }>(`/disk/ai/image/${id}`);
-    return res.data;
-  }
-
   /**
-   * Wait for a queued edit to finish, preferring the REALTIME push (Reverb): subscribe to the
-   * workspace channel, and on the done/failed notification for THIS edit fetch the result via a
-   * single GET (the push carries only status, never the multi-MB image). Falls back to polling when
-   * Reverb isn't configured or the socket stays silent, so completion is never lost. Returns the
-   * edited image (base64).
+   * The queued-edit WAIT (realtime push + HTTP-poll fallback) lives in the SHARED
+   * {@see useAiImageJob} composable — the bot's visual-identity module follows the very same
+   * `/disk/ai/image/{id}` machinery, so there is one implementation, not a fork. This editor keeps the
+   * bytes (`keepImage: true`): the edited image BECOMES the new canvas base, so it must be held.
    */
-  async function awaitAiEdit(id: string): Promise<string> {
-    const wsId = currentWorkspaceId();
-    const channel = wsId ? subscribePrivate(`disk-ai.workspace.${wsId}`) : null;
-    if (!channel) return pollAiEdit(id); // Reverb not configured → poll
+  const aiJob = useAiImageJob();
 
-    return new Promise<string>((resolve, reject) => {
-      let settled = false;
-      let safety: ReturnType<typeof setTimeout> | null = null;
-      let stopConnWatch: () => void = () => {};
-      const stopAbort = watch(aiAbort, (aborted) => {
-        if (aborted) finish(() => reject(new Error('cancelled')));
-      });
+  /** Cancel an in-flight AI edit's polling (the queued job still runs server-side; we stop waiting). */
+  function cancelAi(): void {
+    aiJob.cancel();
+  }
 
-      function finish(run: () => void): void {
-        if (settled) return;
-        settled = true;
-        if (safety) clearTimeout(safety);
-        stopAbort();
-        stopConnWatch();
-        try {
-          channel!.stopListening('.disk-ai-edit.updated');
-        } catch {
-          /* channel teardown is best-effort */
-        }
-        run();
-      }
-
-      // Hand off to HTTP polling — used ONLY on a genuine socket failure (subscription/auth error or
-      // a lost connection), never on a blind timer: a real edit can take far longer than any short
-      // timeout, so polling must not kick in just because the completion push hasn't arrived yet.
-      const fallbackToPoll = (): void => finish(() => resolve(pollAiEdit(id)));
-
-      async function collect(): Promise<void> {
-        try {
-          const data = await fetchAiStatus(id);
-          if (data.status === 'done' && data.image) finish(() => resolve(data.image as string));
-          else if (data.status === 'failed') finish(() => reject(new Error(data.error || 'AI edit failed')));
-        } catch {
-          /* transient — keep waiting for the push */
-        }
-      }
-
-      channel.listen('.disk-ai-edit.updated', (payload) => {
-        const p = payload as { id?: string; status?: string; error?: string };
-        if (p.id !== id) return; // another edit sharing the workspace channel
-        if (p.status === 'done') void collect();
-        else if (p.status === 'failed') finish(() => reject(new Error(p.error || 'AI edit failed')));
-      });
-      channel.error(() => fallbackToPoll()); // subscription/auth error (e.g. 403) → poll
-      stopConnWatch = whenConnectionFails(fallbackToPoll); // socket dropped / server down → poll
-
-      // One immediate check catches an edit that finished BEFORE we subscribed. The long safety net
-      // covers a socket that connected but silently never delivers — set well past the server-side
-      // edit timeout so it never pre-empts a normal (tens-of-seconds) edit.
-      void collect();
-      safety = setTimeout(fallbackToPoll, 210_000);
-    });
+  /** The outcome's failure as the Error this editor's callers already branch on (`'cancelled'`). */
+  function aiFailure(outcome: { error?: string; reason?: string }): Error {
+    if (outcome.reason === 'cancelled') return new Error('cancelled');
+    if (outcome.reason === 'timeout') return new Error('AI edit timed out');
+    return new Error(outcome.error || 'AI edit failed');
   }
 
   /** A fresh copy of a canvas (or null if a 2D context isn't available — happy-dom). */
@@ -817,7 +735,6 @@ export function useImageEditor(file: Ref<DiskFile | null>) {
     const canvas = canvasRef.value;
     if (!canvas || !file.value || aiBusy.value) return;
     aiBusy.value = true;
-    aiAbort.value = false;
     try {
       // AI edits ALWAYS post PNG: gpt-image returns PNG regardless, and posting JPEG/WebP bytes
       // under a filename-derived `image/png` Content-Type makes the provider reject the source.
@@ -835,7 +752,9 @@ export function useImageEditor(file: Ref<DiskFile | null>) {
       if (mask) form.append('mask', new File([mask], 'mask.png', { type: 'image/png' }));
 
       const res = await api.post<{ data: { id: string } }>('/disk/ai/image', form);
-      const image = await awaitAiEdit(res.data.id);
+      const outcome = await aiJob.start(res.data.id, { keepImage: true });
+      if (outcome.status !== 'done' || !outcome.image) throw aiFailure(outcome);
+      const image = outcome.image;
 
       const bytes = Uint8Array.from(atob(image), (ch) => ch.charCodeAt(0));
       const aiImg = await decode(new Blob([bytes], { type: 'image/png' }));
@@ -845,7 +764,6 @@ export function useImageEditor(file: Ref<DiskFile | null>) {
       commitBase(composited ?? baseFromImage(aiImg));
     } finally {
       aiBusy.value = false;
-      aiAbort.value = false;
     }
   }
 

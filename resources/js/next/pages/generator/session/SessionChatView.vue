@@ -360,6 +360,14 @@ const delegateDisabledReason = computed(() =>
     : t('generator.sessions.delegate.buttonDisabled'),
 );
 const botAuthor = computed(() => session.value?.bot_author ?? null);
+/**
+ * This session froze a CHARACTER LIKENESS with its delegation — its images are drawn from the author's
+ * approved face. Only meaningful on a delegated session (the flag rides the same overlay), and it is the
+ * signal that explains why the pictures show a recurring person.
+ */
+const hasCharacterImage = computed(
+  () => isDelegated.value && session.value?.has_character_image === true,
+);
 
 const delegateOpen = ref(false);
 const delegating = ref(false);
@@ -595,6 +603,18 @@ const skeletonKeys = Array.from({ length: 4 }, (_, i) => i);
         <StatusBadge v-if="session" :status="status" :status-map="statusMap" size="sm" />
         <!-- Bot author chip (ADDITIVE — the human stays owner; shown when delegated). Icon + text. -->
         <BotAuthorChip v-if="botAuthor" :author="botAuthor" size="xs" class="text-next-xs" />
+        <!-- This session FROZE a character likeness: its images are drawn from the author's approved
+             face, not invented per image. Sits right after the author chip because it qualifies it. -->
+        <Badge
+          v-if="hasCharacterImage"
+          variant="primary"
+          tone="subtle"
+          size="sm"
+          icon="user"
+          :title="t('generator.sessions.character.chipTitle')"
+        >
+          {{ t('generator.sessions.character.chip') }}
+        </Badge>
         <!-- Archived marker (never color-only: an icon + text Badge). -->
         <Badge v-if="isArchived" variant="neutral" tone="subtle" size="sm" icon="archive">
           {{ t('generator.sessions.archived') }}
@@ -826,6 +846,8 @@ const skeletonKeys = Array.from({ length: 4 }, (_, i) => i);
                 :part-history="session.part_history?.[part.key]"
                 :part-history-map="session.part_history"
                 :busy-part-key="partOpKey"
+                :has-character-image="hasCharacterImage"
+                :bot-author-id="botAuthor?.id ?? null"
                 @save="onSaveRequest"
                 @regenerate="onRegeneratePart"
                 @refine="(payload) => onRefinePart(payload.partKey, payload.instruction)"
@@ -843,6 +865,7 @@ const skeletonKeys = Array.from({ length: 4 }, (_, i) => i);
                 :status="status"
                 :session-id="id"
                 :session-name="session.name"
+                :has-character-image="hasCharacterImage"
                 @save="onSaveRequest"
               />
             </SessionTurn>
@@ -880,6 +903,7 @@ const skeletonKeys = Array.from({ length: 4 }, (_, i) => i);
         :status="status"
         :session-id="id"
         :session-name="session.name"
+        :has-character-image="hasCharacterImage"
         :aria-label="t('generator.sessions.final.title')"
         @save="onSaveRequest"
       />

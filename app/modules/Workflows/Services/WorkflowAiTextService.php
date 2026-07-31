@@ -45,8 +45,13 @@ class WorkflowAiTextService implements AiTextGenerator
      * Generate the text for one resolved ai-text prompt, or '' (fail-closed) on a blank prompt or an
      * exhausted per-run budget. Anything past the budget guard is delegated to the shared service,
      * which itself trims, meters, length-caps, and fails closed on any provider error.
+     *
+     * $authorId (the per-block AUTHOR) is passed STRAIGHT THROUGH to the shared service, which ranks it
+     * against the ambient voice. Workflows itself populates no author voices, so today it is always null
+     * here and the produced instruction is byte-identical to before; the parameter is defaulted so the
+     * direct (non-contract) call sites keep compiling.
      */
-    public function generate(string $prompt, ?string $personaId): string
+    public function generate(string $prompt, ?string $personaId, ?string $authorId = null): string
     {
         if (trim($prompt) === '') {
             return '';
@@ -65,6 +70,7 @@ class WorkflowAiTextService implements AiTextGenerator
             $personaId,
             (int) config('workflows.ai_text_max_chars', 2000),
             self::PURPOSE_HINT,
+            authorId: $authorId,
         );
     }
 

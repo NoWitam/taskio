@@ -20,7 +20,7 @@ import DiskFilePickerModal from '../disk/DiskFilePickerModal.vue';
 import TemplateFilterChain from './TemplateFilterChain.vue';
 import { IMAGE_BASE_KINDS, makeBase } from './imagePlan';
 import { useI18n } from '../../app/i18n';
-import type { ImageBaseKind, ImageFilterStep, ImagePlanContent } from './types';
+import type { ImageBaseKind, ImageCharacterMode, ImageFilterStep, ImagePlanContent } from './types';
 import type { DiskFile } from '../disk/types';
 import type {
   AiTextFeatureConfig,
@@ -59,7 +59,11 @@ const { t } = useI18n();
 const plan = computed<ImagePlanContent>(() => props.modelValue ?? { base: null, filters: [] });
 
 function update(next: Partial<ImagePlanContent>): void {
-  emit('update:modelValue', { base: plan.value.base, filters: plan.value.filters, ...next });
+  const merged: ImagePlanContent = { ...plan.value, ...next };
+  // `auto` IS the absence of the key (the same convention as a storyboard's `max_shots`): an unauthored
+  // plan means "whatever the run has", so only the deliberate `never` is written to the wire.
+  if (merged.character !== 'never') delete merged.character;
+  emit('update:modelValue', merged);
 }
 
 // --- Base -------------------------------------------------------------------
@@ -101,6 +105,21 @@ function onDiskFilePicked(file: DiskFile): void {
 const fileSlotOptions = computed<SelectOption[]>(() =>
   props.fileSlots.map((name) => ({ value: name, label: name })),
 );
+
+// --- Character (whether a delegated session's creator may appear in THIS image) --------------
+// A Select, not a Switch: `auto` is CONDITIONAL ("when the session has a character"), not "on", and a
+// switch would claim this image always shows someone. Only two authored images exist per template, so
+// the cost of an explicit choice is small next to a product shot that keeps growing a face.
+const characterOptions = computed<SelectOption[]>(() =>
+  (['auto', 'never'] as const).map((value) => ({
+    value,
+    label: t(`generator.templates.editor.imagePlan.character.${value}`),
+  })),
+);
+const characterMode = computed<ImageCharacterMode>(() => plan.value.character ?? 'auto');
+function setCharacter(mode: ImageCharacterMode): void {
+  update({ character: mode });
+}
 
 // --- Filter chain (delegated to the shared component) -----------------------
 function setFilters(filters: ImageFilterStep[]): void {
@@ -180,6 +199,26 @@ function stepSummary(step: ImageFilterStep): string {
           />
         </FormField>
       </div>
+    </div>
+
+    <!-- CHARACTER: may a delegated session's creator appear in this image? -->
+    <div class="flex flex-wrap items-start gap-next-2">
+      <span class="w-full text-next-xs font-next-medium text-next-muted-foreground">
+        {{ t('generator.templates.editor.imagePlan.character.label') }}
+      </span>
+      <div class="w-56 shrink-0">
+        <Select
+          :model-value="characterMode"
+          :options="characterOptions"
+          size="sm"
+          :disabled="submitting"
+          :aria-label="t('generator.templates.editor.imagePlan.character.label')"
+          @update:model-value="(v) => setCharacter(v as ImageCharacterMode)"
+        />
+      </div>
+      <p class="min-w-0 flex-1 text-next-xs text-next-muted-foreground">
+        {{ t('generator.templates.editor.imagePlan.character.hint') }}
+      </p>
     </div>
 
     <!-- FILTER chain (shared) -->

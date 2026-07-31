@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // Gallery: Bot (AI Character) module — module overview, API surfaces, polymorphic
 // actor contract, interactive task-execution flow, tool registry, knowledge module,
-// bot-as-approver pattern, and generation-session delegation. Documents the
-// IMPLEMENTED behavior of app/modules/Bot/ (covers B1–B6 + R2 sub-stage 3) — not
-// planned behavior.
+// bot-as-approver pattern, generation-session delegation, and the visual-identity
+// ("Wygląd") module. Documents the IMPLEMENTED behavior of app/modules/Bot/ (covers
+// B1–B6 + R2 sub-stage 3 + the character visual-identity phase) — not planned behavior.
 //
 // Sections:
 //   1. Module overview & concepts (5 modules)
@@ -17,8 +17,9 @@
 //   9. Test seams (structured-output fake vs scripted multi-step double)
 //   10. Bot as named AI approver
 //   11. Bot as generation-session author (R2 sub-stage 3 — Generator delegation)
-//   12. Editor UI (5-module drawer)
-//   13. Refactor lesson: null-guarding shared resource fields
+//   12. Bot visual identity — the "Wygląd" module (a likeness a delegated session freezes)
+//   13. Editor UI (5-module drawer)
+//   14. Refactor lesson: null-guarding shared resource fields
 import StoryPage from '../StoryPage.vue';
 import StorySection from '../StorySection.vue';
 import ApiTable, { type ApiRow } from '../ApiTable.vue';
@@ -71,7 +72,7 @@ const botResourceRows: ApiRow[] = [
   { name: 'prohibitions',     type: 'string[]',                  description: '' },
   { name: 'task_execution',   type: '{ enabled, tools } | null',  description: 'knowledge_source key was REMOVED in B6 (silently ignored if sent).' },
   { name: 'knowledge',        type: '{ enabled, entries: {title,content}[] }', description: '(B6) NOT a bare array — see the Knowledge module section.' },
-  { name: 'visual',           type: 'null',                      description: 'Placeholder. Read-only; no logic yet.' },
+  { name: 'visual',           type: 'BotVisualIdentity | null',  description: 'The "Wygląd" module — a likeness a delegated session freezes. null only when never configured. See §12.' },
   { name: 'audio',            type: 'null',                      description: '(B6) Renamed from voice (column rename). Placeholder, read-only.' },
   { name: 'creator',          type: 'Creator | null',            description: 'Discriminated union: user | workflow_run (automation) | bot. A Bot is only ever created by an authenticated human today, so in practice this is always the user shape. See creator.ts / docs/backend/creator-attribution.md.' },
   { name: 'is_owner',         type: 'boolean',                   description: 'True only for a HUMAN creator match (isOwnedBy) — presentational. Gate actions on can_be_edited/can_be_deleted, not this.' },
@@ -134,7 +135,7 @@ const interactionToolRows: ApiRow[] = [
   { name: 'post_comment(text)',      type: 'Always available.', description: 'Posts a bot-authored comment. Usable any number of times.' },
   { name: 'fill_form(answers)',      type: 'Only when the task has a form.', description: 'Persists form answers. Empty answers → tool-error.' },
   { name: 'ask_and_wait(question)',  type: 'Always available.', description: 'Posts the question as a comment, records question_asked, ENDS the run (bot_run_state → waiting). Only a HUMAN comment resumes it.' },
-  { name: 'finish()',                type: 'Always available.', description: "Submits to in_test (auto-starts approval). FAILS with an instructive error if an attached form is unfilled." },
+  { name: 'finish(summary?)',        type: 'Always available.', description: "Delivers the work: WITH an approval pipeline → in_test + approval starts; WITHOUT one → straight to done (nothing would review an in_test task). FAILS with an instructive error if an attached form is unfilled." },
 ];
 
 // ── Optional registry tools (B5) ────────────────────────────────────────────
@@ -159,6 +160,26 @@ const aiConfigRows: ApiRow[] = [
   { name: 'ai.fetch_max_redirects',     type: 'AI_FETCH_MAX_REDIRECTS',      description: 'Default 3. Each hop re-validated + re-pinned.' },
   { name: 'ai.generate_file_max_bytes', type: 'AI_GENERATE_FILE_MAX_BYTES',  description: 'Default 1 MB.' },
   { name: 'ai.read_attachment_max_bytes', type: 'AI_READ_ATTACHMENT_MAX_BYTES', description: 'Default 1 MB.' },
+];
+
+// ── Bot visual identity ("Wygląd") endpoints ────────────────────────────────
+const botVisualEndpointRows: ApiRow[] = [
+  { name: 'POST /bots/{bot}/visual/generate', type: '{ mode, reference?, reference_file_id?, instruction? }', description: 'Queue ONE likeness generation (multipart). mode: reference | description — exactly one of reference/reference_file_id in reference mode. 202 + a DiskAiEditResource status row. Its own tight throttle (10/min).' },
+  { name: 'POST /bots/{bot}/visual/approve', type: '{ file_id }', description: 'Promote a candidate to the approved likeness. Must already be one of the module\'s candidates. 200 + BotResource.' },
+  { name: 'DELETE /bots/{bot}/visual/candidates/{file}', type: '—', description: 'Delete a candidate and its bytes. The approved likeness is refused (422) — clear the approval first via a normal bot save. 200 + BotResource.' },
+];
+
+// ── BotVisualIdentity fields (bots.visual, Bot::visualIdentity()) ──────────
+const botVisualIdentityRows: ApiRow[] = [
+  { name: 'enabled',            type: 'boolean',           description: 'Gates CONSUMPTION (a Generator delegation may draw from it) — never editing/generating.' },
+  { name: 'descriptor',         type: 'string | null',     description: 'WHO the character is (max 240) — one sentence, not a second persona.' },
+  { name: 'aesthetic',          type: 'string | null',     description: 'Palette / medium / lighting (max 2000) — applies to every drawn image.' },
+  { name: 'wardrobe',           type: 'string | null',     description: 'The default outfit (max 500) — the ONE steerable defense against output-side moderation (a swimsuit refused, a dress accepted for the same character), so it is its own field.' },
+  { name: 'prohibitions',       type: 'string[]',          description: 'Visual "never draw this" list, max 50 entries.' },
+  { name: 'reference_file_id',  type: 'string | null',     description: 'The (re)generation source — a bot-owned upload, or a disk-native file the user picked.' },
+  { name: 'candidates',         type: 'string[]',          description: 'Generated iterations to choose from, file ids, oldest first — max 6 (BotVisualIdentityService::MAX_CANDIDATES).' },
+  { name: 'canonical_file_id',  type: 'string | null',     description: 'The APPROVED likeness — what a delegated session freezes.' },
+  { name: 'prompt',             type: 'string | null',     description: 'The last composed generation prompt — server-written audit trail, read-only in the UI.' },
 ];
 
 // ── Polymorphic actor shapes ───────────────────────────────────────────────
@@ -300,8 +321,8 @@ const approverTypeRows: ApiRow[] = [
               <li>task_started — a run began. Payload {run, trigger}.</li>
               <li>commented — post_comment fired.</li>
               <li>form_filled — fill_form fired.</li>
-              <li>submitted_to_test — finish fired (advanced to in_test, approval started).</li>
-              <li>marked_done — task passed approval, reached done.</li>
+              <li>submitted_to_test — finish fired on a task WITH an approval pipeline (in_test, approval started).</li>
+              <li>marked_done — task reached done: finish on a task with NO pipeline, or approval passed.</li>
               <li>execution_failed — unrecoverable error; run ends, task stays in_progress.</li>
               <li class="pt-next-1 text-next-muted-foreground/70">— B4 interactive lifecycle —</li>
               <li>question_asked — ask_and_wait fired. Payload {question}.</li>
@@ -342,13 +363,14 @@ const approverTypeRows: ApiRow[] = [
         <ApiTable title="BotListResource (index)" :rows="botListResourceRows" />
         <ApiTable title="BotResource (show / store / update / restore)" :rows="botResourceRows" />
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">visual / audio placeholders</p>
+          <p class="mb-next-1 font-next-semibold text-next-fg text-next-sm">audio placeholder</p>
           <p class="text-next-xs text-next-muted-foreground">
-            <code class="font-next-mono">visual</code> and <code class="font-next-mono">audio</code> are stored JSON
-            columns returned as-is (currently <code class="font-next-mono">null</code>). They are reserved for future
-            Visual and Audio modules. Treat them as read-only; no write path exists yet.
-            <code class="font-next-mono">audio</code> is a straight column RENAME of the earlier
+            <code class="font-next-mono">audio</code> is a stored JSON column returned as-is (currently
+            <code class="font-next-mono">null</code>), reserved for a future Audio module. Treat it as
+            read-only; no write path exists yet. A straight column RENAME of the earlier
             <code class="font-next-mono">voice</code> placeholder (B6) — same semantics, new name.
+            <code class="font-next-mono">visual</code> is <strong>no longer a placeholder</strong> — it is
+            the real, writable "Wygląd" module documented in full in §12 below.
           </p>
         </div>
         <ApiTable title="BotActionResource" :rows="botActionResourceRows" />
@@ -790,22 +812,126 @@ const approverTypeRows: ApiRow[] = [
           in-scope inputs and becomes the content's AUTHOR, rendering every text part (and a
           <code class="font-next-mono">shot_list</code>'s voiceover) in the SAME persona/style/dictionary/
           phrases/prohibitions this page's Module overview describes — the human session owner is unchanged
-          and keeps full edit/refine/undo/delete rights. This is the ONE new cross-module edge in the app,
+          and keeps full edit/refine/undo/delete rights. This is a cross-module edge,
           <code class="font-next-mono">Bot → Generator + Variables</code>, strictly one-way (the Generator
-          never imports Bot).
+          never imports Bot). Since the character visual-identity phase (§12), the SAME delegation also
+          freezes the bot's approved LIKENESS onto the session, when its Visual module is on and has one —
+          the image-side twin of the voice, snapshotted the same way.
         </p>
         <Alert variant="info" size="sm">
           Full contract (delegate/undo endpoints, the overlay + fill-report shapes, the
           <code class="font-next-mono">can_delegate</code>/<code class="font-next-mono">can_undo_delegation</code>
           resource flags) lives in <code class="font-next-mono">docs/backend/generator-sessions-api.md</code>
-          ("Bot-author delegation overlay") and the Generator module's own gallery page (§20 of
-          <code class="font-next-mono">GeneratorPage.vue</code>). Design record:
-          <code class="font-next-mono">docs/decisions/ADR-0036-bot-delegation-generation-sessions.md</code>.
+          ("Bot-author delegation overlay" + "Frozen character visual identity") and the Generator module's
+          own gallery page (§20/§22 of <code class="font-next-mono">GeneratorPage.vue</code>). Design records:
+          <code class="font-next-mono">docs/decisions/ADR-0036-bot-delegation-generation-sessions.md</code> and
+          <code class="font-next-mono">docs/decisions/ADR-0042-character-visual-identity.md</code>.
         </Alert>
       </div>
     </StorySection>
 
-    <!-- 12. Editor UI (5-module drawer) -->
+    <!-- 12. Bot visual identity — the "Wygląd" module -->
+    <StorySection title="Bot visual identity — the &quot;Wygląd&quot; module">
+      <div class="flex flex-col gap-next-4 text-next-sm">
+        <p class="text-next-muted-foreground">
+          The bot's LOOK: a written identity an image is drawn from, a bounded strip of generated
+          candidates to choose from, and which one is APPROVED as the bot's canonical likeness. This is
+          the FIRST real logic behind <code class="font-next-mono">bots.visual</code> — the same json
+          column shipped as an explicit placeholder in the original bots migration ("no logic yet"),
+          unchanged in shape, now genuinely read/write. When a session is delegated to a bot with this
+          module on and an approved likeness, the delegation FREEZES the look onto it (§11) — a session's
+          images are then drawn FROM that face rather than merely described. Design record:
+          <code class="font-next-mono">docs/decisions/ADR-0042-character-visual-identity.md</code>.
+        </p>
+
+        <ApiTable title="Visual module endpoints (auth:sanctum + X-Workspace-Id; owner-only)" :rows="botVisualEndpointRows" type-header="Body" />
+
+        <ApiTable title="BotVisualIdentity — bots.visual, {@link Bot::visualIdentity()}" :rows="botVisualIdentityRows" />
+
+        <div class="grid grid-cols-1 gap-next-3 next-sm:grid-cols-2">
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">Two ways in, one pipeline</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              <strong>Reference</strong> mode edits a supplied/picked image toward the SAVED identity;
+              <strong>description</strong> mode generates outright from nothing but the saved identity
+              text. Both ride the Disk module's EXISTING async image machinery
+              (<code class="font-next-mono">DiskAiEdit</code>: same daily cap, same $ meter
+              gate-before-spend, same poll/broadcast contract — see
+              <code class="font-next-mono">docs/backend/disk-api.md</code>) rather than a second
+              pipeline. <strong>The prompt is composed from the PERSISTED module, never from the
+              request</strong> — a generation always draws whatever was last saved, which is why the
+              panel saves the bot first when there are unsaved edits.
+            </p>
+          </div>
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">A new one-way edge: Bot → Disk</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              The produced bytes become a FILE OWNED BY THE BOT
+              (<code class="font-next-mono">fileable_type = 'bot'</code>) — filed by a Bot-module-owned
+              worker BEFORE the Disk edit is published <code class="font-next-mono">done</code>, so a
+              client woken by the poll/broadcast always finds the candidate already there. Deliberately
+              NOT disk-native: invisible to the Disk browser and the "Zasoby" resource tree. Pinned by
+              tests in both directions (<code class="font-next-mono">BotModuleBoundaryTest</code>).
+            </p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-next-3 next-sm:grid-cols-2">
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">Candidate strip (max 6)</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              A strip to CHOOSE from, not an archive: a 7th generation evicts the OLDEST UNAPPROVED
+              candidate (never the approved likeness) and deletes its bytes. The panel warns before the
+              click that crosses this line, not after the deletion.
+            </p>
+          </div>
+          <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
+            <p class="mb-next-1 font-next-semibold text-next-fg">Moderation — a fixable failure, not a dead end</p>
+            <p class="text-next-xs text-next-muted-foreground">
+              The provider's OUTPUT-side moderation is wardrobe-sensitive for the SAME character (a
+              swimsuit refused, a dress accepted) — which is why <code class="font-next-mono">wardrobe</code>
+              is its own field. A refusal settles as its own stored state
+              (<code class="font-next-mono">safety_rejected</code>), reported on the wire as
+              <code class="font-next-mono">error_code: 'safety_rejected'</code> alongside the ordinary
+              <code class="font-next-mono">failed</code> status — deterministic, so the panel offers no
+              retry-as-is, only "fix the wardrobe/description."
+            </p>
+          </div>
+        </div>
+
+        <Alert variant="warning" size="sm">
+          <code class="font-next-mono">enabled</code> gates CONSUMPTION only, never editing or
+          generating. A module that is OFF keeps its content fully editable/generateable — turning it on
+          only decides whether a LATER Generator delegation may draw from it. This is a deliberate
+          departure from the knowledge/task-execution panels (§13), whose fields really are inert while
+          off.
+        </Alert>
+
+        <p class="text-next-xs text-next-muted-foreground">
+          <strong>Send the module WHOLE, or not at all.</strong> An ABSENT <code class="font-next-mono">visual</code>
+          key on a bot save leaves the stored module untouched; a PRESENT one OVERWRITES it in full —
+          including <code class="font-next-mono">candidates</code>/<code class="font-next-mono">canonical_file_id</code>,
+          which the generation worker writes ASYNCHRONOUSLY. A stale snapshot would silently delete a
+          candidate that landed while the form was open — see "Write payload assembly" in §13.
+        </p>
+
+        <Alert variant="info" size="sm">
+          Full request/response contract (the three endpoints, field-level constraints, error codes) lives
+          in <code class="font-next-mono">docs/backend/bots-api.md</code> ("Visual identity module
+          ('Wygląd')"); how a Generator session FREEZES and DRAWS from it lives in
+          <code class="font-next-mono">docs/backend/generator-sessions-api.md</code> ("Frozen character
+          visual identity") and §22 of <code class="font-next-mono">GeneratorPage.vue</code>. The
+          <code class="font-next-mono">BotVisualPanel.vue</code>/<code class="font-next-mono">
+          BotVisualCandidates.vue</code>/<code class="font-next-mono">BotVisualImage.vue</code> editor UI
+          and the shared <code class="font-next-mono">useAiImageJob</code> composable (extracted from the
+          Disk preview editor's own queued-image wait) live under
+          <code class="font-next-mono">resources/js/next/pages/bots/</code> and
+          <code class="font-next-mono">app/composables/</code>.
+        </Alert>
+      </div>
+    </StorySection>
+
+    <!-- 13. Editor UI (5-module drawer) -->
     <StorySection title="Editor UI — 5-module drawer">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <p class="text-next-muted-foreground">
@@ -820,19 +946,21 @@ const approverTypeRows: ApiRow[] = [
             <ul class="flex list-disc flex-col gap-next-1 pl-next-4 text-next-xs text-next-muted-foreground">
               <li>Always-visible general-info band: icon + name + status + description.</li>
               <li>Left vertical module nav (tabs) + right content panel.</li>
-              <li>5 modules: text (required) · task-execution · knowledge · visual (soon) · audio (soon).</li>
+              <li>5 modules: text (required) · task-execution · knowledge · visual ("Wygląd," see §12) · audio (soon).</li>
               <li>Nav shows a state indicator per module: required badge, enabled check, disabled dot, coming-soon badge, or an error dot.</li>
             </ul>
           </div>
           <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
             <p class="mb-next-1 font-next-semibold text-next-fg">Enable-toggle pattern</p>
             <p class="text-next-xs text-next-muted-foreground">
-              Every non-text module (task-execution, knowledge) has an enable
-              <code class="font-next-mono">Switch</code>. When OFF, its form is rendered
-              <code class="font-next-mono">:inert</code> + dimmed, with an info
-              <code class="font-next-mono">Alert</code> explaining the module — the user can
-              preview the fields before turning it on. Visual/audio show a dashed
-              coming-soon placeholder instead of a form.
+              Every non-text module (task-execution, knowledge, visual) has an enable
+              <code class="font-next-mono">Switch</code>. Task-execution/knowledge render their
+              form <code class="font-next-mono">:inert</code> + dimmed while OFF, with an info
+              <code class="font-next-mono">Alert</code> explaining the module. Visual is a
+              deliberate DEPARTURE from that pattern (see §12): OFF only stops a delegated
+              session from USING the likeness, so its fields stay fully live — a warning
+              <code class="font-next-mono">Alert</code> carries the distinction instead of
+              dimming the form. Audio still shows a dashed coming-soon placeholder.
             </p>
           </div>
         </div>
@@ -844,8 +972,12 @@ const approverTypeRows: ApiRow[] = [
             selected any tool, else <code class="font-next-mono">null</code> (module off).
             <code class="font-next-mono">knowledge</code> is always sent as
             <code class="font-next-mono">{enabled, entries}</code>.
-            <code class="font-next-mono">visual</code>/<code class="font-next-mono">audio</code>
-            are never sent (not writable placeholders). A 422 error bag is mapped onto the
+            <code class="font-next-mono">visual</code> is sent WHOLE — the user's edited TEXT
+            fields merged with the SERVER's current file pointers (candidates / approved /
+            reference), never a stale snapshot — but only once the drawer has SEEDED, real data
+            for it (an unsaved new bot omits the key entirely rather than send an empty module
+            that would overwrite nothing anyway; see §12). <code class="font-next-mono">audio</code>
+            is never sent (not a writable placeholder). A 422 error bag is mapped onto the
             matching module's local field errors, and the editor jumps to the first module that
             carries one.
           </p>
@@ -866,7 +998,7 @@ const approverTypeRows: ApiRow[] = [
       </div>
     </StorySection>
 
-    <!-- 13. Refactor lesson -->
+    <!-- 14. Refactor lesson -->
     <StorySection title="Refactor lesson: null-guarding shared resource fields">
       <div class="flex flex-col gap-next-4 text-next-sm">
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">

@@ -40,8 +40,13 @@ class AiTextGenerationService
      * frames the lead instruction sentence for the calling field (null = a generic short field);
      * $lengthGuidance replaces the output contract's LENGTH rule for the calling field (null — every
      * Workflows path — keeps today's single-field clause byte-identical).
+     *
+     * $authorId is the calling BLOCK's author, ranked by {@see AiVoiceContext::effectiveDirective()} against
+     * the ambient session voice. It is deliberately the LAST parameter: every existing call site passes the
+     * earlier ones POSITIONALLY, so appending keeps them compiling untouched (callers that do have an author
+     * pass it by NAME). Null + no session voice ⇒ the persona line, byte-identical to before.
      */
-    public function generate(string $prompt, ?string $personaId, int $maxChars, ?string $purposeHint = null, ?string $lengthGuidance = null): string
+    public function generate(string $prompt, ?string $personaId, int $maxChars, ?string $purposeHint = null, ?string $lengthGuidance = null, ?string $authorId = null): string
     {
         $prompt = trim($prompt);
 
@@ -54,7 +59,12 @@ class AiTextGenerationService
         // VOICE (R2 sub-stage 3): when a delegated run set the ambient voice, it REPLACES the resolved
         // persona in the agent's system instruction (D-E); when null — every non-delegated path, incl.
         // the whole Workflows side, which never sets it — behavior is BYTE-IDENTICAL to before.
-        $voice = $this->voice->directive();
+        //
+        // PER-BLOCK AUTHOR (R2, this sub-stage): the holder ranks the block's own author ABOVE the session
+        // voice and hands back whichever applies. An author that resolved to nothing (deleted / foreign /
+        // malformed) is not in the map, so this falls back to the session voice and then to the persona —
+        // fail-SAFE by construction, and with no author and no session voice the result is unchanged.
+        $voice = $this->voice->effectiveDirective($authorId);
 
         try {
             $response = $this->meter->meter('ai_text', fn () => (new AiTextAgent($persona, $purposeHint, $voice, $lengthGuidance))->prompt(

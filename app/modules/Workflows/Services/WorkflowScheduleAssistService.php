@@ -49,7 +49,7 @@ class WorkflowScheduleAssistService
     {
         $this->enforceRateLimit($userId);
 
-        $raw = $this->run($prompt, $language);
+        $raw = $this->run($prompt, $language, $tz);
 
         return $this->revalidate($this->parse($raw, $language), $tz);
     }
@@ -76,11 +76,19 @@ class WorkflowScheduleAssistService
     /**
      * Run the tool-less agent and return its raw TEXT. A provider/transport failure is not a 500
      * for the caller — it collapses to the same generic feasible:false envelope as malformed JSON.
+     *
+     * TODAY is resolved in the caller's zone (falling back to the app zone) and handed to the agent,
+     * because a request like "codziennie z wyjątkiem dni wolnych od pracy" is answered with concrete
+     * `exclusions.dates`. Without an anchor the model would enumerate holidays for whatever year its
+     * training suggests — a config that validates and compiles cleanly while silently excluding the
+     * wrong dates. The zone also tells it WHICH country's holidays are meant.
      */
-    private function run(string $prompt, string $language): string
+    private function run(string $prompt, string $language, ?string $tz): string
     {
+        $today = now($tz ?? config('app.timezone'))->toDateString();
+
         try {
-            $response = (new ScheduleAssistAgent($language))->prompt(
+            $response = (new ScheduleAssistAgent($language, $today, $tz))->prompt(
                 prompt: $prompt,
                 provider: config('ai.provider'),
                 model: config('ai.model'),

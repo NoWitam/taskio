@@ -4,6 +4,7 @@ namespace App\Modules\Generator\Http\Resources;
 
 use App\Http\Resources\CreatorResource;
 use App\Modules\Generator\Enums\GenerationSessionStatus;
+use App\Modules\Generator\Support\StoryboardFrame;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -60,10 +61,11 @@ class GenerationSessionResource extends JsonResource
             'status' => $this->status?->value,
 
             'slot_values' => is_array($this->slot_values) ? $this->slot_values : [],
-            // Emitted VERBATIM, so each part result also carries any per-part cross-part `stale` flag (Phase A):
-            // refining an UPSTREAM part sets `results.<downstreamPart>.stale = true` (a FE hint — no auto-cascade;
-            // a full generate clears it), which the FE reads straight off `results[partKey].stale`.
-            'results' => is_array($this->results) ? $this->results : null,
+            // Emitted verbatim EXCEPT for the storyboard's transient frame bookkeeping (see {@see publicResults}),
+            // so each part result still carries any per-part cross-part `stale` flag (Phase A): refining an
+            // UPSTREAM part sets `results.<downstreamPart>.stale = true` (a FE hint — no auto-cascade; a full
+            // generate clears it), which the FE reads straight off `results[partKey].stale`.
+            'results' => $this->publicResults(),
 
             // Per-part refine state (R2 sub-stage 2d): for each part that has a prior version, its undo depth
             // + a server-authoritative `can_undo` (creator AND the session is ready AND there is a prior).
@@ -106,6 +108,11 @@ class GenerationSessionResource extends JsonResource
 
             'bot_author' => $this->botAuthor(),
             'is_delegated' => $this->isDelegated(),
+            // Whether this session froze a CHARACTER LIKENESS with the delegation — i.e. whether its images
+            // are drawn from the author's approved likeness rather than from a description. A flag, never the
+            // identity itself: the descriptor / aesthetic / wardrobe / prohibitions are prompt material, and
+            // the overlay that holds them is deliberately not on the wire.
+            'has_character_image' => $this->resource->hasCharacterImage(),
             'can_delegate' => $canUpdate && ($this->status?->isEditable() ?? false),
             'can_undo_delegation' => $canUpdate && $this->resource->isDelegated() && $this->status !== GenerationSessionStatus::Generating,
             'unfilled_required_slots' => $this->resource->unfilledRequiredSlots(),
@@ -120,6 +127,44 @@ class GenerationSessionResource extends JsonResource
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
         ];
+    }
+
+    /**
+     * The per-part results as the API exposes them: the stored map minus the storyboard's IN-FLIGHT frame
+     * bookkeeping (`frame_token`, `frame_claimed_at`).
+     *
+     * Those two keys are a correlation token and a claim stamp that exist only BETWEEN a frame being
+     * announced and settling — {@see StoryboardFrame} already strips them on settle, so they leak onto the
+     * wire only while a run is mid-flight, and only to the session's own owner. Nothing is gained by seeing
+     * them (the token authorizes nothing — a frame job matches it against the row it was dispatched for,
+     * inside the queue), and a client that learned to read them would be reading a lifetime the server owns.
+     * Stripping them makes the wire shape of a settled run and a running one differ only in `image_status`,
+     * which is the contract the FE already has.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function publicResults(): ?array
+    {
+        $results = is_array($this->results) ? $this->results : null;
+
+        if ($results === null) {
+            return null;
+        }
+
+        foreach ($results as $partKey => $result) {
+            if (!is_array($result) || !is_array($result['shots'] ?? null)) {
+                continue;
+            }
+
+            foreach ($result['shots'] as $i => $shot) {
+                if (is_array($shot)) {
+                    unset($shot[StoryboardFrame::TOKEN_KEY], $shot[StoryboardFrame::CLAIMED_AT_KEY]);
+                    $results[$partKey]['shots'][$i] = $shot;
+                }
+            }
+        }
+
+        return $results;
     }
 
     /**
