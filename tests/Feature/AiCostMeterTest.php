@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Ai\Responses\Data\Meta;
 use Laravel\Ai\Responses\Data\Usage;
+use Laravel\Ai\Responses\EmbeddingsResponse;
 use Laravel\Ai\Responses\TextResponse;
 use Tests\TestCase;
 
@@ -137,6 +138,45 @@ class AiCostMeterTest extends TestCase
         $event = AiUsageEvent::where('channel', 'ai_image_edit')->sole();
         $this->assertSame(0, $event->prompt_tokens);
         $this->assertSame(4000, $event->total_tokens);
+    }
+
+    /**
+     * An EMBEDDINGS response carries no `->usage` — embeddings have no completion half, so laravel/ai
+     * reports one flat `->tokens` int. The meter must read the REAL figure rather than falling through
+     * to the opaque-result unit stand-in, because unlike an image edit the true cost IS known here, and
+     * a flat stand-in would misprice every knowledge indexing run by orders of magnitude.
+     */
+    public function test_meter_records_real_tokens_from_an_embeddings_response(): void
+    {
+        // A stand-in exists for this channel; the point is that it is NOT what gets recorded.
+        config()->set('ai.meter.unit_cost.ai_embedding', 4000);
+
+        $response = new EmbeddingsResponse([[0.1, 0.2], [0.3, 0.4]], 137, new Meta);
+
+        $result = app(MeteredAiCall::class)->meter('ai_embedding', fn () => $response);
+
+        $this->assertSame($response, $result); // still transparent to the result type
+
+        $event = AiUsageEvent::where('channel', 'ai_embedding')->sole();
+        $this->assertSame(137, $event->total_tokens, 'the provider figure, not the flat unit');
+        $this->assertSame(137, $event->prompt_tokens, 'an embedding is all input');
+        $this->assertSame(0, $event->completion_tokens);
+        $this->assertNotSame(4000, $event->total_tokens);
+    }
+
+    /**
+     * BYTE-PRESERVING guard for the branch above. A text response also exposes a `tokens` property in
+     * some package versions, so the `->usage` branch must keep winning — otherwise adding embeddings
+     * support would silently re-price every existing ai_text spend.
+     */
+    public function test_a_text_response_still_reports_its_usage_halves(): void
+    {
+        app(MeteredAiCall::class)->meter('ai_text', fn () => $this->textResponse(11, 7));
+
+        $event = AiUsageEvent::where('channel', 'ai_text')->sole();
+        $this->assertSame(11, $event->prompt_tokens);
+        $this->assertSame(7, $event->completion_tokens);
+        $this->assertSame(18, $event->total_tokens);
     }
 
     public function test_cap_zero_disables_the_gate_but_still_records(): void

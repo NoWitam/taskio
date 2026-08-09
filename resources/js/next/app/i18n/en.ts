@@ -121,6 +121,7 @@ export const en = {
     workflows: 'Workflows',
     variables: 'Variables',
     generator: 'Generator',
+    knowledge: 'Knowledge',
     bots: 'Bots',
     labels: 'Labels',
     comingSoon: 'Coming soon',
@@ -225,6 +226,10 @@ export const en = {
         ai_text: 'Text',
         ai_image_edit: 'Image edit',
         ai_image_generate: 'Image generation',
+        // Named for the WORK, not the medium. A bot run spends on somebody else's behalf and on a
+        // schedule nobody watches, so reading it as another slice of "Text" would hide the line
+        // item most likely to grow on its own.
+        ai_bot_task: 'Bot work',
       },
       actor: {
         user: 'Member',
@@ -1353,6 +1358,34 @@ export const en = {
   },
 
   // BotSelect (global bot picker).
+  // The diff engine (ui/data/TextDiffView) — a design-system component, so the copy is neutral:
+  // the same view compares a Disk file, a knowledge revision, and an AI proposal.
+  textDiff: {
+    label: 'Content comparison',
+    noChanges: 'No changes',
+    coarse: 'This document is very long — the comparison is shown in whole blocks, not line by line.',
+    // Screen-reader-only prefixes: the +/− gutter is `aria-hidden`, so without these a diff reads
+    // as ordinary text and there is no way to hear what was added or removed (DC10).
+    rowAdded: 'Added',
+    rowRemoved: 'Removed',
+  },
+
+  // The AI budget banner (ui/patterns/AiBudgetBanner) — shared by Generator, Bots and Knowledge.
+  aiBudget: {
+    blockedTitle: 'AI budget reached',
+    blockedMessage: 'This workspace has reached its monthly AI spending limit, so new generations are paused.',
+    resetsOn: 'Resets on {date}',
+    raiseLimit: 'Raise the limit',
+    contactOwner: 'Ask your workspace owner to raise the limit.',
+  },
+
+  knowledgeBaseSelect: {
+    placeholder: 'Select a knowledge base',
+    search: 'Search knowledge bases…',
+    ariaLabel: 'Select a knowledge base',
+    entries: 'Entries: {count}',
+  },
+
   botSelect: {
     placeholder: 'Select a bot',
     placeholderMultiple: 'Select bots',
@@ -1745,6 +1778,17 @@ export const en = {
 
   // Markdown editor toolbar + panels.
   editor: {
+    // Suggestion popups (wikilinks, mentions). English literals as fallbacks inside a `ui/`
+    // component rendered for every host that did not pass `labels` — the styleguide included.
+    suggest: {
+      mentionList: 'Mentions',
+      // The mention popup's own state copy. `mentionEmpty` replaces a bare English literal that
+      // was baked into the component; `mentionError` is the arm the mention popup never had — the
+      // wikilink popup could already tell a failed search from an empty one, and the shared shell
+      // gives both the same contract.
+      mentionEmpty: 'No matches',
+      mentionError: 'Couldn’t search people. Try again.',
+    },
     toolbar: {
       label: 'Formatting',
       undo: 'Undo',
@@ -2273,6 +2317,7 @@ export const en = {
     statusAction: {
       activate: 'Activate',
       deactivate: 'Deactivate',
+      restore: 'Restore',
       activated: 'Bot activated',
       deactivated: 'Bot deactivated',
       error: 'Couldn’t change the bot’s status.',
@@ -2565,6 +2610,39 @@ export const en = {
       toolsPlaceholder: 'Select tools',
       knowledge: {
         hint: 'Facts and rules the bot should always know while working.',
+        supersededHint:
+          'This bot reads a knowledge base, so the built-in entries below are NOT given to it. They are kept — unbind the base to use them again.',
+        binding: {
+          title: 'Knowledge base',
+          hint: 'A bot can read a shared knowledge base instead of the built-in entries below.',
+          active: 'Active source',
+          inactive: 'Not connected',
+          saveFirst: 'Save the bot first to connect a knowledge base.',
+          baseLabel: 'Base',
+          basePlaceholder: 'Select a knowledge base',
+          modeLabel: 'How it reads',
+          modeHint: 'How much of the base reaches the bot on each run.',
+          mode: {
+            auto: 'Automatic',
+            autoHint: 'The whole base while it fits, then only the matching passages. Recommended.',
+            inline: 'Whole base',
+            inlineHint: 'Every approved entry, verbatim. No AI cost; a large base will not fit.',
+            rag: 'Matching passages',
+            ragHint: 'Only the passages closest in meaning to the task. Scales; costs one AI call.',
+          },
+          bind: 'Connect the base',
+          rebind: 'Save the change',
+          unbind: 'Disconnect',
+          migrate: 'Move these entries into a new base',
+          saved: 'Knowledge base connected',
+          unbound: 'Knowledge base disconnected',
+          saveError: 'We could not save the knowledge base connection',
+          unbindConfirm: {
+            title: 'Disconnect the knowledge base?',
+            message:
+              'The bot stops reading that base and falls back to its built-in entries. The base itself is untouched.',
+          },
+        },
         empty: 'No knowledge entries yet.',
         listLabel: 'Knowledge entries',
         addEntry: 'Add entry',
@@ -3183,17 +3261,18 @@ export const en = {
         noTargets: 'Generate a post first to refine one of its parts.',
         queued: 'We’ll send this once the current run finishes.',
       },
-      // Inline AI-budget signals (R2 sub-stage 4): the compact warn/blocked chip + the blocked banner.
+      // Inline AI-budget signals (R2 sub-stage 4): the compact warn/blocked chip. The BANNER's copy
+      // moved to `aiBudget.*` with the component's promotion to the design system (B15a).
       budget: {
         chipWarn: '{percent}% of budget',
         chipBlocked: 'Budget reached',
         estimatedHint: 'Estimated AI spend this month',
         affordanceBlocked: 'AI budget reached — generation paused',
-        blockedTitle: 'AI budget reached',
-        blockedMessage: 'This workspace has reached its monthly AI spending limit, so new generations are paused.',
-        resetsOn: 'Resets on {date}',
-        raiseLimit: 'Raise the limit',
         contactOwner: 'Ask your workspace owner to raise the limit.',
+        raiseLimit: 'Raise the limit',
+        resetsOn: 'Resets on {date}',
+        blockedMessage: 'This workspace has reached its monthly AI spending limit, so new generations are paused.',
+        blockedTitle: 'AI budget reached',
       },
       empty: {
         title: 'No sessions yet',
@@ -3228,6 +3307,1008 @@ export const en = {
         undoError: 'Could not undo. Please try again.',
         archived: 'Session archived.',
         unarchived: 'Session unarchived.',
+      },
+    },
+  },
+
+  // Top-level "Knowledge" module (R3) — the workspace's mini-encyclopedia: knowledge BASES
+  // (identity + charter + metadata schema) holding short encyclopedic ENTRIES that people write
+  // and AI consumers read back. B4 covers the module frame, the base list and base settings; the
+  // reader / table / graph / search / trash copy joins in B5.
+  //
+  // NO PLURALIZATION anywhere in this block — counted copy is always `Label: {count}`.
+  knowledge: {
+    title: 'Knowledge',
+    subtitle: "Your team's knowledge bases — entries read by people and AI.",
+    module: {
+      hint: 'Structured knowledge your bots and generator rely on.',
+      tabs: 'Knowledge sections',
+      pickBase: 'Pick a base',
+      pickBaseHint: 'Open a base to see its entries, graph and settings.',
+      backToList: 'Back to the base list',
+      nav: {
+        bases: 'Knowledge bases',
+        search: 'Search',
+        trash: 'Trash',
+        compose: 'Composer',
+        reader: 'Reader',
+        table: 'Table',
+        graph: 'Graph',
+        settings: 'Settings',
+      },
+    },
+    filters: {
+      clearAll: 'Clear filters',
+      status: 'Status',
+      stale: 'Stale only',
+      chip: {
+        search: 'Search: {value}',
+        query: 'Query: {value}',
+        status: 'Status: {value}',
+      },
+    },
+    language: {
+      pl: 'Polish',
+      en: 'English',
+    },
+    bases: {
+      new: 'New base',
+      filters: {
+        search: 'Search knowledge bases',
+        trashed: 'Show deleted',
+        trashedChip: 'Deleted bases',
+      },
+      noCharter: 'No charter yet',
+      meta: {
+        entries: 'Entries',
+        language: 'Language',
+        schema: 'Metadata fields',
+        updated: 'Updated',
+      },
+      card: {
+        open: 'Base settings: {name}',
+      },
+      menu: {
+        label: 'Base actions',
+        open: 'Open',
+        settings: 'Settings',
+        trash: 'Move to trash',
+        trashDisabled: 'Only the base creator or the workspace owner can delete this base.',
+      restore: 'Restore',
+      purge: 'Delete forever',
+      },
+      empty: {
+        title: 'You have no knowledge base yet',
+        description:
+          "A knowledge base is your team's mini-encyclopedia. Start with one base per area — for example \"Brand\" or \"Product\".",
+        create: 'Create a base',
+        migrate: 'Move knowledge from a bot',
+      },
+      emptySearch: {
+        title: 'No bases match your filters',
+        description: 'Try a different phrase, or clear the filters.',
+        action: 'Clear filters',
+      },
+      // Destroying a trashed base takes its entries with it, and the count is the part that makes
+      // the sentence a decision rather than a formality.
+      purgeConfirm: {
+        title: 'Delete this base forever?',
+        message: 'The base and its entries ({count}) are deleted permanently. This cannot be undone.',
+      },
+      errors: {
+        title: 'We could not load the knowledge bases',
+        description: 'Something went wrong on the way. Try again.',
+      },
+      toasts: {
+        created: 'Knowledge base created',
+        updated: 'Base settings saved',
+        trashed: 'Base moved to trash',
+        restored: 'Base restored',
+        purged: 'Base deleted permanently',
+        error: 'We could not save your changes',
+      },
+      listLabel: 'Knowledge bases',
+    },
+    settings: {
+      title: 'Base settings',
+      subtitle: 'Identity, charter and the metadata schema of this base.',
+      danger: 'Danger zone',
+      dangerHint: 'The base and its entries go to the trash. You can restore them from there.',
+      dangerTrash: 'Move base to trash',
+      createTitle: 'New knowledge base',
+      editTitle: 'Base settings',
+      create: 'Create base',
+      identity: 'Identity',
+      nameLabel: 'Base name',
+      namePlaceholder: 'e.g. Brand, Product, Support',
+      nameRequired: 'A base name is required',
+      descriptionLabel: 'Short description',
+      descriptionPlaceholder: 'One line about what lives in this base.',
+      languageLabel: 'Base language',
+      languageHint: 'The base language drives indexing and AI hints.',
+      charter: 'Charter',
+      charterHint: 'Describe the base the way you would explain it to a newcomer.',
+      charterPlaceholder:
+        'What is this base?\nWho is it for?\nWhat tone does it use?\nWhat does it cover?\nWhat does it deliberately NOT cover?',
+      charterNotice:
+        'The charter is fed to the AI models using this base. The more precisely you state scope and exclusions, the less it makes things up.',
+      editLocked: 'Only the base creator or the workspace owner can change these settings.',
+      governedLocked:
+        'The charter and the metadata schema are governed by the base creator or the workspace owner. You can still edit the name, description and language.',
+    },
+    schema: {
+      title: 'Metadata schema',
+      hint: 'Fields filled in on every entry, and filterable afterwards.',
+      fieldLegend: 'Key and label',
+      fieldTitle: 'Field {index}',
+      keyPlaceholder: 'field_key',
+      labelPlaceholder: 'Human-readable name',
+      keyLabel: 'Key',
+      labelLabel: 'Label',
+      keyInvalid:
+        'A key may contain letters, digits and underscores, and must start with a letter.',
+      keyDuplicate: 'This key already exists in the schema',
+      labelRequired: 'A label is required',
+      tooManyFields: 'A knowledge base may declare at most {max} metadata fields.',
+      typeLabel: 'Type',
+      nullable: 'Optional',
+      array: 'List of values',
+      options: 'Choices',
+      optionKey: 'Key',
+      optionLabel: 'Label',
+      optionAdd: 'Add choice',
+      optionRemove: 'Remove choice',
+      optionKeyRequired: 'Every choice needs a key',
+      optionKeyDuplicate: 'Choice keys must be unique',
+      addField: 'Add field',
+      removeField: 'Remove field',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
+      empty: 'This base has no metadata schema yet',
+      changeNotice:
+        'Changing the schema does not change existing entries. A new field is empty on entries that already exist; a removed field stops being shown but its values are kept.',
+      unsupported: 'This field type cannot be edited here. It is kept exactly as it is.',
+      base: {
+        text: 'Text',
+        number: 'Number',
+        boolean: 'Yes / no',
+        date: 'Date',
+        enum: 'Choice',
+      },
+    },
+    status: {
+      draft: 'Draft',
+      proposed: 'Proposed',
+      approved: 'Approved',
+      archived: 'Archived',
+      draftHint: 'Visible to the team only; AI will not use it.',
+      proposedHint: 'Proposed by a bot — approve it in the entry editor.',
+      approvedHint: 'Available to AI and search.',
+      archivedHint: 'Hidden in the reader; stays in the base.',
+    },
+    index: {
+      pending: 'Waiting for indexing',
+      indexing: 'Indexing',
+      indexed: 'Indexed',
+      partial: 'Partial: {done}/{total}',
+      partialShort: 'Partial',
+      pendingBudget: 'Paused — AI budget',
+      failed: 'Indexing failed',
+      pendingHint:
+        'This entry is queued for indexing. Semantic search will cover it shortly.',
+      indexingHint: 'Indexing is running. Results may be incomplete.',
+      partialHintShort: 'Some passages of this entry are still queued for indexing.',
+      pendingBudgetHint:
+        'Indexing is paused — the AI budget is used up. We will finish automatically once the limit renews.',
+      failedHint: 'We could not index this entry.',
+      retry: 'Retry indexing',
+      retryQueued: 'The entry is back in the indexing queue',
+    },
+    reader: {
+      aliases: 'Also known as: {names}',
+      articleLabel: 'Entry content',
+      chunks: 'Passages: {count}',
+      edit: 'Edit',
+      stale: 'Stale',
+      updatedBy: 'Updated {date}',
+      prev: 'Previous entry',
+      next: 'Next entry',
+      prevDisabled: 'This is the first entry in this base',
+      nextDisabled: 'This is the last entry in this base',
+      mode: {
+        label: 'Presentation mode',
+        reader: 'Reader',
+        table: 'Table',
+      },
+      menu: {
+        history: 'Version history',
+        trash: 'Move to trash',
+      },
+      toc: {
+        title: 'Contents',
+        navLabel: 'Entries in this knowledge base',
+        count: 'Entries: {count}',
+        search: 'Filter entries',
+        open: 'Show contents',
+        group: 'Group by',
+        groupNone: 'No grouping',
+        groupEmpty: 'No value',
+        moveUp: 'Move up',
+        moveDown: 'Move down',
+        noMatches: 'No entry matches that filter',
+        truncated:
+          'This list shows the first entries of the base. Use the table to reach the rest.',
+      },
+      ghost: {
+        aria: '{label} — entry does not exist',
+        previewTitle: 'This entry does not exist yet',
+        previewHint: 'Click to describe it in the composer.',
+      },
+      preview: {
+        error: 'Could not load the preview',
+      },
+      empty: {
+        title: 'This base is empty',
+        description:
+          'Start with one entry. Add more later — [[…]] wikilinks will tie them together.',
+        action: 'Write the first entry',
+      },
+      notFound: {
+        title: 'There is no entry with that name here',
+        description: 'It may have been renamed or deleted. You can describe it in the composer now.',
+      },
+    },
+    // Panel TITLES only. Their contents live in the sibling blocks below — `t()` walks the dot
+    // path strictly, so `panels.similar` cannot be both a string and a parent.
+    panels: {
+      metadata: 'Metadata',
+      relations: 'Relations',
+      similar: 'Similar',
+      mentions: 'Mentions',
+      linksOut: 'Links to',
+      linksIn: 'Linked from',
+      ghosts: 'Red links',
+      provenance: 'Provenance',
+      history: 'Version history',
+    },
+    similar: {
+      score: 'Match: {percent}%',
+      why: 'Why similar?',
+      dismiss: 'Dismiss similarity: {title}',
+      dismissed: 'Similarity dismissed',
+      // The UNDO on a dismissed suggestion. Refusing a machine guess is not authorship, so the
+      // button stays — and without this key its `aria-label` announced the dotted path itself.
+      restore: 'Restore similarity: {title}',
+      empty: 'We found no similar entries',
+      indexing:
+        'Similar entries appear once indexing finishes. Nothing is missing — it is not ready yet.',
+    },
+    links: {
+      inEmpty: 'No entry links here yet',
+      outEmpty: 'This entry does not link anywhere yet',
+    },
+    // Mentions (B10): one entry's name appears in another's text. Directional — "mentions" and
+    // "mentioned by" are different facts and can exist independently.
+    mentions: {
+      outgoing: 'Mentions',
+      incoming: 'Mentioned by',
+      dismiss: 'Dismiss mention: {title}',
+      dismissed: 'Mention dismissed',
+      restore: 'Restore mention: {title}',
+      // Quotation marks from the catalog: „…” is Polish typography, English wants "…".
+      quote: '"{text}"',
+    },
+    ghosts: {
+      count: 'Red links: {count}',
+      create: 'Create entry',
+    },
+    provenance: {
+      createdBy: 'Created by',
+      createdAt: 'Created',
+      updatedAt: 'Last change',
+      slug: 'Slug',
+      slugCopied: 'Slug copied',
+    },
+    metadata: {
+      edit: 'Edit metadata',
+      noValue: 'No value',
+      empty: 'This base has no metadata schema yet',
+      outOfSchema: 'Off-schema',
+      outOfSchemaHint: 'These fields left the base schema. Their values are kept.',
+      unsupported: 'These field types cannot be edited here. They are kept exactly as they are.',
+      yes: 'Yes',
+      no: 'No',
+      addItem: 'Add item',
+      removeItem: 'Remove item',
+      saved: 'Metadata saved',
+    },
+    entries: {
+      title: 'Entries',
+      subtitle: 'Every entry in this base, for reviewing many at once.',
+      new: 'New entry',
+      caption: 'Entries in this knowledge base',
+      fresh: 'Fresh',
+      trashed: 'Moved to trash',
+      filters: {
+        search: 'Search entries',
+      },
+      col: {
+        title: 'Title',
+        status: 'Status',
+        stale: 'Freshness',
+        index: 'Index',
+        creator: 'Author',
+        updated: 'Updated',
+      },
+      actions: {
+        openAria: 'Open entry: {title}',
+        editAria: 'Edit entry: {title}',
+        more: 'More actions: {title}',
+        history: 'Version history',
+        propose: 'Propose a change with AI',
+        trash: 'Move to trash',
+      },
+      empty: {
+        title: 'This base has no entries yet',
+      },
+      emptySearch: {
+        title: 'No entries match your filters',
+      },
+      trashConfirm: {
+        title: 'Move entry to trash?',
+        message: '"{title}" goes to the trash. You can restore it.',
+      },
+    },
+    // The AI composer (B15a). Since the AI-only pivot this is the only way an entry comes to exist.
+    // No pluralization — all counted copy is "Label: {count}".
+    compose: {
+      title: 'Entry composer',
+      subtitle: 'Write what you know — the composer turns it into entries.',
+      nav: 'Composer',
+      sourceLabel: 'What do you want the bots to know?',
+      sourceHint: 'One block of text is enough. The composer splits it into entries and links them together.',
+      sourcePlaceholder:
+        'Write everything you know and want the bots to know. You do not have to organise it — that is what the composer is for.',
+      seedPrefill: 'Describe what "{title}" is.',
+      seedNotice: 'Other entries link to this one, but it does not exist yet.',
+      amendNotice: 'You are amending an existing entry: "{title}".',
+      amendPlaceholder: 'What should change in this entry?',
+      start: 'Start',
+      startBlocked: 'Shorten the text to {max} characters to start',
+      startError: 'We could not start the composer',
+      cancel: 'Cancel',
+      budgetWarn: 'The AI budget is nearly used up',
+      budgetWarnPercent: '{percent}% of the AI budget used',
+      generating: 'The composer is reading your text and drafting entries. This usually takes under a minute.',
+      generatingLabel: 'Preparing drafts',
+      stalled: 'We did not get a completion signal.',
+      refresh: 'Refresh',
+      ready: 'Done. Drafts: {count}.',
+      boardTitle: 'Drafts: {count}',
+      selectAll: 'Select every draft',
+      select: 'Select draft: {title}',
+      acceptSelected: 'Accept selected: {count}',
+      acceptSelectedNone: 'Select drafts or relations to accept them',
+      graphOnly: 'This run proposes no new entries — only graph changes: {count}.',
+      acceptSelectedConfirm: {
+        title: 'Accept the selected drafts?',
+        message: 'You will accept drafts: {count}. They become entries with the Approved status.',
+      },
+      accept: 'Accept',
+      acceptDraft: 'Save as draft',
+      acceptedToast: 'Draft accepted',
+      // An amendment creates no entry — it changes one. A different claim about what just happened.
+      acceptedAmendmentToast: 'Change saved to the existing entry',
+      accepted: 'Accepted',
+      acceptedOpen: 'Open entry',
+      reject: 'Discard draft: {title}',
+      rejected: 'Draft discarded',
+      expand: 'Expand',
+      collapse: 'Collapse',
+      badgeNew: 'New entry',
+      // Run notes: the ONLY messages explaining why the reviewer got something other than what
+      // they asked for. These are not warnings — the server did the safe thing and is saying so.
+      notesTitle: 'About this run: {count}',
+      // The reviewer's checklist. It exists because dramatic facts were vanishing out of the source
+      // text and nothing said so — and no automatic check can catch that, because a model that
+      // omits an incident reports its coverage honestly. The person is the check.
+      facts: {
+        title: 'What the material says happened',
+        subtitle: 'Read this against the proposals — it is the material, not a verdict on it.',
+        // An OBSERVATION, never a verdict: the check compares names, so an entry covering the
+        // subject under a different title trips it. "No entry carries that name" is true either
+        // way; "an entry is missing" would not be.
+        protagonistTitle:
+          'The material keeps talking about “{title}”, and no entry carries that name.',
+        protagonistHint:
+          'If that is right, everything about them has nowhere to live — check before accepting.',
+        coveredBy: 'In:',
+        openClaim: 'Go to the entry: {title}',
+        empty: 'No events found in this material',
+        emptyHint: 'That is normal for definitional text — descriptions, rules, terminology.',
+        unavailable: 'The fact reading did not run this time, so there is no checklist below.',
+        truncated: 'Showing the first {max} facts — the reading found more than the list holds.',
+      },
+      note: {
+        amend_append_only: 'Appended instead of rewritten',
+        amend_append_onlyHint:
+          'The entry was too long to show the agent in full, so it could only add text. Rewriting what it had not read would have deleted the rest.',
+        amend_too_long: 'The entry is near its length limit',
+        amend_too_longHint:
+          'With this addition the entry would pass the allowed length. Consider splitting it into several entries and linking them.',
+        wikilinks_lost: 'The rewrite removes links: {links}',
+        wikilinks_lostHint:
+          'These wikilinks disappear from the text. That breaks the graph of other entries, even though the sentence itself reads perfectly well.',
+        resolution_degraded: 'The context was thinner than usual',
+        resolution_degradedHint:
+          'Matching names against this base did not run in full, so "not found" may mean "not looked for properly".',
+        // A PROPOSAL WAS DROPPED. This used to happen in silence: an entry that arrived without a
+        // title (or without a body) was discarded server-side and the reviewer was never told, so
+        // the one thing they were waiting for was simply absent from the board and looked like a
+        // decision not to propose it. The note names WHICH one fell out and WHAT was missing —
+        // without both, it cannot be told apart from the model having nothing to say.
+        entry_incomplete: 'One proposal was dropped: “{name}”',
+        entry_incompleteHint:
+          'It arrived without its {field}, so it could not be shown for review. Ask for it again — mentioning it by name usually brings it back complete.',
+        // The field names, worded. They are an enum on the wire and must never print raw.
+        field: {
+          title: 'title',
+          content: 'content',
+        },
+        // The reason matters: each one points at something different to do about it.
+        reason: {
+          budget:
+            'The AI budget ran out before names were fully matched, so "not found" may mean "not looked for properly".',
+          scan_limit:
+            'This base is larger than the scan limit, so name matching covered only part of it.',
+          vectors_unsupported:
+            'This connection has no vector search, so names were matched literally only.',
+          embedding_failed:
+            'Vectors could not be computed, so names were matched literally only.',
+          extraction_failed:
+            'Names could not be extracted from the text, so matching covered less than usual.',
+        },
+        unknown: 'A note about this run',
+      },
+      // What the composer did NOT do. Silence here reads as "there was nothing like that in the
+      // text", so both lists have to appear — as information, never as a warning.
+      unresolvedTitle: 'Not recognised: {count}',
+      unresolvedHint:
+        'No entry and no relation was proposed for these names — the agent could not tell what they referred to.',
+      unresolvedCreate: 'Create an entry: {name}',
+      omitted: 'Outside this session’s context: {titles}',
+      omittedHint:
+        'These entries did not fit the context limit, so the agent never saw them. The absence of proposals about them is not its judgement.',
+      // The amendment card: says HOW the change will land, before the body is read.
+      amendAppendSection: 'Added to the "{section}" section',
+      amendAppendEnd: 'Added at the end of the entry',
+      linksLost: 'This change removes links to other entries: {count}',
+      badgeAmend: 'Amends → {title}',
+      badgeStaleBaseline: 'Baseline out of date',
+      badgeStaleBaselineHint: 'The entry this draft amends changed after the draft was generated.',
+      duplicate: '{percent}% overlap with "{title}"',
+      duplicateOpen: 'Open the existing one',
+      duplicateConfirm: {
+        title: 'Accept despite the overlap?',
+        message:
+          '"{draft}" overlaps the existing entry "{existing}" by {percent}%. You will end up with two separate entries.',
+      },
+      diff: 'Compare',
+      diffBaseline: 'Compare against',
+      diffOriginal: 'Original',
+      diffPrevious: 'Previous draft',
+      diffStored: 'Version in the base',
+      diffNoBaseline: 'This is the first version of this draft — there is nothing to compare it with yet.',
+      diffUnchanged: 'This version is identical to the selected baseline.',
+      diffTitle: 'Title',
+      refineLabel: 'What should change?',
+      refinePlaceholder: 'E.g. "Make every entry shorter" or "Add a pricing section".',
+      refine: 'Revise',
+      refineError: 'We could not revise the drafts',
+      refineScoped: 'Revise only the entry "{title}": ',
+      refineThis: 'Revise this entry',
+      historyTitle: 'Revision history: {count}',
+      historyItem: 'Revision {number}',
+      relations: 'Relations',
+      relationsEmpty: 'This draft does not connect to anything in the base yet.',
+      relationsEmptyHint: 'That is normal for a first entry.',
+      relationsError: 'We could not load the connections',
+      // Relations computed without the vector legs — a quiet note, not an error: what is drawn is true.
+      vectorSkipped: {
+        budget: 'The AI budget is used up, so only connections found in the text are shown.',
+        disabled: 'The semantic index is switched off, so only connections found in the text are shown.',
+        unsupported: 'This environment has no semantic index — only connections found in the text are shown.',
+        error: 'We could not compute similarities — only connections found in the text are shown.',
+      },
+      nodeDraft: 'Draft',
+      // An EXISTING entry a shadow draft proposes to change — the pencil badge in the legend
+      // and on the neighbour row. Not a draft node: the circle is the real entry.
+      nodeAmended: 'Amended',
+      firstSession:
+        'These are the first entries in this base — the composer has nothing to compare them with yet. Connections show up from the next session on.',
+      // An amendment conflict: someone edited the target in parallel. Two honest routes, each priced.
+      conflict: {
+        title: 'Someone changed this entry meanwhile',
+        message: 'The entry "{title}" changed after this draft was generated.',
+        showDiff: 'Show a diff against the new version',
+        freeHint: 'No AI cost',
+        refine: 'Revise again',
+        costHint: 'One agent iteration — this costs',
+        rebase: 'Rebase the comparison',
+        rebased: 'The comparison now points at the entry’s current version',
+        staleDiff: 'You are comparing against a version that has since changed.',
+      },
+      openAmendment: 'Show the amendment',
+      expandContext: 'Widen the context',
+      expandContextHint: 'Pulls in more related entries for the next revision — costs one AI call.',
+      expandContextDone: 'Context widened for the next revision',
+      expandContextReady: 'Context widened — it will be used by the next revision',
+      expandContextAlready: 'This session’s context was already widened — nothing was spent.',
+      expandContextError: 'We could not widen the context',
+      error: {
+        directive: 'The content contains template syntax that an entry cannot store.',
+        tooManyChunks: 'This draft has too many sections. Split it into separate entries.',
+        slugTaken: 'An entry with this title already exists.',
+        generic: 'We could not save this draft.',
+      },
+      failed: {
+        title: 'The composer did not finish',
+        retry: 'Try again',
+        editSource: 'Change the source text',
+        reason: {
+          unparseable: "The agent's answer could not be read.",
+          empty: 'The agent returned no entries.',
+          seed_missed: 'The agent did not describe the entry you asked for.',
+          provider: 'The AI provider did not respond.',
+          disabled: 'The AI composer is switched off in the configuration.',
+        },
+      },
+      expired: {
+        title: 'This composer session has expired',
+        description: 'The source text was not kept.',
+        action: 'Start over',
+      },
+      noDrafts: {
+        title: 'The composer found nothing to turn into entries',
+        description: 'Try adding specifics — names, definitions, rules.',
+      },
+      leave: {
+        title: 'Discard the drafts you have not reviewed?',
+        message: 'You have drafts you have not accepted or discarded: {count}. Leaving discards them.',
+        confirm: 'Leave',
+      },
+      unavailable: {
+        title: 'The composer is temporarily unavailable',
+        budget: "This workspace's monthly AI budget is used up. It renews on {date}.",
+        budgetNoDate: "This workspace's monthly AI budget is used up.",
+        disabled: 'The AI composer is switched off in the configuration.',
+        noVector: 'This environment has no semantic index, so the composer cannot check connections.',
+        generic: 'The composer cannot run a generation right now.',
+        // What still works, and it had to change: editing existing entries is not one of the
+      // things that still works — it is not one of the things that exist. Naming a capability the
+      // module withdrew is worse than naming none, because the reader goes looking for it.
+      editingWorks: 'Reading and searching this base work as usual.',
+        backToReader: 'Back to the reader',
+        usage: 'See AI usage',
+      },
+    },
+    editor: {
+      editTitle: 'Editing: {title}',
+      back: 'Back',
+      unsaved: 'Unsaved changes',
+      titleLabel: 'Title',
+      titlePlaceholder: 'Name the entry with one concept',
+      titleRequired: 'A title is required',
+      contentLabel: 'Content',
+      contentPlaceholder: 'Write the entry. Type [[ to link to another one.',
+      slugLabel: 'Slug',
+      slugHint: 'Used in [[…]] wikilinks. Changing it breaks existing links.',
+      slugInvalid: 'Lowercase letters, digits and hyphens only',
+      aliasesLabel: 'Other names',
+      aliasesHint:
+        'The names this entry gets mentioned by in other texts. They do not work in [[…]] wikilinks — those always address the handle.',
+      aliasesPlaceholder: 'Type a name and press Enter',
+      aliasesTooLong: 'A name can be at most {max} characters',
+      statusLabel: 'Status',
+      settingsSection: 'Entry settings',
+      staleLabel: 'Flag as stale',
+      save: 'Save',
+      cancel: 'Cancel',
+      saved: 'Entry saved',
+      overLimit: {
+        title: 'This entry is over 40,000 characters',
+        body: 'An entry is an encyclopedia entry — if the material is longer, split it into several entries and connect them with [[…]] wikilinks.',
+        saveBlocked: 'Shorten the content to 40,000 characters to save',
+      },
+      leave: {
+        title: 'Discard unsaved changes?',
+        message: 'You have unsaved changes in this entry. Leaving discards them.',
+        confirm: 'Discard',
+      },
+      link: {
+        listLabel: 'Entries to link',
+        ghost: 'Insert a link to a missing entry "{query}"',
+        empty: 'No matches',
+        // A failed search is NOT the same news as no matches.
+        error: 'We could not search the entries — type the name again',
+      },
+    },
+    conflict: {
+      title: 'Someone saved this entry meanwhile',
+      message:
+        'A newer version of this entry was saved while you were writing. Your changes are not saved yet.',
+      safe: 'Your content is safe — nothing disappears until you choose an option.',
+      keep: 'Keep my changes',
+      openLatest: 'Open the latest version in a new tab',
+      overwrite: 'Overwrite with mine',
+      reload: 'Reload the entry to see the newest version.',
+      overwriteConfirm: {
+        title: "Overwrite someone else's changes?",
+        message: 'You will overwrite the newer version. It stays in the history.',
+      },
+    },
+    history: {
+      title: 'Version history',
+      open: 'Show version history',
+      version: 'Version {number}',
+      current: 'Current',
+      empty: 'This is the first version — no history yet',
+      feedLabel: 'Entry version list',
+      compare: 'Compare',
+      sameAsCurrent: 'This version is identical to the current content',
+      view: {
+        label: 'What to show',
+        diff: 'Differences',
+        content: 'Version content',
+      },
+    },
+    graph: {
+      title: 'Graph',
+      subtitle: "How this base's entries connect.",
+      mode: {
+        label: 'Presentation',
+        list: 'List',
+        graph: 'Graph',
+      },
+      depth: 'Depth',
+      depth1: '1 step',
+      depth2: '2 steps',
+      fit: 'Fit',
+      zoomIn: 'Zoom in',
+      zoomOut: 'Zoom out',
+      capped: 'Showing {shown} of {total} most-connected entries',
+      cappedEgo: 'Showing {shown} of {total} entries in this neighbourhood',
+      showMore: '+{count} more',
+      // The layer filter — one kind at a time. "All" stays a choice, because without it the
+      // complete picture (today's default view) would be unreachable.
+      layer: {
+        label: 'Connection kind',
+        all: 'All',
+      },
+      // Missing entries are a SUB-KIND of wikilinks: a red link is a wikilink to an entry nobody
+      // wrote — not a layer of its own.
+      ghosts: {
+        label: 'Missing entries',
+        with: 'With missing',
+        without: 'Without missing',
+        only: 'Only missing',
+      },
+      edge: {
+        wikilink: 'Wikilinks',
+        similarity: 'Similar',
+        // Directional: A mentions B, which does not mean B mentions A.
+        mention: 'Mentions',
+        ghost: 'Missing',
+        // The fifth layer — the only one whose edge carries MEANING, not just a kind.
+        relation: 'Relations',
+        count: '{label}: {count}',
+      },
+      group: {
+        entry: 'Entries',
+      },
+      legend: 'Connection legend',
+      neighbours: 'Neighbours',
+      neighboursLabel: 'Neighbours of the selected entry',
+      neighboursEmpty: 'This entry has no connections yet',
+      ghostSources: 'Entries linking here: {count}',
+      center: 'Centre here',
+      openEntry: 'Open entry',
+      canvasHidden: 'The graph is an illustration. The full content is in the neighbour list beside it.',
+      indexNotice:
+        'Some entries in this base are not indexed yet — similarities may be incomplete. Wikilinks are drawn regardless of the index.',
+      empty: {
+        title: 'Not enough connections to draw a graph',
+        description:
+          'Add [[…]] wikilinks inside your entries, or wait for indexing to finish — similarities will show up on their own.',
+        action: 'Open the reader',
+      },
+      emptyFiltered: {
+        title: 'This layer has no connections here',
+        action: 'Show all',
+      },
+      loadingLabel: 'Loading the graph',
+    },
+    search: {
+      title: 'Search knowledge',
+      subtitle: 'Keyword and meaning, over every base you can read.',
+      placeholder: 'What are you looking for?',
+      results: 'Results: {count}',
+      truncated: 'Only the {limit} best matches are shown. Narrow the query to see different ones.',
+      matches: 'Matched passages: {count}',
+      // The spoken marker for a highlight — the tint alone does not exist for a screen reader.
+      matchStart: 'match:',
+      headingPath: 'Heading path',
+      score: 'Match: {percent}%',
+      jump: 'Jump to passage',
+      start: {
+        title: 'Start typing to search your knowledge',
+        description: 'Search combines keyword and meaning matching — ask in a full sentence.',
+      },
+      examples: {
+        one: 'How do we describe our brand?',
+        two: 'Refund policy',
+        three: 'What tone do we write in?',
+      },
+      empty: {
+        title: 'No results',
+        description: 'Try different words or widen the filters.',
+      },
+      vectorSkipped: {
+        budget: 'Keyword results only — the AI budget for semantic search is used up.',
+        disabled: 'Keyword results only — semantic search is turned off.',
+        unsupported: 'Keyword results only — semantic search is unavailable in this workspace.',
+        error: 'Keyword results only — semantic search could not run this time.',
+      },
+    },
+    migrate: {
+      title: 'Move knowledge from a bot',
+      intro:
+        "We will create a new knowledge base from the bot's built-in entries. From then on the bot reads that base.",
+      botLabel: 'Bot',
+      botHint: 'Pick the bot whose built-in entries you want to move.',
+      botPlaceholder: 'Select a bot',
+      // Mirrors lang/*/bot.php `knowledge.base_name` — the preview must name the base the server
+      // will actually create.
+      baseName: 'Knowledge: {bot}',
+      entries: 'Entries to move: {count}',
+      additive:
+        "The bot's built-in entries are left untouched — unbind the base and it reads them again.",
+      emptyBot: 'This bot has no built-in entries to move.',
+      alreadyBound:
+        'This bot already reads a knowledge base. Moving again creates another base and re-points the bot at it.',
+      previewError: 'We could not load this bot.',
+      confirm: 'Move the knowledge',
+      done: 'Knowledge base created. Entries moved: {count}',
+    },
+    common: {
+      retry: 'Try again',
+      loadError: 'We could not load the data',
+      saveError: 'We could not save your changes',
+      loadingLabel: 'Loading',
+      undo: 'Undo',
+      copy: 'Copy',
+      copied: 'Copied',
+      copyFailed: 'We could not copy that',
+    },
+
+    // Entry type — what an entry IS. `unspecified` is a normal state (every entry written before
+    // types existed), so the name is neutral and never a warning.
+    entityType: {
+      label: 'Entry type',
+      hint: 'It helps the agent pick relations. You can leave it unspecified.',
+      set: 'Set the entry type',
+      saved: 'Entry type saved',
+      person: 'Person',
+      organization: 'Organization',
+      event: 'Event',
+      place: 'Place',
+      product: 'Product',
+      work: 'Work',
+      concept: 'Concept',
+      other: 'Other',
+      unspecified: 'Unspecified',
+    },
+
+    // Typed relations — the fifth graph layer. NOTE: `knowledge.compose.relations` is something
+    // ELSE ("Connections" — the draft graph preview); that key stays untouched.
+    relations: {
+      title: 'Relations',
+      count: 'Relations: {count}',
+      panelEmpty: 'This entry has no relations yet',
+      panelEmptyHint:
+        'Relations describe how this entry connects to others — who belongs where, what follows from what.',
+      connect: 'Connect to…',
+      open: 'Open entry',
+      active: 'Active',
+      ended: 'Ended {year}',
+      retracted: 'Retracted',
+      showEnded: 'Show ended: {count}',
+      hideEnded: 'Hide ended',
+      showHistorical: 'Show historical',
+      hiddenHistorical: 'Hidden ended relations: {count}',
+      labelsHidden: 'Too many relations to label them all — hover an edge or use the list.',
+      from: 'from {date}',
+      until: 'until {date}',
+      sentence: '{subject} {predicate} {object}',
+      sentenceDated: '{subject} {predicate} {object}, from {from}',
+      sentenceEnded: '{subject} {predicate} {object}, until {until}',
+      properties: 'Properties',
+      loadError: 'We could not load the relations',
+
+      // The verbs. Translated CLIENT-side, because the server's `label`/`inverse_label` are
+      // rendered in the SERVER's locale, which this frontend's language switch does not reach.
+      predicate: {
+        member_of: { forward: 'is a member of', inverse: 'has member' },
+        works_on: { forward: 'works on', inverse: 'is worked on by' },
+        knows: { forward: 'knows', inverse: 'knows' },
+        created: { forward: 'created', inverse: 'was created by' },
+        owns: { forward: 'owns', inverse: 'is owned by' },
+        located_in: { forward: 'is located in', inverse: 'contains' },
+        participated_in: { forward: 'participated in', inverse: 'had participant' },
+        occurred_during: { forward: 'occurred during', inverse: 'spans' },
+        part_of: { forward: 'is part of', inverse: 'has part' },
+        is_a: { forward: 'is a', inverse: 'has subtype' },
+        uses: { forward: 'uses', inverse: 'is used by' },
+        depends_on: { forward: 'depends on', inverse: 'is required by' },
+        precedes: { forward: 'precedes', inverse: 'follows' },
+        caused: { forward: 'caused', inverse: 'was caused by' },
+        opposes: { forward: 'opposes', inverse: 'opposes' },
+      },
+
+      // The closed, small set of property keys (KnowledgeRelationType::propertyKeys). Each verb
+      // takes 0 or 1 — a raw identifier as the field label was the one thing here a user would
+      // have had to translate for themselves.
+      property: {
+        role: 'Role',
+        how: 'How they know each other',
+        share: 'Share',
+        purpose: 'Used for',
+        kind: 'Kind of dependency',
+        reason: 'Reason',
+      },
+      group: {
+        affiliation: 'Affiliation',
+        action: 'Activity',
+        spacetime: 'Place and time',
+        social: 'Between people',
+        dependency: 'Dependency',
+        other: 'Other',
+      },
+
+      // The "Graph updates" review — a section that is a PEER of the draft board, not a card in it.
+      updatesTitle: 'Graph updates',
+      updatesSubtitle:
+        'Relations proposed from your text. Nothing is saved without your approval.',
+      opAdd: 'Will add',
+      opUpdate: 'Will change',
+      opEnd: 'Will end',
+      groupCount: 'Relations: {count}',
+      readyCount: 'To save: {count}',
+      // The bar that stops a silent loss: relations are ticked and WAITING, and until this batch
+      // nothing said so on a board accepted card by card.
+      pendingTitle: 'Relations waiting to be saved: {count}',
+      pendingHint:
+        'Accepting entries does not save the relations — they are written in one step, here.',
+      pendingAction: 'Save the relations',
+      appliedNone: 'These relations were already saved.',
+      excludedCount: 'Unticked: {count}',
+      noneSelected: 'No relation is selected — none of them will be saved.',
+      selectAll: 'Select every relation',
+      selectGroup: 'Select relations for: {name}',
+      select: 'Select relation: {sentence}',
+      staleSelection: 'This preview is out of date — the proposal changed since you opened it. Reload the review and choose again.',
+      staleSelectionAction: 'Reload the review',
+      draftBadge: 'Draft',
+      blockedByDraft: 'Waiting for the entry "{title}"',
+      blockedByDraftHint: 'Accept that entry first — without it the relation has nowhere to point.',
+      emptyProposals: 'The agent proposed no relations',
+      emptyProposalsHint:
+        'That is normal for text without clear links between people, organisations or events.',
+      unknownEntity: 'Unknown entity',
+
+      // What the agent did NOT save. Server codes → sentences. Without this a user cannot tell
+      // "the agent found nothing" from "the agent found things and they were thrown away".
+      rejectedTitle: 'Not saved: {count}',
+      rejectedHint: 'The agent proposed these, but the server did not accept them. Reasons below.',
+      reject: {
+        unknown_handle: 'It pointed at something not in this session',
+        unknown_relation_type: 'Relation type outside the vocabulary',
+        type_not_allowed: 'This base does not allow that relation type',
+        self_loop: 'The relation pointed at itself',
+        forbidden_op: 'An operation the agent is not allowed to perform',
+        unknown_op: 'Unknown operation',
+        properties_refused: 'The property "{property}" does not belong to this relation type',
+        duplicate_relation: 'This relation already exists',
+        pair_refused: 'This relation type does not link entities of those kinds',
+        op_cap_reached: 'More operations than one run allows: {max}',
+        template_directive: 'The content carried a template directive',
+        malformed: 'The agent’s answer was unreadable at this point',
+        unknown: 'Rejected for an unknown reason',
+      },
+
+      // Warnings are ADVISORY and read that way — none of them blocks anything.
+      warningsTitle: 'Notes: {count}',
+      warn: {
+        pair_unchecked: 'The type pairing could not be checked',
+        pair_uncheckedHint:
+          'One end has no declared type, so the rule had nothing to check. That is normal for entries written before types existed.',
+        rewrite_degraded_to_append: 'Appended instead of rewritten',
+        rewrite_degraded_to_appendTruncated:
+          'The entry was too long to show the agent in full, so the text was appended rather than rewritten.',
+        rewrite_degraded_to_appendNoRevision:
+          'The entry had no version to compare against, so the text was appended rather than rewritten.',
+        wikilinks_lost: 'The rewrite drops links: {count}',
+        wikilinks_lostHint: 'The rewritten text no longer contains these wikilinks: {links}',
+        ambiguity_unresolved: 'Nothing settled who "{mention}" refers to',
+        // The operation did not vanish — it moved to the board as a card to review.
+        moved_to_review: 'The change to "{title}" is waiting on the board',
+        replaces_unbound: 'A replacement with no relation to end',
+        replaces_unboundHint:
+          'The agent wanted to supersede a relation but did not propose ending it. The new relation would sit alongside the old one — check that is what was meant.',
+        moved_to_reviewHint:
+          'A change to an existing entry goes to the board as a draft with a diff. Nothing is saved until you accept it.',
+        unknown: 'Note without a description',
+      },
+
+      // The accept result. `skipped` is INFORMATION, not failure — a 200 with four saved and two
+      // skipped is the ordinary case.
+      accepted: 'Entries saved: {count}',
+      acceptedRelations: 'Relations saved: {count}',
+      skippedTitle: 'Skipped: {count}',
+      skippedHint: 'This is not an error — these operations simply did not run. Reasons below.',
+      skip: {
+        already_applied: 'This was already saved',
+        relation_gone: 'The relation is no longer there',
+        dependency_not_accepted: 'It depended on an entry that was not accepted',
+        refused: 'A rule did not accept this operation',
+        // Not a fault — a confirmation that the reviewer's decision took effect.
+        not_selected: 'Unticked — not saved',
+        unknown: 'Skipped for an unknown reason',
+      },
+
+      // Ambiguity is settled IN THE ROW — not in a separate section you have to go to and return
+      // from.
+      ambiguity: {
+        label: 'Choose who "{handle}" refers to',
+        placeholder: '"{handle}" — pick an entity',
+        none: 'None of these',
+        scope: 'Also applies to relations: {count}',
+        blocked: 'Choose who is meant first',
+        resolved: 'Chosen: {title}',
+      },
+
+      advisory: {
+        typePair: 'Unusual type pairing',
+        typePairHint:
+          'The relation "{predicate}" rarely links {subjectType} to {objectType}. Check it is what you meant — you can still save it.',
+      },
+
+      // The one survivor of the retired relation EDITOR, and it is NOT in a block named for one:
+      // a person can no longer add, edit or end a relation by hand — only the AI proposes and a
+      // person approves (ADR-0049 D2; the routes, their FormRequests and the editor component are
+      // all gone). An `editor` block holding a single key would send the next reader hunting for a
+      // component that does not exist. Used by the duplicate warning on a proposed relation.
+      showExisting: 'Show the existing one',
+
+      end: {
+        action: 'End the relation',
+        title: 'End the relation',
+        hint: 'The relation stays in the history with an end date.',
+        date: 'End date',
+        submit: 'End it',
+        done: 'Relation ended',
+      },
+
+      // Deleting: the ONLY hard operation in the module. The dialog teaches the end/delete
+      // difference, because it is the only place a user can learn it.
+      retract: {
+        action: 'Delete relation',
+        title: 'Delete the relation entirely?',
+        message:
+          'You are deleting the record as if it had never existed — it disappears from the history too. If the fact merely STOPPED being true, use "End it" instead: the relation stays with an end date and the history remains readable.',
+        confirm: 'Delete entirely',
+        instead: 'End it instead',
+        done: 'Relation deleted',
       },
     },
   },

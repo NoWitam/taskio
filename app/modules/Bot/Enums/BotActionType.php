@@ -28,4 +28,16 @@ enum BotActionType: string
     // B5: a registry tool (fetch_url / web_search / generate_file / read_attachments)
     // was invoked. Payload carries small, non-sensitive meta only.
     case ToolUsed = 'tool_used';
+
+    /**
+     * B6: the bot READ its bound knowledge base while assembling this run's context.
+     *
+     * Recorded because a bot reads its base LIVE: the text it saw is whatever the base said at that
+     * instant, and by the time anyone asks "why did it say that" the base has moved on. The payload
+     * therefore names the entries AND the revision each of them was at — the receipt
+     * ({@see \App\Modules\Knowledge\DTOs\CompiledKnowledge::auditPayload()}) — plus which mode ran and
+     * what the budget left out. No entry TEXT is stored: the revisions already hold it, and copying a
+     * base's contents into an audit row per run would duplicate the knowledge base into the log.
+     */
+    case KnowledgeRead = 'knowledge_read';
 }

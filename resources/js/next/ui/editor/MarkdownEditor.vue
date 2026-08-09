@@ -30,6 +30,7 @@ import {
   buildPart2Extensions,
   type Part2Features,
   type MentionOptions,
+  type WikilinkOptions,
 } from './extensions';
 import type {
   AiTextFeatureConfig,
@@ -81,6 +82,12 @@ const props = withDefaults(
     ifBlocks?: boolean | IfBlockFeatureConfig;
     /** Enable AI-text chips. `true` or `{ personas, labelsEnabled, labelsCatalog }`. */
     aiText?: boolean | AiTextFeatureConfig;
+    /**
+     * Enable `[[`-wikilink autocomplete (Knowledge). Adds NO node and NO schema — the picker
+     * inserts plain `[[slug]]` text, so a document serializes identically whether this is on
+     * or off. Off by default, like every other PART 2 feature.
+     */
+    wikilinks?: WikilinkOptions;
     id?: string;
     describedById?: string;
     ariaLabel?: string;
@@ -157,6 +164,7 @@ const features: Part2Features = {
   variables: props.variables,
   ifBlocks: props.ifBlocks,
   aiText: props.aiText,
+  wikilinks: props.wikilinks,
 };
 const part2 = buildPart2Extensions(features);
 

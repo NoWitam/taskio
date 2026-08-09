@@ -8,7 +8,9 @@ use App\Modules\Bot\Policies\BotPolicy;
 use App\Modules\Bot\Services\BotAuthorVoiceResolver;
 use App\Modules\Bot\Services\BotSessionIdentityResolver;
 use App\Modules\Bot\Tools\Support\BraveSearchProvider;
+use App\Modules\Bot\Tools\Support\HostResolver as SafeUrlGuardHostResolver;
 use App\Modules\Bot\Tools\Support\SearchProvider;
+use App\Modules\Bot\Tools\Support\SystemHostResolver;
 use App\Modules\Generator\Contracts\SessionAuthorIdentityResolver;
 use App\Modules\Variables\Contracts\AuthorVoiceResolver;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -42,6 +44,11 @@ class BotModuleServiceProvider extends ServiceProvider
         // order (Bot registers BEFORE Generator) the load-bearing half is the Generator's `bindIf`, which is
         // what stops its default from clobbering this binding. Both halves pinned by BotModuleBoundaryTest.
         $this->app->bind(SessionAuthorIdentityResolver::class, BotSessionIdentityResolver::class);
+
+        // The SafeUrlGuard's DNS lookup, behind a seam so tests need no network. The concrete is the
+        // system resolver, so production behaviour is unchanged; only a test may rebind it, and only
+        // the LOOKUP — every SSRF decision stays inside the guard.
+        $this->app->bind(SafeUrlGuardHostResolver::class, SystemHostResolver::class);
 
         $this->commands([
             \App\Modules\Bot\Console\ReapStaleBotRunsCommand::class,

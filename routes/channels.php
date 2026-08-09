@@ -34,3 +34,14 @@ Broadcast::channel('disk-ai.workspace.{workspaceId}', function (?User $user, str
 Broadcast::channel('generator.workspace.{workspaceId}', function (?User $user, string $workspaceId): bool {
     return $user !== null && (Workspace::find($workspaceId)?->hasMember($user) ?? false);
 });
+
+/**
+ * Private channel carrying AI drafting-session status pushes for ONE workspace
+ * (see {@see \App\Modules\Knowledge\Events\KnowledgeDraftSessionUpdated}) — so the composer waits on an
+ * event instead of polling a run that takes tens of seconds. Per-workspace, not per-session: every open
+ * composer subscribes once and filters by id. The payload is status-only, never the drafts. Authorized
+ * by CENTRAL workspace membership, identical posture to the two channels above.
+ */
+Broadcast::channel('knowledge.workspace.{workspaceId}', function (?User $user, string $workspaceId): bool {
+    return $user !== null && (Workspace::find($workspaceId)?->hasMember($user) ?? false);
+});

@@ -22,6 +22,7 @@ language as the rest of the `next` form controls.
 | `extensions/placeholder.ts` | Tiny local Placeholder extension (avoids a new npm dependency). |
 | `extensions/types.ts` | PART 2 runtime payloads (mirror the legacy `types/editor.ts` shapes for portability). |
 | `extensions/mention.ts` + `MentionChip.vue` + `MentionSuggest.vue` + `suggestionStore.ts` | `@`-mention node + caret-anchored suggestion popup (no tippy). The **store** (caret rect / query / key forwarding) is shared with the variable trigger; the popup is per-variant (see `VariableSuggest.vue`). |
+| `extensions/SuggestListPopup.vue` | The SHELL both list-shaped caret popups are made of: synthetic caret anchor + `useAnchoredPosition`, viewport listeners, `Teleport` + overlay re-root, panel chrome, and the `role="listbox"` / `aria-activedescendant` scaffold, with ONE state contract (loading → error → empty → rows). Hosts supply only the row (slot), the ids, and the copy. `MentionSuggest.vue` and `WikilinkSuggest.vue` are now just their rows. |
 | `extensions/variable.ts` + `VariableChip.vue` + `VariablePanel.vue` | Template-variable node. Inserted via a `{` **trigger**; the chip opens a **Modal** whose body is the SHARED `ui/variables/VariableReferenceEditor` (source header → nullable-gated TYPED "default when empty" → operations pipeline incl. arg-variables → "Returns: <type>" → change source). The panel keeps only the markdown-only display **name + lock**. |
 | `extensions/VariableSuggest.vue` + `variableFeed.ts` | The `{`-insert popup: the SHARED `ui/variables/VariableBrowser` (an inline ARIA tree with type glyphs, `?`/`[]` markers and expandable containers) anchored to the caret. `variableFeed.ts` turns whichever feed the host gave the editor — the live `source()` list or the flat `VariableDefinition[]` — into that one tree. An object container is **expand-only**, so it can never be inserted. |
 | `extensions/VariablePipelineEditor.vue` + `operationHelpers.ts` | The **shared** operations-pipeline editor (add-operation dropdown filtered by the current running type → steps → per-arg inputs → computed `resultType`) + its pure type-flow helpers. Used by BOTH the VariablePanel and the IF condition editor (DRY). |
@@ -312,12 +313,24 @@ The legacy editor anchored its `@`-mention popup with tippy
 (`getReferenceClientRect` → caret coords). Here a bespoke ProseMirror plugin
 watches the text before the caret for an `@query`, publishes the caret rect +
 query + (async) items into a reactive `suggestionStore`, and a single
-always-mounted `MentionSuggest.vue` reads the store and positions itself against
+always-mounted popup reads the store and positions itself against
 a **synthetic anchor** (`{ getBoundingClientRect: () => caretRect }`) via
 `useAnchoredPosition` — the exact same flip/clamp the rest of `next` uses, with
-zero new deps. Loading shows **option-shaped Skeleton rows** (skeleton rule),
-empty shows a muted row; ↑/↓/Enter/Esc are forwarded from the plugin's
-`handleKeyDown`; the listbox is `role="listbox"`/`option` + `aria-activedescendant`.
+zero new deps. ↑/↓/Enter/Esc are forwarded from the plugin's `handleKeyDown`; the
+listbox is `role="listbox"`/`option` + `aria-activedescendant`.
+
+**One shell, one state contract.** `MentionSuggest.vue` (`@`) and
+`WikilinkSuggest.vue` (`[[`) are ROWS; everything around them lives once, in
+`SuggestListPopup.vue`, which renders in strict precedence: **loading** →
+option-shaped Skeleton rows (skeleton rule); **error** → its own
+`[data-suggest-error]` row; **empty** → a muted row; else the host's rows through
+the `row` slot. The two used to be full copies of each other and DRIFTED — the
+wikilink popup learned to distinguish a *failed* search from one that matched
+nothing, the mention popup did not, so the same failure there read as "no
+matches" and the writer stopped looking. A trigger plugin opts into the error arm
+by setting `suggestionStore.errored` in its fetch's `catch` (both do). The shell
+carries **no copy**: the listbox name and the empty/error wording are passed in,
+translated, by each host.
 
 **SF3.1 — the popup FOLLOWS the caret on scroll, and CLOSES when the caret
 scrolls out of view.** A `window` `scroll` (capture phase, so it fires for any

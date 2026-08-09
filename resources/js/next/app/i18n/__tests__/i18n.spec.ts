@@ -273,12 +273,14 @@ describe('next i18n', () => {
       'workspaces.aiUsage.editor.defaultOption',
       'workspaces.aiUsage.editor.amountLabel',
       'workspaces.aiUsage.editor.save',
+      // The CHIP's copy stays with the Generator; the BANNER's moved to the shared `aiBudget.*`
+      // block when the component was promoted to the design system (B15a).
       'generator.sessions.budget.chipWarn',
       'generator.sessions.budget.chipBlocked',
-      'generator.sessions.budget.blockedTitle',
-      'generator.sessions.budget.blockedMessage',
-      'generator.sessions.budget.raiseLimit',
-      'generator.sessions.budget.contactOwner',
+      'aiBudget.blockedTitle',
+      'aiBudget.blockedMessage',
+      'aiBudget.raiseLimit',
+      'aiBudget.contactOwner',
     ];
 
     it.each(NEW_KEYS)('%s resolves to a non-empty string in en and pl', (key) => {

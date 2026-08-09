@@ -121,6 +121,58 @@ npm run test:unit
 php artisan boost:update
 ```
 
+### The queue worker does NOT reload code
+
+`php artisan queue:work` boots the application once and keeps it in memory for the life of the
+process. **After editing anything a queued job touches — a module service, an agent's prompt, an enum
+— a running worker goes on executing the code as it was when it started.** Nothing warns you: the job
+still succeeds, against a snapshot.
+
+This has already cost a full diagnostic cycle. A worker left running for sixteen hours was still
+executing a pre-graph build of the Knowledge module: every session it processed stored `graph_ops` as
+NULL — which the code on disk cannot do — and the module looked broken from every angle except the
+right one.
+
+So after changing backend code, and before testing anything through the UI:
+
+```bash
+php artisan queue:restart          # running workers finish their current job, then exit
+# then start a fresh one, e.g.:
+setsid nohup php artisan queue:work --tries=1 > storage/logs/queue-worker.log 2>&1 < /dev/null &
+```
+
+The symptom to recognise: **the tests pass, but the same operation through the UI behaves like an
+older version of the code.** Tests run in-process and always see your edits; the worker does not.
+
+### Tests read the developer's `.env`
+
+There is no `.env.testing`, so `php artisan test` inherits whatever is in `.env` — feature flags
+included. A test that exercises one side of a flag must SET that flag itself, or it passes or fails
+according to what somebody last switched on by hand. When a suite goes red after an unrelated `.env`
+change, fix the test's assumption, never the mechanism.
+
+**Concrete case:** `KNOWLEDGE_GRAPH_EXTRACTION_ENABLED` in `.env` picks which branch of
+`KnowledgeDraftSessionService::freezeContext()` a drafting session freezes its context from — the
+entity-resolution pass when true, the older plain-retrieval pass when false. Six tests assumed the
+flag's DEFAULT (`false` in `config/knowledge.php`) and went red the moment a developer's own `.env` set
+it to `true` to exercise the Wiki-Graf work — not because the tests or the flag were broken, but because
+neither side named which branch it needed. Any test that cares which of the two passes ran must set
+`config(['knowledge.graph_extraction.enabled' => …])` explicitly rather than relying on whatever the
+environment happens to have.
+
+### Tests behind an env flag do not run, and do not tell you they are stale
+
+`TENANT_DB_TESTS=1` and `KNOWLEDGE_HEAVY_TESTS=1` gate real DDL and heavy fixtures. The default suite
+still *loads* those classes — they show as "skipped" — so a parse error or a dead import is caught. What
+is NOT caught is a method body scripting a contract that has moved on: `KnowledgeTenantComposerTest`
+scripted an obsolete composer contract for days and no run ever went red.
+
+Run `TENANT_DB_TESTS=1 php artisan test --filter=Tenant` **by hand** before committing changes to the
+composer's queued path, to tenancy plumbing, or whenever a shared-mode test had to be edited to follow a
+contract change — its own-database twin scripts the same contract and will not tell you it rotted. Note
+that these tests issue `CREATE DATABASE`/`DROP DATABASE`, so they need the owner's approval per the
+Safety rules below. When CI exists, this belongs in a **nightly** job, not the per-push run.
+
 ## Safety
 
 - Never edit `.env` secrets.

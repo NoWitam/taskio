@@ -88,6 +88,31 @@ describe('aiUsageMeta', () => {
       expect(channelIcon('ai_text')).toBe('file-text');
     });
 
+    it('names BOT WORK in both languages, so it is not read as more text spend', () => {
+      // A bot run spends on somebody else's behalf and on a schedule nobody watches, which makes
+      // it the line item most likely to grow on its own. It arrived after the meter existed, so
+      // until now the usage screen printed the raw `ai_bot_task` key.
+      setLocale('en');
+      expect(channelLabel('ai_bot_task', translate)).toBe('Bot work');
+      expect(channelLabel('ai_bot_task', translate)).not.toBe('ai_bot_task');
+
+      setLocale('pl');
+      expect(channelLabel('ai_bot_task', translate)).toBe('Praca botów');
+    });
+
+    it('gives bot work its own glyph, NOT the unknown-channel fallback', () => {
+      // `sparkles` is what an unrecognised channel gets. Drawing a known channel with it would
+      // leave the screen looking exactly as it did before the label was added.
+      expect(channelIcon('ai_bot_task')).toBe('workflow');
+      expect(channelIcon('ai_bot_task')).not.toBe(channelIcon('totally_unknown'));
+    });
+
+    it('still degrades gracefully for a channel nobody has taught it', () => {
+      // The property that made the missing label survivable rather than a crash — worth keeping
+      // true as channels keep arriving.
+      expect(channelIcon('some_future_channel')).toBe('sparkles');
+    });
+
     it('actor label uses display_name when present', () => {
       setLocale('en');
       expect(actorLabel(actor({ display_name: 'Ada Lovelace' }), translate)).toBe('Ada Lovelace');

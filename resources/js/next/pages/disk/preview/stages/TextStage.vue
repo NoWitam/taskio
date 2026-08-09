@@ -18,7 +18,9 @@ import TextInput from '../../../../ui/forms/TextInput.vue';
 import SegmentedControl, { type SegmentOption } from '../../../../ui/forms/SegmentedControl.vue';
 import Skeleton from '../../../../ui/data/Skeleton.vue';
 import DraftRestoreBanner from '../DraftRestoreBanner.vue';
-import TextDiffView from '../TextDiffView.vue';
+// The diff engine is a DESIGN-SYSTEM component since B14 (the knowledge version drawer and the
+// AI wizard read the same one); this stage is one of its hosts, not its owner.
+import TextDiffView from '../../../../ui/data/TextDiffView.vue';
 import type { IconName } from '../../../../ui/primitives/icons';
 import { api } from '../../../../app/lib/api';
 import { useDiskStore } from '../../../../app/stores/disk';

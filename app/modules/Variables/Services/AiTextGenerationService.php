@@ -98,9 +98,23 @@ class AiTextGenerationService
      * existing caller — makes the provider call BYTE-IDENTICAL to before; a caller with its own latency
      * budget (the creative-direction derivation, which runs INSIDE the run job's fixed SIGALRM window) passes
      * a tighter one so a hung provider cannot eat the whole job timeout.
+     *
+     * $channel OPTIONALLY buckets the spend somewhere other than `ai_text`. NULL — again every pre-existing
+     * caller — resolves to `ai_text`, so the metered call, the ledger row and the gate are byte-identical to
+     * before (pinned by a test). It is a LAST parameter for the same reason: no existing call site moves.
+     *
+     * A separate channel is worth having because the meter buckets BOTH the price and the operator's view of
+     * where the money went. The knowledge drafting agent is the first spender whose cost belongs to a
+     * different question than "what did the workflows write" — mixing it into `ai_text` would make both
+     * numbers unreadable and neither tunable.
      */
-    public function generateWith(Agent $agent, string $prompt, int $maxChars, ?int $timeout = null): string
-    {
+    public function generateWith(
+        Agent $agent,
+        string $prompt,
+        int $maxChars,
+        ?int $timeout = null,
+        ?string $channel = null,
+    ): string {
         $prompt = trim($prompt);
 
         if ($prompt === '') {
@@ -108,7 +122,7 @@ class AiTextGenerationService
         }
 
         try {
-            $response = $this->meter->meter('ai_text', fn () => $timeout === null
+            $response = $this->meter->meter($channel ?? 'ai_text', fn () => $timeout === null
                 ? $agent->prompt(
                     prompt: $prompt,
                     provider: config('ai.provider'),

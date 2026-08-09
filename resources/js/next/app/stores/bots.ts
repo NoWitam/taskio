@@ -29,6 +29,8 @@ import type {
   BotDetail,
   BotDetailResponse,
   BotFilters,
+  BotKnowledgeBindingPayload,
+  BotKnowledgeMigrationResult,
   BotListItem,
   BotListResponse,
   BotStatusPayload,
@@ -343,6 +345,51 @@ export const useBotsStore = defineStore('next-bots', () => {
     return updated;
   }
 
+  // --- Knowledge module (B6) -------------------------------------------------
+  //
+  //   PUT    /bots/{id}/knowledge-binding  {knowledge_base_id, mode} → BotResource
+  //   DELETE /bots/{id}/knowledge-binding                            → BotResource (idempotent)
+  //   POST   /bots/{id}/knowledge/migrate  (no body)                 → 201 FLAT result
+  //
+  // The two binding calls answer with the WHOLE bot, exactly like the visual endpoints, so the
+  // caller never merges a partial response by hand — and `knowledge_binding` arrives already
+  // resolved rather than reconstructed from the request that changed it.
+
+  /** Point this bot at a knowledge base (upsert — one base per bot). Reconciles detail + list. */
+  async function bindKnowledgeBase(id: string, payload: BotKnowledgeBindingPayload): Promise<BotDetail> {
+    const res = await api.put<BotDetailResponse>(`/bots/${id}/knowledge-binding`, payload);
+    const updated = res.data;
+    replaceInList(updated);
+    if (detail.value && detail.value.id === id) detail.value = updated;
+    return updated;
+  }
+
+  /**
+   * Stop this bot reading a base. Idempotent server-side — unbinding a bot that reads nothing is a
+   * no-op, not a 404 — so the caller never has to check first.
+   */
+  async function unbindKnowledgeBase(id: string): Promise<BotDetail> {
+    const res = await api.delete<BotDetailResponse>(`/bots/${id}/knowledge-binding`);
+    const updated = res.data;
+    replaceInList(updated);
+    if (detail.value && detail.value.id === id) detail.value = updated;
+    return updated;
+  }
+
+  /**
+   * Lift this bot's built-in entries into a NEW base and bind it (`mode: auto`).
+   *
+   * The response is a FLAT object, not a `{data}` envelope and not a bot — hence no `.data` here.
+   * It also leaves the bot in the caller's cache STALE (the bot now has a binding), so a caller
+   * that keeps the bot on screen refetches it; the editor does exactly that.
+   *
+   * 422 `{errors: {knowledge: [msg]}}` when there is nothing to migrate, or when an entry carries
+   * template syntax — the offending titles are named INSIDE that message, so it is shown verbatim.
+   */
+  async function migrateKnowledge(id: string): Promise<BotKnowledgeMigrationResult> {
+    return api.post<BotKnowledgeMigrationResult>(`/bots/${id}/knowledge/migrate`, {});
+  }
+
   return {
     // list state
     items,
@@ -377,5 +424,9 @@ export const useBotsStore = defineStore('next-bots', () => {
     generateVisual,
     approveVisualCandidate,
     deleteVisualCandidate,
+    // knowledge module (B6)
+    bindKnowledgeBase,
+    unbindKnowledgeBase,
+    migrateKnowledge,
   };
 });

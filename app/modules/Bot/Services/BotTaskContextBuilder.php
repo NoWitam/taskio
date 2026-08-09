@@ -4,6 +4,7 @@ namespace App\Modules\Bot\Services;
 
 use App\Modules\Approvals\Enums\ApprovalProcessStatus;
 use App\Modules\Bot\Models\Bot;
+use App\Modules\Knowledge\DTOs\CompiledKnowledge;
 use App\Modules\Tasks\Models\Task;
 
 /**
@@ -11,20 +12,30 @@ use App\Modules\Tasks\Models\Task;
  * NOT tools). Everything the bot needs to reason about the task is gathered here so it
  * is testable in isolation:
  *
- *   - the bot's KNOWLEDGE module entries (B6) — so it reasons with its own knowledge,
+ *   - the bot's KNOWLEDGE — either a bound knowledge base or its own built-in module,
  *   - the task (title / description),
  *   - the attached form schema AND the current submission state (if any),
  *   - the conversation: the most recent N task comments (config ai.context_comment_limit,
  *     default 30), oldest-first so the agent reads the thread in order,
  *   - the approval run history INCLUDING rejection notes/reasons, so a revision run
  *     knows what to fix.
+ *
+ * The class stays PURE: it reads models and returns a string, and it never spends. The
+ * knowledge-base read is the one part of the context that can cost an AI call, so it is
+ * performed by {@see BotKnowledgeReader} and handed IN, already compiled. That keeps the
+ * spend at the caller (which also records the audit for it) and keeps this builder callable
+ * from anywhere without wondering whether building a context bills a workspace.
  */
 class BotTaskContextBuilder
 {
-    public function build(Task $task, ?Bot $bot = null): string
+    /**
+     * $knowledge is the compiled knowledge base, when the bot is bound to one — see
+     * {@see knowledgeSection()} for what happens when it is absent.
+     */
+    public function build(Task $task, ?Bot $bot = null, ?CompiledKnowledge $knowledge = null): string
     {
         $sections = [
-            $this->knowledgeSection($bot),
+            $this->knowledgeSection($bot, $knowledge),
             $this->taskSection($task),
             $this->formSection($task),
             $this->commentsSection($task),
@@ -35,11 +46,33 @@ class BotTaskContextBuilder
     }
 
     /**
-     * The bot's knowledge module rendered as a context block. Empty knowledge (or no bot)
-     * omits the section. Total injected knowledge is capped (config ai.knowledge_max_chars,
+     * The bot's knowledge, from whichever of the two sources it has.
+     *
+     * A compiled KNOWLEDGE BASE wins when one was read: it is already a labelled, fenced DATA
+     * block (the Knowledge module frames and scrubs it), so it is injected verbatim — wrapping
+     * it in a second frame here would let this module's copy of the framing drift from the one
+     * every other consumer gets.
+     *
+     * With no bound base the LEGACY path runs, and it is deliberately untouched: same cap, same
+     * prose, same truncation marker, byte for byte. That is what makes B6 safe to ship — a bot
+     * nobody has migrated behaves exactly as it did yesterday, and the difference is pinned by a
+     * frozen-fixture test rather than by inspection.
+     */
+    private function knowledgeSection(?Bot $bot, ?CompiledKnowledge $knowledge): string
+    {
+        if ($knowledge !== null) {
+            return $knowledge->text;
+        }
+
+        return $this->legacyKnowledgeSection($bot);
+    }
+
+    /**
+     * The bot's built-in knowledge module rendered as a context block. Empty knowledge (or no
+     * bot) omits the section. Total injected knowledge is capped (config ai.knowledge_max_chars,
      * default 8000) so a large knowledge base can't blow the context window.
      */
-    private function knowledgeSection(?Bot $bot): string
+    private function legacyKnowledgeSection(?Bot $bot): string
     {
         // Only inject when the knowledge module is explicitly ENABLED (an off module is
         // inert even if it still holds entries).

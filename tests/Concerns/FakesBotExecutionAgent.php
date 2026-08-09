@@ -39,7 +39,25 @@ trait FakesBotExecutionAgent
             $script,
         ));
 
+        // The reported usage is STATIC on the double, so a metering test could otherwise leak its token
+        // counts into every later scripted run in the same process. Scripting a run resets it; a test
+        // that wants tokens asks for them AFTER scripting (scriptBotRunReporting).
+        ScriptedBotExecutionAgent::$usage = null;
+
         $this->app->bind(BotTaskExecutionAgent::class, ScriptedBotExecutionAgent::class);
+    }
+
+    /**
+     * Script a run that also REPORTS provider token usage on the response it returns — the seam the cost
+     * meter reads to bill the run. Same script format as {@see scriptBotRun}.
+     *
+     * @param  array<int, array{0: string, 1?: array<string, mixed>}>  $script
+     */
+    protected function scriptBotRunReporting(array $script, int $promptTokens, int $completionTokens): void
+    {
+        $this->scriptBotRun($script);
+
+        ScriptedBotExecutionAgent::reportUsage($promptTokens, $completionTokens);
     }
 
     /**

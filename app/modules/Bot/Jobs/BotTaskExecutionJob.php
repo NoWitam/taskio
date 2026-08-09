@@ -7,13 +7,17 @@ use App\Modules\Bot\Enums\BotActionType;
 use App\Modules\Bot\Enums\BotRunTrigger;
 use App\Modules\Bot\Models\Bot;
 use App\Modules\Bot\Services\BotActionService;
+use App\Modules\Bot\Services\BotKnowledgeReader;
 use App\Modules\Bot\Services\BotTaskContextBuilder;
 use App\Modules\Bot\Services\BotTaskInteractionService;
 use App\Modules\Bot\Services\BotTaskRunManager;
+use App\Modules\Bot\Support\BotRunEstimate;
 use App\Modules\Comments\Services\CommentService;
 use App\Modules\Forms\Services\FormSubmissionService;
 use App\Modules\Tasks\Models\Task;
 use App\Modules\Tasks\Services\TaskService;
+use App\Modules\Variables\Contracts\MeteredAiCall;
+use App\Modules\Variables\Support\MeterContext;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -37,6 +41,12 @@ use Illuminate\Support\Facades\Log;
  *   - otherwise -> run-state released to idle (task stays in_progress).
  *
  * On failure: record execution_failed, release the run-state to idle, do NOT advance.
+ *
+ * METER WIRING: everything a run spends is attributed to the BOT and billed to the `ai_bot_task`
+ * channel — see {@see meteredPrompt()} for the per-run/per-step decision and {@see BotRunEstimate} for
+ * what the gate projects. Until this existed a bot was the one AI spender on the platform that cost
+ * real money and left no trace in the ledger, which also meant the workspace $ cap did not apply to the
+ * component that runs most often and entirely without a human watching.
  */
 class BotTaskExecutionJob implements ShouldQueue
 {
@@ -57,6 +67,9 @@ class BotTaskExecutionJob implements ShouldQueue
         BotActionService $actions,
         BotTaskContextBuilder $contextBuilder,
         BotTaskRunManager $runManager,
+        BotKnowledgeReader $knowledgeReader,
+        MeteredAiCall $meter,
+        MeterContext $meterContext,
     ): void {
         $bot = $this->bot;
         $task = $this->task->fresh();
@@ -84,8 +97,26 @@ class BotTaskExecutionJob implements ShouldQueue
             $bot, $task, $commentService, $submissionService, $taskService, $actions,
         );
 
+        // ACTOR (R2 sub-stage 4's escape hatch): an autonomous run has no auth() and no workflow run, so
+        // the meter would attribute everything it spends to nobody. Tag the bot EXPLICITLY for the WHOLE
+        // run — the knowledge read below bills an embedding before the agent has said a word — and clear
+        // it in the finally so the tag can never outlive the run on a reused worker process.
+        $meterContext->setActor($bot->getMorphClass(), (string) $bot->getKey());
+
         try {
-            $context = $contextBuilder->build($task, $bot);
+            // The bound knowledge base, read LIVE for this run. It is the one part of the context
+            // that can bill the workspace (one embedding, in `rag` mode only) — and it never fails:
+            // every refusal degrades inside the Knowledge module to the free inline compilation.
+            // A bot with no binding gets null and the builder keeps using the bot's own module.
+            $knowledge = $knowledgeReader->read($bot, $task);
+
+            if ($knowledge !== null) {
+                // WHAT the bot saw, at WHICH revision. The base moves; this run does not, and
+                // without the receipt an answer given today cannot be explained tomorrow.
+                $actions->record($bot, $task, BotActionType::KnowledgeRead, $knowledge->auditPayload());
+            }
+
+            $context = $contextBuilder->build($task, $bot, $knowledge);
 
             // Resolve through the container (named args) so the agent is overridable in
             // tests (see ScriptedBotExecutionAgent). In production this builds the real
@@ -97,18 +128,47 @@ class BotTaskExecutionJob implements ShouldQueue
                 'interaction' => $interaction,
             ]);
 
-            $agent->prompt(
-                prompt: 'Zajmij się zadaniem. Użyj narzędzi. Zakończ przez finish lub ask_and_wait.',
-                provider: config('ai.provider'),
-                model: config('ai.model'),
-            );
+            $this->meteredPrompt($meter, $agent, $context);
 
             $runManager->release($task, $interaction->outcome());
         } catch (\Throwable $e) {
             Log::error("Bot task execution failed for task {$task->id}: {$e->getMessage()}");
             $actions->record($bot, $task, BotActionType::ExecutionFailed, status: 'failed', error: $e->getMessage());
             $runManager->release($task, null);
+        } finally {
+            $meterContext->clearActor();
         }
+    }
+
+    /**
+     * Run the agent through the cost meter: GATE first, then spend, then record.
+     *
+     * PER RUN, NOT PER STEP — and that is a finding, not a preference. laravel/ai owns the tool loop:
+     * one `prompt()` call runs every step internally and returns only when the loop ends, so there is no
+     * seam to meter a step at without forking the package's gateway. What makes this acceptable is that
+     * the returned response's `usage` is the SUM over every step (the gateway combines them), so the
+     * ledger row carries the run's REAL total tokens — per-run recording loses no accuracy about the
+     * money, only about the moment: the workspace learns the cost when the run ends, not while it runs.
+     *
+     * The gate therefore has to ask its question ONCE, up front, about the WHOLE run — which is exactly
+     * what a projection is for ({@see BotRunEstimate}). Without one, a workspace with a cent of headroom
+     * would be waved into a twelve-step run it cannot pay for and could not be stopped halfway through.
+     * The residual risk is bounded and accepted: a run whose real cost exceeds the projection can end
+     * slightly over cap. The next run is refused; the ledger stays honest about what happened.
+     *
+     * `meter()` re-checks the budget itself before invoking the closure. That second check is the
+     * authoritative gate-before-spend (this one is a projection, and a projection must never be the only
+     * thing standing between a provider and an over-cap workspace).
+     */
+    private function meteredPrompt(MeteredAiCall $meter, mixed $agent, string $context): void
+    {
+        $meter->assertWithinBudget(BotRunEstimate::CHANNEL, BotRunEstimate::forRun($context));
+
+        $meter->meter(BotRunEstimate::CHANNEL, fn () => $agent->prompt(
+            prompt: 'Zajmij się zadaniem. Użyj narzędzi. Zakończ przez finish lub ask_and_wait.',
+            provider: config('ai.provider'),
+            model: config('ai.model'),
+        ));
     }
 
     /**

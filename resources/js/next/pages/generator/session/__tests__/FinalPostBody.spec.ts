@@ -1,11 +1,13 @@
 // @vitest-environment happy-dom
 // FinalPostBody.spec — the assembled "Gotowy post" artifact.
 //
-// Two things this file guards, both about STORYBOARD frames:
+// Three things this file guards, all about STORYBOARD frames:
 //   • a frame still being rendered by its own queue job gets a placeholder, not an empty gap — the
 //     artifact is the surface a user reloads onto mid-run;
 //   • a beat drawn from the session's frozen character says so as a TEXT SUFFIX on the heading, not as a
-//     badge: this is a reading surface, and a row of chips would compete with the content it presents.
+//     badge: this is a reading surface, and a row of chips would compete with the content it presents;
+//   • a `shots` field that is NOT an array (a malformed payload) collapses to nothing rather than being
+//     iterated character by character — the same guard its sibling `SessionResultCard` applies.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { setLocale } from '../../../../app/i18n';
@@ -80,6 +82,20 @@ describe('FinalPostBody', () => {
     await flushPromises();
     expect(wrapper.text()).toContain('Shot 1 · with character');
     expect(wrapper.text()).not.toContain('Shot 2 · with character');
+    wrapper.unmount();
+  });
+
+  it('renders no frames when the shots field is not an array', async () => {
+    const wrapper = mountBody({
+      // A malformed / degraded payload: `shots` as a bare string. Iterating it would emit one frame per
+      // character; the guard makes it render as "nothing produced" instead.
+      results: { storyboard: { kind: 'storyboard', status: 'ok', shots: 'abc' } } as never,
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).not.toContain('Shot 1');
+    expect(wrapper.findAll('[data-test="final-frame-pending"]')).toHaveLength(0);
+    expect(wrapper.find('img').exists()).toBe(false);
     wrapper.unmount();
   });
 });

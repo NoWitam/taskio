@@ -4,6 +4,7 @@ use App\Http\Middleware\RequireWorkspace;
 use App\Modules\Bot\Http\Controllers\BotActionController;
 use App\Modules\Bot\Http\Controllers\BotController;
 use App\Modules\Bot\Http\Controllers\BotInboxController;
+use App\Modules\Bot\Http\Controllers\BotKnowledgeController;
 use App\Modules\Bot\Http\Controllers\BotSessionDelegationController;
 use App\Modules\Bot\Http\Controllers\BotToolRegistryController;
 use App\Modules\Bot\Http\Controllers\BotVisualController;
@@ -40,12 +41,35 @@ Route::middleware('auth:sanctum')->group(function () {
         ->whereUuid('session')
         ->name('bots.sessions.undelegate');
 
+    // Bot KNOWLEDGE (B6): which knowledge base this bot reads, and the one-time lift of its built-in
+    // entries into a real base. The ONLY new Bot → Knowledge edge on the HTTP surface.
+    //
+    // RequireWorkspace is attached here for the same reason it guards the visual routes and the whole
+    // Knowledge module: these touch workspace-owned KNOWLEDGE BASES, and ResolveWorkspace deliberately
+    // no-ops without the X-Workspace-Id header — which would leave WorkspaceScope inert and let a bot be
+    // bound to another workspace's base by id. Fail closed.
+    //
+    // Declared before the {bot} resource so the deeper paths bind cleanly.
+    Route::middleware(RequireWorkspace::class)->group(function () {
+        Route::put('bots/{bot}/knowledge-binding', [BotKnowledgeController::class, 'update'])
+            ->whereUuid('bot')
+            ->name('bots.knowledge-binding.update');
+        Route::delete('bots/{bot}/knowledge-binding', [BotKnowledgeController::class, 'destroy'])
+            ->whereUuid('bot')
+            ->name('bots.knowledge-binding.destroy');
+        Route::post('bots/{bot}/knowledge/migrate', [BotKnowledgeController::class, 'migrate'])
+            ->whereUuid('bot')
+            ->name('bots.knowledge.migrate');
+    });
+
     // Bot VISUAL identity (the "Wygląd" module): create a likeness, approve one, drop one. Declared
     // before the {bot} resource so the deeper paths bind cleanly.
     //
-    // RequireWorkspace is attached HERE and nowhere else in this file: these are the only bot routes
-    // that touch workspace-owned BINARIES, and without an active tenant the File lookups would run
-    // unscoped. Fail closed, exactly like the Disk routes.
+    // RequireWorkspace again, for the same reason as the knowledge-binding group above. (This comment
+    // used to say it was attached "HERE and nowhere else in this file" — untrue from the moment that
+    // group landed, and the kind of claim a reader trusts instead of checking.) These are the bot
+    // routes that touch workspace-owned BINARIES, and without an active tenant the File lookups would
+    // run unscoped. Fail closed, exactly like the Disk routes.
     //
     // Generation rides its own TIGHT throttle bucket — a long, provider-billed call — with the key
     // prefix that keeps it from sharing a counter with every other throttled surface.

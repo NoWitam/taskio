@@ -418,6 +418,55 @@
     font-weight: var(--font-weight-next-semibold);
   }
 
+  /* --- Wikilinks (Knowledge reader) ---------------------------------------
+     Rendered by MarkdownViewer's opt-in `wikilinks` pass, which only ever emits
+     `<a data-wikilink>` / `<a data-ghost>`. A GHOST is an entry that does not
+     exist yet — an invitation, not an error — and it is distinguished by THREE
+     independent cues, never by color alone: a dashed underline (pattern), the
+     danger token (color), and a trailing unlink glyph (shape). */
+  .next-root :where(.next-md-content, .next-md-prose) a[data-wikilink] {
+    text-decoration-style: solid;
+    cursor: pointer;
+  }
+
+  .next-root :where(.next-md-content, .next-md-prose) a[data-ghost] {
+    color: var(--color-next-danger);
+    text-decoration-line: underline;
+    text-decoration-style: dashed;
+    text-underline-offset: 3px;
+  }
+
+  /* The glyph is a MASK over currentColor (the same lucide `unlink` outline the
+     Icon component registers), so it follows the link's color in both themes and
+     needs no second asset for dark mode. */
+  .next-root :where(.next-md-content, .next-md-prose) a[data-ghost]::after {
+    content: '';
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-inline-start: 0.15em;
+    vertical-align: -0.1em;
+    background-color: currentColor;
+    --next-ghost-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m18.84 12.25 1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='m5.17 11.75-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3Cline x1='8' x2='8' y1='2' y2='5'/%3E%3Cline x1='2' x2='5' y1='8' y2='8'/%3E%3Cline x1='16' x2='16' y1='19' y2='22'/%3E%3Cline x1='19' x2='22' y1='16' y2='16'/%3E%3C/svg%3E");
+    -webkit-mask-image: var(--next-ghost-glyph);
+    mask-image: var(--next-ghost-glyph);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+  }
+
+  /* The heading a deep-link landed on. Fades on its own after a couple of seconds
+     (the reader removes the class), and carries no motion under reduced-motion —
+     the global rule in this stylesheet already disables the transition there. */
+  .next-root :where(.next-md-prose) .is-jump-target {
+    background-color: var(--color-next-primary-subtle);
+    border-radius: var(--radius-next-sm);
+    box-shadow: 0 0 0 var(--spacing-next-1) var(--color-next-primary-subtle);
+  }
+
   .next-root :where(.next-md-content, .next-md-prose) ul,
   .next-root :where(.next-md-content, .next-md-prose) ol {
     padding-inline-start: var(--spacing-next-6);

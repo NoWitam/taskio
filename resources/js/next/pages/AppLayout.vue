@@ -83,6 +83,7 @@ const primaryNav: NavLink[] = [
   { key: 'workflows', labelKey: 'nav.workflows', icon: 'workflow', to: '/workflows' },
   { key: 'variables', labelKey: 'nav.variables', icon: 'braces', to: '/variables' },
   { key: 'generator', labelKey: 'nav.generator', icon: 'palette', to: '/generator' },
+  { key: 'knowledge', labelKey: 'nav.knowledge', icon: 'book-open', to: '/knowledge' },
   { key: 'bots', labelKey: 'nav.bots', icon: 'sparkles', to: '/bots' },
 ];
 

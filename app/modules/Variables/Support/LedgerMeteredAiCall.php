@@ -42,7 +42,7 @@ class LedgerMeteredAiCall implements MeteredAiCall
         private MeterActorResolver $actorResolver,
     ) {}
 
-    public function assertWithinBudget(string $channel): void
+    public function assertWithinBudget(string $channel, float $projectedCost = 0.0): void
     {
         $cap = $this->usage->cap();
 
@@ -61,7 +61,11 @@ class LedgerMeteredAiCall implements MeteredAiCall
             return;
         }
 
-        if ($used >= $cap) {
+        // A PROJECTION is added to what has already been spent, so a MULTI-CALL pipeline can ask whether
+        // the whole of it fits before it pays for the first part. `max(0, …)` because a negative
+        // projection is a caller bug and must never be able to LOOSEN the gate. With the default 0.0
+        // this is the original comparison, byte for byte, for every existing caller.
+        if ($used + max(0.0, $projectedCost) >= $cap) {
             throw new AiBudgetExceededException($channel, $used, $cap);
         }
     }
@@ -108,9 +112,21 @@ class LedgerMeteredAiCall implements MeteredAiCall
     }
 
     /**
-     * Token counts for one result: a laravel/ai text response exposes REAL provider tokens on
-     * `->usage`; an opaque result (an image-edit array, or anything unknown) has none, so the
-     * channel's configured UNIT stands in as the total so the budget still moves.
+     * Token counts for one result, in descending order of honesty:
+     *
+     *   1. a laravel/ai TEXT response exposes REAL provider tokens on `->usage` (a prompt half and a
+     *      completion half);
+     *   2. an EMBEDDINGS response ({@see \Laravel\Ai\Responses\EmbeddingsResponse}, and anything else
+     *      shaped like it) has NO `->usage` — embeddings have no completion half, so the package
+     *      reports one flat `->tokens` int instead. Read it as prompt tokens, because that is what it
+     *      is: the input the provider actually charged for. Without this branch the Knowledge indexer
+     *      would fall through to the unit stand-in below and record a made-up flat rate for a channel
+     *      whose real cost is known exactly;
+     *   3. an OPAQUE result (an image-edit array, a raw string, anything unknown) has neither, so the
+     *      channel's configured UNIT stands in as the total and the budget still moves.
+     *
+     * The order is what keeps this byte-preserving for the existing spenders: every text response
+     * carries `->usage` and is answered by branch 1 before branch 2 is ever consulted.
      *
      * @return array{0: int, 1: int, 2: int} [promptTokens, completionTokens, totalTokens]
      */
@@ -121,6 +137,12 @@ class LedgerMeteredAiCall implements MeteredAiCall
             $completionTokens = (int) $result->usage->completionTokens;
 
             return [$promptTokens, $completionTokens, $promptTokens + $completionTokens];
+        }
+
+        if (is_object($result) && isset($result->tokens) && is_int($result->tokens)) {
+            $tokens = max(0, $result->tokens);
+
+            return [$tokens, 0, $tokens];
         }
 
         $unit = (int) config('ai.meter.unit_cost.' . $channel, 0);

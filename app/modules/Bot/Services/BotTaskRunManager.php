@@ -6,9 +6,12 @@ use App\Modules\Bot\Enums\BotActionType;
 use App\Modules\Bot\Enums\BotRunTrigger;
 use App\Modules\Bot\Jobs\BotTaskExecutionJob;
 use App\Modules\Bot\Models\Bot;
+use App\Modules\Bot\Support\BotRunEstimate;
 use App\Modules\Comments\DTOs\CommentDTO;
 use App\Modules\Comments\Services\CommentService;
 use App\Modules\Tasks\Models\Task;
+use App\Modules\Variables\Contracts\MeteredAiCall;
+use App\Modules\Variables\Exceptions\AiBudgetExceededException;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -42,6 +45,7 @@ class BotTaskRunManager
     public function __construct(
         private BotActionService $actions,
         private CommentService $comments,
+        private MeteredAiCall $meter,
     ) {}
 
     /**
@@ -57,6 +61,18 @@ class BotTaskRunManager
         $bot = Bot::find($task->assignee_id);
 
         if ($bot === null || !$bot->canExecuteTasks()) {
+            return;
+        }
+
+        // BUDGET GATE, before the claim (the same posture the Generator's run manager takes): an
+        // already-over-cap workspace never starts a run, so it never burns one of the task's five run
+        // slots on work it cannot pay for and never leaves a task claimed as `running`. This is the
+        // CHEAP question ("is there any money left"); the job asks the expensive one (a projection of
+        // this specific run) once it has the assembled context to project against.
+        //
+        // No-op whenever the cap is off — the shipped default — so a workspace that never set a limit
+        // sees byte-identical behaviour.
+        if (!$this->affordable($bot, $task)) {
             return;
         }
 
@@ -180,6 +196,34 @@ class BotTaskRunManager
             ]);
 
         return $affected === 1;
+    }
+
+    /**
+     * Whether the workspace can still pay for AI at all. False RECORDS the refusal against the task
+     * (an `execution_failed` action carrying the budget reason) rather than failing silently: a bot
+     * that simply stops doing anything, with nothing in its timeline, is the worst possible way for a
+     * cap to be enforced — it looks exactly like a broken bot. The action also makes the task retryable
+     * from the inbox, which is the right affordance: raising the cap or waiting for the month to roll
+     * over makes the same run work.
+     *
+     * NO comment is posted (unlike the run-cap hand-over). A budget ceiling is an operator's concern,
+     * not something to explain to everyone reading the task's conversation.
+     */
+    private function affordable(Bot $bot, Task $task): bool
+    {
+        try {
+            $this->meter->assertWithinBudget(BotRunEstimate::CHANNEL);
+        } catch (AiBudgetExceededException) {
+            $this->actions->record(
+                $bot, $task, BotActionType::ExecutionFailed,
+                status: 'failed',
+                error: __('bot.budget.run_refused'),
+            );
+
+            return false;
+        }
+
+        return true;
     }
 
     /** Whether the task has exhausted its run budget. */

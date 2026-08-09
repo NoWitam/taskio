@@ -12,10 +12,19 @@
 // Disabled: anchors can't be natively disabled, so a disabled link drops its
 // `href`, sets `aria-disabled`, removes it from the tab order, and prevents
 // activation.
+//
+// `plain` exists for links that are ROWS, not inline text: a list/table/rail row
+// whose whole line is the link, and whose colour is decided by the row's own
+// state — struck through and muted once dismissed, inherited otherwise. The other
+// three variants FORCE a colour (primary or muted), so using them there would
+// repaint the row and destroy that state signal. `plain` therefore sets no colour
+// at all and keeps only the hover/focus underline, so a row link is still visibly
+// a link. Everything else — the real `<a href>`, the focus ring, external and
+// disabled handling — is identical across variants.
 import { computed } from 'vue';
 import Icon from './Icon.vue';
 
-type LinkVariant = 'default' | 'muted' | 'standalone';
+type LinkVariant = 'default' | 'muted' | 'standalone' | 'plain';
 
 const props = withDefaults(
   defineProps<{
@@ -48,10 +57,18 @@ const VARIANT_CLASS: Record<LinkVariant, string> = {
   // `standalone` is a self-contained link (often a row/CTA), medium weight.
   standalone:
     'inline-flex items-center gap-next-1 font-next-medium text-next-primary underline-offset-4 hover:underline',
+  // `plain` INHERITS its colour — see the file header. Underline on hover/focus only.
+  plain: 'underline-offset-4 hover:underline focus-visible:underline',
 };
 
 const classes = computed(() => [
-  'next-link rounded-next-sm transition-colors duration-[var(--duration-next-fast)]',
+  'next-link transition-colors duration-[var(--duration-next-fast)]',
+  // `plain` sets NO radius: its hosts are row-shaped and bring their own (`rounded-next-md` on a
+  // full-width rail row), and two competing radius utilities resolve by stylesheet order rather than
+  // by the order they are written here — so a base radius could silently win over the host's. The
+  // focus ring's own radius comes from the global `:focus-visible` rule in `next.css`, so nothing is
+  // lost by omitting it.
+  props.variant === 'plain' ? '' : 'rounded-next-sm',
   VARIANT_CLASS[props.variant],
   props.disabled
     ? 'pointer-events-none cursor-not-allowed text-next-muted-foreground opacity-60 no-underline'

@@ -53,6 +53,10 @@ import EmptyState from '../../ui/data/EmptyState.vue';
 import Alert from '../../ui/feedback/Alert.vue';
 import EntryListInput from './EntryListInput.vue';
 import BotVisualPanel from './BotVisualPanel.vue';
+import BotKnowledgeBindingPanel from './BotKnowledgeBindingPanel.vue';
+// The migration modal lives with the KNOWLEDGE pages (its result is a knowledge base) and imports
+// nothing from here — the same direction the backend boundary runs: Bot depends on Knowledge.
+import BotKnowledgeMigrationModal from '../knowledge/BotKnowledgeMigrationModal.vue';
 import { toolIcon, toolLabel, toolDescription, combineToolSelection } from './botToolMeta';
 import { useBotsStore } from '../../app/stores/bots';
 import { useBotToolRegistryStore } from '../../app/stores/botToolRegistry';
@@ -62,6 +66,7 @@ import type { IconName } from '../../ui/primitives/icons';
 import type {
   BotDetail,
   BotDictionaryEntry,
+  BotKnowledgeBinding,
   BotPhraseEntry,
   BotVisualIdentity,
   BotWritePayload,
@@ -197,6 +202,19 @@ const form = reactive<{
  */
 const visualServer = ref<BotVisualIdentity | null>(null);
 
+/**
+ * The SERVER's knowledge BINDING (B6) — which base this bot reads, or null.
+ *
+ * A server mirror for the same reason `visualServer` is one: it is written by its OWN endpoint
+ * (`PUT/DELETE /bots/{id}/knowledge-binding`) and by the migration, never by this form, so a bot
+ * save must not be able to author it. It also gates how the built-in entry list is presented —
+ * while it is set, those entries are kept but not injected.
+ */
+const knowledgeBindingServer = ref<BotKnowledgeBinding | null>(null);
+
+/** The migration modal ("lift these entries into a real base") — opened from the binding panel. */
+const migrationOpen = ref(false);
+
 // Whether a module is currently ENABLED (drives the nav emphasis + inert forms).
 function moduleEnabled(key: ModuleKey): boolean {
   const meta = MODULES.find((m) => m.key === key);
@@ -258,6 +276,7 @@ function seedFrom(detail: BotDetail): void {
     prohibitions: cloned.visual?.prohibitions ?? [],
   };
   visualServer.value = cloned.visual;
+  knowledgeBindingServer.value = cloned.knowledge_binding ?? null;
   seeded.value = true;
   savedSnapshot.value = formSnapshot();
 }
@@ -436,63 +455,81 @@ function buildPayload(overrides?: VisualOverrides): BotWritePayload {
   };
 }
 
+/**
+ * The first message of one entry of a Laravel validation bag. The bag is TYPED as `string[]`, but it
+ * arrives over the wire: a bare string indexed at `[0]` would surface a ONE-CHARACTER "error message".
+ * A value that is not a non-empty array of strings therefore yields no message at all — the same guard
+ * the rest of the app applies to its bags.
+ */
+function firstMessage(messages: unknown): string | null {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  return typeof messages[0] === 'string' ? messages[0] : null;
+}
+
 /** Map a server 422 validation bag onto the local field errors, then jump to it. */
 function applyServerErrors(err: unknown): void {
   const bag = (err as { response?: { data?: { errors?: Record<string, string[]> } } })?.response?.data?.errors;
   if (!bag) return;
-  if (bag.name?.length) errors.name = bag.name[0];
-  if (bag.persona?.length) errors.persona = bag.persona[0];
+  const name = firstMessage(bag.name);
+  if (name) errors.name = name;
+  const persona = firstMessage(bag.persona);
+  if (persona) errors.persona = persona;
   const toolsKey = Object.keys(bag).find(
     (k) => k === 'task_execution.tools' || /^task_execution\.tools\.\d+$/.test(k),
   );
-  if (toolsKey && bag[toolsKey]?.length) errors.tools = bag[toolsKey][0];
+  const tools = toolsKey ? firstMessage(bag[toolsKey]) : null;
+  if (tools) errors.tools = tools;
 
   // Knowledge: bag-level `knowledge.entries` → section message; per-row keys →
   // `knowledge.entries.<i>.(title|content)`.
-  const knowledgeBag = bag['knowledge.entries'] ?? bag.knowledge;
-  if (knowledgeBag?.length) errors.knowledge = knowledgeBag[0];
+  const knowledge = firstMessage(bag['knowledge.entries']) ?? firstMessage(bag.knowledge);
+  if (knowledge) errors.knowledge = knowledge;
 
   // Visual: the module-level bag (a rejected file id / a malformed module) lands on the section, the
   // per-field ones on their fields. `visual.prohibitions.<i>` collapses onto the list as a whole — the
   // StringListInput has no per-row error slot, and the list is short enough to scan.
-  const visualBag =
-    bag.visual ?? bag['visual.candidates'] ?? bag['visual.canonical_file_id'] ?? bag['visual.reference_file_id'];
-  if (visualBag?.length) errors.visual = visualBag[0];
+  const visual =
+    firstMessage(bag.visual) ??
+    firstMessage(bag['visual.candidates']) ??
+    firstMessage(bag['visual.canonical_file_id']) ??
+    firstMessage(bag['visual.reference_file_id']);
+  if (visual) errors.visual = visual;
   const visualFieldErrors: Record<string, string> = {};
   (['descriptor', 'wardrobe', 'aesthetic', 'prohibitions'] as const).forEach((field) => {
-    const msgs = bag[`visual.${field}`];
-    if (msgs?.length) visualFieldErrors[field] = msgs[0];
+    const msg = firstMessage(bag[`visual.${field}`]);
+    if (msg) visualFieldErrors[field] = msg;
   });
 
   const entryErrors: Record<number, { title?: string; content?: string }> = {};
   const dictErrors: Record<number, Record<string, string>> = {};
   const phraseErrors: Record<number, Record<string, string>> = {};
-  Object.entries(bag).forEach(([key, msgs]) => {
-    if (!msgs.length) return;
+  Object.entries(bag).forEach(([key, messages]) => {
+    const msg = firstMessage(messages);
+    if (msg === null) return;
     // visual.prohibitions.<i> → one message on the whole list
     if (/^visual\.prohibitions\.\d+$/.test(key) && !visualFieldErrors.prohibitions) {
-      visualFieldErrors.prohibitions = msgs[0];
+      visualFieldErrors.prohibitions = msg;
       return;
     }
     // knowledge.entries.<i>.(title|content)
     const km = key.match(/^knowledge\.entries\.(\d+)\.(title|content)$/);
     if (km) {
       const idx = Number(km[1]);
-      entryErrors[idx] = { ...(entryErrors[idx] ?? {}), [km[2]]: msgs[0] };
+      entryErrors[idx] = { ...(entryErrors[idx] ?? {}), [km[2]]: msg };
       return;
     }
     // dictionary.<i>.(term|meaning)
     const dm = key.match(/^dictionary\.(\d+)\.(term|meaning)$/);
     if (dm) {
       const idx = Number(dm[1]);
-      dictErrors[idx] = { ...(dictErrors[idx] ?? {}), [dm[2]]: msgs[0] };
+      dictErrors[idx] = { ...(dictErrors[idx] ?? {}), [dm[2]]: msg };
       return;
     }
     // phrases.<i>.(phrase|context)
     const pm = key.match(/^phrases\.(\d+)\.(phrase|context)$/);
     if (pm) {
       const idx = Number(pm[1]);
-      phraseErrors[idx] = { ...(phraseErrors[idx] ?? {}), [pm[2]]: msgs[0] };
+      phraseErrors[idx] = { ...(phraseErrors[idx] ?? {}), [pm[2]]: msg };
     }
   });
   errors.knowledgeEntries = entryErrors;
@@ -537,6 +574,20 @@ async function persist(overrides?: VisualOverrides): Promise<BotDetail | null> {
  */
 function applySynced(bot: BotDetail): void {
   visualServer.value = bot.visual;
+  // The binding rides the same mirror rule: it moves ONLY on a server response (a bind, an unbind,
+  // a save, or the refetch after a migration).
+  knowledgeBindingServer.value = bot.knowledge_binding ?? null;
+}
+
+/**
+ * A migration created a base and bound this bot to it. The bot in hand is now stale (its binding
+ * changed server-side), so it is refetched rather than patched from the flat 201 body — which
+ * carries the BASE, not the bot.
+ */
+async function onMigrated(): Promise<void> {
+  if (!props.botId) return;
+  const fresh = await store.fetchBot(props.botId);
+  if (fresh) applySynced(fresh);
 }
 
 async function onSubmit(): Promise<void> {
@@ -885,10 +936,28 @@ function onCancel(): void {
 
             <Alert v-if="errors.knowledge" variant="danger" size="sm">{{ errors.knowledge }}</Alert>
 
+            <!-- WHERE this bot's facts come from. Above the entry list on purpose: it decides
+                 whether that list is read at all. -->
+            <BotKnowledgeBindingPanel
+              :bot-id="botId"
+              :binding="knowledgeBindingServer"
+              :built-in-count="form.knowledge.length"
+              @sync="applySynced"
+              @migrate="migrationOpen = true"
+            />
+
+            <!-- The built-in entries are SUPERSEDED while a base is bound: kept, editable, and not
+                 injected into anything. Saying so — with the way back — is the difference between
+                 "my bot ignores what I wrote" and an understood trade. -->
+            <Alert v-if="knowledgeBindingServer" variant="warning" size="sm">
+              {{ t('bots.editor.knowledge.supersededHint') }}
+            </Alert>
+
             <!-- Disabled-but-READABLE when off (fields disabled, not `inert`). -->
             <div
               :aria-disabled="!form.knowledgeEnabled ? 'true' : undefined"
-              :class="!form.knowledgeEnabled && 'opacity-70'"
+              :class="[!form.knowledgeEnabled && 'opacity-70', knowledgeBindingServer && 'opacity-70']"
+              :data-knowledge-superseded="knowledgeBindingServer ? 'true' : undefined"
             >
               <EntryListInput
                 v-model="form.knowledge"
@@ -976,5 +1045,13 @@ function onCancel(): void {
         </Button>
       </footer>
     </div>
+
+    <!-- One migration modal, opened from the binding panel with the bot already fixed. -->
+    <BotKnowledgeMigrationModal
+      v-model:open="migrationOpen"
+      :bot-id="botId"
+      :bot-name="form.name"
+      @migrated="onMigrated"
+    />
   </div>
 </template>

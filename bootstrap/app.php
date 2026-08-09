@@ -4,6 +4,7 @@ use App\Http\Middleware\FlushChangelogMiddleware;
 use App\Http\Middleware\LogMiddleware;
 use App\Http\Middleware\RequireWorkspace;
 use App\Http\Middleware\ResolveWorkspace;
+use App\Http\Middleware\SetUserLocale;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -29,6 +30,21 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->prepend(LogMiddleware::class);
         $middleware->append(FlushChangelogMiddleware::class);
         $middleware->appendToGroup('api', ResolveWorkspace::class);
+
+        // Makes the server answer in the LANGUAGE THE USER CHOSE. `users.locale` was persisted and
+        // never read back, so every `__()` rendered in APP_LOCALE — invisible on a Polish install
+        // until somebody switched the interface to English and got Polish sentences from the API.
+        //
+        // It reads $request->user(), so it must run AFTER Authenticate — the same dependency
+        // ResolveWorkspace has, and the reason that one needed an explicit slot. This one does NOT:
+        // it is absent from the framework's priority list, so the sort leaves it where the group put
+        // it, which is after every prioritised middleware and therefore after Authenticate. Pinned by
+        // UserLocaleTest, because "it happens to land late" is exactly the kind of guarantee that
+        // quietly stops holding.
+        //
+        // Unlike ResolveWorkspace it carries no security weight — nothing about model binding depends
+        // on the locale — so it needs no constraint against SubstituteBindings either.
+        $middleware->appendToGroup('api', SetUserLocale::class);
 
         // SECURITY (cross-workspace binding): appendToGroup alone leaves ResolveWorkspace
         // running AFTER SubstituteBindings, so route-model binding happens while no workspace

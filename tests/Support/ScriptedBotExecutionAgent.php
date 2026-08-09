@@ -7,6 +7,9 @@ use App\Modules\Bot\Services\BotActionService;
 use App\Modules\Bot\Services\BotTaskInteractionService;
 use App\Modules\Bot\Services\BotTaskToolFactory;
 use App\Modules\Tasks\Models\Task;
+use Laravel\Ai\Responses\Data\Meta;
+use Laravel\Ai\Responses\Data\Usage;
+use Laravel\Ai\Responses\TextResponse;
 use Laravel\Ai\Tools\Request as ToolRequest;
 
 /**
@@ -34,6 +37,17 @@ class ScriptedBotExecutionAgent
     /** @var array<int, array{0: string, 1: array<string, mixed>}> */
     public static array $script = [];
 
+    /**
+     * The token usage the scripted run REPORTS BACK, so the cost meter has something to record.
+     *
+     * The real agent returns a TextResponse whose `usage` is the sum over every step of the tool loop
+     * (laravel/ai combines them), and that response is what the meter reads to bill the run. A double
+     * returning null would make every metering assertion vacuously "0 tokens, $0" — true of the double,
+     * false of the thing it stands in for. Defaults to zero so the runs that predate metering are
+     * unaffected; a test that cares sets it.
+     */
+    public static ?Usage $usage = null;
+
     public function __construct(
         private Bot $bot,
         private Task $task,
@@ -45,6 +59,12 @@ class ScriptedBotExecutionAgent
     public static function script(array $script): void
     {
         self::$script = $script;
+    }
+
+    /** Make the next run(s) report these provider tokens on the response the meter reads. */
+    public static function reportUsage(int $promptTokens, int $completionTokens): void
+    {
+        self::$usage = new Usage($promptTokens, $completionTokens);
     }
 
     public function prompt(
@@ -70,7 +90,7 @@ class ScriptedBotExecutionAgent
             }
         }
 
-        return null;
+        return new TextResponse('', self::$usage ?? new Usage(0, 0), new Meta('scripted', 'scripted'));
     }
 
     /** @return array<string, \Laravel\Ai\Contracts\Tool> */

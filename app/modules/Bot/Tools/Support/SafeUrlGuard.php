@@ -30,6 +30,23 @@ use RuntimeException;
 class SafeUrlGuard
 {
     /**
+     * $resolver is the DNS seam only ({@see HostResolver}). NULL — every production call site — resolves
+     * it from the container, which binds {@see SystemHostResolver}, so the live behaviour is byte-for-byte
+     * what it was before the seam existed. A concrete fallback is kept for the case where the guard is
+     * constructed outside a booted container, so `new SafeUrlGuard` never silently loses its resolution.
+     */
+    public function __construct(
+        private ?HostResolver $resolver = null,
+    ) {}
+
+    private function resolver(): HostResolver
+    {
+        return $this->resolver ??= app()->bound(HostResolver::class)
+            ? app(HostResolver::class)
+            : new SystemHostResolver;
+    }
+
+    /**
      * Validate the URL and return the pinning target so the caller connects to exactly
      * what was validated.
      *
@@ -143,25 +160,10 @@ class SafeUrlGuard
             return [$this->canonicalizeIp($host)];
         }
 
-        $records = @dns_get_record($host, DNS_A | DNS_AAAA) ?: [];
-
-        $ips = [];
-        foreach ($records as $record) {
-            if (isset($record['ip'])) {
-                $ips[] = $record['ip'];
-            }
-            if (isset($record['ipv6'])) {
-                $ips[] = $record['ipv6'];
-            }
-        }
-
-        // Fallback for environments where dns_get_record is unavailable/empty.
-        if ($ips === []) {
-            $resolved = gethostbynamel($host);
-            if ($resolved !== false) {
-                $ips = $resolved;
-            }
-        }
+        // The LOOKUP is the only part behind a seam ({@see HostResolver}); every DECISION below and
+        // above stays here. Extracted so the fetch_url tests stop depending on live DNS — offline they
+        // failed fail-CLOSED, which is indistinguishable from a real security regression at a glance.
+        $ips = $this->resolver()->lookup($host);
 
         // If the host cannot be resolved at all, block by default (fail closed) — this is
         // a backstop, NOT the primary defense (numeric forms are already normalized).

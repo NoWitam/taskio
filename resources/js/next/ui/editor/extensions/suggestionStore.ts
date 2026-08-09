@@ -29,18 +29,34 @@ import {
 } from '../../../app/composables/useOverlayStack';
 import type { VariableNode } from '../../variables/types';
 
-/** ONE flat row of the MENTION popup (the variable popup renders `nodes`, not rows). */
+/**
+ * ONE flat row of a LIST-shaped popup (the variable popup renders `nodes`, not rows).
+ *
+ * Shared by the MENTION (`@`) and WIKILINK (`[[`) triggers. The extra fields are optional and
+ * variant-specific — a second row type would have forced a second store, a second popup contract
+ * and a second copy of the keyboard model for what is the same listbox.
+ */
 export interface SuggestionRow {
   id: string;
   label: string;
   /** Mention avatar url. */
   avatar?: string | null;
+  /** WIKILINK: the entry's slug — what actually gets inserted as `[[slug]]`. */
+  slug?: string;
+  /** WIKILINK: the entry's editorial status, rendered as a badge. */
+  status?: string;
+  /**
+   * WIKILINK: `create` marks the trailing "Create entry «query»" affordance. Modelling it as a ROW
+   * rather than as popup-only chrome keeps ↑/↓/Enter arithmetic over a single array — an off-list
+   * extra row is how a keyboard model quietly grows an off-by-one.
+   */
+  kind?: 'entry' | 'create';
 }
 
 export interface SuggestionState {
   active: boolean;
   /** Which trigger opened the popup, drives row rendering + aria label. */
-  variant: 'mention' | 'variable';
+  variant: 'mention' | 'variable' | 'wikilink';
   /** Current text typed after the trigger. */
   query: string;
   /** Viewport-space caret rect the popup anchors to. */
@@ -48,6 +64,14 @@ export interface SuggestionState {
   /** MENTION variant: filtered/loaded rows. (The variable variant uses `nodes`.) */
   items: SuggestionRow[];
   loading: boolean;
+  /**
+   * The last fetch FAILED, as distinct from having returned nothing.
+   *
+   * Both used to leave `items` empty, so a broken search and a base with no such entry produced
+   * the same "No matches" — and the user, told there is no such entry, writes a red link instead
+   * of retrying. A separate flag is the only way the popup can tell the two apart.
+   */
+  errored: boolean;
   /** Highlighted option index (for ↑/↓/Enter + aria-activedescendant). */
   activeIndex: number;
   /**
@@ -87,6 +111,7 @@ export function createSuggestionStore(): SuggestionState {
     rect: null,
     items: [],
     loading: false,
+    errored: false,
     activeIndex: 0,
     nodes: [],
     onKey: null,

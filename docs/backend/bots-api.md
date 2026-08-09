@@ -799,6 +799,40 @@ attempt finds the cap already reached, the bot:
 2. Records a `handed_over` action (`status: 'handed_over'`).
 3. Leaves the task exactly where it is — does **not** advance status.
 
+### AI cost gate (`ai_bot_task`) — every run is now metered and budget-gated
+
+**Until this, a bot's task-execution run was the one AI spender on the platform that cost real money and
+left no trace in the ledger.** `app/modules/Bot` carried no reference at all to `MeteredAiCall` — the
+whole R2 sub-stage 4 $ cap (`docs/backend/workspace-ai-usage-api.md`) covered Workflows `@[ai-text]`, Disk
+AI edits and Generator sessions, but not the component that runs most often and entirely without a human
+watching (the workspace AI-usage page showed real spend on six channels and a silent $0 for however much
+bot work had actually run). Fixed by wiring the whole interactive run through the shared meter, on its own
+channel:
+
+| | |
+|---|---|
+| Channel | `ai_bot_task` (`config('ai.meter.pricing.ai_bot_task.per_1k_tokens')`, default `0.005`, env `AI_PRICE_BOT_TASK_PER_1K` — same rate as `ai_text` today, its own channel so the ledger can answer "what did the bots cost while nobody was watching" and be tuned separately, e.g. a cheaper model for the agent loop) |
+| **NOT** `ai_bot` | The bot spends on more than the task-execution loop — slot-fill (`docs/backend/generator-sessions-api.md`) bills `ai_text`, visual identity bills the image channels (above). A channel named `ai_bot` would promise to cover all of a bot's spend and quietly not. |
+| Gate | `BotTaskRunManager::affordable()` — called **before** the atomic claim in `dispatch()`, same posture as the Generator run manager. An already-over-cap workspace never claims a run slot and never leaves the task stuck `running`. |
+| Projection | `BotRunEstimate::forRun($context)` — the agent loop is multi-step (`#[MaxSteps(12)]`) and laravel/ai owns the loop end-to-end, so nothing can gate mid-run. The projection prices a TYPICAL run (`ai.bot_run_projected_steps`, default 3 steps — not the 12-step ceiling, which would refuse runs costing a quarter of the estimate and do it invisibly), modelling that each step re-sends the fixed instruction block plus every earlier step's output — a triangular-number growth, not `steps × one call`. |
+| Actor tag | `MeterContext::setActor($bot->getMorphClass(), $bot->getKey())` for the **WHOLE run**, set before the knowledge read (an autonomous run has no `auth()` and no workflow-run context, so without an explicit tag the spend would attribute to nobody) and cleared in a `finally` so it can never outlive the run on a reused worker process. Tagging the whole run — not just the agent's own `prompt()` call — is what makes the bound-knowledge embedding read (`rag` mode, one embedding per run) attribute to the bot too. |
+| Refusal | Records `execution_failed` (`bot.budget.run_refused`) against the TASK — a bot that simply stops with nothing in its timeline would be indistinguishable from a broken bot — and makes the task retryable from the inbox. **No comment is posted** (unlike the run-cap hand-over above): a budget ceiling is an operator's concern, not something to explain to everyone reading the task's conversation. |
+
+**Billed PER RUN, not per step — a finding forced by the package, not a design preference.** laravel/ai
+owns the tool loop internally: one `prompt()` call executes every step and returns only once the loop
+ends, so there is no seam to meter a step at without forking the package's gateway. What makes per-run
+billing acceptable rather than merely convenient is that the returned response's `usage` is the SUM over
+every step (`ParsesTextResponses::combineUsage`) — the ledger row still carries the run's real total
+tokens. **Per-run recording loses no accuracy about the money, only about the moment**: the workspace
+learns the cost when the run ends, not while it runs. The gate therefore has to ask its question ONCE, up
+front, about the whole run (`BotRunEstimate`) — the second, authoritative gate-before-spend still lives
+inside `MeteredAiCall::meter()` itself, which re-checks the budget right before invoking the agent.
+
+**Residual risk, accepted rather than engineered away:** a run whose real cost exceeds its projection can
+finish slightly over the cap — the next run is simply refused, and the ledger stays honest about what
+happened. Closing this fully would mean metering inside laravel/ai's own loop, which the package does not
+expose a seam for.
+
 ### Approval completion / rejection integration
 
 - **Completion:** `Task::onApprovalCompleted()` calls
@@ -973,8 +1007,21 @@ user must explicitly turn it on before it takes effect).
   `knowledge` shape for backward compatibility with rows written before this change — no data
   migration was needed for the shape switch itself (only the `voice → audio` rename and the
   new `knowledge` column required schema changes).
-- A future app-wide Knowledge module (outside the Bot module) may eventually absorb this
-  per-bot knowledge store; today it is scoped per-bot only.
+
+**SUPERSEDED, not replaced, by the real Knowledge module (`app/modules/Knowledge/`).** The
+per-bot `knowledge` column described above is what this section originally documented, and it
+remains fully functional exactly as written — no field here changed meaning or was removed. What
+changed is precedence: a bot may additionally be bound to a real, shared `KnowledgeBase`
+(`PUT /bots/{bot}/knowledge-binding`), and **once such a binding exists it wins outright** —
+`BotTaskContextBuilder` reads the compiled knowledge base and never falls back to (or merges
+with) this column, even if `knowledge.enabled` is still `true` on the bot's own record. Only a bot
+with NO binding reads this legacy module, exactly as described above — see
+`docs/backend/knowledge-api.md` → "Bot binding" and
+[ADR-0045](../decisions/ADR-0045-knowledge-consumption-data-erasure.md) D8. `POST
+/bots/{bot}/knowledge/migrate` lifts this column's entries into a real base and binds it in one
+step (see the same section). This column stays as a fully-supported fallback for now; a future
+stage of the roadmap may deprecate it once every workspace has migrated (see
+`docs/product/plan-dzialania.md`) — it is not scheduled for removal by this batch.
 
 ---
 
@@ -1018,9 +1065,12 @@ The `'user'` alias (`'user'` → `App\Models\User`) is registered in `AuthModule
 - `app/modules/Bot/Agents/BotTaskExecutionAgent.php` — interactive Laravel AI agent (B4)
 - `app/modules/Bot/Jobs/BotTaskExecutionJob.php` — one interactive run per dispatch
 - `app/modules/Bot/Services/BotTaskExecutionService.php` — trigger decision (initial/resume/revision)
-- `app/modules/Bot/Services/BotTaskRunManager.php` — atomic claim / run-state machine / cap / hand-over
+- `app/modules/Bot/Services/BotTaskRunManager.php` — atomic claim / run-state machine / cap / hand-over / the `ai_bot_task` gate-before-claim (`affordable()`)
+- `app/modules/Bot/Support/BotRunEstimate.php` — the pre-run $ projection (`CHANNEL = 'ai_bot_task'`), priced through the same `config('ai.meter.pricing')` table the meter bills against
 - `app/modules/Bot/Services/BotTaskInteractionService.php` — the tools' side-effects (single run)
 - `app/modules/Bot/Services/BotTaskContextBuilder.php` — read-context injection
+- `app/modules/Variables/Contracts/MeteredAiCall.php`, `Support/MeterContext.php` — the shared gate/spend/actor-tag seam every `ai_bot_task` call goes through; see `docs/backend/workspace-ai-usage-api.md` for the ledger-wide contract
+- `tests/Feature/BotAiMeteringTest.php` — the gate-before-claim, the per-run actor tag (including the knowledge embedding), and the projection
 - `app/modules/Bot/Tools/` — the four always-present interaction tools
 - `app/modules/Bot/Tools/Registry/` — the four optional registry tools (B5)
 - `app/modules/Bot/Tools/Support/SafeUrlGuard.php` — SSRF hardening for `fetch_url`

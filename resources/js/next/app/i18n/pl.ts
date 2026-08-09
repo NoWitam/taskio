@@ -115,6 +115,7 @@ export const pl: MessageSchema = {
     workflows: 'Przepływy',
     variables: 'Zmienne',
     generator: 'Generator',
+    knowledge: 'Wiedza',
     bots: 'Boty',
     labels: 'Etykiety',
     comingSoon: 'Wkrótce',
@@ -218,6 +219,10 @@ export const pl: MessageSchema = {
         ai_text: 'Tekst',
         ai_image_edit: 'Edycja obrazu',
         ai_image_generate: 'Generowanie obrazu',
+        // Nazwa od PRACY, nie od medium. Bot wydaje w czyimś imieniu i według harmonogramu,
+        // którego nikt nie ogląda — czytanie tego jako kolejnego kawałka „Tekstu” ukryłoby
+        // pozycję najbardziej skłonną rosnąć sama z siebie.
+        ai_bot_task: 'Praca botów',
       },
       actor: {
         user: 'Członek',
@@ -1344,6 +1349,35 @@ export const pl: MessageSchema = {
   },
 
   // BotSelect (globalny wybór bota).
+  // Silnik diffa (ui/data/TextDiffView) — komponent systemu projektowego, więc copy jest
+  // neutralne: ten sam widok porównuje plik z Dysku, wersję wpisu wiedzy i propozycję AI.
+  textDiff: {
+    label: 'Porównanie treści',
+    noChanges: 'Brak zmian',
+    coarse:
+      'Dokument jest bardzo długi — pokazujemy porównanie w całych blokach zamiast wiersz po wierszu.',
+    // Prefiksy tylko dla czytników ekranu: rynienka +/− jest `aria-hidden`, więc bez nich diff
+    // brzmi jak zwykły tekst i nie da się usłyszeć, co dodano, a co usunięto (DC10).
+    rowAdded: 'Dodano',
+    rowRemoved: 'Usunięto',
+  },
+
+  // Baner budżetu AI (ui/patterns/AiBudgetBanner) — wspólny dla Generatora, Botów i Wiedzy.
+  aiBudget: {
+    blockedTitle: 'Budżet AI wyczerpany',
+    blockedMessage: 'Ten obszar roboczy osiągnął miesięczny limit wydatków na AI, więc nowe generacje są wstrzymane.',
+    resetsOn: 'Reset {date}',
+    raiseLimit: 'Zwiększ limit',
+    contactOwner: 'Poproś właściciela obszaru roboczego o zwiększenie limitu.',
+  },
+
+  knowledgeBaseSelect: {
+    placeholder: 'Wybierz bazę wiedzy',
+    search: 'Szukaj baz wiedzy…',
+    ariaLabel: 'Wybierz bazę wiedzy',
+    entries: 'Wpisy: {count}',
+  },
+
   botSelect: {
     placeholder: 'Wybierz bota',
     placeholderMultiple: 'Wybierz boty',
@@ -1710,6 +1744,17 @@ export const pl: MessageSchema = {
   },
 
   editor: {
+    // Popupy podpowiedzi (wikilinki, wzmianki). Angielskie literały jako fallbacki w komponencie
+    // `ui/` renderowały się każdemu hostowi, który nie podał `labels` — w tym w styleguide.
+    suggest: {
+      mentionList: 'Wzmianki',
+      // Kopia stanów popupu wzmianek. `mentionEmpty` zastępuje angielski literał wbudowany w
+      // komponent; `mentionError` to ramię, którego popup wzmianek nie miał — popup wikilinków
+      // już odróżniał nieudane wyszukiwanie od pustego wyniku, a wspólna powłoka daje obu ten
+      // sam kontrakt.
+      mentionEmpty: 'Brak dopasowań',
+      mentionError: 'Nie udało się wyszukać osób. Spróbuj ponownie.',
+    },
     toolbar: {
       label: 'Formatowanie',
       undo: 'Cofnij',
@@ -2240,6 +2285,7 @@ export const pl: MessageSchema = {
       deactivate: 'Dezaktywuj',
       activated: 'Bot aktywowany',
       deactivated: 'Bot dezaktywowany',
+      restore: 'Przywróć',
       error: 'Nie udało się zmienić statusu bota.',
     },
     modules: {
@@ -2530,6 +2576,39 @@ export const pl: MessageSchema = {
       toolsPlaceholder: 'Wybierz narzędzia',
       knowledge: {
         hint: 'Fakty i zasady, które bot powinien zawsze znać podczas pracy.',
+        supersededHint:
+          'Ten bot czyta bazę wiedzy, więc poniższe wpisy wbudowane NIE są mu przekazywane. Zostają zapisane — odepnij bazę, aby znów z nich korzystał.',
+        binding: {
+          title: 'Baza wiedzy',
+          hint: 'Bot może czytać wspólną bazę wiedzy zamiast wpisów wbudowanych poniżej.',
+          active: 'Aktywne źródło',
+          inactive: 'Nie podpięto',
+          saveFirst: 'Zapisz bota, aby podpiąć bazę wiedzy.',
+          baseLabel: 'Baza',
+          basePlaceholder: 'Wybierz bazę wiedzy',
+          modeLabel: 'Sposób czytania',
+          modeHint: 'Jak dużo bazy trafia do bota przy każdym uruchomieniu.',
+          mode: {
+            auto: 'Automatycznie',
+            autoHint: 'Cała baza, dopóki się mieści; potem tylko pasujące fragmenty. Zalecane.',
+            inline: 'Cała baza',
+            inlineHint: 'Wszystkie zatwierdzone wpisy, dosłownie. Bez kosztu AI; duża baza się nie zmieści.',
+            rag: 'Dopasowane fragmenty',
+            ragHint: 'Tylko fragmenty pasujące znaczeniem do zadania. Skaluje się, kosztuje jedno zapytanie AI.',
+          },
+          bind: 'Podepnij bazę',
+          rebind: 'Zapisz zmianę',
+          unbind: 'Odepnij bazę',
+          migrate: 'Przenieś wpisy do nowej bazy',
+          saved: 'Podpięto bazę wiedzy',
+          unbound: 'Odpięto bazę wiedzy',
+          saveError: 'Nie udało się zapisać podpięcia bazy',
+          unbindConfirm: {
+            title: 'Odpiąć bazę wiedzy?',
+            message:
+              'Bot przestanie czytać tę bazę i wróci do wpisów wbudowanych. Sama baza zostaje nietknięta.',
+          },
+        },
         empty: 'Brak wpisów wiedzy.',
         listLabel: 'Wpisy wiedzy',
         addEntry: 'Dodaj wpis',
@@ -3151,16 +3230,18 @@ export const pl: MessageSchema = {
         queued: 'Wyślemy to po zakończeniu bieżącej operacji.',
       },
       // Sygnały budżetu AI przy kompozytorze (R2 pod-etap 4): kompaktowy znacznik ostrzeżenia/blokady + baner.
+      // Chip i etykiety afordancji zostają przy Generatorze; copy BANERA przeniesione do
+      // `aiBudget.*` razem z awansem komponentu do systemu projektowego (B15a).
       budget: {
         chipWarn: '{percent}% budżetu',
         chipBlocked: 'Budżet wyczerpany',
         estimatedHint: 'Szacowany koszt AI w tym miesiącu',
         affordanceBlocked: 'Budżet AI wyczerpany — generowanie wstrzymane',
-        blockedTitle: 'Budżet AI wyczerpany',
-        blockedMessage: 'Ten obszar roboczy osiągnął miesięczny limit wydatków na AI, więc nowe generacje są wstrzymane.',
-        resetsOn: 'Reset {date}',
-        raiseLimit: 'Zwiększ limit',
         contactOwner: 'Poproś właściciela obszaru roboczego o zwiększenie limitu.',
+        raiseLimit: 'Zwiększ limit',
+        resetsOn: 'Reset {date}',
+        blockedMessage: 'Ten obszar roboczy osiągnął miesięczny limit wydatków na AI, więc nowe generacje są wstrzymane.',
+        blockedTitle: 'Budżet AI wyczerpany',
       },
       empty: {
         title: 'Brak sesji',
@@ -3195,6 +3276,1010 @@ export const pl: MessageSchema = {
         undoError: 'Nie udało się cofnąć. Spróbuj ponownie.',
         archived: 'Sesja zarchiwizowana.',
         unarchived: 'Sesja przywrócona z archiwum.',
+      },
+    },
+  },
+
+  // Moduł najwyższego poziomu „Wiedza" (R3) — mini-encyklopedia obszaru roboczego: BAZY wiedzy
+  // (tożsamość + karta tożsamości + schemat metadanych) z krótkimi hasłami, które piszą ludzie,
+  // a odczytują konsumenci AI. B4 obejmuje ramę modułu, listę baz i ustawienia bazy; copy
+  // czytnika / tabeli / grafu / wyszukiwarki / kosza dochodzi w B5.
+  //
+  // ZERO pluralizacji w tym bloku — copy licznikowa zawsze w formie `Etykieta: {count}`.
+  knowledge: {
+    title: 'Wiedza',
+    subtitle: 'Bazy wiedzy Twojego zespołu — hasła, które czytają ludzie i AI.',
+    module: {
+      hint: 'Uporządkowana wiedza, z której korzystają boty i generator.',
+      tabs: 'Sekcje Wiedzy',
+      pickBase: 'Wybierz bazę',
+      pickBaseHint: 'Otwórz bazę, aby zobaczyć jej wpisy, graf i ustawienia.',
+      backToList: 'Wróć do listy baz',
+      nav: {
+        bases: 'Bazy wiedzy',
+        search: 'Szukaj',
+        trash: 'Kosz',
+        compose: 'Kreator',
+        reader: 'Czytnik',
+        table: 'Tabela',
+        graph: 'Graf',
+        settings: 'Ustawienia',
+      },
+    },
+    filters: {
+      clearAll: 'Wyczyść filtry',
+      status: 'Status',
+      stale: 'Tylko nieaktualne',
+      chip: {
+        search: 'Szukaj: {value}',
+        query: 'Zapytanie: {value}',
+        status: 'Status: {value}',
+      },
+    },
+    language: {
+      pl: 'Polski',
+      en: 'Angielski',
+    },
+    bases: {
+      new: 'Nowa baza',
+      filters: {
+        search: 'Szukaj baz wiedzy',
+        trashed: 'Pokaż usunięte',
+        trashedChip: 'Usunięte bazy',
+      },
+      noCharter: 'Brak karty tożsamości',
+      meta: {
+        entries: 'Wpisy',
+        language: 'Język',
+        schema: 'Pola metadanych',
+        updated: 'Aktualizacja',
+      },
+      card: {
+        open: 'Ustawienia bazy: {name}',
+      },
+      menu: {
+        label: 'Akcje bazy',
+        open: 'Otwórz',
+        settings: 'Ustawienia',
+        trash: 'Przenieś do kosza',
+        trashDisabled: 'Bazę może usunąć tylko jej twórca albo właściciel obszaru roboczego.',
+        restore: 'Przywróć',
+        purge: 'Usuń trwale',
+      },
+      empty: {
+        title: 'Nie masz jeszcze żadnej bazy wiedzy',
+        description:
+          'Baza wiedzy to mini-encyklopedia Twojego zespołu. Zacznij od jednej bazy na jeden obszar — na przykład „Marka" albo „Produkt".',
+        create: 'Utwórz bazę',
+        migrate: 'Przenieś wiedzę z bota',
+      },
+      emptySearch: {
+        title: 'Brak baz spełniających filtry',
+        description: 'Spróbuj innej frazy albo wyczyść filtry.',
+        action: 'Wyczyść filtry',
+      },
+      // Trwałe usunięcie bazy zabiera jej wpisy, a liczba jest tym, co czyni ze zdania decyzję,
+      // a nie formalność.
+      purgeConfirm: {
+        title: 'Usunąć bazę trwale?',
+        message: 'Baza i jej wpisy ({count}) zostaną usunięte na zawsze. Tego nie da się cofnąć.',
+      },
+      errors: {
+        title: 'Nie udało się wczytać baz wiedzy',
+        description: 'Coś poszło nie tak po drodze. Spróbuj ponownie.',
+      },
+      toasts: {
+        created: 'Utworzono bazę wiedzy',
+        updated: 'Zapisano ustawienia bazy',
+        trashed: 'Przeniesiono bazę do kosza',
+        restored: 'Baza przywrócona',
+        purged: 'Baza usunięta trwale',
+        error: 'Nie udało się zapisać zmian',
+      },
+      listLabel: 'Bazy wiedzy',
+    },
+    settings: {
+      title: 'Ustawienia bazy',
+      subtitle: 'Tożsamość, karta tożsamości i schemat metadanych tej bazy.',
+      danger: 'Strefa niebezpieczna',
+      dangerHint: 'Baza i jej wpisy trafią do kosza. Możesz je stamtąd przywrócić.',
+      dangerTrash: 'Przenieś bazę do kosza',
+      createTitle: 'Nowa baza wiedzy',
+      editTitle: 'Ustawienia bazy',
+      create: 'Utwórz bazę',
+      identity: 'Tożsamość',
+      nameLabel: 'Nazwa bazy',
+      namePlaceholder: 'np. Marka, Produkt, Wsparcie',
+      nameRequired: 'Nazwa bazy jest wymagana',
+      descriptionLabel: 'Krótki opis',
+      descriptionPlaceholder: 'Jedno zdanie o tym, co mieszka w tej bazie.',
+      languageLabel: 'Język bazy',
+      languageHint: 'Język bazy steruje indeksowaniem i podpowiedziami AI.',
+      charter: 'Karta tożsamości',
+      charterHint: 'Opisz bazę tak, jak wytłumaczył(a)byś ją nowej osobie.',
+      charterPlaceholder:
+        'Czym jest ta baza?\nDla kogo jest przeznaczona?\nJakim tonem mówi?\nCo obejmuje?\nCzego świadomie NIE zawiera?',
+      charterNotice:
+        'Karta tożsamości trafia do modeli AI korzystających z tej bazy. Im konkretniej opiszesz zakres i wykluczenia, tym mniej zmyśleń.',
+      editLocked: 'Te ustawienia może zmienić tylko twórca bazy albo właściciel obszaru roboczego.',
+      governedLocked:
+        'Kartę tożsamości i schemat metadanych zmienia twórca bazy albo właściciel obszaru roboczego. Nazwę, opis i język możesz edytować.',
+    },
+    schema: {
+      title: 'Schemat metadanych',
+      hint: 'Pola, które wypełnia się przy każdym wpisie i po których można filtrować.',
+      fieldLegend: 'Klucz i etykieta',
+      fieldTitle: 'Pole {index}',
+      keyPlaceholder: 'klucz_pola',
+      labelPlaceholder: 'Nazwa widoczna dla ludzi',
+      keyLabel: 'Klucz',
+      labelLabel: 'Etykieta',
+      keyInvalid:
+        'Klucz może zawierać litery, cyfry i podkreślenia; musi zaczynać się od litery.',
+      keyDuplicate: 'Ten klucz już istnieje w schemacie',
+      labelRequired: 'Etykieta jest wymagana',
+      tooManyFields: 'Baza wiedzy może mieć najwyżej tyle pól metadanych: {max}.',
+      typeLabel: 'Typ',
+      nullable: 'Opcjonalne',
+      array: 'Lista wartości',
+      options: 'Opcje wyboru',
+      optionKey: 'Klucz',
+      optionLabel: 'Etykieta',
+      optionAdd: 'Dodaj opcję',
+      optionRemove: 'Usuń opcję',
+      optionKeyRequired: 'Każda opcja musi mieć klucz',
+      optionKeyDuplicate: 'Klucze opcji muszą być unikalne',
+      addField: 'Dodaj pole',
+      removeField: 'Usuń pole',
+      moveUp: 'Przenieś wyżej',
+      moveDown: 'Przenieś niżej',
+      empty: 'Ta baza nie ma jeszcze schematu metadanych',
+      changeNotice:
+        'Zmiana schematu nie zmienia istniejących wpisów. Nowe pole będzie puste we wpisach, które już istnieją; usunięte pole przestaje być pokazywane, ale jego wartości zostają.',
+      unsupported: 'Tego typu pola nie da się tu edytować. Zostaje dokładnie takie, jakie jest.',
+      base: {
+        text: 'Tekst',
+        number: 'Liczba',
+        boolean: 'Tak / nie',
+        date: 'Data',
+        enum: 'Wybór',
+      },
+    },
+    status: {
+      draft: 'Szkic',
+      proposed: 'Zaproponowany',
+      approved: 'Zatwierdzony',
+      archived: 'Zarchiwizowany',
+      draftHint: 'Widoczny tylko dla zespołu; AI go nie użyje.',
+      proposedHint: 'Zaproponowany przez bota — zatwierdź w edytorze wpisu.',
+      approvedHint: 'Dostępny dla AI i wyszukiwania.',
+      archivedHint: 'Ukryty w czytniku; zostaje w bazie.',
+    },
+    index: {
+      pending: 'Oczekuje na indeks',
+      indexing: 'Indeksowanie',
+      indexed: 'Zaindeksowany',
+      partial: 'Częściowo: {done}/{total}',
+      partialShort: 'Częściowo',
+      pendingBudget: 'Wstrzymane — budżet AI',
+      failed: 'Błąd indeksowania',
+      pendingHint:
+        'Ten wpis czeka w kolejce do zindeksowania. Wyszukiwanie semantyczne obejmie go za chwilę.',
+      indexingHint: 'Trwa indeksowanie. Wyniki mogą być niepełne.',
+      partialHintShort: 'Część fragmentów tego wpisu wciąż czeka w kolejce do zindeksowania.',
+      pendingBudgetHint:
+        'Indeksowanie wstrzymane — budżet AI wyczerpany. Dokończymy automatycznie po odnowieniu limitu.',
+      failedHint: 'Nie udało się zindeksować tego wpisu.',
+      retry: 'Ponów indeksowanie',
+      retryQueued: 'Wpis wrócił do kolejki indeksowania',
+    },
+    reader: {
+      aliases: 'Znany też jako: {names}',
+      articleLabel: 'Treść wpisu',
+      chunks: 'Fragmenty: {count}',
+      edit: 'Edytuj',
+      stale: 'Nieaktualny',
+      updatedBy: 'Zaktualizowano {date}',
+      prev: 'Poprzedni wpis',
+      next: 'Następny wpis',
+      prevDisabled: 'To pierwszy wpis w tej bazie',
+      nextDisabled: 'To ostatni wpis w tej bazie',
+      mode: {
+        label: 'Tryb prezentacji',
+        reader: 'Czytnik',
+        table: 'Tabela',
+      },
+      menu: {
+        history: 'Historia wersji',
+        trash: 'Przenieś do kosza',
+      },
+      toc: {
+        title: 'Spis treści',
+        navLabel: 'Wpisy w tej bazie wiedzy',
+        count: 'Wpisy: {count}',
+        search: 'Filtruj wpisy',
+        open: 'Pokaż spis treści',
+        group: 'Grupuj według',
+        groupNone: 'Bez grupowania',
+        groupEmpty: 'Bez wartości',
+        moveUp: 'Przenieś wyżej',
+        moveDown: 'Przenieś niżej',
+        noMatches: 'Żaden wpis nie pasuje do filtra',
+        truncated:
+          'Ta lista pokazuje pierwsze wpisy bazy. Po resztę sięgnij do tabeli.',
+      },
+      ghost: {
+        aria: '{label} — wpis nie istnieje',
+        previewTitle: 'Ten wpis jeszcze nie istnieje',
+        previewHint: 'Kliknij, aby opisać go w kreatorze.',
+      },
+      preview: {
+        error: 'Nie udało się wczytać podglądu',
+      },
+      empty: {
+        title: 'Ta baza jest pusta',
+        description:
+          'Zacznij od jednego hasła. Kolejne dopiszesz, a wikilinki [[…]] połączą je w całość.',
+        action: 'Napisz pierwszy wpis',
+      },
+      notFound: {
+        title: 'Nie ma tu wpisu o tej nazwie',
+        description: 'Mógł zostać przemianowany albo usunięty. Możesz go teraz opisać w kreatorze.',
+      },
+    },
+    panels: {
+      metadata: 'Metadane',
+      relations: 'Relacje',
+      similar: 'Podobne',
+      mentions: 'Wzmianki',
+      linksOut: 'Linkuje do',
+      linksIn: 'Linkowane z',
+      ghosts: 'Czerwone linki',
+      provenance: 'Pochodzenie',
+      history: 'Historia wersji',
+    },
+    similar: {
+      score: 'Dopasowanie: {percent}%',
+      why: 'Dlaczego podobne?',
+      dismiss: 'Odrzuć podobieństwo: {title}',
+      dismissed: 'Odrzucono podobieństwo',
+      // Cofnięcie odrzucenia sugestii. Odrzucanie domysłu maszyny to nie autorstwo, więc przycisk
+      // zostaje — a bez tego klucza jego `aria-label` czytał samą ścieżkę.
+      restore: 'Przywróć podobieństwo: {title}',
+      empty: 'Nie znaleźliśmy podobnych wpisów',
+      indexing:
+        'Podobne wpisy pojawią się po zakończeniu indeksowania. Nic nie zginęło — po prostu nie jest jeszcze gotowe.',
+    },
+    links: {
+      inEmpty: 'Żaden wpis jeszcze tu nie linkuje',
+      outEmpty: 'Ten wpis nie linkuje jeszcze do niczego',
+    },
+    // Wzmianki (B10): nazwa wpisu pada w treści innego. Kierunkowe — „wspomina" i „wspomniany
+    // przez" to dwa różne fakty i mogą istnieć niezależnie.
+    mentions: {
+      outgoing: 'Wspomina',
+      incoming: 'Wspomniany przez',
+      dismiss: 'Odrzuć wzmiankę: {title}',
+      dismissed: 'Odrzucono wzmiankę',
+      restore: 'Przywróć wzmiankę: {title}',
+      // Cudzysłowy z katalogu: „…” to polska typografia, angielski chce "…".
+      quote: '„{text}”',
+    },
+    ghosts: {
+      count: 'Czerwone linki: {count}',
+      create: 'Utwórz wpis',
+    },
+    provenance: {
+      createdBy: 'Utworzył(a)',
+      createdAt: 'Utworzono',
+      updatedAt: 'Ostatnia zmiana',
+      slug: 'Identyfikator (slug)',
+      slugCopied: 'Skopiowano identyfikator',
+    },
+    metadata: {
+      edit: 'Edytuj metadane',
+      noValue: 'Brak wartości',
+      empty: 'Ta baza nie ma jeszcze schematu metadanych',
+      outOfSchema: 'Poza schematem',
+      outOfSchemaHint: 'Te pola zniknęły ze schematu bazy. Ich wartości są zachowane.',
+      unsupported: 'Tych typów pól nie da się tu edytować. Zostają dokładnie takie, jakie są.',
+      yes: 'Tak',
+      no: 'Nie',
+      addItem: 'Dodaj element',
+      removeItem: 'Usuń element',
+      saved: 'Zapisano metadane',
+    },
+    entries: {
+      title: 'Wpisy',
+      subtitle: 'Wszystkie wpisy tej bazy — do przeglądania wielu naraz.',
+      new: 'Nowy wpis',
+      caption: 'Lista wpisów tej bazy wiedzy',
+      fresh: 'Aktualny',
+      trashed: 'Przeniesiono do kosza',
+      filters: {
+        search: 'Szukaj we wpisach',
+      },
+      col: {
+        title: 'Tytuł',
+        status: 'Status',
+        stale: 'Aktualność',
+        index: 'Indeks',
+        creator: 'Autor',
+        updated: 'Aktualizacja',
+      },
+      actions: {
+        openAria: 'Otwórz wpis: {title}',
+        editAria: 'Edytuj wpis: {title}',
+        more: 'Więcej akcji: {title}',
+        history: 'Historia wersji',
+        propose: 'Zaproponuj zmianę przez AI',
+        trash: 'Przenieś do kosza',
+      },
+      empty: {
+        title: 'Ta baza nie ma jeszcze wpisów',
+      },
+      emptySearch: {
+        title: 'Brak wpisów spełniających filtry',
+      },
+      trashConfirm: {
+        title: 'Przenieść wpis do kosza?',
+        message: '„{title}" trafi do kosza. Możesz go przywrócić.',
+      },
+    },
+    // Kreator AI (B15a). Po zwrocie na AI-only to jedyna droga powstania wpisu.
+    // Bez pluralizacji — cała copy licznikowa w formie „Etykieta: {count}".
+    compose: {
+      title: 'Kreator wpisów',
+      subtitle: 'Napisz, co wiesz — kreator ułoży z tego hasła.',
+      nav: 'Kreator',
+      sourceLabel: 'Co chcesz przekazać botom?',
+      sourceHint: 'Jeden tekst wystarczy. Kreator sam podzieli go na hasła i połączy je ze sobą.',
+      sourcePlaceholder:
+        'Napisz wszystko, co wiesz i co chcesz, żeby wiedziały boty. Nie musisz tego porządkować — od tego jest kreator.',
+      seedPrefill: 'Napisz, czym jest „{title}".',
+      seedNotice: 'Ten wpis jest linkowany z innych haseł, ale jeszcze nie istnieje.',
+      amendNotice: 'Poprawiasz istniejący wpis: „{title}".',
+      amendPlaceholder: 'Co ma się zmienić w tym wpisie?',
+      start: 'Zacznij',
+      startBlocked: 'Zmniejsz tekst do {max} znaków, aby zacząć',
+      startError: 'Nie udało się uruchomić kreatora',
+      cancel: 'Anuluj',
+      budgetWarn: 'Budżet AI jest na wyczerpaniu',
+      budgetWarnPercent: 'Zużyto {percent}% budżetu AI',
+      generating: 'Kreator czyta Twój tekst i układa hasła. To zwykle kilkadziesiąt sekund.',
+      generatingLabel: 'Przygotowywanie szkiców',
+      stalled: 'Nie dostaliśmy potwierdzenia zakończenia.',
+      refresh: 'Odśwież',
+      ready: 'Gotowe. Szkice: {count}.',
+      boardTitle: 'Szkice: {count}',
+      selectAll: 'Zaznacz wszystkie szkice',
+      select: 'Zaznacz szkic: {title}',
+      acceptSelected: 'Akceptuj zaznaczone: {count}',
+      acceptSelectedNone: 'Zaznacz szkice lub relacje, żeby je zaakceptować',
+      graphOnly: 'Ten przebieg nie proponuje nowych wpisów — same zmiany w grafie: {count}.',
+      acceptSelectedConfirm: {
+        title: 'Zaakceptować zaznaczone szkice?',
+        message: 'Zaakceptujesz szkice: {count}. Powstaną wpisy o statusie Zatwierdzony.',
+      },
+      accept: 'Akceptuj',
+      acceptDraft: 'Zapisz jako roboczy',
+      acceptedToast: 'Zaakceptowano szkic',
+      // Nowelizacja nie tworzy wpisu — zmienia istniejący. To inne zdanie o tym, co się stało.
+      acceptedAmendmentToast: 'Zapisano zmianę w istniejącym wpisie',
+      accepted: 'Zaakceptowany',
+      acceptedOpen: 'Otwórz wpis',
+      reject: 'Odrzuć szkic: {title}',
+      rejected: 'Odrzucono szkic',
+      expand: 'Rozwiń',
+      collapse: 'Zwiń',
+      badgeNew: 'Nowy wpis',
+      // Notatki przebiegu: JEDYNE komunikaty tłumaczące, dlaczego recenzent dostał coś innego,
+      // niż prosił. To nie są ostrzeżenia — serwer zrobił rzecz bezpieczną i o tym mówi.
+      notesTitle: 'O tym przebiegu: {count}',
+      // Lista kontrolna recenzenta. Istnieje, bo z tekstu źródłowego znikały dramatyczne fakty
+      // i nic o tym nie mówiło — a automat tego nie złapie, bo model, który pomija incydent,
+      // zgłasza pokrycie zgodnie z prawdą. Sprawdzeniem jest człowiek.
+      facts: {
+        title: 'Co według materiału się wydarzyło',
+        subtitle: 'Czytaj to obok propozycji — to materiał, nie ocena jego pokrycia.',
+        // OBSERWACJA, nigdy werdykt: sprawdzenie porównuje nazwy, więc wpis opisujący bohatera
+        // pod innym tytułem da fałszywy alarm. „Żaden wpis nie nosi tej nazwy” jest prawdą tak czy
+        // inaczej; „brakuje wpisu” nie byłoby.
+        protagonistTitle:
+          'Materiał ciągle mówi o „{title}”, a żaden wpis nie nosi tej nazwy.',
+        protagonistHint:
+          'Jeśli to trafne, wszystko o tej osobie nie ma gdzie mieszkać — sprawdź przed akceptacją.',
+        coveredBy: 'We wpisach:',
+        openClaim: 'Przejdź do wpisu: {title}',
+        empty: 'W tym materiale nie znaleziono wydarzeń',
+        emptyHint: 'To normalne przy tekście definicyjnym — opisach, zasadach, terminologii.',
+        unavailable: 'Odczyt faktów nie wykonał się tym razem, więc nie ma poniżej listy kontrolnej.',
+        truncated: 'Pokazano pierwsze {max} faktów — odczyt znalazł ich więcej, niż mieści lista.',
+      },
+      note: {
+        amend_append_only: 'Dopisano zamiast przepisać',
+        amend_append_onlyHint:
+          'Wpis był za długi, żeby pokazać go agentowi w całości, więc mógł tylko dopisać treść. Przepisanie tego, czego nie przeczytał, skasowałoby resztę.',
+        amend_too_long: 'Wpis dobija do limitu długości',
+        amend_too_longHint:
+          'Po dopisaniu wpis przekroczyłby dopuszczalną długość. Rozważ podzielenie go na kilka wpisów i połączenie ich linkami.',
+        wikilinks_lost: 'Przepisanie usuwa linki: {links}',
+        wikilinks_lostHint:
+          'Te wikilinki znikną z treści. Psuje to graf innych wpisów, choć samo zdanie czyta się bez zarzutu.',
+        resolution_degraded: 'Kontekst był uboższy niż zwykle',
+        resolution_degradedHint:
+          'Dopasowanie nazw do wpisów bazy nie przebiegło w pełni, więc „nie znaleziono” może znaczyć „nie doszukano się”.',
+        // PROPOZYCJA ZOSTAŁA ODRZUCONA. Działo się to dotąd po cichu: wpis, który przyszedł bez
+        // tytułu (albo bez treści), znikał po stronie serwera i recenzent nie dowiadywał się o
+        // tym — jedyna rzecz, na którą czekał, po prostu nie pojawiała się na tablicy i wyglądała
+        // jak świadoma decyzja, żeby jej nie proponować. Notatka nazywa, KTÓRA wypadła i CZEGO
+        // zabrakło — bez obu tych rzeczy nie da się jej odróżnić od tego, że model nie miał nic
+        // do powiedzenia.
+        entry_incomplete: 'Jedna propozycja została odrzucona: „{name}”',
+        entry_incompleteHint:
+          'Przyszła bez pola „{field}”, więc nie dało się pokazać jej do recenzji. Poproś o nią ponownie — wskazanie jej z nazwy zwykle przywraca ją w komplecie.',
+        // Nazwy pól, słowami. Na drucie to enum i nigdy nie może wyrenderować się surowo.
+        field: {
+          title: 'tytuł',
+          content: 'treść',
+        },
+        // Powód ma znaczenie: każdy wskazuje na coś innego do zrobienia.
+        reason: {
+          budget:
+            'Zabrakło budżetu AI na pełne dopasowanie nazw, więc „nie znaleziono” może znaczyć „nie doszukano się”.',
+          scan_limit:
+            'Baza jest większa niż limit przeszukania, więc dopasowanie nazw objęło tylko jej część.',
+          vectors_unsupported:
+            'To połączenie nie obsługuje wyszukiwania wektorowego, więc nazwy dopasowano wyłącznie dosłownie.',
+          embedding_failed:
+            'Nie udało się policzyć wektorów, więc nazwy dopasowano wyłącznie dosłownie.',
+          extraction_failed:
+            'Nie udało się wydobyć nazw z tekstu, więc dopasowanie objęło mniej niż zwykle.',
+        },
+        unknown: 'Uwaga do tego przebiegu',
+      },
+      // Czego kreator NIE zrobił. Cisza w tym miejscu czyta się jako „w tekście nic takiego nie
+      // było”, więc obie listy muszą się pokazać — to informacja, nie ostrzeżenie.
+      unresolvedTitle: 'Nie rozpoznano: {count}',
+      unresolvedHint:
+        'Dla tych nazw nie zaproponowano ani wpisu, ani relacji — agent nie ustalił, czego dotyczą.',
+      unresolvedCreate: 'Utwórz wpis: {name}',
+      omitted: 'Poza kontekstem tej sesji: {titles}',
+      omittedHint:
+        'Te wpisy nie zmieściły się w limicie kontekstu, więc agent ich nie widział. Brak propozycji na ich temat nie jest jego oceną.',
+      // Karta nowelizacji: mówi, JAK zmiana wyląduje, zanim recenzent przeczyta treść.
+      amendAppendSection: 'Dopisek do sekcji „{section}”',
+      amendAppendEnd: 'Dopisek na końcu wpisu',
+      linksLost: 'Ta zmiana usuwa linki do innych wpisów: {count}',
+      badgeAmend: 'Nowelizacja → {title}',
+      badgeStaleBaseline: 'Baseline nieaktualny',
+      badgeStaleBaselineHint: 'Wpis, który ten szkic poprawia, zmienił się po wygenerowaniu szkicu.',
+      duplicate: 'Pokrywa się z „{title}" w {percent}%',
+      duplicateOpen: 'Otwórz istniejący',
+      duplicateConfirm: {
+        title: 'Zaakceptować mimo pokrycia?',
+        message:
+          '„{draft}" pokrywa się z istniejącym wpisem „{existing}" w {percent}%. Powstaną dwa osobne hasła.',
+      },
+      diff: 'Porównaj',
+      diffBaseline: 'Porównaj z',
+      diffOriginal: 'Oryginał',
+      diffPrevious: 'Poprzedni szkic',
+      diffStored: 'Wersja w bazie',
+      diffNoBaseline: 'To pierwsza wersja tego szkica — nie ma jeszcze z czym jej porównać.',
+      diffUnchanged: 'Ta wersja niczym się nie różni od wybranej podstawy.',
+      diffTitle: 'Tytuł',
+      refineLabel: 'Co poprawić?',
+      refinePlaceholder: 'Np. „Skróć wszystkie hasła" albo „Dodaj sekcję o cenach".',
+      refine: 'Popraw',
+      refineError: 'Nie udało się poprawić szkiców',
+      refineScoped: 'Popraw tylko wpis „{title}": ',
+      refineThis: 'Popraw ten wpis',
+      historyTitle: 'Historia poprawek: {count}',
+      historyItem: 'Poprawka {number}',
+      relations: 'Powiązania',
+      relationsEmpty: 'Ten szkic nie łączy się jeszcze z niczym w bazie.',
+      relationsEmptyHint: 'To normalne dla pierwszego wpisu.',
+      relationsError: 'Nie udało się wczytać powiązań',
+      // Powiązania policzone bez wektorów — cicha notka, nie błąd: to, co narysowane, jest prawdą.
+      vectorSkipped: {
+        budget: 'Budżet AI jest wyczerpany, więc pokazujemy tylko powiązania z treści.',
+        disabled: 'Indeks semantyczny jest wyłączony, więc pokazujemy tylko powiązania z treści.',
+        unsupported: 'To środowisko nie ma indeksu semantycznego — pokazujemy powiązania z treści.',
+        error: 'Nie udało się policzyć podobieństw — pokazujemy tylko powiązania z treści.',
+      },
+      nodeDraft: 'Szkic',
+      // ISTNIEJĄCY wpis, który szkic-cień proponuje zmienić — plakietka z ołówkiem w legendzie
+      // i na wierszu sąsiada. To nie węzeł szkicu: kółko jest prawdziwym wpisem.
+      nodeAmended: 'Nowelizowany',
+      firstSession:
+        'To pierwsze hasła w tej bazie — kreator nie ma jeszcze z czym ich porównać. Powiązania pojawią się przy kolejnych.',
+      // Konflikt nowelizacji: ktoś zmienił target równolegle. Dwie uczciwe drogi, każda z ceną.
+      conflict: {
+        title: 'Ktoś zmienił ten wpis w międzyczasie',
+        message: 'Wpis „{title}" został zmieniony po wygenerowaniu tego szkica.',
+        showDiff: 'Pokaż diff wobec nowej wersji',
+        freeHint: 'Bez kosztu AI',
+        refine: 'Popraw ponownie',
+        costHint: 'Jedna iteracja agenta — kosztuje',
+        rebase: 'Przebazuj podgląd',
+        rebased: 'Porównanie wskazuje teraz aktualną wersję wpisu',
+        staleDiff: 'Porównujesz z wersją, która już się zmieniła.',
+      },
+      openAmendment: 'Pokaż nowelizację',
+      expandContext: 'Poszerz kontekst',
+      expandContextHint: 'Dociąga więcej powiązanych wpisów do następnej poprawki — kosztuje jedno zapytanie AI.',
+      expandContextDone: 'Poszerzono kontekst dla kolejnej poprawki',
+      expandContextReady: 'Kontekst poszerzony — zostanie użyty przy następnej poprawce',
+      expandContextAlready: 'Kontekst tej sesji został już poszerzony — nic nie wydano.',
+      expandContextError: 'Nie udało się poszerzyć kontekstu',
+      error: {
+        directive: 'Treść zawiera składnię szablonów, której wpis nie może przechowywać.',
+        tooManyChunks: 'Ten szkic ma zbyt wiele sekcji. Podziel go na osobne hasła.',
+        slugTaken: 'Wpis o takim tytule już istnieje.',
+        generic: 'Nie udało się zapisać tego szkica.',
+      },
+      failed: {
+        title: 'Kreator nie dokończył pracy',
+        retry: 'Spróbuj ponownie',
+        editSource: 'Zmień tekst źródłowy',
+        reason: {
+          unparseable: 'Odpowiedź agenta nie dała się odczytać.',
+          empty: 'Agent nie zwrócił żadnych haseł.',
+          seed_missed: 'Agent nie opisał hasła, o które prosiłeś(-aś).',
+          provider: 'Dostawca AI nie odpowiedział.',
+          disabled: 'Kreator AI jest wyłączony w konfiguracji.',
+        },
+      },
+      expired: {
+        title: 'Ta sesja kreatora wygasła',
+        description: 'Tekst źródłowy nie został zapisany.',
+        action: 'Zacznij od nowa',
+      },
+      noDrafts: {
+        title: 'Kreator nie znalazł tu materiału na hasła',
+        description: 'Spróbuj napisać więcej konkretów — nazwy, definicje, zasady.',
+      },
+      leave: {
+        title: 'Porzucić nieobejrzane szkice?',
+        message: 'Masz szkice, których jeszcze nie zaakceptowano ani nie odrzucono: {count}. Jeśli wyjdziesz, przepadną.',
+        confirm: 'Wyjdź',
+      },
+      unavailable: {
+        title: 'Kreator jest chwilowo niedostępny',
+        budget: 'Miesięczny budżet AI tego obszaru roboczego został wyczerpany. Odnowi się {date}.',
+        budgetNoDate: 'Miesięczny budżet AI tego obszaru roboczego został wyczerpany.',
+        disabled: 'Kreator AI jest wyłączony w konfiguracji.',
+        noVector: 'To środowisko nie obsługuje indeksu semantycznego, więc kreator nie potrafi sprawdzić powiązań.',
+        generic: 'Kreator nie może teraz uruchomić generowania.',
+        // Co nadal działa — i musiało się zmienić: edycja istniejących wpisów nie jest jedną z
+        // rzeczy, które działają; nie jest jedną z rzeczy, które istnieją. Nazwanie możliwości,
+        // której moduł już nie ma, jest gorsze niż nienazwanie żadnej — czytelnik pójdzie jej szukać.
+        editingWorks: 'Czytanie i wyszukiwanie w tej bazie działa normalnie.',
+        backToReader: 'Wróć do czytnika',
+        usage: 'Zobacz zużycie AI',
+      },
+    },
+    editor: {
+      editTitle: 'Edycja: {title}',
+      back: 'Wróć',
+      unsaved: 'Niezapisane zmiany',
+      titleLabel: 'Tytuł',
+      titlePlaceholder: 'Nazwij hasło jednym pojęciem',
+      titleRequired: 'Tytuł jest wymagany',
+      contentLabel: 'Treść',
+      contentPlaceholder: 'Napisz hasło. Wpisz [[, aby połączyć je z innym wpisem.',
+      slugLabel: 'Identyfikator (slug)',
+      slugHint: 'Używany w wikilinkach [[…]]. Zmiana zrywa istniejące linki.',
+      slugInvalid: 'Dozwolone są małe litery, cyfry i myślniki',
+      aliasesLabel: 'Inne nazwy',
+      aliasesHint:
+        'Nazwy, pod którymi ten wpis bywa wspominany w innych tekstach. Nie działają w wikilinkach [[…]] — te zawsze wskazują na identyfikator.',
+      aliasesPlaceholder: 'Wpisz nazwę i naciśnij Enter',
+      aliasesTooLong: 'Nazwa może mieć najwyżej {max} znaków',
+      statusLabel: 'Status',
+      settingsSection: 'Ustawienia wpisu',
+      staleLabel: 'Oznacz jako nieaktualny',
+      save: 'Zapisz',
+      cancel: 'Anuluj',
+      saved: 'Zapisano wpis',
+      overLimit: {
+        title: 'Ten wpis przekracza 40 000 znaków',
+        body: 'Wpis to hasło encyklopedyczne — jeśli materiał jest dłuższy, podziel go na kilka haseł i połącz je wikilinkami [[…]].',
+        saveBlocked: 'Zmniejsz treść do 40 000 znaków, aby zapisać',
+      },
+      leave: {
+        title: 'Porzucić niezapisane zmiany?',
+        message: 'Masz niezapisane zmiany w tym wpisie. Jeśli wyjdziesz, przepadną.',
+        confirm: 'Porzuć',
+      },
+      link: {
+        listLabel: 'Wpisy do połączenia',
+        ghost: 'Wstaw link do nieistniejącego wpisu „{query}"',
+        empty: 'Brak dopasowań',
+        // Awaria wyszukiwania to CO INNEGO niż brak dopasowań.
+        error: 'Nie udało się wyszukać wpisów — wpisz nazwę jeszcze raz',
+      },
+    },
+    conflict: {
+      title: 'Ktoś zapisał ten wpis w międzyczasie',
+      message:
+        'Nowsza wersja tego wpisu została zapisana, gdy pisałeś(-aś). Twoje zmiany nie zostały jeszcze zapisane.',
+      safe: 'Twoja treść jest bezpieczna — dopóki nie wybierzesz opcji, nic nie znika.',
+      keep: 'Zostaw moje zmiany',
+      openLatest: 'Otwórz najnowszą wersję w nowej karcie',
+      overwrite: 'Nadpisz moją wersją',
+      reload: 'Przeładuj wpis, aby zobaczyć najnowszą wersję.',
+      overwriteConfirm: {
+        title: 'Nadpisać cudze zmiany?',
+        message: 'Nadpiszesz nowszą wersję. Zostanie ona w historii.',
+      },
+    },
+    history: {
+      title: 'Historia wersji',
+      open: 'Pokaż historię wersji',
+      version: 'Wersja {number}',
+      current: 'Aktualna',
+      empty: 'Ta wersja jest pierwsza — nie ma jeszcze historii',
+      feedLabel: 'Lista wersji wpisu',
+      compare: 'Porównaj',
+      sameAsCurrent: 'Ta wersja jest identyczna z obecną treścią wpisu',
+      view: {
+        label: 'Co pokazać',
+        diff: 'Różnice',
+        content: 'Treść wersji',
+      },
+    },
+    graph: {
+      title: 'Graf',
+      subtitle: 'Jak wpisy tej bazy łączą się ze sobą.',
+      mode: {
+        label: 'Sposób prezentacji',
+        list: 'Lista',
+        graph: 'Graf',
+      },
+      depth: 'Głębokość',
+      depth1: '1 krok',
+      depth2: '2 kroki',
+      fit: 'Dopasuj',
+      zoomIn: 'Przybliż',
+      zoomOut: 'Oddal',
+      capped: 'Pokazano {shown} z {total} wpisów o największej liczbie połączeń',
+      cappedEgo: 'Pokazano {shown} z {total} wpisów z tego sąsiedztwa',
+      showMore: '+{count} dalszych',
+      // Filtr warstw — jeden rodzaj naraz. „Wszystkie” zostaje jako wybór, bo bez niego pełny
+      // obraz bazy (dzisiejszy widok domyślny) byłby nieosiągalny.
+      layer: {
+        label: 'Rodzaj połączeń',
+        all: 'Wszystkie',
+      },
+      // Nieistniejące to PODRODZAJ wikilinków: czerwony link to wikilink do wpisu, którego nikt
+      // nie napisał — nie osobna warstwa.
+      ghosts: {
+        label: 'Nieistniejące wpisy',
+        with: 'Z nieistniejącymi',
+        without: 'Bez nieistniejących',
+        only: 'Tylko nieistniejące',
+      },
+      edge: {
+        wikilink: 'Wikilinki',
+        similarity: 'Podobne',
+        // Kierunkowa: A wspomina B, co nie znaczy, że B wspomina A.
+        mention: 'Wzmianki',
+        ghost: 'Nieistniejące',
+        // Piąta warstwa — jedyna, w której krawędź niesie ZNACZENIE, nie tylko rodzaj.
+        relation: 'Relacje',
+        count: '{label}: {count}',
+      },
+      group: {
+        entry: 'Wpisy',
+      },
+      legend: 'Legenda połączeń',
+      neighbours: 'Sąsiedzi',
+      neighboursLabel: 'Lista sąsiadów wybranego wpisu',
+      neighboursEmpty: 'Ten wpis nie ma jeszcze żadnych połączeń',
+      ghostSources: 'Linkują tu wpisy: {count}',
+      center: 'Wyśrodkuj tutaj',
+      openEntry: 'Otwórz wpis',
+      canvasHidden: 'Graf jest ilustracją. Pełna treść jest w liście sąsiadów obok.',
+      indexNotice:
+        'Część wpisów tej bazy nie jest jeszcze zaindeksowana — podobieństwa mogą być niepełne. Wikilinki rysują się niezależnie od indeksu.',
+      empty: {
+        title: 'Za mało połączeń, żeby narysować graf',
+        description:
+          'Dodaj wikilinki [[…]] w treści wpisów albo poczekaj na zakończenie indeksowania — podobieństwa pojawią się same.',
+        action: 'Otwórz czytnik',
+      },
+      emptyFiltered: {
+        title: 'Ta warstwa nie ma tu żadnych połączeń',
+        action: 'Pokaż wszystkie',
+      },
+      loadingLabel: 'Ładowanie grafu',
+    },
+    search: {
+      title: 'Szukaj w wiedzy',
+      subtitle: 'Słowa i znaczenie, we wszystkich bazach, które możesz czytać.',
+      placeholder: 'Czego szukasz?',
+      results: 'Wyniki: {count}',
+      truncated: 'Pokazano tylko {limit} najlepszych trafień. Zawęź zapytanie, aby zobaczyć inne.',
+      matches: 'Dopasowane fragmenty: {count}',
+      // Wypowiadany znacznik trafienia — samo podświetlenie nie istnieje dla czytnika ekranu.
+      matchStart: 'trafienie:',
+      headingPath: 'Ścieżka nagłówków',
+      score: 'Dopasowanie: {percent}%',
+      jump: 'Skocz do fragmentu',
+      start: {
+        title: 'Zacznij pisać, żeby przeszukać wiedzę',
+        description: 'Wyszukiwanie łączy dopasowanie słów i znaczenia — pytaj pełnym zdaniem.',
+      },
+      examples: {
+        one: 'Jak opisujemy naszą markę?',
+        two: 'Polityka zwrotów',
+        three: 'Jakim tonem piszemy?',
+      },
+      empty: {
+        title: 'Brak wyników',
+        description: 'Spróbuj innych słów albo poszerz filtry.',
+      },
+      vectorSkipped: {
+        budget: 'Wyniki tylko słowne — budżet AI na wyszukiwanie semantyczne jest wyczerpany.',
+        disabled: 'Wyniki tylko słowne — wyszukiwanie semantyczne jest wyłączone.',
+        unsupported:
+          'Wyniki tylko słowne — wyszukiwanie semantyczne jest niedostępne w tej przestrzeni.',
+        error: 'Wyniki tylko słowne — wyszukiwanie semantyczne tym razem się nie powiodło.',
+      },
+    },
+    migrate: {
+      title: 'Przenieś wiedzę z bota',
+      intro:
+        'Utworzymy nową bazę wiedzy z wpisów wbudowanych w bota. Od tej pory bot będzie czytał tę bazę.',
+      botLabel: 'Bot',
+      botHint: 'Wybierz bota, którego wbudowane wpisy chcesz przenieść.',
+      botPlaceholder: 'Wybierz bota',
+      // Mirrors lang/*/bot.php `knowledge.base_name` — the preview must name the base the server
+      // will actually create.
+      baseName: 'Wiedza: {bot}',
+      entries: 'Wpisy do przeniesienia: {count}',
+      additive:
+        'Wbudowane wpisy bota zostają nietknięte — jeśli odepniesz bazę, bot znów będzie czytał je.',
+      emptyBot: 'Ten bot nie ma wbudowanych wpisów do przeniesienia.',
+      alreadyBound:
+        'Ten bot czyta już bazę wiedzy. Przeniesienie utworzy kolejną bazę i przepnie bota na nią.',
+      previewError: 'Nie udało się wczytać danych bota.',
+      confirm: 'Przenieś wiedzę',
+      done: 'Utworzono bazę wiedzy. Przeniesione wpisy: {count}',
+    },
+    common: {
+      retry: 'Spróbuj ponownie',
+      loadError: 'Nie udało się wczytać danych',
+      saveError: 'Nie udało się zapisać zmian',
+      loadingLabel: 'Ładowanie',
+      undo: 'Cofnij',
+      copy: 'Kopiuj',
+      copied: 'Skopiowano',
+      copyFailed: 'Nie udało się skopiować',
+    },
+
+    // Typ encji — czym JEST wpis. `unspecified` to stan normalny (wszystkie wpisy sprzed
+    // wprowadzenia typów), więc nazwa jest neutralna, nigdy ostrzegawcza.
+    entityType: {
+      label: 'Typ encji',
+      hint: 'Ułatwia agentowi dobieranie relacji. Można zostawić nieokreślony.',
+      set: 'Ustaw typ encji',
+      saved: 'Zapisano typ encji',
+      person: 'Osoba',
+      organization: 'Organizacja',
+      event: 'Wydarzenie',
+      place: 'Miejsce',
+      product: 'Produkt',
+      work: 'Dzieło',
+      concept: 'Pojęcie',
+      other: 'Inny',
+      unspecified: 'Nieokreślony',
+    },
+
+    // Relacje typowane — piąta warstwa grafu. UWAGA: `knowledge.compose.relations` to CO INNEGO
+    // („Powiązania" — podgląd grafu szkiców); tamtego klucza nie ruszamy.
+    relations: {
+      title: 'Relacje',
+      count: 'Relacje: {count}',
+      panelEmpty: 'Ten wpis nie ma jeszcze relacji',
+      panelEmptyHint:
+        'Relacje opisują, jak ten wpis łączy się z innymi — kto gdzie należy, co z czego wynika.',
+      connect: 'Połącz z…',
+      open: 'Otwórz wpis',
+      active: 'Aktywna',
+      ended: 'Zakończona {year}',
+      retracted: 'Wycofana',
+      showEnded: 'Pokaż zakończone: {count}',
+      hideEnded: 'Ukryj zakończone',
+      showHistorical: 'Pokaż historyczne',
+      hiddenHistorical: 'Ukryto relacje zakończone: {count}',
+      labelsHidden:
+        'Za dużo relacji, żeby pokazać wszystkie podpisy — najedź na krawędź albo skorzystaj z listy.',
+      from: 'od {date}',
+      until: 'do {date}',
+      sentence: '{subject} {predicate} {object}',
+      sentenceDated: '{subject} {predicate} {object}, od {from}',
+      sentenceEnded: '{subject} {predicate} {object}, do {until}',
+      properties: 'Właściwości',
+      loadError: 'Nie udało się wczytać relacji',
+
+      // Czasowniki. Tłumaczone PO STRONIE KLIENTA, bo `label`/`inverse_label` z serwera są
+      // renderowane w locale serwera, którego przełącznik języka w tym froncie nie dosięga.
+      predicate: {
+        member_of: { forward: 'należy do', inverse: 'ma członka' },
+        works_on: { forward: 'pracuje nad', inverse: 'ma w pracach' },
+        knows: { forward: 'zna', inverse: 'zna' },
+        created: { forward: 'stworzył', inverse: 'stworzone przez' },
+        owns: { forward: 'jest właścicielem', inverse: 'ma właściciela' },
+        located_in: { forward: 'znajduje się w', inverse: 'mieści' },
+        participated_in: { forward: 'brał udział w', inverse: 'miał uczestnika' },
+        occurred_during: { forward: 'wydarzyło się podczas', inverse: 'obejmuje' },
+        part_of: { forward: 'jest częścią', inverse: 'składa się z' },
+        is_a: { forward: 'jest rodzajem', inverse: 'ma podtyp' },
+        uses: { forward: 'używa', inverse: 'jest używane przez' },
+        depends_on: { forward: 'zależy od', inverse: 'jest warunkiem dla' },
+        precedes: { forward: 'poprzedza', inverse: 'następuje po' },
+        caused: { forward: 'spowodował', inverse: 'spowodowane przez' },
+        opposes: { forward: 'jest w opozycji do', inverse: 'jest w opozycji do' },
+      },
+
+      // Zamknięty, mały zbiór kluczy właściwości (KnowledgeRelationType::propertyKeys). Każdy
+      // czasownik dopuszcza 0 lub 1 — surowy identyfikator jako etykieta pola był tu jedyną
+      // rzeczą, którą użytkownik musiałby sobie przetłumaczyć sam.
+      property: {
+        role: 'Rola',
+        how: 'Skąd się znają',
+        share: 'Udział',
+        purpose: 'Do czego',
+        kind: 'Rodzaj zależności',
+        reason: 'Powód',
+      },
+      group: {
+        affiliation: 'Przynależność',
+        action: 'Działanie',
+        spacetime: 'Miejsce i czas',
+        social: 'Relacje między ludźmi',
+        dependency: 'Zależność',
+        other: 'Pozostałe',
+      },
+
+      // Przegląd „Zmiany w grafie" — sekcja RÓWNORZĘDNA tablicy szkiców, nie karta w niej.
+      updatesTitle: 'Zmiany w grafie',
+      updatesSubtitle:
+        'Relacje zaproponowane na podstawie Twojego tekstu. Nic nie zapisze się bez Twojej zgody.',
+      opAdd: 'Doda',
+      opUpdate: 'Zmieni',
+      opEnd: 'Zakończy',
+      groupCount: 'Relacje: {count}',
+      readyCount: 'Do zapisu: {count}',
+      // Pasek, który zatrzymuje cichą stratę: relacje są zaznaczone i CZEKAJĄ, a do tej pory nic
+      // o tym nie mówiło przy zatwierdzaniu kart po kolei.
+      pendingTitle: 'Relacje czekają na zapis: {count}',
+      pendingHint:
+        'Akceptacja wpisów nie zapisuje relacji — zapisują się jednym krokiem, tutaj.',
+      pendingAction: 'Zapisz relacje',
+      appliedNone: 'Te relacje były już zapisane.',
+      excludedCount: 'Odznaczone: {count}',
+      noneSelected: 'Nie zaznaczono żadnej relacji — żadna nie zostanie zapisana.',
+      selectAll: 'Zaznacz wszystkie relacje',
+      selectGroup: 'Zaznacz relacje encji: {name}',
+      select: 'Zaznacz relację: {sentence}',
+      staleSelection: 'Podgląd jest nieaktualny — propozycja zmieniła się od czasu jej otwarcia. Odśwież przegląd i wybierz ponownie.',
+      staleSelectionAction: 'Odśwież przegląd',
+      draftBadge: 'Szkic',
+      blockedByDraft: 'Czeka na wpis „{title}"',
+      blockedByDraftHint:
+        'Zaakceptuj najpierw ten wpis — bez niego relacja nie ma do czego prowadzić.',
+      emptyProposals: 'Agent nie zaproponował żadnych relacji',
+      emptyProposalsHint:
+        'To normalne przy tekście bez wyraźnych powiązań między osobami, organizacjami czy wydarzeniami.',
+      unknownEntity: 'Nieznana encja',
+
+      // Czego agent NIE zapisał. Kody z serwera → zdania. Bez tego użytkownik nie odróżni
+      // „agent nic nie znalazł" od „agent znalazł i odrzucił".
+      rejectedTitle: 'Nie zapisano: {count}',
+      rejectedHint: 'Agent to zaproponował, ale serwer nie przyjął. Poniżej powody.',
+      reject: {
+        unknown_handle: 'Wskazywało na coś, czego nie ma w tej sesji',
+        unknown_relation_type: 'Typ relacji spoza słownika',
+        type_not_allowed: 'Ta baza nie dopuszcza tego typu relacji',
+        self_loop: 'Relacja wskazywała sama na siebie',
+        forbidden_op: 'Operacja niedozwolona dla agenta',
+        unknown_op: 'Nieznana operacja',
+        properties_refused: 'Właściwość „{property}" nie należy do tego typu relacji',
+        duplicate_relation: 'Taka relacja już istnieje',
+        pair_refused: 'Ten typ relacji nie łączy takich encji',
+        op_cap_reached: 'Przekroczono limit operacji w jednym przebiegu: {max}',
+        template_directive: 'Treść zawierała dyrektywę szablonu',
+        malformed: 'Odpowiedź agenta była nieczytelna w tym miejscu',
+        unknown: 'Odrzucono z nieznanego powodu',
+      },
+
+      // Ostrzeżenia są DORADCZE i tak brzmią — nic nie blokują.
+      warningsTitle: 'Uwagi: {count}',
+      warn: {
+        pair_unchecked: 'Nie dało się sprawdzić pary typów',
+        pair_uncheckedHint:
+          'Jedna ze stron nie ma określonego typu, więc reguła nie miała czego sprawdzić. To normalne dla wpisów sprzed wprowadzenia typów.',
+        rewrite_degraded_to_append: 'Zamiast przepisania — dopisanie',
+        rewrite_degraded_to_appendTruncated:
+          'Wpis był za długi, żeby pokazać go agentowi w całości, więc treść została dopisana zamiast przepisana.',
+        rewrite_degraded_to_appendNoRevision:
+          'Wpis nie miał wersji do porównania, więc treść została dopisana zamiast przepisana.',
+        wikilinks_lost: 'Przepisanie gubi linki: {count}',
+        wikilinks_lostHint: 'Przepisana treść nie zawiera tych wikilinków: {links}',
+        ambiguity_unresolved: 'Nie ustalono, o kogo chodzi w „{mention}"',
+        // Operacja nie zniknęła — przeniosła się na tablicę jako karta do przejrzenia.
+        moved_to_review: 'Zmiana wpisu „{title}" czeka na tablicy',
+        replaces_unbound: 'Zastąpienie bez wskazanej relacji do zakończenia',
+        replaces_unboundHint:
+          'Agent chciał zastąpić relację, ale nie zaproponował jej zakończenia. Nowa relacja powstanie obok starej — sprawdź, czy o to chodziło.',
+        moved_to_reviewHint:
+          'Zmiana treści istniejącego wpisu trafia na tablicę jako szkic z podglądem różnic. Nic nie zapisze się, dopóki jej nie zaakceptujesz.',
+        unknown: 'Uwaga bez opisu',
+      },
+
+      // Wynik akceptacji. `skipped` to INFORMACJA, nie porażka — 200 z czterema zapisanymi
+      // i dwoma pominiętymi to typowy przypadek.
+      accepted: 'Zapisano wpisy: {count}',
+      acceptedRelations: 'Zapisano relacje: {count}',
+      skippedTitle: 'Pominięto: {count}',
+      skippedHint: 'To nie jest błąd — te operacje po prostu się nie wykonały. Poniżej powody.',
+      skip: {
+        already_applied: 'To było już zapisane',
+        relation_gone: 'Relacji już nie ma',
+        dependency_not_accepted: 'Zależało od wpisu, którego nie zaakceptowano',
+        refused: 'Reguła nie przyjęła tej operacji',
+        // Nie błąd, tylko potwierdzenie decyzji recenzenta.
+        not_selected: 'Odznaczono — nie zapisano',
+        unknown: 'Pominięto z nieznanego powodu',
+      },
+
+      // Niejednoznaczność rozstrzygana W WIERSZU — nie w osobnej sekcji, do której trzeba pójść
+      // i wrócić.
+      ambiguity: {
+        label: 'Wskaż, o kogo chodzi w „{handle}"',
+        placeholder: '„{handle}" — wskaż encję',
+        none: 'Żaden z nich',
+        scope: 'Dotyczy też relacji: {count}',
+        blocked: 'Najpierw wskaż, o kogo chodzi',
+        resolved: 'Wskazano: {title}',
+      },
+
+      advisory: {
+        typePair: 'Nietypowa para typów',
+        typePairHint:
+          'Relacja „{predicate}" rzadko łączy {subjectType} z {objectType}. Sprawdź, czy o to chodziło — zapisać i tak można.',
+      },
+
+      // Jedyny ocalały klucz po wycofanym EDYTORZE relacji — i celowo NIE w bloku nazwanym jego
+      // imieniem: użytkownik nie może już ręcznie dodać, edytować ani zakończyć relacji, robi to
+      // wyłącznie agent AI, a człowiek zatwierdza (ADR-0049 D2; trasy, ich FormRequesty i sam
+      // komponent edytora zniknęły). Blok `editor` z jednym kluczem wysyłałby następną osobę na
+      // poszukiwanie komponentu, którego nie ma. Używane przez ostrzeżenie o duplikacie relacji.
+      showExisting: 'Pokaż istniejącą',
+
+      end: {
+        action: 'Zakończ relację',
+        title: 'Zakończ relację',
+        hint: 'Relacja zostanie w historii z datą zakończenia.',
+        date: 'Data zakończenia',
+        submit: 'Zakończ',
+        done: 'Zakończono relację',
+      },
+
+      // Usunięcie: JEDYNA twarda operacja w module. Dialog uczy różnicy end/usuń, bo to
+      // jedyne miejsce, gdzie użytkownik może się jej nauczyć.
+      retract: {
+        action: 'Usuń relację',
+        title: 'Usunąć relację całkowicie?',
+        message:
+          'Usuwasz zapis tak, jakby nigdy nie powstał — zniknie też z historii. Jeśli ten fakt PRZESTAŁ być prawdziwy, użyj „Zakończ" zamiast usuwania: relacja zostanie z datą końca, a historia pozostanie czytelna.',
+        confirm: 'Usuń całkowicie',
+        instead: 'Zamiast tego zakończ',
+        done: 'Usunięto relację',
       },
     },
   },

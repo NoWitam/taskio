@@ -104,7 +104,14 @@ export type IconName =
   | 'copy'
   | 'crop'
   // --- AI cost / budget (R2 sub-stage 4 usage meter) ---
-  | 'wallet';
+  | 'wallet'
+  // --- Knowledge (R3): the module + a knowledge base + the link graph ---
+  | 'book-open'
+  | 'network'
+  // Entry-type glyphs. They were added to the REGISTRY below without being added here, which
+  // `Record<IconName, string>` makes a type error — latent only because no typecheck runs in CI.
+  | 'map-pin'
+  | 'package';
 
 /** name -> array of inner SVG elements (paths/circles) as raw markup. */
 export const ICONS: Record<IconName, string> = {
@@ -324,6 +331,14 @@ export const ICONS: Record<IconName, string> = {
     '<line x1="4" x2="4" y1="22" y2="15" />',
   circle: '<circle cx="12" cy="12" r="10" />',
   bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />',
+  // Entry-type glyphs. Both silhouettes are deliberately unlike the other type icons
+  // (user / users / calendar / bookmark / braces): a teardrop and a box, readable at badge size.
+  'map-pin':
+    '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" />' +
+    '<circle cx="12" cy="10" r="3" />',
+  package:
+    '<path d="m7.5 4.27 9 5.15" /><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />' +
+    '<path d="m3.3 7 8.7 5 8.7-5" /><path d="M12 22V12" />',
   image:
     '<rect width="18" height="18" x="3" y="3" rx="2" ry="2" /><circle cx="9" cy="9" r="2" />' +
     '<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />',
@@ -344,6 +359,17 @@ export const ICONS: Record<IconName, string> = {
     '<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v3" />' +
     '<path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-3" />' +
     '<path d="M16 12a2 2 0 0 0 0 4h5a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1Z" />',
+  // An OPEN book: two facing pages over a spine. Deliberately unlike `file-text`
+  // (one page) and `folder` — the module aside relies on four distinct silhouettes.
+  'book-open':
+    '<path d="M12 7v14" />' +
+    '<path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3Z" />',
+  // Three nodes joined by two lines — the link GRAPH section. Deliberately unlike `workflow`
+  // (squares = steps) and `git-branch` (a fork): this one is a neighbourhood, not a sequence.
+  network:
+    '<rect x="9" y="2" width="6" height="6" rx="1" /><rect x="2" y="16" width="6" height="6" rx="1" />' +
+    '<rect x="16" y="16" width="6" height="6" rx="1" />' +
+    '<path d="M12 8v3" /><path d="M5 16v-2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2" />',
 };
 
 /** All available icon names — handy for the gallery icon grid. */

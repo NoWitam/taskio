@@ -35,6 +35,21 @@ Rules:
   **Pass the term as an argument — the scope must never read from `request()`.** It is
   case-insensitive and no-ops on a blank term. Do not hand-roll `whereLike` /
   `where(..., 'like', ...)` in services or repositories.
+- **The term is a literal, not a pattern.** `%` and `_` are escaped before the term is
+  wrapped in `%…%`, so a search matches only itself — previously an unescaped `%` matched
+  every row and `_` was a live single-char wildcard. Escaping order matters: the backslash
+  is escaped first, or `\_` becomes `\\_` and the search silently returns zero rows instead
+  of over-matching. The scope's unused fourth parameter, `bool $allowWildcards = false`, is
+  a deliberate seam for a future advanced-search feature that wants live wildcards — not
+  dead code to be swept up.
+- **A JSON column is not prose.** A column cast to `array` is stored `json_encode`d with no
+  flags, so `Łódź` is on disk as `Łódź` and a `::text` LIKE never sees the
+  letter the user typed. The one caller that searches such a column
+  (`FormSubmissionService::indexByForm`) encodes the term the same way *before* handing it
+  to the scope — encode first, escape second, or the backslashes eat each other. Keep that
+  encoding at the call site: moving it into the trait would corrupt every plain-text search
+  in the app. Note the cost this variant accepts: `Ł` and `ł` are different bytes,
+  so search stops folding case for non-ASCII.
 - Prefer `Model::query()` and Eloquent over `DB::`; eager-load to avoid N+1. Known
   exception: the per-form analytical layer (`FormAnalyticalTableService`) uses raw
   SQL / `Schema` by design.

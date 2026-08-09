@@ -13,6 +13,7 @@ return [
     App\Modules\Approvals\ApprovalsModuleServiceProvider::class,
     App\Modules\Bot\BotModuleServiceProvider::class,
     App\Modules\Variables\VariablesModuleServiceProvider::class,
+    App\Modules\Knowledge\KnowledgeModuleServiceProvider::class,
     App\Modules\Generator\GeneratorModuleServiceProvider::class,
     App\Modules\Workflows\WorkflowsModuleServiceProvider::class,
     App\Modules\Workspaces\WorkspacesModuleServiceProvider::class,

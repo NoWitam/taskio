@@ -18,6 +18,24 @@
         </include>
     </source>
     <php>
+        <!--
+            The suite runs every test in ONE process, so Laravel's container, the Eloquent model
+            registry, the route/view/config caches and the query log accumulate across hundreds of
+            feature tests. PHP's stock CLI limit (128M) is exhausted partway through — the failure
+            mode is an "Allowed memory size exhausted" storm rather than a red test, so it reads like
+            a broken suite instead of a machine limit, and it forces every contributor to invent
+            their own -d flag or split the run by hand.
+
+            At 512M the whole suite completes in one command (~2750 tests, ~8 min), as does the
+            Knowledge module's ~435-test slice (~3 min) that previously had to be run in halves by
+            hand. It is a TEST-HARNESS setting only: nothing in the application is allowed to depend
+            on it, and a genuine leak would still show up as a slow, growing run.
+
+            NOTE FOR ANYONE RUNNING THESE: one process at a time. Every suite shares the single
+            `test` database, so two concurrent `php artisan test` runs migrate and truncate under
+            each other and produce dozens of unrelated failures.
+        -->
+        <ini name="memory_limit" value="512M"/>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>

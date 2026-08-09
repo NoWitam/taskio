@@ -410,6 +410,11 @@ export const stories: StyleguideStory[] = [
   },
   {
     section: 'Modules',
+    name: 'Knowledge',
+    component: () => import('./pages/KnowledgePage.vue'),
+  },
+  {
+    section: 'Modules',
     name: 'Workflows',
     component: () => import('./pages/WorkflowsPage.vue'),
   },

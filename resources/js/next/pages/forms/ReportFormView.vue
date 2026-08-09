@@ -75,7 +75,10 @@ async function submit(): Promise<void> {
   } catch (err: unknown) {
     const e = err as { response?: { data?: { errors?: Record<string, string[]>; message?: string } } };
     const fieldErrors = e.response?.data?.errors;
-    if (fieldErrors?.name?.length) nameError.value = fieldErrors.name[0];
+    // TYPED `string[]`, but it arrives over the wire: indexing a bare string at `[0]` would show a
+    // ONE-CHARACTER "error" under the field, so only a real non-empty array counts as a message.
+    const nameMessages = fieldErrors?.name;
+    if (Array.isArray(nameMessages) && nameMessages.length) nameError.value = nameMessages[0];
     else toast.danger(e.response?.data?.message ?? t('forms.reports.createError'));
   } finally {
     saving.value = false;

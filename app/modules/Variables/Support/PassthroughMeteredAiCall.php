@@ -18,8 +18,8 @@ final class PassthroughMeteredAiCall implements MeteredAiCall
         return $call();
     }
 
-    public function assertWithinBudget(string $channel): void
+    public function assertWithinBudget(string $channel, float $projectedCost = 0.0): void
     {
-        // No budget, no gate.
+        // No budget, no gate — and nothing for a projection to be measured against either.
     }
 }

@@ -100,6 +100,7 @@ import { createMention, type MentionOptions } from './mention';
 import { createVariable } from './variable';
 import { createAiText } from './aiText';
 import { createIfBlock, DEFAULT_MAX_DEPTH } from './ifBlock';
+import { createWikilink, type WikilinkOptions } from './wikilink';
 import type {
   AiTextFeatureConfig,
   IfBlockFeatureConfig,
@@ -108,6 +109,7 @@ import type {
 
 export type { MentionOptions };
 export type { MentionItem } from './types';
+export type { WikilinkOptions, WikilinkItem } from './wikilink';
 
 /** Feature configs for the PART 2 app nodes (all OFF by default). */
 export interface Part2Features {
@@ -119,6 +121,13 @@ export interface Part2Features {
   ifBlocks?: boolean | IfBlockFeatureConfig;
   /** AI-text chips (`true` for defaults, or a config). */
   aiText?: boolean | AiTextFeatureConfig;
+  /**
+   * `[[`-wikilink autocomplete (Knowledge module).
+   *
+   * The odd one out in this list: it adds NO node and NO schema. It is a bare suggestion plugin
+   * that inserts plain `[[slug]]` text, so enabling it cannot change how a document serializes.
+   */
+  wikilinks?: WikilinkOptions;
 }
 
 /**
@@ -171,6 +180,8 @@ export function buildPart2Extensions(features: Part2Features): {
       }),
     );
   }
+
+  if (features.wikilinks) extensions.push(createWikilink(features.wikilinks));
 
   return { extensions };
 }

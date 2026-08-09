@@ -22,7 +22,13 @@ import { SESSION_CAPABILITIES } from './sessionGating';
 import { collectSavableImages, pngFileName, type SaveImageRequest, type SavableImage } from './sessionImages';
 import { useI18n } from '../../../app/i18n';
 import type { ContentTypePart } from '../types';
-import type { SessionResults, SessionStatus, StoryboardShot } from '../sessionTypes';
+import type {
+  SessionPartResult,
+  SessionResults,
+  SessionScene,
+  SessionStatus,
+  StoryboardShot,
+} from '../sessionTypes';
 
 const props = defineProps<{
   parts: ContentTypePart[];
@@ -59,6 +65,26 @@ function partLabel(part: ContentTypePart): string {
 }
 function isText(part: ContentTypePart): boolean {
   return part.kind === 'text_body' || part.kind === 'script';
+}
+
+/**
+ * The produced scenes of a `scene_plan` result. Guarded the same way its sibling `SessionResultCard`
+ * guards the same wire fields: a contract field the UI ITERATES is only iterated once it really is an
+ * array. A malformed / string payload renders nothing instead of one row per character.
+ */
+function scenesOf(result: SessionPartResult | undefined): SessionScene[] {
+  const scenes = result?.scenes;
+  return Array.isArray(scenes) ? scenes : [];
+}
+
+/**
+ * The produced shots of a `storyboard` result. `shots` is a union on the wire (`ShotListShot[]` for a
+ * shot_list, `StoryboardShot[]` for a storyboard) — the CALLER's part kind is what narrows it, exactly
+ * as in `SessionResultCard`; the array check is the runtime half of that narrowing.
+ */
+function storyboardShotsOf(result: SessionPartResult | undefined): StoryboardShot[] {
+  const shots = result?.shots;
+  return Array.isArray(shots) ? (shots as StoryboardShot[]) : [];
 }
 
 /** "Ujęcie 3" — plus "· z postacią" when this beat is drawn from the session's frozen character. */
@@ -157,7 +183,7 @@ const saveMenu = computed<ButtonMenuItem[]>(() =>
         <!-- scene -->
         <template v-else-if="block.part.kind === 'scene_plan'">
           <div
-            v-for="(scene, index) in block.result?.scenes ?? []"
+            v-for="(scene, index) in scenesOf(block.result)"
             :key="index"
             class="flex flex-col gap-next-1_5 rounded-next-md border border-next-border bg-next-card p-next-3"
           >
@@ -193,7 +219,7 @@ const saveMenu = computed<ButtonMenuItem[]>(() =>
         <!-- storyboard — one produced image per shot. -->
         <template v-else-if="block.part.kind === 'storyboard'">
           <div
-            v-for="(shot, index) in (block.result?.shots ?? []) as StoryboardShot[]"
+            v-for="(shot, index) in storyboardShotsOf(block.result)"
             :key="index"
             class="flex flex-col gap-next-1_5 rounded-next-md border border-next-border bg-next-card p-next-3"
           >

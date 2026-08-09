@@ -38,7 +38,8 @@ import DelegateBotDialog from './DelegateBotDialog.vue';
 import SessionFillReportPanel from './SessionFillReportPanel.vue';
 import BotAuthorChip from './BotAuthorChip.vue';
 import SessionBudgetChip from './SessionBudgetChip.vue';
-import SessionBudgetBanner from './SessionBudgetBanner.vue';
+// Promoted to the design system in B15a — three modules need this exact panel (spec §24.8).
+import AiBudgetBanner from '../../../ui/patterns/AiBudgetBanner.vue';
 import Tooltip from '../../../ui/overlay/Tooltip.vue';
 import { useSessionSettle } from './useSessionSettle';
 import { hasCreativeDirection } from './sessionDirection';
@@ -878,7 +879,7 @@ const skeletonKeys = Array.from({ length: 4 }, (_, i) => i);
           v-if="showBudgetBanner || showBudgetChip"
           class="border-t border-next-border bg-next-card px-next-3 pt-next-3"
         >
-          <SessionBudgetBanner
+          <AiBudgetBanner
             v-if="showBudgetBanner"
             :summary="aiUsage.summary"
             :can-manage="canManageBudget"

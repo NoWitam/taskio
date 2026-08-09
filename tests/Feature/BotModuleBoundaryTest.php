@@ -5,7 +5,10 @@ namespace Tests\Feature;
 use App\Modules\Bot\BotModuleServiceProvider;
 use App\Modules\Bot\Http\Controllers\BotSessionDelegationController;
 use App\Modules\Bot\Jobs\GenerateBotVisualJob;
+use App\Modules\Bot\Models\Bot;
 use App\Modules\Bot\Services\BotAuthorVoiceResolver;
+use App\Modules\Bot\Services\BotKnowledgeReader;
+use App\Modules\Bot\Services\BotKnowledgeService;
 use App\Modules\Bot\Services\BotSessionIdentityResolver;
 use App\Modules\Bot\Services\BotSlotFillService;
 use App\Modules\Bot\Services\BotVisualIdentityService;
@@ -13,6 +16,9 @@ use App\Modules\Generator\Contracts\SessionAuthorIdentityResolver;
 use App\Modules\Generator\GeneratorModuleServiceProvider;
 use App\Modules\Generator\Services\SessionDelegationService;
 use App\Modules\Generator\Support\NullSessionAuthorIdentityResolver;
+use App\Modules\Knowledge\Services\KnowledgeBindingService;
+use App\Modules\Knowledge\Services\KnowledgeCompiler;
+use App\Modules\Knowledge\Services\KnowledgeRetrievalService;
 use App\Modules\Variables\Contracts\AuthorVoiceResolver;
 use App\Modules\Variables\Support\NullAuthorVoiceResolver;
 use App\Modules\Variables\VariablesModuleServiceProvider;
@@ -232,6 +238,40 @@ class BotModuleBoundaryTest extends TestCase
             $offenders,
             'the Disk module must never name the Bot module (Bot → Disk is one-way).',
         );
+    }
+
+    /**
+     * B6 adds the third deliberate downward edge: Bot → KNOWLEDGE. The bot reads a workspace knowledge
+     * base instead of only its own JSON column, so this module names the Knowledge seams — and Knowledge
+     * names nothing back (pinned module-wide, and literally, by KnowledgeModuleBoundaryTest, whose
+     * forbidden list already includes this module).
+     *
+     * The half asserted HERE is the one that scan cannot see: the seam is INVERTED, so everything crossing
+     * it is a PRIMITIVE. Knowledge is handed the morph alias `'bot'` and a uuid, never a Bot model — which
+     * is what lets one base serve consumers that do not exist yet. A signature taking a Bot would compile
+     * fine and pass every functional test in this suite; it would simply make the shared layer depend on
+     * this one, one method at a time.
+     */
+    public function test_the_knowledge_seam_is_crossed_with_primitives_only(): void
+    {
+        $reader = $this->sourceOf(BotKnowledgeReader::class);
+        $service = $this->sourceOf(BotKnowledgeService::class);
+
+        $this->assertStringContainsString('App\\Modules\\Knowledge', $reader, 'the knowledge reader must call the Knowledge seams.');
+        $this->assertStringContainsString('App\\Modules\\Knowledge', $service, 'the knowledge wiring must call the Knowledge seams.');
+
+        // The alias the consumer identifies itself by — a registered morph alias, not an FQCN.
+        $this->assertSame('bot', BotKnowledgeReader::BINDABLE_TYPE);
+        $this->assertSame('bot', (new Bot)->getMorphClass());
+
+        // And the seam on the OTHER side takes strings: no Knowledge signature may name a Bot type.
+        foreach ([KnowledgeBindingService::class, KnowledgeRetrievalService::class, KnowledgeCompiler::class] as $fqcn) {
+            $this->assertStringNotContainsString(
+                'App\\Modules\\Bot',
+                $this->sourceOf($fqcn),
+                $fqcn . ' must stay Bot-agnostic (Bot → Knowledge is one-way).',
+            );
+        }
     }
 
     /**

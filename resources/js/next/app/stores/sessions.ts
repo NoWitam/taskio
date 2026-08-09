@@ -79,27 +79,11 @@ function extractMessage(err: unknown): string {
 }
 
 /**
- * The typed AI-budget refusal code the metered gate surfaces (R2 sub-stage 4) — mirrors the Disk image
- * path's clean 429 convention. Kept as a constant so the FE recognizes a budget block DISTINCTLY from a
- * generic error and shows the budget banner instead of a generic toast.
+ * The AI-budget refusal signals now live in `app/lib/aiBudget.ts` (promoted in B15a): three modules
+ * spend against the same workspace cap, and the Knowledge composer may not import from this store.
+ * RE-EXPORTED so every existing caller here keeps working unchanged — same constant, same function.
  */
-export const AI_BUDGET_ERROR_CODE = 'ai_budget_exceeded';
-
-/**
- * Recognize a BUDGET / over-cap refusal distinctly from any other failure. True when the gate answers with
- * HTTP 429 (the shared budget status this codebase uses for a monthly-cap stop) OR the body carries the
- * typed budget code (`code`/`error` === {@link AI_BUDGET_ERROR_CODE}). Forward-compatible: either signal
- * suffices, so the composer can map it to a typed blocked state rather than the generic error path.
- */
-export function isBudgetError(err: unknown): boolean {
-  const res = (err as {
-    response?: { status?: number; data?: { code?: string; error?: string } };
-  })?.response;
-  if (!res) return false;
-  if (res.status === 429) return true;
-  const code = res.data?.code ?? res.data?.error;
-  return code === AI_BUDGET_ERROR_CODE;
-}
+export { AI_BUDGET_ERROR_CODE, isBudgetError } from '../lib/aiBudget';
 
 export const useSessionsStore = defineStore('next-sessions', () => {
   // --- List state ----------------------------------------------------------

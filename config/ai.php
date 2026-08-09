@@ -117,6 +117,13 @@ return [
 
     'context_comment_limit' => (int) env('AI_CONTEXT_COMMENT_LIMIT', 30),
 
+    // How many agent STEPS one bot run is PROJECTED to take when the budget gate asks "can this
+    // workspace afford the whole run" (see BotRunEstimate). Deliberately NOT the agent's MaxSteps
+    // ceiling (12): that exists to stop a runaway, and projecting it would refuse runs costing a
+    // quarter of the estimate. A typical run is read → act → finish. Raise it only if real runs
+    // routinely go deeper; being too pessimistic here turns bots off for people who can afford them.
+    'bot_run_projected_steps' => (int) env('AI_BOT_RUN_PROJECTED_STEPS', 3),
+
     // Cap on the total characters of the bot's knowledge module injected into the
     // execution context (so a large knowledge base can't blow the context window).
     'knowledge_max_chars' => (int) env('AI_KNOWLEDGE_MAX_CHARS', 8000),
@@ -193,6 +200,70 @@ return [
             ],
             'ai_image_generate' => [
                 'per_call' => (float) env('AI_PRICE_IMAGE_GENERATE_PER_CALL', 0.19),
+            ],
+            // The Knowledge indexer's embedding calls. Priced per 1k REAL tokens like ai_text
+            // (an embedding response reports its own token count), NOT per call: one call carries a
+            // whole entry's chunks, so a per-call price would charge a one-paragraph note the same as
+            // a 40k-character policy. $0.00002/1k is text-embedding-3-small's list price
+            // ($0.02 per 1M tokens) — three orders of magnitude below chat text, which is the point:
+            // indexing a whole knowledge base costs cents.
+            //
+            // KNOWN ROUNDING FLOOR: `estimated_cost` is a decimal(10,4), so a single spend under
+            // $0.0001 (~5k embedding tokens) records as 0.0000. Embedding spend therefore shows up in
+            // the ledger's TOKEN column long before it moves the $ gate. That is the honest behaviour
+            // for a channel this cheap, and it is a schema property, not a meter bug — widening the
+            // column to chase it would only add precision to an ESTIMATE.
+            'ai_embedding' => [
+                'per_1k_tokens' => (float) env('AI_PRICE_EMBEDDING_PER_1K', 0.00002),
+            ],
+            // The Knowledge DRAFTING agent (the AI composer that turns raw material into draft entries).
+            // Same price basis and same rate as ai_text — it is the same kind of chat completion on the
+            // same model — but its OWN channel, because the meter buckets both the price and the
+            // operator's answer to "where did the month go". Folding composition spend into ai_text
+            // would make the workflow figure and the knowledge figure equally unreadable, and neither
+            // separately tunable when the two diverge (a cheaper drafting model, say).
+            'ai_knowledge' => [
+                'per_1k_tokens' => (float) env('AI_PRICE_KNOWLEDGE_PER_1K', 0.005),
+            ],
+            // The composer's ENTITY RESOLUTION pass — the small call that reads raw material and lists
+            // the names it mentions, before the expensive composition call writes anything.
+            //
+            // Its own channel, at the SAME rate as ai_knowledge today, and the sameness is the point of
+            // splitting rather than an argument against it:
+            //
+            //   1. The meter prices PER CHANNEL. Extraction is a small structured call that wants a
+            //      cheap model, and the day it gets one the ledger can only tell the truth if it is
+            //      ALREADY billed separately — folded into ai_knowledge it would keep being charged at
+            //      the composition rate forever, invisibly, whatever model actually ran.
+            //   2. The two spend on DIFFERENT rhythms. Extraction runs on session start and on every
+            //      context expansion; composition runs on every refinement as well. An operator asking
+            //      "where did the month go" cannot answer it from one merged figure, and cannot tell
+            //      whether resolution is earning its cost.
+            //
+            // Exactly the argument the ai_knowledge split above makes against ai_text, one level down.
+            'ai_knowledge_resolve' => [
+                'per_1k_tokens' => (float) env('AI_PRICE_KNOWLEDGE_RESOLVE_PER_1K', 0.005),
+            ],
+            // The bot's autonomous TASK-EXECUTION loop (one `ai_bot_task` row per run, carrying the
+            // tokens of EVERY step of that run's tool loop — see BotTaskExecutionJob).
+            //
+            // Its own channel, and not merely `ai_text`, for the reason the two knowledge channels give
+            // one level down: a channel names an OWNER of the money question. `ai_text` answers "what did
+            // resolving @[ai-text] directives cost" — a directive inside somebody's workflow or generation
+            // session, always downstream of a human pressing something. This answers "what did the bots
+            // cost while nobody was watching", which is a different question with a different owner, a
+            // different rhythm (a bot runs on assignment, on every human reply, on every rejected
+            // approval) and a different tuning decision (an agent loop is the obvious first candidate for
+            // a cheaper model). Folded together, neither figure could be read or tuned.
+            //
+            // NOT `ai_bot`: the bot spends on more than this. Its slot-fill bills `ai_text` (it is a
+            // Generator-session fill) and its visual identity bills the image channels. A channel called
+            // `ai_bot` would promise to cover all of it and quietly not.
+            //
+            // Same rate as ai_text today — the same model on the same provider — but see point 1 above:
+            // the sameness is why splitting now is cheap, not a reason to wait.
+            'ai_bot_task' => [
+                'per_1k_tokens' => (float) env('AI_PRICE_BOT_TASK_PER_1K', 0.005),
             ],
         ],
         'unit_cost' => [

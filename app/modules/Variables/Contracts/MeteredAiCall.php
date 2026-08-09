@@ -40,6 +40,16 @@ interface MeteredAiCall
      * {@see \App\Modules\Variables\Exceptions\AiBudgetExceededException} when the channel is over cap;
      * the pass-through does nothing. `meter()` runs this same check itself, so a caller that only ever
      * calls `meter()` need not call this.
+     *
+     * $projectedCost lets a MULTI-CALL spender ask the question it actually has: not "is any budget
+     * left" but "is there enough left for the WHOLE thing I am about to start". A pipeline that gates
+     * only on its first call can pass, spend, and then die halfway — having charged the workspace for
+     * work nobody will ever see. Defaulting to 0.0 keeps every existing caller byte-identical: with no
+     * projection the question is exactly the old one.
+     *
+     * It is an ESTIMATE and must be treated as one. Refusing on a projection can turn away a run that
+     * would in fact have fitted, so a caller should project against its real caps rather than paranoid
+     * multiples of them.
      */
-    public function assertWithinBudget(string $channel): void;
+    public function assertWithinBudget(string $channel, float $projectedCost = 0.0): void;
 }

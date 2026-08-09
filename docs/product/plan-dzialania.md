@@ -19,6 +19,9 @@ R1 Dysk ◀────────────── Generator musi mieć gdzie
    │
 R2 Generator treści + Templatki ◀── serce produktu; największy rozdział
    │
+   ├─ Moduł Wiedzy (Knowledge) ◀── wstawiony poza numeracją, decyzja właściciela; MVP+ UKOŃCZONY
+   │                               (patrz „Moduł Wiedzy (Knowledge)" w CZĘŚCI II, przed R3)
+   │
 R3 Kalendarz ◀────────── lekki moduł; workflow-step „wydarzenie"; oddech po R2
    │
 R4 Publishing Hub ◀───── publikuje wyniki Generatora; trigger „zatwierdzono"
@@ -37,6 +40,7 @@ R8 Uniwersum + backlog wizji (Trendy, Streamy, Muzyka, kompozytor…)
 | **R0. Stabilizacja i spójność** | Zabezpieczyć zrobioną pracę, domknąć długi, ujednolicić UI | domknięcie Etapów 1–5 |
 | **R1. Dysk (Zasoby)** | Centralne repozytorium plików dla całej platformy | Etap 6 |
 | **R2. Generator treści + Templatki** | Tworzenie treści AI z szablonów, sesje, style botów | Etap 7 |
+| **Moduł Wiedzy (Knowledge)** *(poza numeracją, wstawiony przed R3)* | Wspólna, kuratorowana baza faktów dla wszystkich konsumentów AI (dziś: boty) | brak w pierwotnym CHECK LIST — decyzja właściciela w trakcie R2 |
 | **R3. Kalendarz** | Oś czasu: wydarzenia, terminy, krok workflow | Etap 8 |
 | **R4. Publishing Hub** | Realna publikacja na platformach + kolejka + historia | Etap 9 |
 | **R5. Kampanie** | Automatyczne cykle: „co wtorek nowy post" | Etap 10 |
@@ -629,6 +633,176 @@ identity"), `docs/backend/bots-api.md` (sekcja „Visual identity module ('Wygl�
 `docs/backend/disk-api.md` (poll `error_code`/`safety_rejected`, resume-on-retry, `input_fidelity`). In-app
 dokumentacja: `resources/js/next/docs/pages/GeneratorPage.vue` (§22, §23) i
 `resources/js/next/docs/pages/BotsPage.vue` (§12).
+
+---
+
+## Moduł Wiedzy (Knowledge)
+
+**Status: MVP+ ukończone.** Wstawiony poza pierwotną numeracją R-rozdziałów — decyzja właściciela
+(planning-agent rekomendował węższy MVP; owner wybrał wariant MVP+ z chunkingiem i wizualnym grafem
+już w pierwszym cięciu, „wbrew rekomendacji"), zbudowany **przed R3 Kalendarz**, bo kilka
+zaplanowanych konsumentów wiedzy (boty, docelowo Generator/Workflows) potrzebowało go wcześniej niż
+kalendarza. Pełny kontrakt backendu: `docs/backend/knowledge-api.md`. Zapis decyzji:
+`docs/decisions/ADR-0043-knowledge-module-design.md`, `ADR-0044-knowledge-index.md`,
+`ADR-0045-knowledge-consumption-data-erasure.md`.
+
+**Cel:** trwałe, kuratorowane miejsce faktów, których workspace uczy platformę RAZ, a każdy
+konsument AI odczytuje z powrotem — zamiast każdej postaci (bota) trzymającej własną, niewspółdzieloną
+listę wpisów.
+
+**Zbudowany zakres:**
+- **Baza wiedzy** — twardy kontener workspace'u z kartą tożsamości (charter) i typowanym schematem
+  metadanych (na deskryptorach modułu Variables, nie na formacie Forms); rewersyjna kaskada kosza
+  baza→wpisy.
+- **Wpis** — hasło encyklopedyczne (tytuł + treść ≤ 40 000 znaków + metadane + status
+  draft/proposed/approved/archived + flaga „nieaktualny" `stale_at`, ortogonalna do statusu); slug
+  stabilny przy zmianie tytułu; pełna historia wersji append-only z przywracaniem (dopisuje, nie
+  cofa) i blokadą optymistyczną (409 przy równoległym zapisie).
+- **Wikilinki i czerwone linki (duchy)** — `[[slug]]`/`[[slug|etykieta]]` budują graf wpis→wpis;
+  nierozwiązany link to duch, automatycznie „ożywiany", gdy powstanie wpis o pasującym slugu.
+- **Indeks semantyczny** — chunking (dzielenie wpisu na fragmenty po strukturze dokumentu),
+  różnicowe indeksowanie po digestach (edycja jednego akapitu = 1 wywołanie embeddingu, nie
+  ponowne indeksowanie całości), degradacja budżetowa nigdy nie blokująca zapisu treści.
+- **Wyszukiwarka hybrydowa** — leg słów kluczowych + leg wektorowy, fuzja przez reciprocal-rank,
+  uczciwa o tym, kiedy leg wektorowy nie zadziałał (limit AI, wyłącznik, awaria dostawcy) zamiast
+  udawać błąd lub ciszej zwracać mniej wyników bez wyjaśnienia.
+- **Graf** — widok całej bazy (huby) i widok ego (sąsiedztwo jednego wpisu), deterministyczny layout
+  SVG bez zewnętrznej zależności (`knowledgeGraphLayout.ts`, czysta funkcja).
+- **Powiązanie z botem** — `PUT`/`DELETE /bots/{bot}/knowledge-binding` + jednorazowa migracja
+  wbudowanej wiedzy bota do prawdziwej bazy (`POST /bots/{bot}/knowledge/migrate`); powiązanie ma
+  **pierwszeństwo bezwzględne** nad starym polem `bots.knowledge` — kolumna zostaje jako trwały
+  fallback dla niezmigrowanych botów, bez ustalonego terminu wygaszenia.
+- **Usuwanie danych osoby (RODO, część)** — `php artisan knowledge:purge-subject`: skanuje i
+  (na żądanie, `--apply`) usuwa wszystko w module Wiedza noszące podane frazy (wpisy, historię
+  wersji, embeddingi, czerwone linki); dry-run domyślny, limit szerokości dopasowania, potwierdzenie
+  wpisywane ręcznie. **Zasięg tylko Wiedza** — nie jest to pełne prawo do bycia zapomnianym w całej
+  aplikacji (osobny, większy temat).
+
+**Etap: Kreator AI — status: ukończone.** Właściciel przejrzał manualny edytor po zbudowaniu R1/R2 w
+innych modułach i zdecydował o pivocie: wpisy **nie powstają już ręcznie** — „Nowy wpis" w całej
+aplikacji (czytnik, tabela, graf, czerwony link) otwiera kreator AI zamiast pustego formularza; edytor
+zostaje wyłącznie do edycji **istniejących** wpisów. Trzy decyzje właściciela zapisane wprost:
+AI-only w warstwie UI (nie w API — `POST /entries` zostaje, bo to ta sama ścieżka, którą wywołuje
+publikacja szkicu), zmiana istniejącego wpisu publikuje się od razu (bez dodatkowej bramki akceptacji
+ponad tę, którą MVP już miało — każdy członek workspace'u mógł i może edytować dowolny wpis), oraz
+osobny kanał licznika kosztu AI (`ai_knowledge`) tak, żeby wydatek kreatora dało się odróżnić w
+raporcie zużycia od innych powierzchni tekstowych. Pełny kontrakt:
+`docs/backend/knowledge-api.md` → „The AI composer". Zapis decyzji:
+`docs/decisions/ADR-0046-knowledge-ai-composer.md`.
+
+- **Sesja kreatora** — jeden tekst źródłowy wklejony przez użytkownika → agent (jedno metrowane
+  wywołanie na sesję/poprawkę) → 1–8 proponowanych wpisów (`status: proposed`) do przeglądu.
+  Szkic jest **zwykłym wierszem `knowledge_entries`** niosącym `draft_session_id` — niewidzialny
+  wszędzie w produkcie przez globalny scope modelu (`WithoutDraftsScope`), z jednym, jawnym wyjątkiem
+  (`withDrafts()`) w samym kreatorze. Akceptacja to jeden zapis kolumny, nie kopiowanie wiersza.
+  Sesja settluje się na zdarzeniu realtime (`knowledge-draft-session.updated` na kanale
+  `knowledge.workspace.{workspaceId}`) — **zero pollingu**, zgodnie ze stojącym wymogiem właściciela.
+- **Nowelizacje (szkice-cienie)** — kreator, widząc zamrożony na starcie sesji kontekst (istniejące
+  wpisy, których wklejony materiał może dotyczyć), może zaproponować AMENDMENT zamiast nowego wpisu:
+  `targets_entry_id` + zamrożona `target_revision_id` (rewizja, którą model faktycznie widział),
+  odtwarzana jako token blokady optymistycznej przy akceptacji — człowiek, który edytował target w
+  międzyczasie, dostaje konflikt zamiast cichego nadpisania. Cel spoza zamrożonej listy degraduje się
+  do zwykłego „stwórz", nigdy nie ginie po cichu. Adres szkicu-cienia jest zarezerwowany
+  (`__shadow-<ulid>`) i pilnowany bazodanowym `CHECK`-em, nie tylko kodem aplikacji.
+- **Podgląd powiązań i diff** — panel powiązań to REUSE tego samego kanwasu/layoutu grafu (nie druga
+  wizualizacja): węzeł-szkic ma `is_draft`, wpis-nowelizowany ma `amended_by` (adnotacja, nie
+  krawędź). Panel diffa porównuje trzy możliwe bazowe wersje (oryginał / poprzedni szkic / wersja w
+  bazie — trzecia wyłącznie dla nowelizacji) przez współdzielony komponent `TextDiffView`.
+- **Usuwanie danych osoby — rozszerzone.** Sesje kreatora (surowy tekst źródłowy + historia
+  poleceń poprawek) i nieprzyjęte szkice są teraz w zasięgu `knowledge:purge-subject` — trafienie
+  frazy w sesję porzuca ją w całości (jedyna uczciwa granulacja dla wklejonego, nieindeksowanego
+  tekstu). Naprawiona asymetria z pierwszej wersji skanu (szkic-wpis był niewidzialny, ale jego
+  historia rewizji już nie — usuwanie kasowało historię i zostawiało żywy, nieoznaczony tekst szkicu).
+
+**Etap: Wiki-Graf (relacje typowane) — status: ukończone.** Osobna tabela `knowledge_relations` (nie
+kolumna/`source` w `knowledge_links` — link to kasowany-i-odtwarzany CACHE, relacja jest opłacona i
+zatwierdzona przez człowieka i żaden sweep nie może jej zmieść) + własny, append-only log zdarzeń
+(`knowledge_relation_events`, celowo NIE moduł Changelog — cztery niezależne powody, pierwszy
+rozstrzygający: `changelogs` nie ma lustra tenantowego). Zamknięty słownik **15 typów relacji** w kodzie
+(allow-lista per baza jako podzbiór) + **8 typów encji** wyprowadzonych wstecz z czasowników, jakich
+używają relacje (`work` ≠ `product`, bo biorą inne czasowniki; `null` ≠ `other` — null to „nikt nie
+powiedział", `other` to świadoma odpowiedź). Macierz par typów jest **doradcza**, gdy typ któregoś końca
+jest nieznany — odrzuca tylko, gdy OBA końce są typowane i para jest spoza macierzy; świadome
+odstępstwo od strict-mode reszty modułu, bo wszystkie istniejące wpisy mają dziś `null`, a twarde
+odrzucanie kasowałoby poprawne relacje z powodu brakującej klasyfikacji. LLM **nigdy nie usuwa** —
+kontrakt maszynowy zna wyłącznie `create`/`update`/`end`; `retract` („to nigdy nie było prawdą", wiersz
+PRZETRWA) i twarde, nieodwracalne `DELETE` są afordancją wyłącznie człowieka, z osobnego panelu relacji.
+Graf zyskał piątą warstwę krawędzi (`edges[].kind: 'relation'`, dyskryminator, nie druga wizualizacja).
+Bramka przeglądu obejmuje WSZYSTKO (decyzja właściciela) — żadnego trybu auto-akceptacji, ścieżka
+zapisu jest dokładnie ta, co przed etapem. Usuwanie danych osoby rozszerzone o szóstą powierzchnię:
+relacja, której własny `description`/`properties` nazywa podmiot, niezależnie od tego, czy któraś z
+dwóch encji, które łączy, w ogóle o nim wspomina. Pełny kontrakt: `docs/backend/knowledge-api.md` →
+„Typed relations". Zapis decyzji: `docs/decisions/ADR-0047-knowledge-typed-relations.md`.
+
+**Świadomie odłożone po Wiki-Grafie (kandydaci na kolejny podetap, nie zaplanowane):**
+1. **Faza wykrywania relacji jako osobny, metrowany krok.** Dziś ekstrakcja relacji dzieje się WEWNĄTRZ
+   zwykłej kompozycji/poprawki — to samo wywołanie, które proponuje wpisy, proponuje też `graph_ops`. Nie
+   ma osobnego przycisku, osobnego wydatku ani pola-odpowiednika `context_expanded_at`
+   (`relations_detected_at` nie istnieje). Wzorowany na `expand-context` osobny krok „wykryj relacje" —
+   z własnym, jawnym kosztem, uruchamiany na żądanie zamiast przy każdej generacji — jest realnym
+   kandydatem na kolejny podetap, nie przybliżeniem tego etapu.
+2. **Scalanie zduplikowanych encji.** Moduł nie ma dziś żadnego mechanizmu wykrywania ani łączenia
+   dwóch wpisów, które w rzeczywistości opisują tę samą osobę/organizację/rzecz — poza tym, co panel
+   duplikatów kreatora (próg podobieństwa wektorowego) i tak już ostrzega przy tworzeniu NOWYCH wpisów.
+   Zewnętrzny research (`docs/ai/reference-links.md` → Knowledge module, wpis 8) notuje konkretną,
+   sourcowaną receptę na przyszłość (podobieństwo embeddingu ~0.97 + odległość edycyjna, scalanie
+   wyłącznie zatwierdzane przez człowieka) — nieprzyjętą teraz, bo moduł nie ma dziś problemu
+   duplikatów encji do rozwiązania.
+3. **Wnioskowanie po grafie relacji.** Typowane relacje są dziś wyłącznie tym, co ktoś jawnie zapisał —
+   nic nie wyprowadza tranzytywnych ani pośrednich faktów z istniejących relacji (np. „A pracuje nad
+   projektem B, B jest częścią C, więc A pośrednio pracuje nad C"). Żaden krok nie odpytuje grafu w ten
+   sposób, ani przy kompozycji, ani przy odczycie.
+4. **Community detection / klastrowanie grafu.** Zwykły (bez LLM) Leiden clustering jest zapisany jako
+   opcja w rezerwie na przyszły tryb przeglądania/klastrowania (`docs/ai/reference-links.md` → wpis 7),
+   niezależnie od pytania o ekstrakcję relacji — nie zaplanowany, nie zbudowany. Pełny GraphRAG
+   (podsumowania społeczności, hierarchiczne raporty Leiden) jest świadomie odrzucony jako
+   nieproporcjonalny do skali mini-wiki per-workspace.
+
+**Świadomie odłożone po Kreatorze AI (kandydaci na kolejny podetap, nie zaplanowane):**
+1. **Estymata kosztu pojedynczej operacji.** Serwer nigdy nie zwraca „ten przebieg będzie kosztować
+   ~$X" — tylko stan budżetu workspace'u (wykorzystanie/limit/data odnowienia). Świadomie: długość
+   odpowiedzi modelu nie jest znana z góry, a wymyślona liczba szkodzi bardziej niż jej brak.
+2. **Afordancja wielu równoległych nowelizacji jednego wpisu.** Drut już to wyraża
+   (`amended_by` to lista), ale UI czyta wyłącznie pierwszy element listy przy akcji „otwórz
+   nowelizację" — dwie sesje proponujące zmianę tego samego wpisu naraz są dziś rzadkie, ale kształt
+   odpowiedzi już na nie czeka.
+3. ~~**LLM-owa ekstrakcja relacji.**~~ **ZBUDOWANE w etapie Wiki-Graf (patrz wyżej), ta pozycja jest
+   nieaktualna.** W momencie spisania tej listy żaden krok nie pytał modelu o typowane relacje między
+   encjami wcale — dziś ten sam wywołanie, które proponuje wpisy, proponuje też `graph_ops` (relacje z
+   zamkniętego, 15-werbowego słownika, laundrowane w kodzie, nigdy nie ufając własnej pewności modelu).
+   Nieaktualne, bo **niedotyczące** typowanych relacji, jest wciąż: `podgląd powiązań kreatora`
+   (`GET …/draft-sessions/{session}/relations`, panel `KnowledgeDraftRelationsPanel.vue`) — krawędzie
+   MIĘKKIE między szkicami (podobieństwo/wzmianki/wikilinki) liczy DALEJ wyłącznie deterministycznie i
+   wektorowo, bez osobnego rozumowania modelu „czy te dwa fragmenty mówią o tym samym" — to jest inny
+   mechanizm niż typowane relacje i pozostaje bez zmian.
+4. **Propozycje zmian inicjowane automatycznie, nie z ręcznie wklejonego materiału.** Kreator dziś
+   startuje wyłącznie z decyzji człowieka, który coś wkleja do pola źródłowego. Nic w tym module nie
+   proponuje nowelizacji z własnej inicjatywy — na podstawie zakończonego zadania bota, przebiegu
+   workflow czy innej aktywności platformy. To istotnie większa funkcja niż samouzupełnianie pola
+   tekstowego i naturalnie łączy się z punktami 2–3 poniższej listy Etapu 2 (krok workflow, web-research).
+
+**Świadomie odłożone na Etap 2 (kolejny podetap Wiedzy, do zaplanowania osobno):**
+1. **Śluza propozycji** — dziś każdy członek workspace'u może od razu zapisać/edytować wpis; etap 2
+   ma dodać opcjonalny przepływ „propozycja → akceptacja" dla baz, które tego wymagają (dziś status
+   `proposed` istnieje w słowniku, ale nic go nie bramkuje — patrz `KnowledgeEntryStatus` w
+   `docs/backend/knowledge-api.md`).
+2. **Krok workflow czytający/piszący do Wiedzy** — dziś jedynym konsumentem jest Bot; Workflows
+   (krok w stylu `read_knowledge`/`propose_entry`) to naturalne następne rozszerzenie tej samej
+   krawędzi konsumpcji (`KnowledgeBindingService` już jest zaprojektowane pod wielu konsumentów).
+3. **Web-research** — automatyczne zasilanie bazy z zewnętrznych źródeł (np. przez istniejące
+   narzędzie `fetch_url`/`web_search` bota) zamiast wyłącznie ręcznego wpisywania.
+4. **Ingestia z Dysku** — import pliku (PDF, dokument tekstowy) z modułu Disk jako gotowy wpis lub
+   zestaw wpisów, zamiast kopiowania treści ręcznie.
+5. **Tryb „odpowiedz"** — interaktywny tryb pytań do bazy wiedzy (czat/Q&A) ponad istniejącym
+   wyszukiwaniem hybrydowym, zamiast tylko listy wyników.
+6. **CommandPalette** — szybkie wyszukiwanie/skok do wpisu wiedzy z globalnej palety poleceń
+   aplikacji (dziś wyszukiwarka Wiedzy jest osobnym ekranem).
+
+**Ryzyka:** operacyjne, nie produktowe — patrz `docs/backend/knowledge-api.md` → „Production caveat"
+(rozszerzenie `pgvector` wymaga uprawnień superusera; do potwierdzenia przez DBA przed pierwszym
+wdrożeniem produkcyjnym) i ADR-0045 → „Consequences — known limitations" (re-migracja bota osiera-ca
+starą bazę zamiast ją scalać; `rag` nie ma własnego progu podobieństwa; koszowana-i-przywrócona baza
+nie sygnalizuje w UI, że kiedykolwiek była w koszu).
 
 ---
 

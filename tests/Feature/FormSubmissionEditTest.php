@@ -16,7 +16,7 @@ class FormSubmissionEditTest extends TestCase
     {
         $user = User::factory()->create();
         $form = Form::factory()->enabled()->create();
-        
+
         $submission = FormSubmission::create([
             'form_id' => $form->id,
             'submittable_type' => Form::class,
@@ -39,7 +39,7 @@ class FormSubmissionEditTest extends TestCase
     {
         $user = User::factory()->create();
         $form = Form::factory()->enabled()->create();
-        
+
         $submission = FormSubmission::create([
             'form_id' => $form->id,
             'submittable_type' => Form::class,
@@ -70,10 +70,12 @@ class FormSubmissionEditTest extends TestCase
                 // No submittable provided = manual submission
             ]);
 
+        // Flat, not `data.*`: the resource's own `data` key (the answers) displaces Laravel's
+        // envelope — pinned by FormSubmissionCreateTest::test_single_submission_responses_are_not_data_wrapped.
         $response->assertCreated()
-            ->assertJsonPath('data.is_approved', true);
-        
-        $submission = FormSubmission::find($response->json('data.id'));
+            ->assertJsonPath('is_approved', true);
+
+        $submission = FormSubmission::find($response->json('id'));
         $this->assertNotNull($submission->approved_at);
         $this->assertTrue($submission->isApproved());
     }
@@ -82,7 +84,7 @@ class FormSubmissionEditTest extends TestCase
     {
         $user = User::factory()->create();
         $form = Form::factory()->enabled()->create();
-        
+
         $submission = FormSubmission::create([
             'form_id' => $form->id,
             'submittable_type' => Form::class,
@@ -93,9 +95,9 @@ class FormSubmissionEditTest extends TestCase
         ]);
 
         $this->assertFalse($submission->isApproved());
-        
+
         $submission->approve();
-        
+
         $this->assertTrue($submission->fresh()->isApproved());
         $this->assertNotNull($submission->approved_at);
     }
@@ -104,7 +106,7 @@ class FormSubmissionEditTest extends TestCase
     {
         $user = User::factory()->create();
         $form = Form::factory()->enabled()->create();
-        
+
         $approvedAt = now()->subHour();
         $submission = FormSubmission::create([
             'form_id' => $form->id,
@@ -116,7 +118,7 @@ class FormSubmissionEditTest extends TestCase
         ]);
 
         $submission->approve();
-        
+
         // approved_at should remain the same
         $this->assertEquals(
             $approvedAt->timestamp,

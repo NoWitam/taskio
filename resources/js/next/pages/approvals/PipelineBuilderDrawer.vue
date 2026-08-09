@@ -247,15 +247,22 @@ function buildPayload(): PipelineWritePayload {
   };
 }
 
-/** Map a server 422 validation bag onto the local field errors (best-effort). */
+/**
+ * Map a server 422 validation bag onto the local field errors (best-effort).
+ *
+ * Every bag entry is `Array.isArray`-guarded before it is indexed: the bag is TYPED as `string[]`, but
+ * it arrives over the wire, and indexing a bare string at `[0]` would surface a ONE-CHARACTER "error
+ * message" next to the field.
+ */
 function applyServerErrors(err: unknown): void {
   const bag = (err as { response?: { data?: { errors?: Record<string, string[]> } } })?.response?.data?.errors;
   if (!bag) return;
-  if (bag.name?.length) errors.name = bag.name[0];
+  const nameMessages = bag.name;
+  if (Array.isArray(nameMessages) && nameMessages.length) errors.name = nameMessages[0];
   // stages.<i>.name / .approver_id / .approver_type → map back to the row by index.
   Object.entries(bag).forEach(([key, msgs]) => {
     const m = key.match(/^stages\.(\d+)\.(name|approver_id|approver_type)$/);
-    if (!m || !msgs.length) return;
+    if (!m || !Array.isArray(msgs) || !msgs.length) return;
     const stage = form.stages[Number(m[1])];
     if (!stage) return;
     const existing = errors.stages[stage.uid] ?? {};

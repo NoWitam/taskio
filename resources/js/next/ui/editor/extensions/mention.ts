@@ -125,6 +125,9 @@ export function createMention(options: MentionOptions) {
         store.active = false;
         store.items = [];
         store.loading = false;
+        // Cleared with the rest of the state: an error belongs to the search that failed, not to
+        // the next time the popup opens.
+        store.errored = false;
         store.query = '';
         store.rect = null;
         overlay.release();
@@ -197,6 +200,7 @@ export function createMention(options: MentionOptions) {
       const runFetch = async (query: string): Promise<void> => {
         const token = ++requestToken;
         store.loading = true;
+        store.errored = false;
         store.items = [];
         store.activeIndex = 0;
         try {
@@ -210,7 +214,13 @@ export function createMention(options: MentionOptions) {
             }),
           );
         } catch {
-          if (token === requestToken) store.items = [];
+          // A FAILED SEARCH IS NOT AN EMPTY ONE — the same distinction the wikilink trigger makes.
+          // Swallowing the failure into an empty list told the writer this workspace has no such
+          // person, so they type the name as plain text and the mention is never made.
+          if (token === requestToken) {
+            store.errored = true;
+            store.items = [];
+          }
         } finally {
           if (token === requestToken) store.loading = false;
         }

@@ -82,11 +82,21 @@ export function channelLabel(channel: string, t: Translate): string {
   return t(`workspaces.aiUsage.channel.${channel}`, channel);
 }
 
-/** A stable, in-set glyph per channel (text → document; edit → crop; generate → image; else sparkles). */
+/**
+ * A stable, in-set glyph per channel (text → document; edit → crop; generate → image; bot work →
+ * workflow; else sparkles).
+ *
+ * `ai_bot_task` deliberately does NOT reuse `sparkles`, which the Bots module uses in the nav:
+ * `sparkles` is this function's fallback for a channel it does not know, so a bot channel drawn
+ * with it would be indistinguishable from an unrecognised one — exactly the state this addition
+ * exists to leave. `workflow` says machine-driven work and is used by nothing else here.
+ */
 export function channelIcon(channel: string): IconName {
   switch (channel) {
     case 'ai_text':
       return 'file-text';
+    case 'ai_bot_task':
+      return 'workflow';
     case 'ai_image_edit':
       return 'crop';
     case 'ai_image_generate':

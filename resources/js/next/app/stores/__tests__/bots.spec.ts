@@ -62,6 +62,7 @@ function detail(overrides: Partial<BotDetail> = {}): BotDetail {
     visual: null,
     audio: null,
     knowledge: { enabled: false, entries: [] },
+    knowledge_binding: null,
     creator: { type: 'user', id: 'u1', name: 'Ada', email: 'ada@example.com', avatar: null },
     is_owner: true,
     can_execute_tasks: false,
@@ -379,5 +380,56 @@ describe('next bots store', () => {
     expect(restored.id).toBe('b1');
     expect(store.items.map((b) => b.id)).toEqual(['b1', 'b2']);
     expect(store.detail?.name).toBe('Restored');
+  });
+});
+
+// --- Knowledge module (B6) ---------------------------------------------------
+// The binding is a bot-level decision with its own endpoint. What matters here is the WIRE: the
+// verb, the body, and that both mutations reconcile the detail cache from the whole bot they
+// answer with — the editor's built-in section reads that copy to learn it went inactive.
+describe('bots store — knowledge binding', () => {
+  it('binds with a PUT carrying both the base and the mode, and reconciles the detail', async () => {
+    const store = useBotsStore();
+    const bound = detail({ knowledge_binding: { knowledge_base_id: 'base-7', mode: 'rag' } });
+    apiMock.put.mockResolvedValueOnce({ data: bound });
+
+    const result = await store.bindKnowledgeBase('b1', { knowledge_base_id: 'base-7', mode: 'rag' });
+
+    expect(apiMock.put).toHaveBeenCalledWith('/bots/b1/knowledge-binding', {
+      knowledge_base_id: 'base-7',
+      mode: 'rag',
+    });
+    expect(result.knowledge_binding).toEqual({ knowledge_base_id: 'base-7', mode: 'rag' });
+  });
+
+  it('unbinds with a DELETE on the same path — no second verb for an undo', async () => {
+    const store = useBotsStore();
+    apiMock.delete.mockResolvedValueOnce({ data: detail({ knowledge_binding: null }) });
+
+    const result = await store.unbindKnowledgeBase('b1');
+
+    expect(apiMock.delete).toHaveBeenCalledWith('/bots/b1/knowledge-binding');
+    expect(result.knowledge_binding).toBeNull();
+  });
+
+  it('migrates and returns the FLAT 201 body — not a bot, and not a {data} envelope', async () => {
+    const store = useBotsStore();
+    // `api.post` resolves with the response BODY, which here has no `data` key at all.
+    apiMock.post.mockResolvedValueOnce({
+      knowledge_base_id: 'base-9',
+      name: 'Knowledge: Bot',
+      entries_count: 3,
+      mode: 'auto',
+    });
+
+    const result = await store.migrateKnowledge('b1');
+
+    expect(apiMock.post).toHaveBeenCalledWith('/bots/b1/knowledge/migrate', {});
+    expect(result).toEqual({
+      knowledge_base_id: 'base-9',
+      name: 'Knowledge: Bot',
+      entries_count: 3,
+      mode: 'auto',
+    });
   });
 });

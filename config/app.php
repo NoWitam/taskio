@@ -80,6 +80,16 @@ return [
 
     'locale' => env('APP_LOCALE', 'en'),
 
+    /*
+    | The locales this installation actually ships translations for — the ONE list both halves of the
+    | per-user locale read. `SetUserLocale` will not apply a locale outside it (a column can hold
+    | anything a past migration or a direct write put there, and setLocale('xx') silently renders every
+    | key as its own name), and the endpoint that WRITES `users.locale` validates against the same
+    | array. Two lists would drift, and the drift would be invisible: the write would accept a value
+    | the reader then ignored, so a user's chosen language would simply not take effect.
+    */
+    'supported_locales' => ['en', 'pl'],
+
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
 
     'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),

@@ -320,6 +320,94 @@ const routes: RouteRecordRaw[] = [
           },
         ],
       },
+      {
+        // Top-level "Knowledge" (PL "Wiedza") module shell (R3): the workspace's
+        // mini-encyclopedia — knowledge BASES (identity + charter + metadata schema)
+        // holding short encyclopedic ENTRIES that people write and AI consumers read
+        // back.
+        //
+        // B5 adds the module-level Search / Trash pages and the per-base sections; B5b
+        // adds the GRAPH section, which — like the reader — is addressed by SLUG, because
+        // a slug is the only entry handle derivable from an entry's own text.
+        path: 'knowledge',
+        component: () => import('../../pages/knowledge/KnowledgeModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+        children: [
+          {
+            path: '',
+            name: 'next.knowledge',
+            component: () => import('../../pages/knowledge/KnowledgeBasesView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+          },
+          {
+            // STATIC segments before the `:baseId` wildcard, so `search` / `trash` can
+            // never be read as a base id however a later edit reorders this list.
+            path: 'search',
+            name: 'next.knowledge.search',
+            component: () => import('../../pages/knowledge/KnowledgeSearchView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+          },
+          {
+            // One open base, five sections. The bare record keeps the `next.knowledge.base`
+            // name and redirects to the default section, so a named push with no section —
+            // and any legacy `?section=` deep link — lands on the reader.
+            path: ':baseId',
+            meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+            children: [
+              {
+                path: '',
+                name: 'next.knowledge.base',
+                redirect: (to) =>
+                  sectionRedirect(
+                    to,
+                    'next.knowledge.base.',
+                    ['reader', 'table', 'graph', 'settings'],
+                    'reader',
+                  ),
+              },
+              {
+                // The entry is addressed by SLUG, not by id: wikilinks carry slugs, so this
+                // is the only entry URL derivable from an entry's own text.
+                path: 'reader/:slug?',
+                name: 'next.knowledge.base.reader',
+                component: () => import('../../pages/knowledge/KnowledgeReaderView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+              },
+              {
+                path: 'table',
+                name: 'next.knowledge.base.table',
+                component: () => import('../../pages/knowledge/KnowledgeEntriesTableView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+              },
+              {
+                // The AI COMPOSER (B15a) — after the AI-only pivot this is the ONLY way an
+                // entry comes into existence. `:session?` absent starts empty; present
+                // returns to a running or finished board, so a refresh, a deep link and a
+                // back-navigation all land on the same drafts.
+                path: 'compose/:session?',
+                name: 'next.knowledge.base.compose',
+                component: () => import('../../pages/knowledge/KnowledgeComposeView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+              },
+              {
+                // The LINK GRAPH. `:slug?` absent = the base overview; present = that
+                // entry's ego graph, so a re-centre is a real, shareable URL and a
+                // refresh redraws the same picture (the layout is deterministic).
+                path: 'graph/:slug?',
+                name: 'next.knowledge.base.graph',
+                component: () => import('../../pages/knowledge/KnowledgeGraphView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+              },
+              {
+                path: 'settings',
+                name: 'next.knowledge.base.settings',
+                component: () => import('../../pages/knowledge/KnowledgeBaseSettingsView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.knowledge' },
+              },
+            ],
+          },
+        ],
+      },
     ],
   },
   {

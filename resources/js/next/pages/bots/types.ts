@@ -87,6 +87,48 @@ export interface BotKnowledge {
 }
 
 /**
+ * HOW a bound bot reads its base (KnowledgeBindingMode, verified 1:1). The three are not
+ * interchangeable and the copy must not pretend they are:
+ *
+ *   inline  the WHOLE approved base, verbatim, in the author's order. No AI call, misses nothing —
+ *           until the base outgrows the character budget, at which point it silently drops the tail.
+ *   rag     only the passages closest in meaning to the question, plus one hop of links. Scales to
+ *           any size, costs one embedding per read, and can miss what nobody's query resembles.
+ *   auto    inline while the base FITS, retrieval once it does not. The default, because it is the
+ *           choice a well-informed operator would keep re-making as the base grows.
+ */
+export type KnowledgeBindingMode = 'inline' | 'rag' | 'auto';
+
+/** The three modes in the order the UI offers them — `auto` first, because it is the default. */
+export const KNOWLEDGE_BINDING_MODES: KnowledgeBindingMode[] = ['auto', 'inline', 'rag'];
+
+/** `BotResource.knowledge_binding` — a bare pair, not an expanded base (the base has its own endpoint). */
+export interface BotKnowledgeBinding {
+  knowledge_base_id: string;
+  mode: KnowledgeBindingMode;
+}
+
+/** The PUT body. One base per bot, so this is an upsert and never needs a create/update split. */
+export interface BotKnowledgeBindingPayload {
+  knowledge_base_id: string;
+  mode: KnowledgeBindingMode;
+}
+
+/**
+ * The 201 body of `POST /bots/{bot}/knowledge/migrate` — a FLAT object, NOT a `{data}` envelope
+ * and NOT a bot: enough to link straight to the new base without a second serializer.
+ *
+ * The migration is ADDITIVE: `bots.knowledge` is left exactly as it was, so nothing is lost if the
+ * user decides the base was a mistake — they unbind and the built-in entries are live again.
+ */
+export interface BotKnowledgeMigrationResult {
+  knowledge_base_id: string;
+  name: string;
+  entries_count: number;
+  mode: KnowledgeBindingMode;
+}
+
+/**
  * The VISUAL module ("Wygląd") — the bot's LIKENESS: the written identity an image is drawn from, the
  * generated candidate strip, and which of those is APPROVED. Mirrors `Bot::visualIdentity()` 1:1; the
  * detail resource returns `null` when the module was never configured (a bot older than the module).
@@ -175,6 +217,15 @@ export interface BotDetail {
   audio: null;
   // --- 5. Knowledge module — { enabled, entries: [{title, content}] }. ---
   knowledge: BotKnowledge;
+  /**
+   * B6 — the knowledge BASE this bot reads, or null. Present on the DETAIL resource only (the list
+   * resource omits it on purpose, so a page of bots is never a page of lookups).
+   *
+   * It takes PRECEDENCE over `knowledge` above: while a binding exists the built-in entries are
+   * kept but NOT injected. An editor must therefore show the binding as the active source and mark
+   * the built-in section inactive — otherwise a user edits entries that nothing reads.
+   */
+  knowledge_binding: BotKnowledgeBinding | null;
   // --- Meta / capability flags ---
   /** `whenLoaded('creator')` — polymorphic (Phase 3): user | workflow_run | bot | null. */
   creator?: Creator | null;

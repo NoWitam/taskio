@@ -1,0 +1,30 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`KnowledgeGraphView > draws each edge kind with its own line PATTERN, not just its own colour 1`] = `
+[
+  {
+    "classes": [
+      "is-mention",
+    ],
+    "kind": "mention",
+  },
+  {
+    "classes": [
+      "is-similarity",
+    ],
+    "kind": "similarity",
+  },
+  {
+    "classes": [
+      "is-wikilink",
+    ],
+    "kind": "wikilink",
+  },
+  {
+    "classes": [
+      "is-ghost",
+    ],
+    "kind": "ghost",
+  },
+]
+`;

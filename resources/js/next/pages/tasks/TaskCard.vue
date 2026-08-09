@@ -93,7 +93,12 @@ const commentsCount = computed(() => props.task?.comments ?? 0);
 const assignee = computed(() => (props.task ? resolveAssignee(props.task) : null));
 
 // --- Labels overflow ("+N") ----------------------------------------------
-const labels = computed(() => props.task?.labels ?? []);
+// `labels` is a contract ARRAY the card iterates twice (the visible track + the hidden measuring row).
+// A non-array payload must collapse to "no labels" rather than be spread one chip per character.
+const labels = computed(() => {
+  const value = props.task?.labels;
+  return Array.isArray(value) ? value : [];
+});
 const labelTrackRef = ref<HTMLElement | null>(null);
 const labelMeasureRef = ref<HTMLElement | null>(null);
 

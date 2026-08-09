@@ -6,7 +6,8 @@ cross-module actor resolver). R2 sub-stage 4 — see **ADR-0037** for the full d
 gate cutover, the per-workspace cap column, the polymorphic actor attribution, the pre-run 429 gate). This
 page is the practical, endpoint-by-endpoint contract; for the SESSION-side consumer contract (the pre-run
 429 on the four run endpoints, session tagging) see `docs/backend/generator-sessions-api.md` → "Cost meter
-integration".
+integration"; for the BOT-side consumer contract (the `ai_bot_task` channel, the gate-before-claim, the
+per-run projection) see `docs/backend/bots-api.md` → "AI cost gate (`ai_bot_task`)".
 
 > Every AI spend in the app — Workflows `@[ai-text]`, Disk AI edits, Generator sessions — routes through
 > the SAME ledger (`Variables\Support\LedgerMeteredAiCall`) and is summarized by this page's endpoints. This
@@ -23,7 +24,8 @@ spend; no provider invoice or real billing reconciliation feeds it. The wire alw
 
 ```
 AiUsageEvent (one row per metered AI call, across every spender app-wide)
-  channel                 'ai_text' | 'ai_image_edit' | 'ai_image_generate'
+  channel                 'ai_text' | 'ai_image_edit' | 'ai_image_generate' | 'ai_bot_task'
+                           | 'ai_embedding' | 'ai_knowledge' | 'ai_knowledge_resolve'
   prompt_tokens / completion_tokens / total_tokens   real provider tokens (0 for an opaque result)
   estimated_cost          DECIMAL(10,4) — the $ figure the R2 sub-stage 4 gate sums and refuses over
   session_id               the generation session that drove it, if any (no FK — outlives a purged session)
@@ -38,6 +40,8 @@ AiUsageEvent (one row per metered AI call, across every spender app-wide)
 | `ai_text` | `total_tokens / 1000 * per_1k_tokens` — REAL provider tokens | `ai.meter.pricing.ai_text.per_1k_tokens` | `0.005` | `AI_PRICE_TEXT_PER_1K` |
 | `ai_image_edit` | flat `per_call` — an image edit has no real token count | `ai.meter.pricing.ai_image_edit.per_call` | `0.17` | `AI_PRICE_IMAGE_EDIT_PER_CALL` |
 | `ai_image_generate` | flat `per_call` | `ai.meter.pricing.ai_image_generate.per_call` | `0.19` | `AI_PRICE_IMAGE_GENERATE_PER_CALL` |
+| `ai_bot_task` | `total_tokens / 1000 * per_1k_tokens` — a bot's autonomous task-execution run. **One row per RUN, not per step** — laravel/ai's agent loop returns only once every step is done, but the response's `usage` SUMS every step, so the row still carries the run's real total. Gated BEFORE the claim by a pre-run $ projection (`BotRunEstimate`), re-checked by the ordinary gate-before-spend at record time. See `docs/backend/bots-api.md` → "AI cost gate (`ai_bot_task`)" for the full contract. | `ai.meter.pricing.ai_bot_task.per_1k_tokens` | `0.005` | `AI_PRICE_BOT_TASK_PER_1K` |
+| `ai_embedding`, `ai_knowledge`, `ai_knowledge_resolve` | The Knowledge module's indexing/composer channels — see `docs/backend/knowledge-api.md`. Listed here for completeness; not otherwise covered by this page. | `ai.meter.pricing.{channel}.per_1k_tokens` | `0.00002` / `0.005` / `0.005` | `AI_PRICE_EMBEDDING_PER_1K` / `AI_PRICE_KNOWLEDGE_PER_1K` / `AI_PRICE_KNOWLEDGE_RESOLVE_PER_1K` |
 
 A missing/zero price for a channel yields `estimated_cost: 0.0` for that spend — the gate stays OPEN for
 that channel rather than blocking on a misconfiguration (`LedgerMeteredAiCall::estimateCost()`). The
@@ -90,7 +94,7 @@ a new `App\Support\Meter\MeterActorResolver`:
 
 | Order | Source | Result |
 |---|---|---|
-| 1 | An explicit tag on `Variables\Support\MeterContext::setActor()` | Kept as-is — the queued session run (owner, or the bot when delegated), the autonomous bot slot-fill, and the Disk AI-edit worker all tag explicitly because none has its own `auth()`/run context on a queue worker. |
+| 1 | An explicit tag on `Variables\Support\MeterContext::setActor()` | Kept as-is — the queued session run (owner, or the bot when delegated), the autonomous bot slot-fill, **the bot's whole task-execution run** (`ai_bot_task` — tagged for the run's full duration, including the bound-knowledge embedding read that happens before the agent says a word), and the Disk AI-edit worker all tag explicitly because none has its own `auth()`/run context on a queue worker. |
 | 2 | An active `WorkflowRunContext` | The run's own morph identity — a workflow's `@[ai-text]` call attributes to the run. |
 | 3 | `auth()->id()` | The request-bound user. |
 | 4 | None of the above | `[null, null]` — unattributed. |
@@ -141,6 +145,7 @@ GET /api/workspaces/{id}/ai-usage
   "per_channel": [
     { "channel": "ai_text", "cost": 2.10, "tokens": 184320 },
     { "channel": "ai_image_generate", "cost": 1.71, "tokens": 36000 },
+    { "channel": "ai_bot_task", "cost": 0.63, "tokens": 51200 },
     { "channel": "ai_image_edit", "cost": 0.41, "tokens": 8000 }
   ],
   "per_actor": [
@@ -233,6 +238,8 @@ fail loudly on a client bug, not to be routinely handled.
 - `app/modules/Variables/Support/MeterContext.php` — the ambient session + explicit-actor tag holder
 - `app/modules/Variables/Models/AiUsageEvent.php`, `Exceptions/AiBudgetExceededException.php`
 - `app/Support/Meter/MeterActorResolver.php` — the cross-module actor resolution (mirrors `HasCreator`)
+- `app/modules/Bot/Services/BotTaskRunManager.php`, `Support/BotRunEstimate.php` — the `ai_bot_task`
+  gate-before-claim and its pre-run $ projection; see `docs/backend/bots-api.md`
 - `app/modules/Workspaces/Http/Controllers/WorkspaceAiUsageController.php`
 - `app/modules/Workspaces/Http/Resources/AiUsageSummaryResource.php`
 - `app/modules/Workspaces/Http/Requests/UpdateAiBudgetRequest.php`

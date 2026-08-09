@@ -1,0 +1,25 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`KnowledgeDraftRelationsPanel > pins the node classes so "draft" and "amended" cannot collapse into one look 1`] = `
+[
+  {
+    "classes": [
+      "is-draft",
+      "is-entry",
+    ],
+    "draft": "true",
+  },
+  {
+    "classes": [
+      "is-entry",
+    ],
+    "draft": null,
+  },
+  {
+    "classes": [
+      "is-entry",
+    ],
+    "draft": null,
+  },
+]
+`;

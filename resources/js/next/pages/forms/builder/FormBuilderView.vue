@@ -186,10 +186,14 @@ async function save(): Promise<void> {
   } catch (err: unknown) {
     const e = err as { response?: { data?: { errors?: Record<string, string[]>; message?: string } } };
     const fieldErrors = e.response?.data?.errors;
-    if (fieldErrors?.name?.length) {
-      nameError.value = fieldErrors.name[0];
-    } else if (fieldErrors?.content?.length) {
-      toast.danger(fieldErrors.content[0]);
+    // The bag entries are TYPED `string[]`, but they arrive over the wire: indexing a bare string at
+    // `[0]` would show a ONE-CHARACTER "error", so only a real non-empty array counts as a message.
+    const nameMessages = fieldErrors?.name;
+    const contentMessages = fieldErrors?.content;
+    if (Array.isArray(nameMessages) && nameMessages.length) {
+      nameError.value = nameMessages[0];
+    } else if (Array.isArray(contentMessages) && contentMessages.length) {
+      toast.danger(contentMessages[0]);
     } else {
       toast.danger(e.response?.data?.message ?? t('forms.builder.saveError'));
     }
