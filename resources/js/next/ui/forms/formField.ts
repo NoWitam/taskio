@@ -8,6 +8,26 @@
 // caller threading anything by hand. Every control ALSO accepts its own
 // `id` / `ariaInvalid` / `describedById` props so it works standalone outside a
 // FormField.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// `ariaInvalid` MUST default to `undefined` in every control.
+// ─────────────────────────────────────────────────────────────────────────────
+// Controls resolve their error state as
+//
+//     const invalid = computed(() => props.ariaInvalid ?? field?.invalid.value ?? false);
+//
+// i.e. "an explicit prop wins; absence hands the verdict to the FormField". That
+// only holds while ABSENCE IS `undefined`. A `boolean`-typed prop with no declared
+// default gets Vue's boolean casting — absent becomes `false` — and `false ?? x`
+// is `false`, so the `field` branch becomes unreachable and a FormField carrying
+// an error hands its control nothing: no `aria-invalid` for assistive technology
+// and no error line on the FieldShell. That was a live, app-wide defect.
+//
+// Therefore every control (and every wrapper that FORWARDS the prop, e.g.
+// UserSelect → Select) declares `ariaInvalid: undefined` in `withDefaults`, which
+// opts out of the cast while leaving the bare-attribute shorthand
+// (`<TextInput aria-invalid />` → `true`) intact. Pinned by
+// `__tests__/ariaInvalidDelegation.spec.ts`.
 import { inject, provide, type ComputedRef, type InjectionKey, type Ref } from 'vue';
 
 /**

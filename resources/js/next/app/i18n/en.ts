@@ -114,6 +114,7 @@ export const en = {
     sectionComingSoon: 'Coming soon',
     dashboard: 'Dashboard',
     tasks: 'Tasks',
+    calendar: 'Calendar',
     disk: 'Disk',
     forms: 'Forms',
     approvals: 'Approvals',
@@ -960,6 +961,204 @@ export const en = {
       statusError: 'Couldn’t change the status',
       deleteError: 'Couldn’t delete the task',
       commentError: 'Couldn’t post the comment',
+    },
+  },
+
+  // Calendar module (R3): one timeline, four sources, two surfaces.
+  //
+  // THREE COPY RULES ARE ENFORCED BY THE KEY LAYOUT ITSELF, so a well-meaning edit cannot
+  // undo them:
+  //   • Loss has SIX sentences, not three: every kind has a `withCount` and an `unknown`
+  //     variant, because an unknown count is a different STATEMENT, not a missing number.
+  //     Nothing here may ever print "0".
+  //   • There is NO key for a source's name or for a badge's text. Both arrive already
+  //     translated from the module that owns them, and translating them here would break
+  //     the promise that a new source needs no frontend change.
+  //   • No plural machinery: `t()` has none, so every counter is worded "Label: {n}".
+  calendar: {
+    title: 'Calendar',
+    subtitle: 'Deadlines, automations and events on one timeline.',
+    loading: 'Loading the calendar…',
+
+    mode: {
+      label: 'View',
+      grid: 'Month',
+      agenda: 'Agenda',
+    },
+
+    nav: {
+      prevMonth: 'Previous month',
+      nextMonth: 'Next month',
+      today: 'Today',
+      todayDisabled: 'Today is already in this view',
+    },
+
+    timezone: {
+      chip: 'Time zone: {tz}',
+      mismatch:
+        'The calendar shows days and times in the team’s time zone ({tz}). Your browser is in {localTz}.',
+      fieldHint: 'Time in the team’s time zone: {tz}',
+    },
+
+    day: {
+      more: '+{n} more',
+      showAll: 'Show every occurrence: {date}',
+      count: 'Occurrences: {n}',
+      empty: 'Nothing on this day',
+      createHere: 'Add an event on this day',
+    },
+
+    occurrence: {
+      allDay: 'all day',
+      from: 'from {time}',
+      range: '{from}–{to}',
+      when: 'When',
+      source: 'Source',
+      timezone: 'Time zone',
+      open: 'Open',
+      // Deliberately different from `open`: for a workflow run there is no URL that opens
+      // that particular run (its detail route is nested under its workflow), so the action
+      // may only promise the screen it actually reaches.
+      openList: 'Open the runs list',
+      editable: 'Can be edited here',
+      external: 'Opens in another module',
+    },
+
+    dense: {
+      // The FALLBACK wording, used only when the occurrence carries no `cadence_label`.
+      // When it does, the marker renders that server prose instead — untranslated, like
+      // every other sentence a source hands us finished.
+      //
+      // What the count means: how many this one chip stands in for. NOT the size of the
+      // series, which the contract does not carry — nothing here may guess at one.
+      chip: 'Series — showing {shown}',
+      aria: 'This item repeats more often than the grid can show',
+    },
+
+    filters: {
+      searchPlaceholder: 'Search the calendar…',
+      sources: 'Sources',
+      clearAll: 'Clear filters',
+      chip: {
+        source: 'Source: {value}',
+        search: 'Search: {value}',
+      },
+    },
+
+    results: {
+      count: 'Occurrences: {n}',
+      none: 'No occurrences',
+    },
+
+    legend: {
+      sources: 'Sources:',
+      colorNote: 'Colour means an item’s urgency or state, not its source.',
+      unavailable: 'Couldn’t be loaded',
+    },
+
+    truncation: {
+      title: 'This view isn’t showing everything',
+      windowTrimmed: {
+        withCount:
+          '{source}: {n} occurrences from the end of this range didn’t fit. Earlier days are complete.',
+        unknown:
+          '{source}: some occurrences from the end of this range didn’t fit. Earlier days are complete.',
+      },
+      itemsDropped: {
+        withCount:
+          '{source}: {n} items are missing from this view ENTIRELY — not shortened, absent. Narrow the filters or search for a specific one.',
+        unknown:
+          '{source}: some items are missing from this view ENTIRELY — not shortened, absent. Narrow the filters or search for a specific one.',
+      },
+      itemDensified: {
+        withCount:
+          '{source}: items repeating more often than can be shown: {n}. You are seeing the START of the series — the empty days after it don’t mean nothing is happening.',
+        unknown:
+          '{source}: some items repeat more often than can be shown. You are seeing the START of the series — the empty days after it don’t mean nothing is happening.',
+      },
+      action: {
+        narrowFilters: 'Narrow the filters',
+        searchByName: 'Search by name',
+      },
+    },
+
+    // A source could not answer. TWO wordings, because the reader's question is "do I click
+    // something or do I go and tell somebody", and `reason` finally answers it. Neither
+    // sentence explains the failure — a reader does not need to know what "not constructed"
+    // means, only whether there is anything for them to do.
+    unavailable: {
+      retryable: 'Couldn’t load: {sources}. That’s usually temporary — try again.',
+      permanent: 'Couldn’t load: {sources}. Trying again won’t change this one; it needs looking at.',
+      // Said once, under whichever lines appeared: the grid below is real, current data.
+      rest: 'Everything else on the calendar is up to date.',
+      retry: 'Try again',
+    },
+
+    empty: {
+      title: 'Nothing in this range',
+      description: 'Deadlines, automations and events from this month will appear here.',
+      action: 'New event',
+      filtered: {
+        title: 'No results for these filters',
+        description: 'Try a different source or search term.',
+        action: 'Clear filters',
+      },
+    },
+
+    error: {
+      title: 'Couldn’t load the calendar',
+      description: 'Something went wrong while loading this range.',
+      retry: 'Try again',
+    },
+
+    event: {
+      new: 'New event',
+      edit: 'Edit event',
+      view: 'Event',
+      save: 'Save',
+      cancel: 'Cancel',
+      delete: 'Delete',
+      saved: 'Event saved',
+      deleted: 'Event deleted',
+      saveError: 'Couldn’t save the event',
+      deleteError: 'Couldn’t delete the event',
+      loadError: 'Couldn’t load the event',
+      // Gated on `can_be_edited` / `can_be_deleted`, so this names BOTH people who can:
+      // an event created by an automation has no human owner, but the workspace owner may
+      // still fix it.
+      noPermission: 'This event can be edited by its author or by the workspace owner.',
+      createdByRun: 'Created by an automation',
+      field: {
+        title: 'Title',
+        titlePlaceholder: 'What is happening?',
+        description: 'Description',
+        allDay: 'All day',
+        allDayToggle: 'This event takes a whole day',
+        start: 'Starts',
+        startDay: 'Start date',
+        startTime: 'Start time',
+        end: 'Ends',
+        endDay: 'End date',
+        endTime: 'End time',
+      },
+      // The six colour NAMES are gone with the two pickers that used them (this drawer and
+      // the `create_event` workflow step). Colour on the calendar is a DICTIONARY OF
+      // MEANINGS — a deadline's priority, a run's result, "this is only a projection" — and
+      // an event states none, so an event's colour is a server-assigned constant nobody
+      // picks. Nothing reads a colour NAME any more: the grid paints tokens (calendarMeta),
+      // and a `badge.label` arrives as finished server prose.
+      validation: {
+        titleRequired: 'Give the event a title.',
+        startDateRequired: 'Pick the day this event falls on.',
+        startsAtRequired: 'Pick the date and time this event starts.',
+        endBeforeStart: 'The end cannot be earlier than the start.',
+      },
+      deleteConfirm: {
+        title: 'Delete this event?',
+        // No promise of restoring it: the row is soft-deleted, but there is no restore
+        // endpoint, so from here it is gone.
+        message: '“{name}” will be removed from the calendar.',
+      },
     },
   },
 
@@ -5089,6 +5288,36 @@ export const en = {
         },
         summary: '{name} · {count} inputs',
       },
+      // create_event (R3 B4) — puts a calendar event on the workspace's grid. `label` /
+      // `description` are the step TYPE's name and the add-step picker's blurb, exactly
+      // like the other three; every FIELD label below therefore ends in `…Label`, because
+      // a field called "Description" cannot borrow the key that describes the whole step.
+      create_event: {
+        label: 'Add calendar event',
+        description: 'Put an event on the workspace calendar. It only annotates the timeline — it never triggers anything.',
+        titleLabel: 'Title',
+        titlePlaceholder: 'Event title (type { to insert a variable)',
+        descriptionLabel: 'Description',
+        descriptionHint: 'Shown on the event as plain text — the calendar does not render markdown.',
+        descriptionPlaceholder: 'Optional description (type { to insert a variable)',
+        allDay: 'All day',
+        allDayHint:
+          'Decides which date field below is required, so it is a fixed choice rather than a variable — a run-time value could land on a branch with no date in it.',
+        allDayToggle: 'This event takes a whole day',
+        startDate: 'Day',
+        startDateHint: 'The day the event falls on. Required — an event with no place in time has no square to draw on.',
+        startsAt: 'Starts',
+        startsAtHint:
+          'Required. The date and time you pick are read in the workspace’s time zone; a variable carrying a full moment keeps its own.',
+        endsAt: 'Ends',
+        endsAtHint: 'Optional, and read in the same time zone as the start. An end that cannot be read, or that falls before the start, simply leaves the event with no stated end.',
+        // No `color` / `colorHint`: the step has no colour field. A calendar colour states a
+        // meaning (priority, run result, "only a projection") and an event states none.
+        outputs: {
+          title: 'Available to later steps',
+          hint: '{{steps.{key}.event_id}} and {{steps.{key}.title}}.',
+        },
+      },
       addStep: 'Add step',
       addStepOfType: 'Add step: {type}',
       maxSteps: 'You can add at most 50 steps.',
@@ -5159,6 +5388,7 @@ export const en = {
         // overview summarises by the mapped-input count rather than surfacing a raw id.
         generateContentFallback: 'Generated content',
         generateContentInputs: 'Generated content · {count} inputs',
+        createEventFallback: 'New event',
       },
     },
     editor: {
@@ -5258,6 +5488,10 @@ export const en = {
       pickVariable: 'Pick a variable',
       pickElementField: 'Pick an item field',
       pickDate: 'Pick a date',
+      // The fallback label for a field that names a MOMENT (a timed event's start/end).
+      // Worded apart from `pickDate` because the control genuinely differs: this one can
+      // state an hour, and a field that cannot must not borrow a label promising one.
+      pickDateTime: 'Pick a date and time',
       removeVariable: 'Remove variable',
       returns: 'Returns:',
       expected: 'expected {types}',
@@ -5386,6 +5620,10 @@ export const en = {
           // generate_content → the produced generation session (R2 sub-stage 5).
           sessionTitle: 'Generated content',
           openSession: 'Open the generation in a new tab',
+          // create_event → the event it put on the calendar (R3 B4). Unlike the session,
+          // this step DOES publish a title, so the card can name the real event.
+          untitledEvent: 'Untitled event',
+          openEvent: 'Open event “{name}” in a new tab',
         },
         // A run parked on a content generation. There is no live push on this screen and no
         // cancel today — the copy says both plainly.

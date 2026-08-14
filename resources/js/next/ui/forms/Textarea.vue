@@ -42,6 +42,9 @@ const props = withDefaults(
     ariaLabel?: string;
   }>(),
   {
+    // Absence must stay `undefined` (no Boolean cast to `false`) so it defers
+    // to the surrounding FormField — see `formField.ts`.
+    ariaInvalid: undefined,
     rows: 3,
     disabled: false,
     readonly: false,

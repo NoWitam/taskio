@@ -24,7 +24,8 @@ const propRows: ApiRow[] = [
   { name: 'clearable', type: 'boolean', default: 'true', description: 'Show a clear (✕) button when filled.' },
   { name: 'size', type: "'sm'|'md'|'lg'", default: "'md'", description: 'Control height + text scale.' },
   { name: 'disabled / readonly', type: 'boolean', default: 'false', description: 'Inert / read-only.' },
-  { name: 'success / dirty / ariaInvalid', type: 'boolean', default: 'false', description: 'Standalone state styling.' },
+  { name: 'success / dirty', type: 'boolean', default: 'false', description: 'Standalone state styling.' },
+  { name: 'ariaInvalid', type: 'boolean', default: '—', description: 'Force the error state standalone; omit it and the surrounding FormField decides.' },
 ];
 const eventRows: ApiRow[] = [
   { name: 'update:modelValue', type: 'string | null', description: 'Emitted when the ISO time changes (typed or steppers).' },

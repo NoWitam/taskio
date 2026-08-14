@@ -35,4 +35,51 @@ return [
         ],
     ],
 
+    // R3 Kalendarz. Nazwy źródeł i plakietki wystąpień są tłumaczone SERWEROWO i przenoszone w
+    // odpowiedzi kalendarza: ekran kalendarza musi umieć narysować źródło, o którym nigdy nie słyszał —
+    // inaczej „dodanie źródła nie wymaga zmian na froncie" przestaje być prawdą przy pierwszym z nich.
+    'calendar' => [
+        'schedule_source' => 'Zaplanowane automatyzacje',
+        'run_source' => 'Przebiegi automatyzacji',
+        'scheduled_badge' => 'Zaplanowane',
+        // Przebieg, którego workflow już usunięto, i tak się wydarzył — jego kratka nadal musi coś mówić.
+        'run_untitled' => 'Usunięta automatyzacja',
+
+        // Jak często powtarza się zaplanowana automatyzacja — tekst, który czyni znacznik zagęszczenia
+        // w kalendarzu informacyjnym („Seria — pokazano 64" nie mówi nic; „Co 5 min" mówi dlaczego
+        // seria jest dłuższa niż dzień). Etykietę mają wyłącznie tryby INTERWAŁOWE; dlaczego nie mają
+        // jej harmonogramy o stałych godzinach — patrz ScheduleCadenceLabel.
+        'cadence' => [
+            'every_minutes' => 'Co :count min',
+            'every_hours' => 'Co :count h',
+            // Interwał wraz z jego opcjonalnym oknem aktywności.
+            'within' => ':cadence, :window',
+        ],
+    ],
+
+    // TYPY KROKÓW jako tekst. Używa ich katalog zmiennych, który wysyła „<typ kroku> · <wyjście>" jako
+    // nazwę wyświetlaną każdej zmiennej wyjściowej kroku. Edytor workflowów nazywa typy kroków z
+    // własnego katalogu, więc nic nie dopasowuje się po tych napisach.
+    'step_types' => [
+        'create_task' => 'Utwórz zadanie',
+        'create_form_report' => 'Utwórz raport formularza',
+        'generate_content' => 'Wygeneruj treść',
+        'create_event' => 'Utwórz wydarzenie w kalendarzu',
+    ],
+
+    // Stany przebiegu jako TEKST, dla miejsc, w których to serwer musi je nazwać (plakietka kalendarza
+    // oraz `state_label` w API przebiegów). Metoda label() w enumie czyta teraz te klucze: wcześniej
+    // miała polskie napisy na sztywno i była ostatnim śladem ogólnoaplikacyjnej usterki, w której proza
+    // serwera szła po APP_LOCALE zamiast po języku czytającego. Nic nie dopasowuje się po tej prozie —
+    // interfejs przebiegów rozpoznaje stan po `run.state`, a `state_label` traktuje wyłącznie jako
+    // zapasowy napis — więc to domknięcie naprawy, a nie zmiana kontraktu.
+    'run_states' => [
+        'pending' => 'Oczekuje',
+        'running' => 'W trakcie',
+        'waiting' => 'Wstrzymany',
+        'completed' => 'Zakończony',
+        'failed' => 'Błąd',
+        'cancelled' => 'Anulowany',
+    ],
+
 ];

@@ -34,4 +34,50 @@ return [
         ],
     ],
 
+    // R3 Calendar. Source names and occurrence badges are translated SERVER-side and carried in the
+    // calendar response: the calendar screen must be able to render a source it has never heard of, or
+    // "adding a source needs no frontend change" stops being true on the very first one.
+    'calendar' => [
+        'schedule_source' => 'Scheduled automations',
+        'run_source' => 'Automation runs',
+        'scheduled_badge' => 'Planned',
+        // A run whose workflow has since been deleted still happened, and its square still has to say
+        // something.
+        'run_untitled' => 'Deleted automation',
+
+        // How often a scheduled automation repeats — the prose that makes the calendar's density
+        // marker informative ("Series — showing 64" says nothing; "Every 5 min" says why). Only the
+        // INTERVAL time modes have one; see ScheduleCadenceLabel for why fixed-time schedules do not.
+        'cadence' => [
+            'every_minutes' => 'Every :count min',
+            'every_hours' => 'Every :count h',
+            // The interval plus its optional active window.
+            'within' => ':cadence, :window',
+        ],
+    ],
+
+    // STEP TYPES as prose. Used by the variable catalog, which ships "<step type> · <output>" as the
+    // display name of every step-output variable. The workflow EDITOR words step types from its own
+    // catalogue, so nothing matches on these strings.
+    'step_types' => [
+        'create_task' => 'Create task',
+        'create_form_report' => 'Create form report',
+        'generate_content' => 'Generate content',
+        'create_event' => 'Create calendar event',
+    ],
+
+    // Run states as PROSE, for the places the server has to word them itself (the calendar badge, and
+    // `state_label` on the runs API). The enum's label() reads these now: it used to hardcode Polish,
+    // which was the last remnant of the app-wide defect where server prose followed APP_LOCALE instead
+    // of the reader's language. Nothing matches on the prose — the runs UI keys off `run.state` and
+    // treats `state_label` only as a fallback — so this is the fix landing, not a contract change.
+    'run_states' => [
+        'pending' => 'Pending',
+        'running' => 'Running',
+        'waiting' => 'Waiting',
+        'completed' => 'Completed',
+        'failed' => 'Failed',
+        'cancelled' => 'Cancelled',
+    ],
+
 ];

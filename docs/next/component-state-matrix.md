@@ -227,6 +227,43 @@ several controls under a single label/description/message.
 | Slots/props | label, required asterisk, description, `error`, `success`, control slot(s) |
 | States | default, required, with-description, error (message visible), success (message visible), dirty (subtle line, no message), disabled (dims label + control), readonly, multiple-controls |
 
+### The `ariaInvalid` invariant (project rule)
+
+Every control in this tier resolves its own invalid state the same way:
+
+```ts
+const invalid = computed(() => props.ariaInvalid ?? field?.invalid.value ?? false);
+```
+
+**An explicit `ariaInvalid` prop wins; absence hands the verdict to the surrounding
+FormField.** That reading only holds while absence is genuinely `undefined`. A
+`boolean`-typed prop declared with no explicit default gets Vue's boolean **cast** — an
+absent attribute becomes `false` — and `false ?? x` is `false`, so the `field` branch
+becomes unreachable: a FormField carrying a server error hands its control **nothing**.
+No `aria-invalid` for assistive technology, no error line on the FieldShell, and a
+`focusFirstError()` helper querying `[aria-invalid="true"]` finds nothing to focus. This
+was a live, app-wide defect across the `ui/forms` control family (rationale in
+`resources/js/next/ui/forms/formField.ts`; pinned by the sweep in
+`ui/forms/__tests__/ariaInvalidDelegation.spec.ts`, which covers 18 controls + 7
+forwarding wrappers).
+
+**Rule — binding on every control and every wrapper, permanent, not a one-time cleanup:**
+
+- Declare `ariaInvalid: undefined` in the control's `withDefaults` — never `false`, and
+  never omit the default and let Vue's boolean cast supply one.
+- **Any wrapper that forwards the prop to an inner control** (e.g. `UserSelect`,
+  `LabelSelect`, `FormSelect`, `PipelineSelect`, `TemplateSelect`, `BotSelect`,
+  `KnowledgeBaseSelect` → `Select`) must repeat `ariaInvalid: undefined` on its **own**
+  prop declaration. The fix stops exactly at the first wrapper that redeclares
+  `ariaInvalid` with an implicit `false` default — that is how seven wrappers broke the
+  first time, silently, with no error at any call site.
+- The bare-attribute shorthand (`<TextInput aria-invalid />` → `true`) must keep working
+  — opting out of the boolean **cast** is not the same as opting out of the boolean
+  **shorthand**.
+- A new control or wrapper added anywhere under `ui/forms/` (or `ui/editor/`) must be
+  added to the `CONTROLS`/`WRAPPERS` sweep in `ariaInvalidDelegation.spec.ts` — a control
+  missing from that list is a control nobody checks.
+
 ### TextInput
 
 | Axis | Values |
@@ -327,9 +364,16 @@ several controls under a single label/description/message.
 
 ### Switch
 
-| States | off, on, hover, focus, disabled (off/on), loading (pending async toggle), with leading/trailing label |
+| States | off, on, hover, focus, disabled (off/on), loading (pending async toggle), **error**, with leading/trailing label |
 
-- **A11y:** `role="switch"` + `aria-checked`; Space/Enter toggles; label clickable.
+- **Error skin (mirrors Checkbox/Radio exactly):** the danger border draws on the track
+  only while the switch is **off** — an already-**on** switch keeps its primary fill, the
+  same idiom Checkbox/Radio use (a checked/selected state outranks invalid too). Never
+  color alone: the surrounding FormField still renders the message + alert icon
+  underneath. Reads its state from the field the same way every other control does — see
+  the `ariaInvalid` invariant above.
+- **A11y:** `role="switch"` + `aria-checked`; Space/Enter toggles; label clickable;
+  `aria-invalid` set when in the error state.
 
 ### Slider
 

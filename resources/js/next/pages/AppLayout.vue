@@ -77,6 +77,9 @@ interface NavLink {
 const primaryNav: NavLink[] = [
   { key: 'dashboard', labelKey: 'nav.dashboard', icon: 'layout-dashboard', to: '/dashboard' },
   { key: 'tasks', labelKey: 'nav.tasks', icon: 'list-checks', to: '/tasks' },
+  // Right after Tasks: a task's deadline is the calendar's nearest semantic neighbour, and
+  // it is the source most people will recognise on the grid first.
+  { key: 'calendar', labelKey: 'nav.calendar', icon: 'calendar', to: '/calendar' },
   { key: 'disk', labelKey: 'nav.disk', icon: 'folder', to: '/disk' },
   { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', to: '/forms' },
   { key: 'approvals', labelKey: 'nav.approvals', icon: 'git-branch', to: '/approvals' },

@@ -108,6 +108,7 @@ export const pl: MessageSchema = {
     sectionComingSoon: 'Wkrótce',
     dashboard: 'Pulpit',
     tasks: 'Zadania',
+    calendar: 'Kalendarz',
     disk: 'Dysk',
     forms: 'Formularze',
     approvals: 'Akceptacje',
@@ -952,6 +953,205 @@ export const pl: MessageSchema = {
       statusError: 'Nie udało się zmienić statusu',
       deleteError: 'Nie udało się usunąć zadania',
       commentError: 'Nie udało się dodać komentarza',
+    },
+  },
+
+  // Moduł Kalendarza (R3): jedna oś czasu, cztery źródła, dwie powierzchnie.
+  //
+  // Trzy reguły kopii są wymuszone samym układem kluczy, więc nie da się ich cofnąć
+  // nieuważną edycją:
+  //   • strata ma SZEŚĆ zdań, nie trzy: każdy rodzaj ma wariant `withCount` i `unknown`,
+  //     bo nieznana liczba to inne STWIERDZENIE, a nie brakująca cyfra. Nigdzie nie może
+  //     paść „0”;
+  //   • nie ma klucza na nazwę źródła ani na treść plakietki — jedno i drugie przychodzi
+  //     przetłumaczone z modułu, który je posiada, a tłumaczenie ich tutaj zerwałoby
+  //     obietnicę „nowe źródło bez zmiany frontendu”;
+  //   • bez odmiany liczebników: `t()` jej nie ma, więc każdy licznik ma kształt
+  //     „Etykieta: {n}”.
+  calendar: {
+    title: 'Kalendarz',
+    subtitle: 'Terminy, automatyzacje i wydarzenia na jednej osi czasu.',
+    loading: 'Wczytywanie kalendarza…',
+
+    mode: {
+      label: 'Widok',
+      grid: 'Miesiąc',
+      agenda: 'Agenda',
+    },
+
+    nav: {
+      prevMonth: 'Poprzedni miesiąc',
+      nextMonth: 'Następny miesiąc',
+      today: 'Dziś',
+      todayDisabled: 'Dzisiejszy dzień jest już w tym widoku',
+    },
+
+    timezone: {
+      chip: 'Strefa: {tz}',
+      mismatch:
+        'Kalendarz pokazuje dni i godziny w strefie zespołu ({tz}). Twoja przeglądarka jest w {localTz}.',
+      fieldHint: 'Godzina w strefie zespołu: {tz}',
+    },
+
+    day: {
+      more: '+{n} więcej',
+      showAll: 'Pokaż wszystkie wystąpienia: {date}',
+      count: 'Wystąpienia: {n}',
+      empty: 'Brak wystąpień',
+      createHere: 'Dodaj wydarzenie na ten dzień',
+    },
+
+    occurrence: {
+      allDay: 'cały dzień',
+      from: 'od {time}',
+      range: '{from}–{to}',
+      when: 'Kiedy',
+      source: 'Źródło',
+      timezone: 'Strefa',
+      open: 'Otwórz',
+      // Świadomie inne niż `open`: dla przebiegu automatyzacji nie istnieje adres, który
+      // otwiera TEN przebieg (jego trasa szczegółów jest zagnieżdżona pod przepływem),
+      // więc akcja może obiecywać tylko ekran, na który naprawdę trafia.
+      openList: 'Otwórz listę uruchomień',
+      editable: 'Można edytować tutaj',
+      external: 'Otworzy się w innym module',
+    },
+
+    dense: {
+      // Brzmienie ZAPASOWE, używane tylko wtedy, gdy wystąpienie nie niesie
+      // `cadence_label`. Gdy niesie, znacznik renderuje tę serwerową prozę — bez
+      // tłumaczenia, jak każde inne gotowe zdanie od źródła.
+      //
+      // Co znaczy liczba: ile wystąpień reprezentuje ten jeden kafelek. NIE rozmiar serii,
+      // którego kontrakt nie niesie — nic tutaj nie może go zgadywać.
+      chip: 'Seria — pokazano {shown}',
+      aria: 'Ta pozycja powtarza się częściej, niż widać na siatce',
+    },
+
+    filters: {
+      searchPlaceholder: 'Szukaj w kalendarzu…',
+      sources: 'Źródła',
+      clearAll: 'Wyczyść filtry',
+      chip: {
+        source: 'Źródło: {value}',
+        search: 'Szukaj: {value}',
+      },
+    },
+
+    results: {
+      count: 'Wystąpienia: {n}',
+      none: 'Brak wystąpień',
+    },
+
+    legend: {
+      sources: 'Źródła:',
+      colorNote: 'Kolor oznacza pilność albo stan pozycji, nie jej źródło.',
+      unavailable: 'Nie udało się wczytać',
+    },
+
+    truncation: {
+      title: 'Ten widok nie pokazuje wszystkiego',
+      windowTrimmed: {
+        withCount:
+          '{source}: nie zmieściło się {n} wystąpień z końca tego zakresu. Wcześniejsze dni są kompletne.',
+        unknown:
+          '{source}: część wystąpień z końca tego zakresu nie zmieściła się w widoku. Wcześniejsze dni są kompletne.',
+      },
+      itemsDropped: {
+        withCount:
+          '{source}: {n} pozycji nie ma w tym widoku W CAŁOŚCI — nie brakuje im końcówki, nie ma ich wcale. Zawęź filtry albo wyszukaj konkretną pozycję.',
+        unknown:
+          '{source}: część pozycji nie zmieściła się w tym widoku W CAŁOŚCI — nie brakuje im końcówki, nie ma ich wcale. Zawęź filtry albo wyszukaj konkretną pozycję.',
+      },
+      itemDensified: {
+        withCount:
+          '{source}: pozycje powtarzające się częściej, niż da się pokazać: {n}. Widzisz POCZĄTEK serii — puste dni po niej nie znaczą, że nic się nie dzieje.',
+        unknown:
+          '{source}: część pozycji powtarza się częściej, niż da się pokazać. Widzisz POCZĄTEK serii — puste dni po niej nie znaczą, że nic się nie dzieje.',
+      },
+      action: {
+        narrowFilters: 'Zawęź filtry',
+        searchByName: 'Szukaj po nazwie',
+      },
+    },
+
+    // Źródło nie odpowiedziało. DWA brzmienia, bo pytanie czytelnika brzmi „mam w coś
+    // kliknąć, czy komuś powiedzieć", a `reason` wreszcie na nie odpowiada. Żadne z tych
+    // zdań nie tłumaczy awarii — czytelnik nie musi wiedzieć, co znaczy „nie dało się
+    // skonstruować", tylko czy ma coś zrobić.
+    unavailable: {
+      retryable: 'Nie udało się wczytać: {sources}. To zwykle chwilowe — spróbuj ponownie.',
+      permanent: 'Nie udało się wczytać: {sources}. Ponowna próba tego nie zmieni; ktoś musi się temu przyjrzeć.',
+      // Raz, pod tym, co się pojawiło: siatka poniżej to prawdziwe, aktualne dane.
+      rest: 'Reszta kalendarza jest aktualna.',
+      retry: 'Spróbuj ponownie',
+    },
+
+    empty: {
+      title: 'Nic w tym zakresie',
+      description: 'Terminy, automatyzacje i wydarzenia z tego miesiąca pojawią się tutaj.',
+      action: 'Nowe wydarzenie',
+      filtered: {
+        title: 'Brak wyników dla tych filtrów',
+        description: 'Spróbuj innego źródła albo innej frazy.',
+        action: 'Wyczyść filtry',
+      },
+    },
+
+    error: {
+      title: 'Nie udało się wczytać kalendarza',
+      description: 'Coś poszło nie tak przy wczytywaniu tego zakresu.',
+      retry: 'Spróbuj ponownie',
+    },
+
+    event: {
+      new: 'Nowe wydarzenie',
+      edit: 'Edytuj wydarzenie',
+      view: 'Wydarzenie',
+      save: 'Zapisz',
+      cancel: 'Anuluj',
+      delete: 'Usuń',
+      saved: 'Wydarzenie zapisane',
+      deleted: 'Wydarzenie usunięte',
+      saveError: 'Nie udało się zapisać wydarzenia',
+      deleteError: 'Nie udało się usunąć wydarzenia',
+      loadError: 'Nie udało się wczytać wydarzenia',
+      // Bramkowane na `can_be_edited` / `can_be_deleted`, więc wymienia OBIE osoby, które
+      // mogą: wydarzenie utworzone przez automatyzację nie ma ludzkiego autora, ale
+      // właściciel przestrzeni i tak może je poprawić.
+      noPermission: 'To wydarzenie może edytować jego autor lub właściciel przestrzeni.',
+      createdByRun: 'Utworzone przez automatyzację',
+      field: {
+        title: 'Tytuł',
+        titlePlaceholder: 'Co się dzieje?',
+        description: 'Opis',
+        allDay: 'Całodniowe',
+        allDayToggle: 'To wydarzenie zajmuje cały dzień',
+        start: 'Początek',
+        startDay: 'Data początku',
+        startTime: 'Godzina początku',
+        end: 'Koniec',
+        endDay: 'Data końca',
+        endTime: 'Godzina końca',
+      },
+      // Sześć NAZW kolorów zniknęło razem z dwoma wyborami, które ich używały (ta szuflada
+      // i krok workflow `create_event`). Kolor w kalendarzu to SŁOWNIK ZNACZEŃ — priorytet
+      // terminu, wynik przebiegu, „to tylko projekcja” — a wydarzenie nie mówi żadnego,
+      // więc jego kolor jest stałą nadawaną przez serwer i nikt go nie wybiera. Nazwy
+      // koloru nie czyta już nic: siatka maluje tokenami (calendarMeta), a `badge.label`
+      // przychodzi jako gotowa proza z serwera.
+      validation: {
+        titleRequired: 'Nadaj wydarzeniu tytuł.',
+        startDateRequired: 'Wybierz dzień, w którym wypada to wydarzenie.',
+        startsAtRequired: 'Wybierz datę i godzinę rozpoczęcia.',
+        endBeforeStart: 'Koniec nie może być wcześniejszy niż początek.',
+      },
+      deleteConfirm: {
+        title: 'Usunąć wydarzenie?',
+        // Bez obietnicy przywrócenia: wiersz jest miękko usuwany, ale endpointu `restore`
+        // nie ma — z perspektywy użytkownika wydarzenie znika.
+        message: '„{name}” zniknie z kalendarza.',
+      },
     },
   },
 
@@ -5059,6 +5259,37 @@ export const pl: MessageSchema = {
         },
         summary: '{name} · {count} wejść',
       },
+      // create_event (R3 B4) — stawia wydarzenie na siatce kalendarza przestrzeni.
+      // `label` / `description` to nazwa TYPU kroku i opis w wyborze kroków, dokładnie jak
+      // w pozostałych trzech; dlatego każda etykieta POLA poniżej kończy się na `…Label` —
+      // pole „Opis” nie może pożyczyć klucza, który opisuje cały krok.
+      create_event: {
+        label: 'Dodaj wydarzenie',
+        description: 'Postaw wydarzenie w kalendarzu przestrzeni. Tylko oznacza oś czasu — nigdy niczego nie uruchamia.',
+        titleLabel: 'Tytuł',
+        titlePlaceholder: 'Tytuł wydarzenia (wpisz {, aby wstawić zmienną)',
+        descriptionLabel: 'Opis',
+        descriptionHint: 'Pokazywany przy wydarzeniu jako zwykły tekst — kalendarz nie renderuje markdowna.',
+        descriptionPlaceholder: 'Opcjonalny opis (wpisz {, aby wstawić zmienną)',
+        allDay: 'Całodniowe',
+        allDayHint:
+          'Decyduje, które pole daty poniżej jest wymagane, więc jest stałym wyborem, a nie zmienną — wartość z czasu wykonania mogłaby trafić w gałąź bez żadnej daty.',
+        allDayToggle: 'To wydarzenie zajmuje cały dzień',
+        startDate: 'Dzień',
+        startDateHint: 'Dzień, w którym wypada wydarzenie. Wymagany — wydarzenie bez miejsca w czasie nie ma kratki, na której da się je narysować.',
+        startsAt: 'Początek',
+        startsAtHint:
+          'Wymagany. Wybrana data i godzina są czytane w strefie czasowej przestrzeni; zmienna niosąca pełną chwilę zachowuje własną.',
+        endsAt: 'Koniec',
+        endsAtHint: 'Opcjonalny, czytany w tej samej strefie co początek. Koniec nieczytelny albo wcześniejszy niż początek po prostu zostawia wydarzenie bez podanego końca.',
+        // Bez `color` / `colorHint`: krok nie ma pola koloru. Kolor w kalendarzu mówi
+        // ZNACZENIE (priorytet, wynik przebiegu, „to tylko projekcja”), a wydarzenie nie ma
+        // żadnego do powiedzenia.
+        outputs: {
+          title: 'Dostępne dla kolejnych kroków',
+          hint: '{{steps.{key}.event_id}} oraz {{steps.{key}.title}}.',
+        },
+      },
       addStep: 'Dodaj krok',
       addStepOfType: 'Dodaj krok: {type}',
       maxSteps: 'Możesz dodać maksymalnie 50 kroków.',
@@ -5129,6 +5360,7 @@ export const pl: MessageSchema = {
         // podsumowuje liczbą przypisanych wejść, a nie surowym identyfikatorem.
         generateContentFallback: 'Wygenerowana treść',
         generateContentInputs: 'Wygenerowana treść · {count} wejść',
+        createEventFallback: 'Nowe wydarzenie',
       },
     },
     editor: {
@@ -5228,6 +5460,11 @@ export const pl: MessageSchema = {
       pickVariable: 'Wybierz zmienną',
       pickElementField: 'Wybierz pole elementu',
       pickDate: 'Wybierz datę',
+      // Zapasowa etykieta pola, które nazywa CHWILĘ (początek/koniec wydarzenia
+      // godzinowego). Osobne słowa od `pickDate`, bo kontrolka naprawdę jest inna: ta
+      // potrafi podać godzinę, a pole, które nie potrafi, nie może pożyczać etykiety,
+      // która ją obiecuje.
+      pickDateTime: 'Wybierz datę i godzinę',
       removeVariable: 'Usuń zmienną',
       returns: 'Zwraca:',
       expected: 'oczekiwano {types}',
@@ -5356,6 +5593,10 @@ export const pl: MessageSchema = {
           // generate_content → utworzona sesja generowania (R2 podetap 5).
           sessionTitle: 'Wygenerowana treść',
           openSession: 'Otwórz generowanie w nowej karcie',
+          // create_event → wydarzenie postawione w kalendarzu (R3 B4). W odróżnieniu od
+          // sesji ten krok PUBLIKUJE tytuł, więc karta może nazwać prawdziwe wydarzenie.
+          untitledEvent: 'Wydarzenie bez nazwy',
+          openEvent: 'Otwórz wydarzenie „{name}” w nowej karcie',
         },
         // Uruchomienie wstrzymane na generowaniu treści. Ten ekran nie odświeża się sam,
         // a wstrzymanego uruchomienia nie da się dziś anulować — copy mówi o tym wprost.

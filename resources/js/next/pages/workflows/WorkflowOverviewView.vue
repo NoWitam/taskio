@@ -222,12 +222,20 @@ function stepSummary(step: WorkflowStep): string {
       : t('workflows.step.summary.generateContentFallback');
   }
 
-  const raw = step.type === 'create_task' ? cfg.title : cfg.name;
+  // The remaining three types are all identified by ONE human string, but by a DIFFERENT
+  // key each, and the fallback has to name the right thing — hence a map rather than the
+  // binary ternary this was, which silently read a fourth type as a form report.
+  const titleKey = step.type === 'create_task' || step.type === 'create_event' ? 'title' : 'name';
+  const raw = (cfg as Record<string, unknown>)[titleKey];
   const echoed = stripVariableDirectives(typeof raw === 'string' ? raw : '', catalog.value, steps.value);
   if (echoed.trim() !== '') return echoed;
-  return step.type === 'create_task'
-    ? t('workflows.step.summary.createTaskFallback')
-    : t('workflows.step.summary.createFormReportFallback');
+
+  const FALLBACKS: Record<string, string> = {
+    create_task: 'workflows.step.summary.createTaskFallback',
+    create_form_report: 'workflows.step.summary.createFormReportFallback',
+    create_event: 'workflows.step.summary.createEventFallback',
+  };
+  return t(FALLBACKS[step.type] ?? 'workflows.step.summary.createTaskFallback');
 }
 
 function goToRuns(): void {

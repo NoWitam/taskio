@@ -64,7 +64,13 @@ const props = withDefaults(
     /** Override the loader (styleguide / tests inject a mock dataset). */
     fetchOptions?: SelectFetchOptions;
   }>(),
-  { disabled: false, readonly: false },
+  {
+    // Absence must stay `undefined` (no Boolean cast to `false`) so it defers
+    // to the surrounding FormField — see `formField.ts`.
+    ariaInvalid: undefined,
+    disabled: false,
+    readonly: false,
+  },
 );
 
 const resolvedLeadingIcon = computed<IconName | undefined>(() =>

@@ -290,7 +290,7 @@ function stepStatusLabel(step: WorkflowRunStep): string {
 // output (a FAILED step's null payload, or an unexpected shape) falls back to the
 // readable key→value summary + the error Alert — never a raw JSON dump.
 interface StepResource {
-  kind: 'task' | 'report' | 'session';
+  kind: 'task' | 'report' | 'session' | 'event';
   icon: IconName;
   title: string;
   /** Whole-card open target (a real deep-link) when one exists; absent → static card. */
@@ -364,6 +364,24 @@ function computeStepResource(step: WorkflowRunStep): StepResource | null {
         params: { id: String(p.session_id) },
       }).href,
       actionLabel: t('workflows.runs.detail.stepResult.openSession'),
+    };
+  }
+
+  // create_event publishes `event_id` + `title`. The calendar screen opens ONE event from
+  // `?event=<uuid>` on its own route, so the card deep-links there — the same shape the
+  // task card uses. Unlike the session card this one HAS a title on the wire, so it shows
+  // the event's real name and only falls back when the resolved title came through blank.
+  if (step.type === 'create_event' && p.event_id != null) {
+    const title =
+      typeof p.title === 'string' && p.title.trim() !== ''
+        ? p.title
+        : t('workflows.runs.detail.stepResult.untitledEvent');
+    return {
+      kind: 'event',
+      icon: 'calendar',
+      title,
+      href: router.resolve({ name: 'next.calendar', query: { event: String(p.event_id) } }).href,
+      actionLabel: t('workflows.runs.detail.stepResult.openEvent', '', { name: title }),
     };
   }
 

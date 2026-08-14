@@ -31,6 +31,9 @@ const props = withDefaults(
     size?: 'sm' | 'md';
   }>(),
   {
+    // Absence must stay `undefined` (no Boolean cast to `false`) so it defers
+    // to the surrounding FormField — see `formField.ts`.
+    ariaInvalid: undefined,
     indeterminate: false,
     disabled: false,
     size: 'md',

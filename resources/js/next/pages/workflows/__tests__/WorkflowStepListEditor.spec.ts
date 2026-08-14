@@ -12,6 +12,7 @@ import { mount } from '@vue/test-utils';
 import { h, nextTick } from 'vue';
 import WorkflowStepListEditor from '../WorkflowStepListEditor.vue';
 import { makeStepDraft, MAX_STEPS, type StepDraft } from '../workflowEditorModel';
+import { STEP_TYPES } from '../workflowMeta';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 
 // A lightweight card stub that echoes the props the list feeds it, so the routing +
@@ -63,12 +64,13 @@ describe('WorkflowStepListEditor', () => {
     const wrapper = mountEditor(steps);
 
     // One add card per step type (not a dropdown), in a stable order. R2 sub-stage 5
-    // appended the third, `generate_content`.
+    // appended the third, `generate_content`; R3 B4 appended the fourth, `create_event`.
     const cards = wrapper.findAll('button[aria-label^="Add step:"]');
     expect(cards.map((c) => c.attributes('aria-label'))).toEqual([
       'Add step: Create task',
       'Add step: Create form report',
       'Add step: Generate content',
+      'Add step: Add calendar event',
     ]);
 
     // Clicking "Create form report" appends a correctly-typed card with a unique key.
@@ -95,7 +97,7 @@ describe('WorkflowStepListEditor', () => {
     const wrapper = mountEditor(many);
 
     const cards = wrapper.findAll('button[aria-label^="Add step:"]');
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(STEP_TYPES.length);
     expect(cards.every((c) => c.attributes('disabled') !== undefined)).toBe(true);
 
     wrapper.unmount();
@@ -114,10 +116,12 @@ describe('WorkflowStepListEditor', () => {
     const wrapper = mountEditor(steps);
 
     const cards = wrapper.findAll('button[aria-label^="Add step:"]');
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(STEP_TYPES.length);
     expect(cards[0].attributes('disabled')).toBeUndefined();
     expect(cards[1].attributes('disabled')).toBeUndefined();
     expect(cards[2].attributes('disabled')).toBeDefined();
+    // The per-type cap is generate_content's ALONE — a fourth type must stay addable.
+    expect(cards[3].attributes('disabled')).toBeUndefined();
     expect(cards[2].attributes('title')).toContain('2');
     // "Disabled actions must remain understandable": the reason is VISIBLE on the card, not
     // only in a `title` tooltip a keyboard/touch user can never reach.

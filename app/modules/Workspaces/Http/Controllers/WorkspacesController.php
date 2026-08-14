@@ -4,6 +4,7 @@ namespace App\Modules\Workspaces\Http\Controllers;
 
 use App\Models\User;
 use App\Modules\Workspaces\DTOs\WorkspaceDTO;
+use App\Modules\Workspaces\DTOs\WorkspaceSettingsDTO;
 use App\Modules\Workspaces\Http\Requests\StoreWorkspaceRequest;
 use App\Modules\Workspaces\Http\Requests\UpdateWorkspaceRequest;
 use App\Modules\Workspaces\Http\Resources\WorkspaceMemberResource;
@@ -47,7 +48,7 @@ class WorkspacesController
     public function update(UpdateWorkspaceRequest $request, Workspace $workspace)
     {
         return WorkspaceResource::make(
-            $this->service->rename($workspace, $request->string('name')->toString())
+            $this->service->updateSettings($workspace, WorkspaceSettingsDTO::fromRequest($request))
         );
     }
 

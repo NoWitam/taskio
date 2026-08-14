@@ -496,6 +496,7 @@ class StoreWorkflowRequest extends FormRequest
                 WorkflowStepType::CREATE_TASK => $this->validateCreateTaskConfig($validator, $prefix, $config, $refCtx),
                 WorkflowStepType::CREATE_FORM_REPORT => $this->validateCreateFormReportConfig($validator, $prefix, $config, $refCtx),
                 WorkflowStepType::GENERATE_CONTENT => $this->validateGenerateContentConfig($validator, $prefix, $config, $refCtx),
+                WorkflowStepType::CREATE_EVENT => $this->validateCreateEventConfig($validator, $prefix, $config, $refCtx),
             };
 
             $this->rejectForeignStepKeys($validator, $prefix, $config, $this->allowedStepKeys($type));
@@ -574,7 +575,14 @@ class StoreWorkflowRequest extends FormRequest
                 continue;
             }
 
-            foreach (['priority', 'deadline', 'submissions_from', 'submissions_to'] as $field) {
+            // Every structured union field across every step type. A field missing from this list
+            // silently skips the catalog build, so its pipeline is never type-checked at write time and
+            // fails first at run time instead — add new union fields here as well as to their own
+            // validator.
+            foreach ([
+                'priority', 'deadline', 'submissions_from', 'submissions_to',
+                'start_date', 'starts_at', 'ends_at',
+            ] as $field) {
                 if ($this->isVariablePipeline($config[$field] ?? null)) {
                     return true;
                 }
@@ -677,6 +685,103 @@ class StoreWorkflowRequest extends FormRequest
         }
 
         return true;
+    }
+
+    /**
+     * create_event config: title (required string), description (nullable string), all_day (required
+     * LITERAL boolean), start_date / starts_at / ends_at (date string OR union).
+     *
+     * There is no `color` — a calendar colour states a MEANING (priority, run outcome, "only a
+     * projection") and an event states none, so every event gets the same constant on the grid. A stored
+     * definition still carrying the key is refused by the allow-list, which is where every other foreign
+     * key on this step type is refused too.
+     *
+     * THE ALL-DAY DISCRIMINATOR IS ENFORCED HERE, BOTH WAYS — the same rule the Calendar's own
+     * FormRequest applies to a hand-made event, applied to a definition:
+     *
+     *   all_day = true   → `start_date` required, `starts_at`/`ends_at` FORBIDDEN.
+     *   all_day = false  → `starts_at` required, `start_date` FORBIDDEN.
+     *
+     * The forbidding half is the one worth defending. A config carrying both shapes would validate,
+     * save, and then quietly discard one of them on every single run — the author would see an event
+     * on the wrong kind of square with nothing anywhere saying why. Refusing at authoring time is the
+     * only moment a person is still looking at the mistake.
+     *
+     * `all_day` is a LITERAL and not the value|variable union: it decides which OTHER fields are
+     * required, so a run-time value would make this whole check unexpressible, and a definition could
+     * pass validation and still reach a branch with no date in it. See
+     * {@see \App\Modules\Workflows\Steps\CreateEventStep}.
+     *
+     * @param  array<string, mixed>  $config
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     */
+    private function validateCreateEventConfig(Validator $validator, string $prefix, array $config, ?array $refCtx = null): void
+    {
+        $title = $config['title'] ?? null;
+        if (!is_string($title) || trim($title) === '') {
+            $validator->errors()->add($prefix . '.title', 'The create_event step requires a non-empty title.');
+        }
+
+        if (($config['description'] ?? null) !== null && !is_string($config['description'])) {
+            $validator->errors()->add($prefix . '.description', 'The description must be a string.');
+        }
+
+        $allDay = $config['all_day'] ?? null;
+        if (!is_bool($allDay)) {
+            $validator->errors()->add($prefix . '.all_day', 'The create_event step requires all_day to be a literal true or false.');
+        }
+
+        // Each date field is the same literal|variable union create_task.deadline uses, terminating in
+        // DATE — so a variable reaches it through the identical write-time type flow.
+        foreach (['start_date', 'starts_at', 'ends_at'] as $key) {
+            $this->validateUnionOrLiteral(
+                $validator,
+                $prefix . '.' . $key,
+                $config[$key] ?? null,
+                fn (mixed $value) => $this->isParsableDate($value),
+                'a valid date',
+                $refCtx,
+                [VariableType::DATE],
+            );
+        }
+
+        if (is_bool($allDay)) {
+            $this->validateEventShapeInTime($validator, $prefix, $config, $allDay);
+        }
+    }
+
+    /**
+     * Exactly one time shape per event: the chosen branch's field present, the other branch's fields
+     * absent. Presence is "the key carries a non-null value" — a union object counts as present, which
+     * is the point, since a forbidden field is just as wrong when it is a variable.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function validateEventShapeInTime(Validator $validator, string $prefix, array $config, bool $allDay): void
+    {
+        $present = fn (string $key): bool => ($config[$key] ?? null) !== null;
+
+        if ($allDay) {
+            if (!$present('start_date')) {
+                $validator->errors()->add($prefix . '.start_date', 'An all-day create_event step requires a start_date.');
+            }
+
+            foreach (['starts_at', 'ends_at'] as $key) {
+                if ($present($key)) {
+                    $validator->errors()->add($prefix . '.' . $key, 'An all-day create_event step has no time of day; remove ' . $key . ' or turn off all_day.');
+                }
+            }
+
+            return;
+        }
+
+        if (!$present('starts_at')) {
+            $validator->errors()->add($prefix . '.starts_at', 'A create_event step that is not all-day requires a starts_at.');
+        }
+
+        if ($present('start_date')) {
+            $validator->errors()->add($prefix . '.start_date', 'A timed create_event step has no separate start_date; remove it or turn on all_day.');
+        }
     }
 
     /**
@@ -1331,6 +1436,16 @@ class StoreWorkflowRequest extends FormRequest
             // its keys are checked against the template's declarations instead (validateTemplateSlotMapping).
             WorkflowStepType::GENERATE_CONTENT => [
                 'template_id', 'slots', 'folder_id', 'name', 'bot_id',
+            ],
+            // No `subject_type`/`subject_id`: a run-created event is a standalone annotation. Letting a
+            // step aim the pointer would mean the workflow editor had to offer a subject picker over
+            // every module's ids, which is a surface nobody has designed — and the pointer is optional
+            // for a reason. It can be added later without changing a stored definition.
+            //
+            // No `color` either, and that one is a fence rather than a deferral: an event has no meaning
+            // to colour by, so the grid colours every event the same. See CreateEventStep.
+            WorkflowStepType::CREATE_EVENT => [
+                'title', 'description', 'all_day', 'start_date', 'starts_at', 'ends_at',
             ],
         };
     }

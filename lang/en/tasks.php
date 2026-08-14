@@ -128,4 +128,12 @@ return [
         'approvalPreparing' => 'Preparing approval...',
         'noFormAttached' => 'No form attached to this task',
     ],
+
+    // R3 Calendar. The source name is translated SERVER-side and carried in the calendar response,
+    // because otherwise adding a source would mean editing the frontend — and this module's whole
+    // contract is that it does not. Occurrence badges reuse the existing `tasks.status.*` keys rather
+    // than duplicating them here.
+    'calendar' => [
+        'source' => 'Task deadlines',
+    ],
 ];

@@ -808,18 +808,58 @@ nie sygnalizuje w UI, że kiedykolwiek była w koszu).
 
 ## R3. Kalendarz (Etap 8)
 
+**Status: backend zbudowany.** Pełny kontrakt: `docs/backend/calendar-api.md`. Zapis decyzji:
+`docs/decisions/ADR-0051-calendar-module-design.md`.
+
 **Cel:** wspólna oś czasu dla całej platformy.
 
-**Backend:** model wydarzenia (tytuł, opis, zakres czasu, kolor/typ, powiązanie
-polimorficzne ze źródłem), mapowanie istniejących modeli na wydarzenia (task z deadlinem,
-zaplanowane uruchomienia workflow — read-only projekcje).
-**Frontend:** widok miesiąca + lista (agenda), kreator wydarzenia, nawigacja do obiektów
-źródłowych.
-**Workflow:** krok `create_event`; trigger czasowy już jest (harmonogram z 5.1) — nie
-dublować, kalendarz tylko **wizualizuje** też przyszłe odpalenia harmonogramów.
-**Później (backlog):** import świąt/eventów zewnętrznych jako inspiracje dla kampanii.
+**Backend:** moduł NISKI z rejestrem źródeł (`CalendarSource` + `CalendarSourceRegistry`) —
+Kalendarz **nie zna** żadnego modułu źródłowego; każdy moduł, który ma coś do pokazania, sam
+implementuje kontrakt i sam się rejestruje ze swojego providera (przepis krok po kroku:
+`docs/backend/calendar-api.md` → „The Calendar knows nobody — how to add a new source"). R4
+Publikacje dołożą się jako piąte źródło bez zmiany ani jednej linii w `app/modules/Calendar`
+— przypięte testem (`CalendarModuleBoundaryTest`).
 
-**Ryzyka:** niskie; pilnować, by kalendarz był projekcją, a nie drugim źródłem prawdy.
+**Poprawka względem pierwotnego sformułowania powyżej:** „powiązanie polimorficzne ze
+źródłem" było mylącym sformułowaniem i zostało w praktyce ODRZUCONE (patrz ADR-0051, decyzja
+D2) — prowadziłoby wprost do materializacji projekcji cronem do wierszy, czyli dokładnie
+tego, przed czym ostrzega akapit Ryzyka poniżej. To, co faktycznie powstało: model
+wydarzenia (tytuł, opis, rozróżnik całodniowe-dzień/chwila-UTC — **nigdy nie konwertowany
+strefowo**, kolor z zamkniętego słownika) ze wskaźnikiem `subject_type`/`subject_id` jako
+**miękkim linkiem** — nullable, bez `morphTo()`, nigdy niededereferencjonowanym przez
+Kalendarz — plus mapowanie ISTNIEJĄCYCH modeli na wystąpienia przez ten sam kontrakt: task
+z deadlinem (moduł Tasks), zaplanowane uruchomienia workflow jako READ-ONLY projekcje **tylko
+w przyszłość** (moduł Workflows) ORAZ realne uruchomienia jako historia **tylko w przeszłość**
+— dwa OSOBNE źródła, bo jedna projekcja kłamałaby o historii (workflow mógł zostać
+wyłączony/edytowany, harmonogram ma doktrynę zużytego slotu).
+
+**Frontend:** *nie zbudowany w tym batchu* — widok miesiąca/agendy, kreator wydarzenia i
+nawigacja do obiektów źródłowych pozostają do zrobienia (backend→UX/UI→frontend zgodnie z
+kolejnością refaktoru z CLAUDE.md).
+**Workflow:** krok `create_event` ✅ zbudowany (kontrakt: `docs/backend/workflows-api.md` →
+„Steps" → `create_event`); trigger czasowy już był (harmonogram z 5.1) — kalendarz tylko
+**wizualizuje** też przyszłe odpalenia harmonogramów, nigdy nie duplikuje wyzwalacza: **żaden
+trigger nie czyta `calendar_events`** — ogrodzenie definicyjne wpisane w model (ADR-0051,
+decyzja D4): wydarzenie to adnotacja na osi czasu, nic nigdy nie wykonuje się dlatego, że
+wydarzenie istnieje.
+**Świadomie POZA zakresem, nie z oszczędności:** cykliczność wydarzeń — wymagałaby drugiego
+silnika rekurencji obok kompilatora harmonogramów, który mieszka w Workflows, a którego
+Kalendarz nie może nazwać (ADR-0051, decyzja D5). Kto potrzebuje cyklicznej adnotacji, ma już
+narzędzie: workflow na harmonogramie z krokiem `create_event`.
+**Później (backlog):** import świąt/eventów zewnętrznych jako inspiracje dla kampanii; kosz
+wydarzeń ma tylko soft-delete, bez ekranu przywracania (endpoint bez ekranu byłby kontraktem
+trzymanym za darmo — do zrobienia razem z UI).
+
+**Ryzyka:** zaadresowane, nie „niskie z założenia" — kalendarz jest PROJEKCJĄ (rejestr +
+zapytanie o ograniczone okno przy każdym odczycie), nigdy drugim źródłem prawdy: brak
+jakiejkolwiek materializacji cronem do wierszy (dokładnie ten scenariusz, przed którym
+ostrzegał ten akapit, został rozważony i odrzucony — ADR-0051), żaden trigger nie odczytuje
+`calendar_events`. Koszt odczytu „na żywo" (setki automatyzacji projektowanych przy każdej
+nawigacji miesiąca) zaadresowany osobno filtrem `next_due_at` + limitem pozycji per źródło,
+NIE cache'owaniem kompilacji harmonogramu (próbowano, zmierzono, usunięto — kompilacja to
+<2% kosztu projekcji; liczby i uzasadnienie w ADR-0051, decyzja D8). Otwarty (nieautomatyczny)
+punkt: ogrodzenie „żaden trigger nie czyta wydarzeń" pilnowane dziś tylko przeglądem kodu, nie
+testem granicznym.
 
 ---
 

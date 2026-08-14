@@ -39,6 +39,7 @@ import FormSelect from '../../ui/forms/FormSelect.vue';
 import PipelineSelect from '../../ui/forms/PipelineSelect.vue';
 import TemplateSelect from '../../ui/forms/TemplateSelect.vue';
 import Checkbox from '../../ui/forms/Checkbox.vue';
+import Switch from '../../ui/forms/Switch.vue';
 import Button from '../../ui/primitives/Button.vue';
 import Badge from '../../ui/primitives/Badge.vue';
 import Icon from '../../ui/primitives/Icon.vue';
@@ -181,6 +182,10 @@ const summary = computed<string>(() => {
     }
     return strValue('name').trim() || t('workflows.step.summary.generateContentFallback');
   }
+  if (props.step.type === 'create_event') {
+    const title = stripVariableDirectives(strValue('title'), props.catalog, props.steps, props.triggerType).trim();
+    return title || t('workflows.step.summary.createEventFallback');
+  }
   return '';
 });
 
@@ -315,6 +320,44 @@ const toModel = computed<WorkflowFieldValue<string> | null>({
   get: () => cfg<WorkflowFieldValue<string> | null>('submissions_to') ?? null,
   set: (v) => setCfg('submissions_to', v),
 });
+
+// --- create_event (R3 B4) ----------------------------------------------------
+// The step writes a CALENDAR EVENT through the Calendar's own service, so its config is
+// shaped by the SAME all-day discriminator the Calendar enforces everywhere else.
+//
+// THE ONE THING THIS BLOCK EXISTS TO PROTECT: `all_day` is a LITERAL boolean and gets a
+// Switch, never the value-or-variable field the three date rows get. It decides which
+// OTHER field is required, so a run-time value would make the definition unvalidatable at
+// write time — a workflow could save and then reach a branch with no date in it.
+// `StoreWorkflowRequest::validateCreateEventConfig` refuses a non-boolean outright, so
+// offering a variable here would only be offering something the server will reject.
+//
+// The three date rows are the SAME literal|variable DATE union `create_task.deadline`
+// uses, so a variable reaches them through the identical write-time type flow. Their
+// LITERAL controls differ by branch, though, and the switch decides that too: the all-day
+// row gets a day picker, the timed rows a date+time one (`with-time` in the template). A
+// deadline is a day; a timed event's start is a moment, and a control that cannot say an
+// hour cannot express the field it is standing in for.
+const allDayModel = computed<boolean>({
+  get: () => cfg<boolean>('all_day') === true,
+  set: (value) => setCfg('all_day', value === true),
+});
+const startDateModel = computed<WorkflowFieldValue<string> | null>({
+  get: () => cfg<WorkflowFieldValue<string> | null>('start_date') ?? null,
+  set: (v) => setCfg('start_date', v),
+});
+const startsAtModel = computed<WorkflowFieldValue<string> | null>({
+  get: () => cfg<WorkflowFieldValue<string> | null>('starts_at') ?? null,
+  set: (v) => setCfg('starts_at', v),
+});
+const endsAtModel = computed<WorkflowFieldValue<string> | null>({
+  get: () => cfg<WorkflowFieldValue<string> | null>('ends_at') ?? null,
+  set: (v) => setCfg('ends_at', v),
+});
+
+// A colour picker used to live here, worded from the calendar's own vocabulary. It is gone
+// with that vocabulary: colour on the calendar is a dictionary of MEANINGS, an event has
+// none to state, and the server now refuses the key (`allowedStepKeys`).
 
 // --- create_task: attachments (value-or-variable, FILE) ---------------------
 // A FILE terminal. Unlike priority/deadline, the picker is genuinely TYPE-FILTERED to
@@ -897,7 +940,26 @@ const vovFieldSpecs = computed(() => ({
   submissions_from: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
   submissions_to: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
   attachments: { resultTypes: FILE_RESULT_TYPES } as VovFieldSpec,
+  // create_event's three date rows. Listed here — not merely rendered — so the SAVED-model
+  // type gate covers them while the card is COLLAPSED, exactly as it does for `deadline`.
+  // A step type that does not own a key contributes nothing: the gate skips an unset field.
+  start_date: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
+  starts_at: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
+  ends_at: { resultTypes: DATE_RESULT_TYPES } as VovFieldSpec,
 }));
+
+/**
+ * Whether a date field belongs to the time group `create_event` is currently NOT sending.
+ * `all_day` picks exactly one group; the other is FORBIDDEN on the wire (a 422, not an
+ * ignore), so `buildStepConfig` drops it — and the type gate must agree with the builder.
+ * Always false for every other step type, which owns none of these keys.
+ */
+function isSuppressedEventDateField(field: string): boolean {
+  if (props.step.type !== 'create_event') return false;
+  return cfg<boolean>('all_day') === true
+    ? field === 'starts_at' || field === 'ends_at'
+    : field === 'start_date';
+}
 
 /** Project a SAVED `{op,args}` wire step onto the editor step shape `pipelineSatisfies` reads. */
 function toEditorStep(wire: WorkflowFieldPipelineStep): VariablePipelineStep {
@@ -924,6 +986,12 @@ const typeErrorFields = computed<string[]>(() => {
   // The fixed per-type specs (create_task / create_form_report). A generate_content step
   // owns none of these keys, so the loop is a no-op there.
   for (const [field, spec] of Object.entries(vovFieldSpecs.value)) {
+    // Skip a field this step will not EMIT. It matters for exactly one case: a
+    // create_event card keeps BOTH time groups in its draft (so flipping `all_day` back
+    // and forth does not destroy what was typed), but only the chosen branch reaches the
+    // wire. Judging the hidden group would block Save over a field that is neither on
+    // screen nor in the payload.
+    if (isSuppressedEventDateField(field)) continue;
     const value = cfg<WorkflowFieldValue | null>(field) ?? null;
     if (!value || value.kind !== 'variable') continue;
     const pipeline = (value.pipeline ?? []).map(toEditorStep);
@@ -1843,6 +1911,140 @@ const labelsModel = computed<string[]>({
           </p>
           <p class="text-next-xs text-next-muted-foreground">
             {{ t('workflows.step.generate_content.outputs.statusNote') }}
+          </p>
+        </div>
+      </template>
+
+      <!-- create_event (R3 B4) -->
+      <template v-else-if="step.type === 'create_event'">
+        <!-- title (required, full MarkdownEditor: variables + operations + if-blocks + ai-text).
+             A blank title after resolution HARD-FAILS the run — an event with no name has
+             nothing to draw on the square. -->
+        <!-- NOTE the `…Label` key names: `workflows.step.create_event.label` and
+             `.description` are already spoken for — they are the step TYPE's own name and
+             the add-step picker's blurb (`stepLabel()` / the picker's `v-for`). A field
+             called `description` cannot reuse the key that describes the whole step. -->
+        <FormField :label="t('workflows.step.create_event.titleLabel')" required :error="fieldError('title')">
+          <MarkdownEditor
+            :model-value="strValue('title')"
+            min-height="4rem"
+            :variables="editorFeature"
+            :if-blocks="IF_BLOCK_CONFIG"
+            :ai-text="aiTextConfig"
+            :placeholder="t('workflows.step.create_event.titlePlaceholder')"
+            :aria-label="t('workflows.step.create_event.titleLabel')"
+            @update:model-value="(v: string) => setCfg('title', v)"
+          />
+        </FormField>
+
+        <!-- description (optional). Stored and shown as PLAIN TEXT by the Calendar — there
+             is no markdown contract on a calendar event. -->
+        <FormField
+          :label="t('workflows.step.create_event.descriptionLabel')"
+          :description="t('workflows.step.create_event.descriptionHint')"
+          :error="fieldError('description')"
+        >
+          <MarkdownEditor
+            :model-value="strValue('description')"
+            min-height="6rem"
+            :variables="editorFeature"
+            :if-blocks="IF_BLOCK_CONFIG"
+            :ai-text="aiTextConfig"
+            :placeholder="t('workflows.step.create_event.descriptionPlaceholder')"
+            :aria-label="t('workflows.step.create_event.descriptionLabel')"
+            @update:model-value="(v: string) => setCfg('description', v)"
+          />
+        </FormField>
+
+        <!-- THE DISCRIMINATOR — a literal Switch, deliberately NOT a value-or-variable
+             field. It decides which date field below is required, so a run-time value would
+             make this definition unvalidatable when it is saved. -->
+        <FormField
+          :label="t('workflows.step.create_event.allDay')"
+          :description="t('workflows.step.create_event.allDayHint')"
+          :error="fieldError('all_day')"
+        >
+          <Switch v-model="allDayModel" :label="t('workflows.step.create_event.allDayToggle')" />
+        </FormField>
+
+        <!-- ALL-DAY branch: a DAY, and nothing else. The timed fields are not merely hidden
+             here — they are dropped from the payload, because the server forbids them.
+             The literal control is the DAY picker, and deliberately so: an all-day event
+             has no hour to state and no zone to state it in. -->
+        <div v-if="allDayModel" class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2">
+          <FormField
+            :label="t('workflows.step.create_event.startDate')"
+            required
+            :description="t('workflows.step.create_event.startDateHint')"
+            :error="fieldError('start_date')"
+          >
+            <DateOrVariableField
+              v-model="startDateModel"
+              :variables="allVariables"
+              :operations-catalog="operationsCatalog"
+              :arg-variables="allVariables"
+              :external-error-present="!!fieldError('start_date')"
+              :picker-label="t('workflows.step.create_event.startDate')"
+              :date-label="t('workflows.step.create_event.startDate')"
+            />
+          </FormField>
+        </div>
+
+        <!-- TIMED branch: a start MOMENT, and an optional end. Both literal controls carry
+             a time (`with-time`) — the same discriminator that moves the required field
+             moves the granularity, because a field labelled "Starts" that can only say a
+             day cannot express what it asks for, and the day it would emit reads as
+             midnight: the previous square, for every workspace west of Greenwich.
+             The picked wall clock is sent AS PICKED; the server reads it in the
+             workspace's zone. -->
+        <div v-else class="grid grid-cols-1 gap-next-4 next-sm:grid-cols-2">
+          <FormField
+            :label="t('workflows.step.create_event.startsAt')"
+            required
+            :description="t('workflows.step.create_event.startsAtHint')"
+            :error="fieldError('starts_at')"
+          >
+            <DateOrVariableField
+              v-model="startsAtModel"
+              with-time
+              :variables="allVariables"
+              :operations-catalog="operationsCatalog"
+              :arg-variables="allVariables"
+              :external-error-present="!!fieldError('starts_at')"
+              :picker-label="t('workflows.step.create_event.startsAt')"
+              :date-label="t('workflows.step.create_event.startsAt')"
+            />
+          </FormField>
+          <FormField
+            :label="t('workflows.step.create_event.endsAt')"
+            :description="t('workflows.step.create_event.endsAtHint')"
+            :error="fieldError('ends_at')"
+          >
+            <DateOrVariableField
+              v-model="endsAtModel"
+              with-time
+              :variables="allVariables"
+              :operations-catalog="operationsCatalog"
+              :arg-variables="allVariables"
+              :external-error-present="!!fieldError('ends_at')"
+              :picker-label="t('workflows.step.create_event.endsAt')"
+              :date-label="t('workflows.step.create_event.endsAt')"
+            />
+          </FormField>
+        </div>
+
+        <!-- NO colour control. A calendar colour states a MEANING (a deadline's priority, a
+             run's result, "only a projection") and an event states none, so the grid gives
+             every event the same constant. The server refuses the key outright
+             (`allowedStepKeys`), so offering it would be a 422 waiting to happen. -->
+
+        <!-- What this step publishes for LATER steps. -->
+        <div class="flex flex-col gap-next-1 rounded-next-md border border-next-border bg-next-muted/20 p-next-3">
+          <p class="text-next-xs font-next-medium text-next-fg">
+            {{ t('workflows.step.create_event.outputs.title') }}
+          </p>
+          <p class="text-next-xs text-next-muted-foreground">
+            {{ t('workflows.step.create_event.outputs.hint', '', { key: step.key || 'event' }) }}
           </p>
         </div>
       </template>

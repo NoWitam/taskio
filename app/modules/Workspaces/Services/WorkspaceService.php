@@ -4,6 +4,7 @@ namespace App\Modules\Workspaces\Services;
 
 use App\Models\User;
 use App\Modules\Workspaces\DTOs\WorkspaceDTO;
+use App\Modules\Workspaces\DTOs\WorkspaceSettingsDTO;
 use App\Modules\Workspaces\Enums\WorkspaceDbMode;
 use App\Modules\Workspaces\Enums\WorkspaceStatus;
 use App\Modules\Workspaces\Jobs\ProvisionWorkspaceJob;
@@ -58,9 +59,17 @@ class WorkspaceService
         return $workspace;
     }
 
-    public function rename(Workspace $workspace, string $name): Workspace
+    /**
+     * Apply the settings this request actually spoke about (see WorkspaceSettingsDTO for why "absent"
+     * and "null" have to stay distinguishable). A request that named nothing writes nothing.
+     */
+    public function updateSettings(Workspace $workspace, WorkspaceSettingsDTO $dto): Workspace
     {
-        $workspace->update(['name' => $name]);
+        $attributes = $dto->toAttributes();
+
+        if ($attributes !== []) {
+            $workspace->update($attributes);
+        }
 
         return $workspace;
     }

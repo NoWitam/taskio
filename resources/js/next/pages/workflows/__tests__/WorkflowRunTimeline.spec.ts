@@ -43,6 +43,9 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({
     resolve: (loc: { name?: string; params?: { id?: string }; query?: Record<string, string> }) => {
       if (loc.name === 'next.tasks') return { href: `/next/tasks?task=${loc.query?.task ?? ''}` };
+      // R3 B7: a `create_event` step deep-links to the calendar screen, which opens ONE event
+      // from `?event=<uuid>` on its own route.
+      if (loc.name === 'next.calendar') return { href: `/next/calendar?event=${loc.query?.event ?? ''}` };
       if (loc.name === 'next.forms.reports')
         return { href: `/next/forms/${loc.params?.id ?? ''}/reports?report=${loc.query?.report ?? ''}` };
       return { href: `/next/forms/${loc.params?.id ?? ''}` };
@@ -395,5 +398,82 @@ describe('WorkflowRunTimeline — retry a failed run (E)', () => {
     await flushPromises();
 
     expect(toastDanger).toHaveBeenCalledWith('This workflow hit its run limit — the retry was blocked.');
+  });
+});
+
+// A run whose `create_event` step put an event on the calendar (R3 B7). The step publishes
+// `event_id` + `title`; the card deep-links to the calendar screen, which opens exactly one
+// event from `?event=<uuid>`.
+const eventRun = {
+  ...stepRun,
+  id: 'run-6',
+  steps: [
+    {
+      id: 'step-e',
+      position: 0,
+      type: 'create_event',
+      key: 'make_event',
+      status: 'succeeded',
+      status_label: 'Succeeded',
+      status_tone: 'success',
+      payload: { event_id: '019evt', title: 'Nagranie odcinka' },
+      error: null,
+      created_at: '2026-07-02T14:00:03Z',
+    },
+  ],
+};
+
+describe('WorkflowRunTimeline — create_event step output (R3 B7)', () => {
+  it('renders the event by NAME and links to the calendar, not to a raw uuid', async () => {
+    fetchRun.mockResolvedValue(eventRun);
+    const wrapper = mountTimeline('run-6');
+    await flushPromises();
+
+    // Unlike the generation-session card, this step DOES carry a title on the wire, so the
+    // card shows the event's real name rather than the key it was produced under.
+    expect(wrapper.text()).toContain('Nagranie odcinka');
+    expect(wrapper.text()).not.toContain('event_id');
+    expect(wrapper.text()).not.toContain('019evt');
+
+    const link = wrapper.findAll('a').find((a) => a.attributes('href') === '/next/calendar?event=019evt');
+    expect(link).toBeTruthy();
+    // A new tab, like every other resource card here: the run drawer stays where it was.
+    expect(link?.attributes('target')).toBe('_blank');
+  });
+
+  it('falls back to a named placeholder when the resolved title came through blank', async () => {
+    // The title is a RESOLVED value — a variable that produced nothing arrives as ''. A card
+    // labelled with an empty string would look broken; one labelled with a uuid would be
+    // unreadable.
+    fetchRun.mockResolvedValue({
+      ...eventRun,
+      steps: [{ ...eventRun.steps[0], payload: { event_id: '019evt', title: '   ' } }],
+    });
+    const wrapper = mountTimeline('run-6');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Untitled event');
+    expect(wrapper.findAll('a').some((a) => a.attributes('href') === '/next/calendar?event=019evt')).toBe(true);
+  });
+
+  it('renders no event card at all when the step produced no event id', async () => {
+    // A failed or skipped step has no payload. Nothing to open, so nothing that looks openable.
+    fetchRun.mockResolvedValue({
+      ...eventRun,
+      steps: [
+        {
+          ...eventRun.steps[0],
+          status: 'failed',
+          payload: null,
+          error: 'create_event step requires a resolvable `starts_at`.',
+        },
+      ],
+    });
+    const wrapper = mountTimeline('run-6');
+    await flushPromises();
+
+    expect(wrapper.findAll('a').some((a) => (a.attributes('href') ?? '').includes('/next/calendar'))).toBe(false);
+    // The reason it failed is still on screen — that is what the author came to read.
+    expect(wrapper.text()).toContain('create_event step requires a resolvable');
   });
 });

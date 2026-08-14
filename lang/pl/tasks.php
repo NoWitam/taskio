@@ -130,4 +130,11 @@ return [
         'approvalPreparing' => 'Przygotowywanie zatwierdzenia...',
         'noFormAttached' => 'Brak przypiętego formularza do tego zadania',
     ],
+
+    // R3 Kalendarz. Nazwa źródła jest tłumaczona SERWEROWO i podana w odpowiedzi kalendarza, bo inaczej
+    // dodanie nowego źródła wymagałoby zmiany na froncie — a cała umowa tego modułu mówi, że nie wymaga.
+    // Plakietki wystąpień korzystają z istniejących kluczy `tasks.status.*`; nie powielamy ich tutaj.
+    'calendar' => [
+        'source' => 'Terminy zadań',
+    ],
 ];

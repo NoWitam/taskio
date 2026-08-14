@@ -409,6 +409,184 @@ describe('next i18n', () => {
     });
   });
 
+  describe('Calendar keys (R3 B6/B7) exist in both catalogs', () => {
+    // A targeted guard on top of the whole-catalog parity above, so a half-added key set
+    // fails loudly HERE with the missing path named.
+    const NEW_KEYS = [
+      'nav.calendar',
+      'calendar.title',
+      'calendar.subtitle',
+      'calendar.mode.label',
+      'calendar.mode.grid',
+      'calendar.mode.agenda',
+      'calendar.nav.prevMonth',
+      'calendar.nav.nextMonth',
+      'calendar.nav.today',
+      'calendar.nav.todayDisabled',
+      'calendar.timezone.chip',
+      'calendar.timezone.mismatch',
+      'calendar.timezone.fieldHint',
+      'calendar.day.more',
+      'calendar.day.showAll',
+      'calendar.day.count',
+      'calendar.day.empty',
+      'calendar.day.createHere',
+      'calendar.occurrence.allDay',
+      'calendar.occurrence.from',
+      'calendar.occurrence.range',
+      'calendar.occurrence.when',
+      'calendar.occurrence.source',
+      'calendar.occurrence.timezone',
+      'calendar.occurrence.open',
+      'calendar.occurrence.openList',
+      'calendar.occurrence.editable',
+      'calendar.occurrence.external',
+      'calendar.dense.chip',
+      'calendar.dense.aria',
+      'calendar.filters.searchPlaceholder',
+      'calendar.filters.sources',
+      'calendar.filters.clearAll',
+      'calendar.filters.chip.source',
+      'calendar.filters.chip.search',
+      'calendar.results.count',
+      'calendar.results.none',
+      'calendar.legend.sources',
+      'calendar.legend.colorNote',
+      'calendar.legend.unavailable',
+      // Two wordings, because `unavailable_sources[].reason` says whether a retry is worth
+      // offering — one sentence could only have been vague enough to cover both.
+      'calendar.unavailable.retryable',
+      'calendar.unavailable.permanent',
+      'calendar.unavailable.rest',
+      'calendar.unavailable.retry',
+      'calendar.empty.title',
+      'calendar.empty.description',
+      'calendar.empty.action',
+      'calendar.empty.filtered.title',
+      'calendar.empty.filtered.description',
+      'calendar.empty.filtered.action',
+      'calendar.error.title',
+      'calendar.error.description',
+      'calendar.error.retry',
+      'calendar.loading',
+      'calendar.event.new',
+      'calendar.event.edit',
+      'calendar.event.view',
+      'calendar.event.save',
+      'calendar.event.cancel',
+      'calendar.event.delete',
+      'calendar.event.saved',
+      'calendar.event.deleted',
+      'calendar.event.saveError',
+      'calendar.event.deleteError',
+      'calendar.event.loadError',
+      'calendar.event.noPermission',
+      'calendar.event.field.title',
+      'calendar.event.field.allDay',
+      'calendar.event.field.start',
+      'calendar.event.field.end',
+      'calendar.event.field.description',
+      'calendar.event.validation.titleRequired',
+      'calendar.event.validation.startDateRequired',
+      'calendar.event.validation.startsAtRequired',
+      'calendar.event.validation.endBeforeStart',
+      'calendar.event.deleteConfirm.title',
+      'calendar.event.deleteConfirm.message',
+      // The `create_event` workflow step (B7) + its read surfaces.
+      'workflows.step.create_event.label',
+      'workflows.step.create_event.description',
+      'workflows.step.create_event.titleLabel',
+      'workflows.step.create_event.descriptionLabel',
+      'workflows.step.create_event.allDay',
+      'workflows.step.create_event.allDayHint',
+      'workflows.step.create_event.allDayToggle',
+      'workflows.step.create_event.startDate',
+      'workflows.step.create_event.startsAt',
+      'workflows.step.create_event.endsAt',
+      'workflows.step.create_event.outputs.title',
+      'workflows.step.create_event.outputs.hint',
+      'workflows.step.summary.createEventFallback',
+      'workflows.runs.detail.stepResult.untitledEvent',
+      'workflows.runs.detail.stepResult.openEvent',
+    ];
+
+    it.each(NEW_KEYS)('%s resolves to a non-empty string in en and pl', (key) => {
+      setLocale('en');
+      const enValue = translate(key);
+      expect(enValue, `en.${key} missing`).not.toBe(key);
+      expect(enValue.length).toBeGreaterThan(0);
+      setLocale('pl');
+      const plValue = translate(key);
+      expect(plValue, `pl.${key} missing`).not.toBe(key);
+      expect(plValue.length).toBeGreaterThan(0);
+    });
+
+    /**
+     * NO COLOUR VOCABULARY IS LEFT, AND THE ABSENCE IS THE CONTRACT.
+     *
+     * Colour on the calendar is a DICTIONARY OF MEANINGS: a task deadline is coloured by its
+     * priority, a workflow run by its result, a schedule by the one colour that says "this
+     * is a projection, not a fact". Two surfaces let a human pick from the same six values
+     * with the pick meaning nothing — the event drawer and the `create_event` workflow step
+     * — so in one grid red said "urgent", "failed", and nothing. Both pickers are gone; an
+     * event's colour is a server-assigned constant.
+     *
+     * This is asserted rather than merely deleted because a colour NAME reappearing in a
+     * catalog is the cheap half of a picker coming back, and it would come back reading as
+     * a tidy little addition to a translation file.
+     */
+    it('defines no colour NAMES and no colour FIELD label — both pickers were removed', () => {
+      const gone = [
+        'calendar.event.field.color',
+        'workflows.step.create_event.color',
+        'workflows.step.create_event.colorHint',
+        ...['neutral', 'primary', 'success', 'warning', 'danger', 'info'].map(
+          (c) => `calendar.event.color.${c}`,
+        ),
+      ];
+      for (const key of gone) {
+        for (const locale of ['en', 'pl'] as const) {
+          setLocale(locale);
+          // `translate` echoes the key back when nothing resolves.
+          expect(translate(key), `${locale} still defines ${key}`).toBe(key);
+        }
+      }
+    });
+
+    it('the loss vocabulary has SIX sentences — a known and an unknown count per kind', () => {
+      // An unknown count is a different STATEMENT, not a missing number. If any `unknown`
+      // variant went missing, the component would fall back to printing the key.
+      for (const kind of ['windowTrimmed', 'itemsDropped', 'itemDensified']) {
+        for (const locale of ['en', 'pl'] as const) {
+          setLocale(locale);
+          const withCount = translate(`calendar.truncation.${kind}.withCount`);
+          const unknown = translate(`calendar.truncation.${kind}.unknown`);
+          expect(withCount, `${locale} ${kind}.withCount`).toContain('{n}');
+          // The unknown variant must NOT carry a number token at all — an interpolation
+          // that never receives a value is how "0" gets on screen.
+          expect(unknown, `${locale} ${kind}.unknown`).not.toContain('{n}');
+          expect(unknown).not.toBe(withCount);
+        }
+      }
+    });
+
+    it('the densified sentence keeps the "empty days" warning in both locales', () => {
+      // Without it, the cliff a folded series leaves on the grid reads as "it stopped".
+      setLocale('en');
+      expect(translate('calendar.truncation.itemDensified.unknown')).toMatch(/empty days/i);
+      setLocale('pl');
+      expect(translate('calendar.truncation.itemDensified.unknown')).toMatch(/puste dni/i);
+    });
+
+    it('never promises that a deleted event can be restored (there is no restore endpoint)', () => {
+      for (const locale of ['en', 'pl'] as const) {
+        setLocale(locale);
+        const message = translate('calendar.event.deleteConfirm.message', undefined, { name: 'X' });
+        expect(message).not.toMatch(/undo|restore|cofn|przywr/i);
+      }
+    });
+  });
+
   describe('boolean type is always named Condition / Warunek (§refinement 2)', () => {
     const get = (cat: Record<string, unknown>, path: string): string =>
       path

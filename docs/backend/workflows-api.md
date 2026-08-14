@@ -384,7 +384,7 @@ carry `status` at all, and `WorkflowService::create()` hardcodes `WorkflowStatus
 | `conditions.*.operator`       | required-if-present      | one of `WorkflowConditionOperator`, MUST belong to `field_type`'s allow-list |
 | `conditions.*.value`          | required-if-present (unless value-less) | shape depends on the operator — see the Conditions section |
 | `steps`                        | yes                      | array, min 1, max 50                                               |
-| `steps.*.type`                  | yes                      | `create_task` \| `create_form_report` \| `generate_content` (at most 2 `generate_content` steps per workflow — see the Steps section) |
+| `steps.*.type`                  | yes                      | `create_task` \| `create_form_report` \| `generate_content` \| `create_event` (at most 2 `generate_content` steps per workflow — see the Steps section) |
 | `steps.*.key`                    | yes                      | string, max 100, **distinct across the whole array**, `[A-Za-z0-9_]+` only (letters/digits/underscore — see below) — used for `{{steps.<key>.*}}` |
 | `steps.*.config`                 | no                       | object; shape depends on `steps.*.type` (see the Steps section)   |
 
@@ -3255,6 +3255,105 @@ this feature. See "Suspend/resume engine" below for the columns/mechanics, and
 
 ---
 
+### `create_event` (R3 B4)
+
+Puts a **calendar event** on the workspace's grid, through the Calendar module's own DTO and
+service (`CalendarEventDTO` / `CalendarEventService`) — never a raw model write, exactly like
+every other step. Full read/write contract for calendar events themselves (the all-day/instant
+discriminator, the resource shapes, the write endpoints a human uses for the same table) lives in
+[`docs/backend/calendar-api.md`](calendar-api.md); this section covers only the step's own
+config/output/error contract. Design record: **ADR-0051**.
+
+`App\Modules\Workflows\Steps\CreateEventStep`. The `Workflows → Calendar` edge is crossed in
+exactly this one class and is one-way — the Calendar names nothing under `app/modules/Workflows`
+(`CalendarModuleBoundaryTest`). An event created this way is attributed to the **executing run**,
+never to whoever triggered it — nothing in the step sets a creator; `HasCreator` stamps
+`creator_type='workflow_run'` because `WorkflowStepRunner` publishes the run to
+`WorkflowRunContext` around the whole step loop (the same mechanism `create_task`/
+`create_form_report` rely on, ADR-0015).
+
+| Config field   | Required                                     | Type                                | Failure mode |
+|-----------------|-----------------------------------------------|----------------------------------------|--------------|
+| `title`             | **yes**                                          | resolved string                          | **HARD** — blank after resolution fails the whole step. Clamped to 255 chars (the `calendar_events.title` column width) after resolution, the same reviewer fix `create_task.title` carries. |
+| `description`           | no                                                 | resolved string                            | absent/blank → `null`. |
+| `all_day`                  | **yes**, and **LITERAL ONLY** — never a variable      | boolean                                       | Missing/not-a-boolean → **422 at authoring time** (`steps.<i>.config.all_day`), never a run-time failure. |
+| `start_date`                   | required iff `all_day=true`, forbidden otherwise         | literal \| variable union, DATE                  | **HARD** when required and unresolvable — an event with no position in time has no square to draw it on, so the run stops rather than writing an unselectable row. |
+| `starts_at`                        | required iff `all_day=false`, forbidden otherwise            | literal \| variable union, DATE                     | **HARD**, same reasoning as `start_date`. |
+| `ends_at`                              | no, only meaningful when `all_day=false`                         | literal \| variable union, DATE                        | **SOFT** — unresolvable, unparseable, or earlier than `starts_at` (which a run-time variable can perfectly well produce) all yield `null`. An event with no stated end is ordinary; dropping a nonsensical end keeps the event and loses only the part that made no sense. |
+
+**There is no `color` field.** An event has no colour of its own to author — see
+`docs/backend/calendar-api.md` → "The `event` source's colour is a constant" — so the grid
+gives every event the same server-assigned constant regardless of what a run's definition
+says. A stored definition still carrying the key is refused by the allow-list (see the 422
+table below), the same place every other foreign key on this step type is refused.
+
+**Output**: `{ event_id, title }`.
+
+**Why `all_day` is literal-only, unlike every value-or-variable field beside it.** It is the
+discriminator deciding which OTHER fields are required — a run-time value would make the write
+validator unable to demand the right fields for the branch the run will actually take, and a
+definition could pass authoring-time validation and still reach a run with no date in it at all.
+A literal keeps the mistake catchable at the one moment an author is still looking at it.
+
+**Why a missing date is a HARD failure, unlike `create_task.deadline` (optional, soft-defaults to
+`null`).** A task with no deadline is a perfectly ordinary task. An event with no position in time
+is not an event — there is no square on the grid to put it on — so writing the row anyway would
+leave a `calendar_events` entry the read path can never select and nobody will ever see, which is
+worse than a run that stops and says why.
+
+**Author-time `422`s** (`StoreWorkflowRequest::validateCreateEventConfig()` — the SAME
+both-ways discriminator enforcement `StoreCalendarEventRequest` applies to a hand-made event,
+applied here to a *definition*):
+
+| Code | Field                                | Meaning |
+|------|-----------------------------------------|---------|
+| 422  | `steps.<i>.config.title`                    | Missing or blank. |
+| 422  | `steps.<i>.config.all_day`                      | Missing, or not a literal boolean (e.g. a `{kind:'variable'}` union). |
+| 422  | `steps.<i>.config.start_date`                       | Present while `all_day=false` (a timed event has no separate day — remove it or turn on `all_day`), OR absent while `all_day=true`. |
+| 422  | `steps.<i>.config.starts_at` / `.ends_at`               | Present while `all_day=true` (an all-day event has no time of day), OR `starts_at` absent while `all_day=false`. |
+| 422  | `steps.<i>.config.<foreign key>`                                | Anything outside `{title, description, all_day, start_date, starts_at, ends_at}` — notably `color` (an event has no colour of its own to set — see the field table above) and `subject_type`/`subject_id`: the pointer is deliberately **not** part of this step's vocabulary, since a run-created event is a standalone annotation, not a reference back into the run. |
+
+**Run-time flow.** `title` and `description` resolve through the same directive/pipeline resolver
+`create_task` uses. Each date field resolves through the shared value-or-variable union at type
+`DATE`; the resolver coerces even a bare-day literal to a full ISO instant, so the all-day branch
+**re-prints the day the resolved value itself names** (`Carbon::parse($resolved)->format('Y-m-d')`)
+rather than converting anything — a bare `2026-02-01` round-trips to `2026-02-01` with no timezone
+involved, because an all-day event has no zone to convert *into* in the first place. This is the
+one place a regression here could quietly write an instant into an all-day row, which is why it is
+pinned by `CalendarEventWorkflowStepTest::test_a_run_creates_an_all_day_event_without_acquiring_a_time`
+rather than trusted to work by inspection alone.
+
+**Whose clock the TIMED branch (`starts_at`/`ends_at`) reads.** The same rule
+`POST`/`PUT /api/calendar/events` uses — see `docs/backend/calendar-api.md` → "Whose midnight —
+the write side" — applies here: a value with **no** zone is read on the **workspace's** clock, an
+**explicit** offset (`+02:00`, `Z`, a full identifier) always wins. Both doors resolve through the
+identical class, `App\Modules\Calendar\Services\CalendarInstantResolver`, so a Warsaw workspace
+automating "14:00" and a person typing "14:00" into the event drawer land on the same instant. The
+step's config editor sends a full moment for this branch — `yyyy-mm-ddTHH:mm`, not a bare day — so
+the literal an author types already carries an hour, matching what the resolver expects.
+
+**The rule reads the AUTHOR'S OWN TEXT for a literal field — never what the variable resolver
+hands back — and that split is a real, accepted limitation, not an oversight to be
+rediscovered by tracing an offset bug:**
+
+- A **literal** `starts_at`/`ends_at` (the author typed a date into the step editor) is read
+  through `CalendarInstantResolver` exactly as written, so a zone-less literal is interpreted in
+  the **workspace's** timezone — agreeing with the API and the grid.
+- A **variable**-sourced value has no such text to read. By the time it reaches this step, the
+  Variables module's own `DATE` coercion has already run it through a bare
+  `Carbon::parse($v)->toIso8601String()`, which stamps a zone-less value with
+  `config('app.timezone')` (`'UTC'`) — so the value this step sees already looks like a caller who
+  said `Z`, and taking it as given (the same "an explicit zone wins" rule, applied to what
+  actually arrived) reads it as **UTC**, not the workspace's timezone.
+
+Fixing this would mean changing the Variables module's `DATE` coercion, which also feeds
+`create_task.deadline` and `create_form_report`'s submission-window fields — out of scope for this
+step alone, and deliberately left visible here rather than silently patched around: a workflow
+whose `starts_at` is a variable reference (a trigger timestamp, another step's output) lands in
+UTC even on a non-UTC workspace, while the identical text typed as a literal lands correctly.
+
+---
+
 ## Suspend/resume engine (R2 sub-stage 5)
 
 The generic mechanism `generate_content` (above) is the first — and, today, only — consumer of. A step
@@ -4119,7 +4218,9 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Workflows/Services/WorkflowScheduleAssistService.php` — AI assist orchestration + re-validation gate
 - `app/modules/Workflows/Agents/ScheduleAssistAgent.php` — the tool-less natural-language agent, prompt built from the v2 enums/limits
 - `app/modules/Workflows/Http/Requests/SchedulePreviewRequest.php`, `Http/Controllers/WorkflowSchedulePreviewController.php` — the live schedule-preview endpoint (incl. the `anchor` param)
-- `app/modules/Workflows/Steps/` — the 2 step implementations (`CreateTaskStep`, `CreateFormReportStep`)
+- `app/modules/Workflows/Steps/` — the step implementations (`CreateTaskStep`, `CreateFormReportStep`,
+  `GenerateContentStep`, `CreateEventStep` — R3 B4, see the `create_event` section above and
+  `docs/backend/calendar-api.md`)
 - `app/modules/Workflows/Jobs/WorkflowRunJob.php`
 - `app/modules/Workflows/Console/RunScheduledWorkflowsCommand.php`
 - `app/modules/Workflows/Console/ReapStaleWorkflowRunsCommand.php`
@@ -4127,6 +4228,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Workflows/routes/api.php`
 - `app/modules/Forms/Observers/FormSubmissionObserver.php` — form_submitted hook
 - `app/modules/Forms/Services/FormReportService.php`, `Jobs/CreateFormReport.php` — the `create_form_report` step's sink
+- `app/modules/Calendar/Services/CalendarEventService.php`, `DTOs/CalendarEventDTO.php` — the `create_event` step's sink (R3 B4; full contract in `docs/backend/calendar-api.md`)
 - `config/workflows.php` — caps, run timeout, max depth, assist throttle
 - `routes/console.php` — schedule registration for both console commands
 - `tests/Feature/WorkflowCrudTest.php`
@@ -4139,6 +4241,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `tests/Feature/WorkflowScheduleAssistTest.php` — v2 examples incl. the legacy-proposal read-shim case
 - `tests/Feature/WorkflowSchedulePreviewTest.php` — the preview endpoint (empty/`anchor`/prev-or-at semantics, `approximate` always false, checkEmpty-off behavior)
 - `tests/Feature/WorkflowStepsTest.php`
+- `tests/Feature/CalendarEventWorkflowStepTest.php` — the `create_event` step (R3 B4): creator attribution, the all-day discriminator surviving the resolver, both authoring-time and run-time failure modes
 - `tests/Feature/WorkflowVariableCatalogTest.php`
 - `tests/Unit/Workflows/WorkflowConditionEvaluatorTest.php`
 - `tests/Unit/Workflows/WorkflowScheduleServiceTest.php` — includes the DST spring-forward AND fall-back pins, the `exclusions` post-filter loop, `last_working_day`
@@ -4150,6 +4253,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `docs/decisions/ADR-0010-workflows-schedule-rebuild.md` — the 12→16-family batch; §7 (frontend two-mode) is SUPERSEDED by ADR-0012, the rest stands as history
 - `docs/decisions/ADR-0009-workflows-rescope-typed-variables.md` — the 5.1 re-scope decisions
 - `docs/decisions/ADR-0008-workflows-module-design.md` — run-engine decisions that still hold (superseded sections marked)
+- `docs/decisions/ADR-0051-calendar-module-design.md` — the Calendar module's own design record (the `create_event` step crosses into it one-way); full API contract in `docs/backend/calendar-api.md`
 - `docs/next/workflows-uxui-spec.md` — the frontend UX/UI specification (REVISION 4 — the v2 compositional builder)
 - `app/modules/Variables/Services/OperationExecutor.php` — the shared pipeline engine (72→77 ops; phase-1b's presence family + `date_format`)
 - `app/modules/Variables/DTOs/OperationResult.php` — pipeline outcome, incl. the `hard` flag (phase-1b)

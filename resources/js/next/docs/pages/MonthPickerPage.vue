@@ -25,7 +25,8 @@ const propRows: ApiRow[] = [
   { name: 'locale', type: 'string', default: "'pl'", description: 'BCP-47 locale for month names (Intl).' },
   { name: 'clearable / size', type: 'boolean | size', default: 'true / md', description: 'Clear button; control height.' },
   { name: 'disabled / readonly', type: 'boolean', default: 'false', description: 'Inert / read-only.' },
-  { name: 'success / dirty / ariaInvalid', type: 'boolean', default: 'false', description: 'Standalone state styling.' },
+  { name: 'success / dirty', type: 'boolean', default: 'false', description: 'Standalone state styling.' },
+  { name: 'ariaInvalid', type: 'boolean', default: '—', description: 'Force the error state standalone; omit it and the surrounding FormField decides.' },
 ];
 const eventRows: ApiRow[] = [
   { name: 'update:modelValue', type: 'string | null', description: 'Emitted with the chosen month as yyyy-mm-01.' },

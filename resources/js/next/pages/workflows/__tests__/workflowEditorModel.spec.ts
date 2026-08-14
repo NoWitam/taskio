@@ -490,3 +490,126 @@ describe('buildStepConfig — generate_content wire', () => {
     }
   });
 });
+
+// --- create_event (R3 B4) ----------------------------------------------------
+// The step writes a calendar event through the Calendar's own service, so its config is
+// shaped by the SAME all-day discriminator the Calendar enforces on a hand-made event —
+// and enforced BOTH WAYS by `StoreWorkflowRequest::validateEventShapeInTime`:
+//   all_day = true  → start_date required, starts_at/ends_at FORBIDDEN
+//   all_day = false → starts_at required, start_date FORBIDDEN
+// The forbidding half is what these tests mostly guard. A config carrying both shapes
+// would save and then quietly discard one of them on every run.
+describe('buildStepConfig — create_event', () => {
+  const evStep = (config: Record<string, unknown>): StepDraft => ({
+    uid: 'e', type: 'create_event', key: 'event', config,
+  });
+  const literal = (value: string): WorkflowFieldValue<string> => ({ kind: 'literal', value });
+
+  it('seeds a literal boolean discriminator and BOTH time groups', () => {
+    // `all_day` must be a real boolean from the first render: the server demands `is_bool`,
+    // so an un-set tri-state would 422 on a field the author never touched. Both groups are
+    // seeded so flipping the switch back and forth does not destroy what was typed.
+    const cfg = emptyStepConfig('create_event');
+    expect(cfg.all_day).toBe(false);
+    expect(Object.keys(cfg).sort()).toEqual(
+      ['all_day', 'description', 'ends_at', 'start_date', 'starts_at', 'title'].sort(),
+    );
+    // And NOT `color`: the key is refused by `allowedStepKeys`, so seeding one would have
+    // made the first save of an otherwise untouched new step a 422.
+    expect('color' in cfg).toBe(false);
+  });
+
+  it('suggests an `event` key base', () => {
+    expect(suggestStepKey('create_event', [])).toBe('event');
+    expect(suggestStepKey('create_event', ['event'])).toBe('event_2');
+  });
+
+  it('ALL-DAY: emits start_date and DROPS the timed group even when the draft still holds it', () => {
+    const out = buildStepConfig(
+      evStep({
+        title: '  Launch  ',
+        all_day: true,
+        start_date: literal('2026-08-09'),
+        // Left over from a flip of the switch — present in the draft, forbidden on the wire.
+        starts_at: literal('2026-08-09'),
+        ends_at: literal('2026-08-10'),
+        description: '',
+      }),
+    );
+    expect(out).toEqual({
+      title: 'Launch',
+      all_day: true,
+      start_date: { kind: 'literal', value: '2026-08-09' },
+    });
+    expect('starts_at' in out).toBe(false);
+    expect('ends_at' in out).toBe(false);
+    expect('description' in out).toBe(false);
+  });
+
+  it('TIMED: emits starts_at/ends_at and DROPS start_date even when the draft still holds it', () => {
+    const out = buildStepConfig(
+      evStep({
+        title: 'Recording',
+        all_day: false,
+        start_date: literal('2026-08-09'),
+        starts_at: literal('2026-08-09T14:30'),
+        ends_at: literal('2026-08-09T15:30'),
+      }),
+    );
+    expect('start_date' in out).toBe(false);
+    expect(out.starts_at).toEqual({ kind: 'literal', value: '2026-08-09T14:30' });
+    expect(out.ends_at).toEqual({ kind: 'literal', value: '2026-08-09T15:30' });
+  });
+
+  it('always emits `all_day` as a REAL boolean, never a truthy string or a null', () => {
+    expect(buildStepConfig(evStep({ title: 'x', all_day: undefined })).all_day).toBe(false);
+    expect(buildStepConfig(evStep({ title: 'x', all_day: 'true' })).all_day).toBe(false);
+    expect(buildStepConfig(evStep({ title: 'x', all_day: true })).all_day).toBe(true);
+  });
+
+  it('passes a VARIABLE date through untouched (the same union create_task.deadline uses)', () => {
+    const variable: WorkflowFieldValue<string> = {
+      kind: 'variable',
+      ref: { source: 'trigger', path: 'trigger.submitted_at', type: 'date' },
+    };
+    const out = buildStepConfig(evStep({ title: 'x', all_day: false, starts_at: variable }));
+    expect(out.starts_at).toEqual(variable);
+  });
+
+  it('omits an unset optional rather than sending null (ends_at, description)', () => {
+    const out = buildStepConfig(
+      evStep({ title: 'x', all_day: false, starts_at: literal('2026-08-09'), ends_at: null, description: '' }),
+    );
+    expect(out).toEqual({ title: 'x', all_day: false, starts_at: { kind: 'literal', value: '2026-08-09' } });
+  });
+
+  /**
+   * THE MIGRATION CASE, and the reason the wire body is assembled from a whitelist rather
+   * than copied from the draft.
+   *
+   * A workflow SAVED while the colour picker still existed keeps `color` in its stored step
+   * config, so it is still there in the loaded draft. `rejectForeignStepKeys` now answers
+   * that key with a 422 — so echoing it back would make an old workflow unsavable for an
+   * author who only opened it to fix a typo, with the error naming a control that no longer
+   * exists on the screen.
+   */
+  it('DROPS a `color` left in an older stored definition instead of echoing it back', () => {
+    const out = buildStepConfig(
+      evStep({ title: 'x', all_day: true, start_date: literal('2026-08-09'), color: 'danger' }),
+    );
+    expect('color' in out).toBe(false);
+  });
+
+  it('emits an EMPTY title (never omits it) so the required error lands on the field', () => {
+    expect(buildStepConfig(evStep({ title: '   ', all_day: true })).title).toBe('');
+  });
+
+  it('emits NO key outside the backend allow-list', () => {
+    // Mirrors `StoreWorkflowRequest::allowedStepKeys(CREATE_EVENT)` exactly — no `color`.
+    const allowed = ['title', 'description', 'all_day', 'start_date', 'starts_at', 'ends_at'];
+    const out = buildStepConfig(
+      evStep({ title: 'x', all_day: true, start_date: literal('2026-08-09'), description: 'd', color: 'info' }),
+    );
+    expect(Object.keys(out).every((k) => allowed.includes(k))).toBe(true);
+  });
+});

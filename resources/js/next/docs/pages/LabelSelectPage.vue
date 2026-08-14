@@ -86,7 +86,8 @@ const propRows: ApiRow[] = [
   { name: 'display / summary', type: "'chips' | 'summary'", default: "'chips'", description: 'Trigger display (mirrors Select).' },
   { name: 'size', type: "'sm' | 'md' | 'lg'", default: "'md'", description: 'Trigger height + text scale.' },
   { name: 'disabled / readonly', type: 'boolean', default: 'false', description: 'Inert / non-editable trigger.' },
-  { name: 'ariaInvalid / success / dirty', type: 'boolean', default: 'false', description: 'Standalone state lines (auto inside a FormField).' },
+  { name: 'success / dirty', type: 'boolean', default: 'false', description: 'Standalone state lines (auto inside a FormField).' },
+  { name: 'ariaInvalid', type: 'boolean', default: '—', description: 'Force the error state standalone; omit it and the surrounding FormField decides.' },
   { name: 'placeholder / ariaLabel', type: 'string', default: 'i18n', description: 'Trigger placeholder + accessible label.' },
 ];
 </script>

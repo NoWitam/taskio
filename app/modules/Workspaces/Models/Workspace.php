@@ -29,6 +29,10 @@ class Workspace extends AbstractModel
         'db_username',
         'db_password',
         'ai_monthly_cost_cap',
+        // The workspace's IANA timezone (R3 Calendar). NULL = inherit config('app.timezone'). It is the
+        // ONE answer to where a day breaks for everybody in this workspace — read via
+        // CalendarTimezoneResolver, never overridden per request.
+        'timezone',
     ];
 
     protected function casts(): array

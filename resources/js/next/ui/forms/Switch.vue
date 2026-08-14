@@ -27,6 +27,9 @@ const props = withDefaults(
     ariaLabel?: string;
   }>(),
   {
+    // Absence must stay `undefined` (no Boolean cast to `false`) so it defers
+    // to the surrounding FormField — see `formField.ts`.
+    ariaInvalid: undefined,
     labelPosition: 'trailing',
     disabled: false,
     loading: false,
@@ -43,6 +46,9 @@ const describedBy = computed(
   () => props.describedById ?? field?.describedById.value,
 );
 const disabled = computed(() => props.disabled || (field?.disabled.value ?? false));
+// Same rule as every other control: an explicit prop wins, absence defers to the
+// surrounding FormField. See the invariant in `formField.ts`.
+const invalid = computed(() => props.ariaInvalid ?? field?.invalid.value ?? false);
 const inert = computed(() => disabled.value || props.loading);
 
 function toggle(): void {
@@ -58,10 +64,15 @@ const dims = computed(() =>
 
 const trackClass = computed(() => {
   const base =
-    'relative inline-flex shrink-0 items-center rounded-next-full border border-transparent transition-colors duration-[var(--duration-next-fast)] ease-[var(--ease-next-standard)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-next-ring';
+    'relative inline-flex shrink-0 items-center rounded-next-full border transition-colors duration-[var(--duration-next-fast)] ease-[var(--ease-next-standard)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-next-ring';
   const on = model.value ? 'bg-next-primary' : 'bg-next-input';
+  // Error skin, mirroring Checkbox/Radio exactly: the danger border draws on the
+  // UNSET state; a switch that is already on keeps its primary fill (there, the
+  // filled state outranks invalid too). Never color alone — the FormField still
+  // renders the message + alert icon underneath.
+  const line = invalid.value && !model.value ? 'border-next-danger' : 'border-transparent';
   const dim = inert.value ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer';
-  return `${base} ${on} ${dim}`;
+  return `${base} ${on} ${line} ${dim}`;
 });
 </script>
 
@@ -80,7 +91,7 @@ const trackClass = computed(() => {
       :class="[trackClass, dims.track]"
       :aria-checked="model"
       :aria-busy="loading ? 'true' : undefined"
-      :aria-invalid="ariaInvalid ? 'true' : undefined"
+      :aria-invalid="invalid ? 'true' : undefined"
       :aria-describedby="describedBy"
       :aria-label="ariaLabel"
       :disabled="disabled"

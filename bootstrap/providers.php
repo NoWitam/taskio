@@ -3,6 +3,11 @@
 return [
     App\Providers\AppServiceProvider::class,
     App\Modules\Users\UsersModuleServiceProvider::class,
+    // Calendar owns a CONTRACT and a REGISTRY and knows none of its sources; the modules below register
+    // themselves into it from their own boot(). Listed ahead of them for readability only — the registry
+    // is bound in Calendar's register() and sources register in boot(), and Laravel runs every register()
+    // before any boot(), so no ordering here can break registration.
+    App\Modules\Calendar\CalendarModuleServiceProvider::class,
     App\Modules\Tasks\TasksModuleServiceProvider::class,
     App\Modules\Labels\LabelsModuleServiceProvider::class,
     App\Modules\FilterTabs\FilterTabsModuleServiceProvider::class,

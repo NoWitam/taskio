@@ -128,6 +128,28 @@ export function emptyStepConfig(type: WorkflowStepType): Record<string, unknown>
         name: '',
         bot_id: null,
       };
+    case 'create_event':
+      // `all_day` is seeded FALSE — a real, literal boolean from the first render, never
+      // null. It is the discriminator that decides which other fields are required, and
+      // the backend demands `is_bool`; an un-set tri-state would make the very first save
+      // of an otherwise complete step a 422 about a field the author never saw.
+      //
+      // BOTH time groups are seeded. Only the one matching `all_day` is ever emitted (the
+      // other is FORBIDDEN, not ignored), but keeping both in the draft is what lets the
+      // author flip the switch back and forth without losing what they typed.
+      //
+      // NO `color`. The step used to seed one and emit it; `allowedStepKeys` now REFUSES
+      // the key (it is a fence, not a deferral — an event has no meaning to colour by, so
+      // the grid colours every event the same), and a seeded value would have made the
+      // very first save of a new step a 422 about a control that no longer exists.
+      return {
+        title: '',
+        description: '',
+        all_day: false,
+        start_date: null,
+        starts_at: null,
+        ends_at: null,
+      };
     default:
       return {};
   }
@@ -140,6 +162,7 @@ const STEP_KEY_BASE: Record<WorkflowStepType, string> = {
   create_task: 'task',
   create_form_report: 'report',
   generate_content: 'content',
+  create_event: 'event',
 };
 
 /**
@@ -365,6 +388,38 @@ export function buildStepConfig(step: StepDraft): Record<string, unknown> {
       put(out, 'folder_id', idOrOmit(c.folder_id));
       put(out, 'name', trimmedOrOmit(c.name));
       put(out, 'bot_id', idOrOmit(c.bot_id));
+      return out;
+    }
+    case 'create_event': {
+      // title is required — always emitted (trimmed, possibly empty; the client
+      // pre-validation and the server both reject an empty one).
+      out.title = String(c.title ?? '').trim();
+      put(out, 'description', trimmedOrOmit(c.description));
+
+      // The DISCRIMINATOR, always emitted as a real boolean. `is_bool` is the rule, so a
+      // stringy "false" or a null would be a 422 on the one field the author cannot see a
+      // control problem in.
+      const allDay = c.all_day === true;
+      out.all_day = allDay;
+
+      // EXACTLY ONE time group reaches the wire, and the other is DROPPED rather than
+      // sent empty. `validateEventShapeInTime` reads PRESENCE (`!== null`), so a stray
+      // `starts_at` left over from a flip of the switch is a 422 naming a field the author
+      // is no longer looking at — even though the draft legitimately still holds it so the
+      // value survives flipping back.
+      if (allDay) {
+        put(out, 'start_date', unionOrOmit(c.start_date));
+      } else {
+        put(out, 'starts_at', unionOrOmit(c.starts_at));
+        put(out, 'ends_at', unionOrOmit(c.ends_at));
+      }
+
+      // NO `color` is emitted, and this whitelist is what makes that safe RETROACTIVELY: a
+      // definition SAVED while the picker still existed keeps `color` in its stored config
+      // and therefore in the loaded draft, but the wire body is assembled key by key from
+      // the allowed set, so the stale value is dropped here instead of being echoed back
+      // into a save that `rejectForeignStepKeys` would now answer with a 422 — on a field
+      // the author cannot see, in a workflow they only opened to edit the title.
       return out;
     }
     default:

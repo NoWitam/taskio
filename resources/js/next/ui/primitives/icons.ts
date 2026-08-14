@@ -111,7 +111,12 @@ export type IconName =
   // Entry-type glyphs. They were added to the REGISTRY below without being added here, which
   // `Record<IconName, string>` makes a type error — latent only because no typecheck runs in CI.
   | 'map-pin'
-  | 'package';
+  | 'package'
+  // --- Calendar (R3): a repeating SERIES ---
+  // For the "this repeats more often than the grid can draw" marker. `more-horizontal`
+  // reads as an actions menu and `rotate-ccw` is already spoken for ("restore filter"),
+  // so neither could carry a third meaning without teaching the user to distrust both.
+  | 'repeat';
 
 /** name -> array of inner SVG elements (paths/circles) as raw markup. */
 export const ICONS: Record<IconName, string> = {
@@ -370,6 +375,11 @@ export const ICONS: Record<IconName, string> = {
     '<rect x="9" y="2" width="6" height="6" rx="1" /><rect x="2" y="16" width="6" height="6" rx="1" />' +
     '<rect x="16" y="16" width="6" height="6" rx="1" />' +
     '<path d="M12 8v3" /><path d="M5 16v-2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2" />',
+  // Two arrows chasing each other around a loop — a SERIES, unmistakably unlike the
+  // single-arrow `rotate-ccw` (undo/restore) it sits beside in this registry.
+  repeat:
+    '<path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" />' +
+    '<path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" />',
 };
 
 /** All available icon names — handy for the gallery icon grid. */

@@ -41,6 +41,44 @@ describe('DateOrVariableField', () => {
     wrapper.unmount();
   });
 
+  /**
+   * `withTime` — WHICH literal control, and why the wrong one is not a cosmetic mismatch.
+   *
+   * A day-only control under a field that names a MOMENT cannot express an hour at all, and
+   * the value it does emit is read as midnight — which lands on the PREVIOUS square for every
+   * workspace west of Greenwich. So the host declares the granularity and the two controls
+   * are never interchangeable. Asserted on the DOM because the swap is the whole feature.
+   */
+  it('offers a DAY control by default — a deadline is a day, not a moment', () => {
+    const wrapper = mountField();
+
+    expect(wrapper.findComponent({ name: 'DatePicker' }).exists()).toBe(true);
+    expect(wrapper.findComponent({ name: 'DateTimePicker' }).exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('offers a DATE+TIME control when the field names a moment (`withTime`)', () => {
+    const wrapper = mountField({ withTime: true });
+
+    expect(wrapper.findComponent({ name: 'DateTimePicker' }).exists()).toBe(true);
+    expect(wrapper.findComponent({ name: 'DatePicker' }).exists()).toBe(false);
+    // …and it says so: a control that can state an hour must not borrow the day label.
+    expect(wrapper.find('[aria-label="Pick a date and time"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('emits the author’s OWN wall clock — no offset, no zone compensation', async () => {
+    // The server reads a bare time in the workspace's zone. Shifting it here as well would
+    // be a second implementation of that rule, and two implementations of one rule disagree.
+    const wrapper = mountField({ withTime: true });
+
+    await wrapper.findComponent({ name: 'DateTimePicker' }).vm.$emit('update:modelValue', '2026-08-10T14:30');
+
+    const emitted = wrapper.emitted('update:modelValue');
+    expect(emitted?.[emitted.length - 1]).toEqual([{ kind: 'literal', value: '2026-08-10T14:30' }]);
+    wrapper.unmount();
+  });
+
   it('forwards the operations catalog and forces the pipeline to return a date', () => {
     const catalog = standardOperationsCatalog();
     const wrapper = mountField({ operationsCatalog: catalog });

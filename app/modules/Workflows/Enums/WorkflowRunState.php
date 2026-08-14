@@ -28,16 +28,25 @@ enum WorkflowRunState: string
     case FAILED = 'failed';
     case CANCELLED = 'cancelled'; // reserved — not produced by the MVP engine.
 
+    /**
+     * The state's name in the READER's language.
+     *
+     * This used to hardcode Polish, and it was the last remnant of an app-wide defect this chapter
+     * fixed everywhere else: server prose was following `APP_LOCALE` rather than the language of the
+     * person reading it. The value is serialized as `state_label` on the runs API, so the change is
+     * visible there — but it is the FIX arriving, not a contract change: nothing matches on the prose.
+     * The runs UI branches on `run.state` (a stable code) and uses `state_label` only as the fallback
+     * argument to its own translation lookup, which is the house rule — recognize structurally, never
+     * by the server's wording.
+     *
+     * There was briefly a second method here, `translatedLabel()`, whose body was `return $this->label()`
+     * — kept so the calendar's badge call site would read as what it was doing. Two names for one string
+     * is not documentation; it is a second thing to keep in step, and the next person to change the
+     * wording would have had to notice both. The call site says what it means with a comment instead.
+     */
     public function label(): string
     {
-        return match ($this) {
-            self::PENDING => 'Oczekuje',
-            self::RUNNING => 'W trakcie',
-            self::WAITING => 'Wstrzymany',
-            self::COMPLETED => 'Zakończony',
-            self::FAILED => 'Błąd',
-            self::CANCELLED => 'Anulowany',
-        };
+        return __('workflows.run_states.' . $this->value);
     }
 
     public function tone(): string

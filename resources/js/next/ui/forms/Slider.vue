@@ -43,6 +43,9 @@ const props = withDefaults(
     ariaLabelMax?: string;
   }>(),
   {
+    // Absence must stay `undefined` (no Boolean cast to `false`) so it defers
+    // to the surrounding FormField — see `formField.ts`.
+    ariaInvalid: undefined,
     min: 0,
     max: 100,
     step: 1,

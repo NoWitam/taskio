@@ -508,6 +508,23 @@ function validateSteps(): boolean {
       errors[`steps.${i}.config.template_id`] = t('workflows.step.validation.configRequired');
       ok = false;
     }
+    // create_event: a title, plus the ONE date field the chosen `all_day` branch requires.
+    // The date fields are value-or-variable unions, so `blank()` (which stringifies) cannot
+    // judge them — an unset union is null, and a set one is an object. Checked here rather
+    // than left to the server because the branch is decided by a literal the author just
+    // toggled: the field they must fill is on screen, and naming it now is the difference
+    // between a fix and a round-trip.
+    if (s.type === 'create_event') {
+      if (blank('title')) {
+        errors[`steps.${i}.config.title`] = t('workflows.step.validation.configRequired');
+        ok = false;
+      }
+      const dateField = cfg.all_day === true ? 'start_date' : 'starts_at';
+      if (cfg[dateField] == null) {
+        errors[`steps.${i}.config.${dateField}`] = t('workflows.step.validation.configRequired');
+        ok = false;
+      }
+    }
   });
 
   // At most TWO generate_content steps (mirrors GENERATE_CONTENT_MAX): each one is a whole

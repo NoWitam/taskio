@@ -154,7 +154,8 @@ const propRows: ApiRow[] = [
   { name: 'loading', type: 'boolean', default: 'false', description: 'Static mode: spinner + “Loading…” in the list.' },
   { name: 'emptyText', type: 'string', default: "'No results'", description: 'Empty-state text when the (first) page is empty.' },
   { name: 'disabled / readonly', type: 'boolean', default: 'false', description: 'Inert / non-editable trigger (also inherited from FormField).' },
-  { name: 'ariaInvalid / success / dirty', type: 'boolean', default: 'false', description: 'Standalone state lines; provided automatically inside a FormField.' },
+  { name: 'success / dirty', type: 'boolean', default: 'false', description: 'Standalone state lines; provided automatically inside a FormField.' },
+  { name: 'ariaInvalid', type: 'boolean', default: '—', description: 'Force the error state standalone; omit it and the surrounding FormField decides.' },
   { name: 'id / describedById / ariaLabel', type: 'string', default: '—', description: 'Standalone wiring; provided automatically inside a FormField.' },
 ];
 

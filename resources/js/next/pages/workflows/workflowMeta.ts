@@ -49,17 +49,30 @@ export function triggerShort(type: WorkflowTriggerType, t: Translate): string {
 // --- Step types (§7.4 — two only) ------------------------------------------
 
 /** The step types in a stable order (used by the add-step type picker). */
-export const STEP_TYPES: WorkflowStepType[] = ['create_task', 'create_form_report', 'generate_content'];
+export const STEP_TYPES: WorkflowStepType[] = [
+  'create_task',
+  'create_form_report',
+  'generate_content',
+  'create_event',
+];
 
 /**
  * Step-type → icon (§7.4): create_task → plus, create_form_report → file-text,
  * generate_content → sparkles (the Generator module's own glyph, so the step reads
- * as "this runs the content generator").
+ * as "this runs the content generator"), create_event → calendar (the Calendar module's
+ * own glyph, for the same reason).
+ *
+ * `calendar` is ALSO the `schedule` TRIGGER's glyph, and that collision is deliberate
+ * rather than overlooked: the two never appear in the same vocabulary (a trigger badge
+ * and a step badge are different rows of the editor, each labelled in words), and the
+ * alternative — giving the Calendar module two different silhouettes depending on which
+ * list it is in — would be the more confusing choice.
  */
 const STEP_ICONS: Record<WorkflowStepType, IconName> = {
   create_task: 'plus',
   create_form_report: 'file-text',
   generate_content: 'sparkles',
+  create_event: 'calendar',
 };
 
 export function stepIcon(type: WorkflowStepType): IconName {

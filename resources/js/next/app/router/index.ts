@@ -51,6 +51,17 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, titleKey: 'nav.tasks' },
       },
       {
+        // The workspace TIMELINE (R3): one screen, two surfaces (a month grid and an
+        // agenda), aggregating every module that puts something in time. It has NO child
+        // routes on purpose — the mode, the month, the filters and the open event/drawer
+        // all live in the QUERY (`?month=&mode=&sources=&q=&event=&edit=&new=&date=`), so
+        // every one of them is deep-linkable and the Back button closes an overlay.
+        path: 'calendar',
+        name: 'next.calendar',
+        component: () => import('../../pages/calendar/CalendarView.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.calendar' },
+      },
+      {
         // The disk file manager. The current folder is a PATH param (`/next/disk/<id>`,
         // deep-linkable); the optional `:folder` also carries the synthetic `sys:res…` /
         // `sys:trash` ids (single segment, no slash), so one route serves the whole tree.

@@ -20,6 +20,11 @@ class WorkspaceResource extends JsonResource
             // default; 0 = explicit unlimited); the effective cap + usage live on the ai-usage summary.
             'ai_cap' => $this->ai_monthly_cost_cap !== null ? (float) $this->ai_monthly_cost_cap : null,
             'can_manage_ai_budget' => $request->user()?->can('manageAiBudget', $this->resource) ?? false,
+            // The workspace's IANA timezone (R3 Calendar). NULL is meaningful and is sent as null: it
+            // says "inherit the application timezone", which is not the same statement as any concrete
+            // identifier and must stay distinguishable in the settings UI. The EFFECTIVE zone actually
+            // used to draw a grid is reported per-response in the calendar's own `meta.timezone`.
+            'timezone' => $this->timezone,
             // Uses the eager-loaded users_count when present (withCount), otherwise
             // falls back to a lightweight count query — never loads the collection.
             // Bypass the User member scope: this counts THIS workspace's members, but

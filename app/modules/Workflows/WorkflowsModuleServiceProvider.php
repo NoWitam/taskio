@@ -2,10 +2,13 @@
 
 namespace App\Modules\Workflows;
 
+use App\Modules\Calendar\Services\CalendarSourceRegistry;
 use App\Modules\Generator\Events\GenerationSessionUpdated;
 use App\Modules\Variables\Contracts\AiTextGenerator;
 use App\Modules\Variables\Contracts\ElementScopeResolver;
 use App\Modules\Variables\Contracts\FunctionReferenceLookup;
+use App\Modules\Workflows\Calendar\WorkflowRunCalendarSource;
+use App\Modules\Workflows\Calendar\WorkflowScheduleCalendarSource;
 use App\Modules\Workflows\Console\ReapStaleWorkflowRunsCommand;
 use App\Modules\Workflows\Console\RunScheduledWorkflowsCommand;
 use App\Modules\Workflows\Listeners\ResumeWaitingRunOnSessionTerminal;
@@ -109,5 +112,27 @@ class WorkflowsModuleServiceProvider extends ServiceProvider
             'workflow' => Workflow::class,
             'workflow_run' => WorkflowRun::class,
         ]);
+
+        // R3 Calendar — Workflows puts BOTH of its own halves on the grid, and they are two sources
+        // rather than one on purpose: a projected schedule can only say what WOULD fire, which is a
+        // different (and often false) claim about a past day than what DID. See the two classes.
+        //
+        // Registered from HERE, in boot(), so the Calendar module never names Workflows. Lazily, because
+        // this boot() runs on every request of the application and only a calendar read ever asks. The
+        // `bound()` guard stops a build without the Calendar provider from registering into a
+        // throwaway auto-resolved registry — see the same guard in TasksModuleServiceProvider.
+        if ($this->app->bound(CalendarSourceRegistry::class)) {
+            $calendarSources = $this->app->make(CalendarSourceRegistry::class);
+
+            $calendarSources->registerLazy(
+                WorkflowScheduleCalendarSource::ID,
+                fn (): WorkflowScheduleCalendarSource => $this->app->make(WorkflowScheduleCalendarSource::class),
+            );
+
+            $calendarSources->registerLazy(
+                WorkflowRunCalendarSource::ID,
+                fn (): WorkflowRunCalendarSource => $this->app->make(WorkflowRunCalendarSource::class),
+            );
+        }
     }
 }

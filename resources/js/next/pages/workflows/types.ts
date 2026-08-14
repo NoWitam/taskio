@@ -54,8 +54,16 @@ export type WorkflowTriggerType = 'form_submitted' | 'schedule';
  * R2 sub-stage 5 adds the THIRD: `generate_content`, which runs a Generator TEMPLATE
  * and publishes the produced text + Disk image files. It is the first SUSPENDING step
  * — it parks the run in the `waiting` state while the generation settles.
+ *
+ * R3 B4 adds the FOURTH: `create_event`, which puts a CALENDAR EVENT on the workspace's
+ * grid through the Calendar's own service. It suspends nothing and fires nothing — an
+ * event is an annotation on the timeline, never a trigger.
  */
-export type WorkflowStepType = 'create_task' | 'create_form_report' | 'generate_content';
+export type WorkflowStepType =
+  | 'create_task'
+  | 'create_form_report'
+  | 'generate_content'
+  | 'create_event';
 
 /**
  * The canonical TYPE of a workflow variable / condition field (mirrors
@@ -457,6 +465,48 @@ export interface GenerateContentStepConfig {
   folder_id?: string | null;
   /** Nullable — the generated session's display name (defaults to the template's). */
   name?: string | null;
+}
+
+/**
+ * `create_event` config (R3 B4) — the EXACT allow-list
+ * (`StoreWorkflowRequest::allowedStepKeys`): ANY other top-level key is a 422. Note what
+ * is NOT in it: `subject_type` / `subject_id`. A run-created event is a standalone
+ * annotation; aiming its pointer would need a subject picker over every module's ids,
+ * which is a surface nobody has designed.
+ *
+ * Outputs (published as `steps.<key>.*`): `event_id` TEXT · `title` TEXT.
+ *
+ * THE `all_day` DISCRIMINATOR IS A LITERAL BOOLEAN, NEVER A VARIABLE — and that is a
+ * contract, not an oversight. It decides which OTHER fields are required, so a run-time
+ * value would make the definition unvalidatable at write time and a workflow could pass
+ * validation and still reach a branch with no date in it. `StoreWorkflowRequest` enforces
+ * both halves, so the editor must not offer what the server will refuse:
+ *   all_day = true  → `start_date` required, `starts_at`/`ends_at` FORBIDDEN.
+ *   all_day = false → `starts_at` required, `start_date` FORBIDDEN.
+ *
+ * The three date fields are the SAME literal|variable union `create_task.deadline` uses,
+ * terminating in DATE.
+ */
+export interface CreateEventStepConfig {
+  /** Required non-blank after resolution — a blank title HARD-FAILS the run. */
+  title: string;
+  description?: string | null;
+  /** REQUIRED literal boolean. Never a `WorkflowFieldValue`. */
+  all_day: boolean;
+  /** Literal date string OR a variable ref. Used iff `all_day`; a missing value hard-fails. */
+  start_date?: WorkflowFieldValue<string> | string | null;
+  /** Literal date string OR a variable ref. Used iff `!all_day`; a missing value hard-fails. */
+  starts_at?: WorkflowFieldValue<string> | string | null;
+  /**
+   * Optional and SOFT: unresolvable, unparseable, or earlier than the start simply yields
+   * an event with no stated end, which is an ordinary event.
+   */
+  ends_at?: WorkflowFieldValue<string> | string | null;
+  // NO `color`, and `allowedStepKeys` REFUSES the key rather than ignoring it. A calendar
+  // colour states a MEANING — a task deadline's priority, a run's result, "this is only a
+  // projection" — and an event states none, so the grid gives every event the same constant.
+  // Offering the six values here would have re-created the decoration the Calendar's own
+  // drawer just lost, in the surface that WRITES the same rows.
 }
 
 // The REV3 schedule-descriptor types (`ScheduleParamType`, `ScheduleParamDescriptor`,

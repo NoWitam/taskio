@@ -131,6 +131,7 @@ const stepTypeRows: ApiRow[] = [
   { name: 'create_task',        type: '{ title (req), description?, priority?, deadline?, labels?, assignee_type?+assignee_id?, form_id?, approval_pipeline_id?, attachments? }', description: 'Via TaskService::create(). Output: { task_id, title }. Assignment/form/pipeline are NOW fields on this step (folded in from the removed assign_bot/attach_form/start_approval). attachments accepts a file id (or a list of them) or a FILE-typed variable — e.g. a generate_content step\'s image_file_ids.' },
   { name: 'create_form_report', type: '{ form_id (req), name (req), guidelines?, sources?, submissions_from?, submissions_to? }', description: 'Via FormReportService::create() — fire-and-forget, but runs INLINE under the run loop\'s forced sync driver (see Ops notes in the backend doc), NOT genuinely async. Output: { report_id, report_name }.' },
   { name: 'generate_content',   type: '{ template_id (req), slots?, folder_id?, name?, bot_id? }', description: 'R2 sub-stage 5. Runs a Generator Template — the ONE step that SUSPENDS the run (parks it in `waiting`) while the generation runs on the real queue. Output: { session_id, content, image_file_ids, status, has_failed_parts }. `bot_id` optionally delegates the session to a bot (voice + likeness — slots still come from the workflow). Max 2 per workflow.' },
+  { name: 'create_event',       type: '{ title (req), description?, all_day (req, LITERAL bool), start_date?, starts_at?, ends_at? }', description: 'R3 B4. Writes a CALENDAR EVENT through the Calendar\'s own service — the same kind of row a person makes by hand, and it fires nothing. Output: { event_id, title }. `all_day` is a literal boolean and deliberately NOT the value|variable union: it decides which OTHER field is required, so a run-time value would make the definition unvalidatable at save time. The discriminator is enforced BOTH ways — all_day:true requires start_date and FORBIDS starts_at/ends_at; all_day:false requires starts_at and FORBIDS start_date. The three date fields are the same literal|variable DATE union create_task.deadline uses; a missing start HARD-FAILS the run (an event with no place in time has no square), while a missing/unparseable/backwards `ends_at` is SOFT and simply leaves no stated end. No `color`: an event has no colour of its own — the grid gives every event the same server-assigned constant regardless of what the definition says, and a stored `color` key is refused as a foreign key (422). No subject_type/subject_id: a run-created event is a standalone annotation.' },
 ];
 
 // ── generate_content granular 422s ───────────────────────────────────────────
@@ -1619,6 +1620,17 @@ WHERE id = ? AND state = 'pending'</pre>
             and <code class="font-next-mono">DateOrVariableField.vue</code> (date-specific, needs
             its own date-picker literal control) — two concrete, purpose-built add-ons for the two
             structured-field SHAPES that exist today, rather than one over-parameterized component.
+            <code class="font-next-mono">DateOrVariableField</code>'s literal control is not a
+            single picker: a <code class="font-next-mono">withTime</code> prop (R3 B4, added for
+            <code class="font-next-mono">create_event</code>) picks between a day-only
+            <code class="font-next-mono">DatePicker</code> (<code class="font-next-mono">yyyy-mm-dd</code>,
+            the default — still what <code class="font-next-mono">create_task.deadline</code> and
+            <code class="font-next-mono">create_event.start_date</code> use) and a
+            <code class="font-next-mono">DateTimePicker</code>
+            (<code class="font-next-mono">yyyy-mm-ddTHH:mm</code>, used by
+            <code class="font-next-mono">create_event.starts_at</code>/<code class="font-next-mono">.ends_at</code>)
+            — the host declares which its field needs; the granularity is a fact about the field,
+            never a default this component guesses at.
             Both echo the editor's <code class="font-next-mono">VariableChip</code> look without
             importing it directly (different underlying data models — directive/ProseMirror state
             vs. the <code class="font-next-mono">{kind}</code> union). <strong>SF3.3-5</strong>

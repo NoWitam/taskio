@@ -12,6 +12,7 @@ const off = ref(false);
 const labelled = ref(true);
 const pending = ref(false);
 const loading = ref(false);
+const consent = ref(false);
 
 function fakeAsync() {
   loading.value = true;
@@ -42,17 +43,26 @@ const propRows: ApiRow[] = [
         <li><code>role="switch"</code> + <code>aria-checked</code>; native button activation means <kbd>Space</kbd>/<kbd>Enter</kbd> toggle.</li>
         <li>The whole label row is clickable; the label is associated via the wrapping <code>&lt;label&gt;</code>.</li>
         <li><code>loading</code> sets <code>aria-busy</code> and blocks toggling for the duration of a pending async change.</li>
+        <li>Error state sets <code>aria-invalid</code> on the track; the danger border shows only while off (an on switch keeps its fill) — never color alone, so pair it with a FormField message.</li>
       </ul>
     </template>
 
-    <StorySection title="States" description="off · on · disabled (each) · loading.">
+    <StorySection title="States" description="off · on · disabled (each) · loading · error.">
       <div class="flex flex-wrap gap-next-8">
         <StoryCell label="off"><Switch :model-value="false" /></StoryCell>
         <StoryCell label="on"><Switch :model-value="true" /></StoryCell>
         <StoryCell label="disabled off"><Switch :model-value="false" disabled /></StoryCell>
         <StoryCell label="disabled on"><Switch :model-value="true" disabled /></StoryCell>
         <StoryCell label="loading"><Switch :model-value="true" loading /></StoryCell>
+        <StoryCell label="error (off)"><Switch :model-value="false" aria-invalid /></StoryCell>
+        <StoryCell label="error (on, fill wins)"><Switch :model-value="true" aria-invalid /></StoryCell>
       </div>
+      <p class="mt-next-3 text-next-sm text-next-muted-foreground">
+        The danger border draws only while the switch is off — an already-on switch keeps
+        its primary fill, the same idiom Checkbox/Radio use (a checked/selected state
+        outranks invalid too). Never color alone: pair it with a FormField error message,
+        as below.
+      </p>
     </StorySection>
 
     <StorySection title="Sizes">
@@ -76,6 +86,12 @@ const propRows: ApiRow[] = [
     <StorySection title="Realistic usage (FormField)">
       <FormField label="Notifications" description="Turn submission alerts on or off for this project.">
         <Switch v-model="labelled" label="Notify me on new submissions" />
+      </FormField>
+    </StorySection>
+
+    <StorySection title="Realistic usage (FormField error)" description="Required consent with an error message.">
+      <FormField :error="!consent ? 'You must accept the terms to continue.' : undefined">
+        <Switch v-model="consent" label="I accept the terms and privacy policy" :aria-invalid="!consent" />
       </FormField>
     </StorySection>
 

@@ -249,6 +249,62 @@ describe('WorkflowOverviewView — steps panel (§3.2)', () => {
     );
     expect(wrapper.text()).toContain('Weekly digest');
   });
+
+  /**
+   * R3 B7 — `create_event`, the FOURTH step type. It is titled by `title` (like `create_task`)
+   * and NOT by `name` (like `create_form_report`), and it has a fallback of its own.
+   *
+   * This pair exists because the summary used to be a binary ternary over two type names: a
+   * fourth type read as a form report, took the wrong key, found nothing, and fell back to
+   * "New task" — wrong word, wrong field, no error. The map that replaced it is only correct as
+   * long as every type in it is exercised.
+   */
+  it('create_event → its title, read from `title` and not from `name`', async () => {
+    const wrapper = await mountOverview(
+      makeWorkflow({
+        trigger_config: { form_id: 'f1' },
+        steps: [
+          {
+            type: 'create_event',
+            key: 'event',
+            // `name` is deliberately present and WRONG: reading the create_form_report key
+            // would surface it, which is exactly the regression this pins.
+            config: { title: 'Recording session', name: 'not the event title', all_day: true },
+          },
+        ],
+      }),
+    );
+
+    const text = wrapper.text();
+    expect(text).toContain('Recording session');
+    expect(text).not.toContain('not the event title');
+    expect(text).toContain('event'); // the key mono chip
+  });
+
+  it('an empty create_event title → the EVENT fallback, never the task one', async () => {
+    const wrapper = await mountOverview(
+      makeWorkflow({
+        trigger_config: { form_id: 'f1' },
+        steps: [{ type: 'create_event', key: 'event', config: { title: '', all_day: false } }],
+      }),
+    );
+
+    expect(wrapper.text()).toContain(en.workflows.step.summary.createEventFallback);
+    expect(wrapper.text()).not.toContain(en.workflows.step.summary.createTaskFallback);
+  });
+
+  it('strips variable directives out of a create_event title too', async () => {
+    const directive = `@[variable]("${JSON.stringify({ v: 1, data: { id: 'trigger.fields.status', name: 'Old', type: 'text' } }).replace(/"/g, '\\"')}")`;
+    const wrapper = await mountOverview(
+      makeWorkflow({
+        trigger_config: { form_id: 'f1' },
+        steps: [{ type: 'create_event', key: 'event', config: { title: `Shoot for ${directive}`, all_day: true } }],
+      }),
+    );
+
+    expect(wrapper.text()).toContain('Shoot for Status');
+    expect(wrapper.text()).not.toContain('@[variable]');
+  });
 });
 
 describe('WorkflowOverviewView — "View runs" navigation (Batch 3)', () => {

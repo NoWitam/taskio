@@ -17,6 +17,13 @@ enum WorkflowStepType: string
      * run until that settles — see {@see \App\Modules\Workflows\Steps\GenerateContentStep}.
      */
     case GENERATE_CONTENT = 'generate_content';
+    /**
+     * Puts a CALENDAR EVENT on the workspace's grid (R3 B4) — an annotation on the timeline, and
+     * nothing that will ever fire: see {@see \App\Modules\Calendar\Models\CalendarEvent} for the fence
+     * around what an event is allowed to mean. The step writes through the Calendar's own service, so
+     * a workflow-created event is the same kind of row as a hand-made one.
+     */
+    case CREATE_EVENT = 'create_event';
 
     /** @return array<int, string> */
     public static function ids(): array
@@ -24,12 +31,19 @@ enum WorkflowStepType: string
         return array_column(self::cases(), 'value');
     }
 
+    /**
+     * The step type's name in the reader's language.
+     *
+     * Translated rather than hardcoded, and the three older cases were repointed here rather than
+     * left as they were: this label is server prose that ships in the variable catalog
+     * (`WorkflowVariableCatalogService::stepOutputVariables`, as "<step> · <output>"), and the app is
+     * PL+EN switchable. The Polish values are byte-identical to what the match arms held, so nothing
+     * changes for a Polish reader; the English ones stop a fourth case from having to choose between
+     * hardcoding Polish and being the odd one out. Nothing matches on this prose — the workflow editor
+     * words step types from its own catalogue.
+     */
     public function label(): string
     {
-        return match ($this) {
-            self::CREATE_TASK => 'Utwórz zadanie',
-            self::CREATE_FORM_REPORT => 'Utwórz raport formularza',
-            self::GENERATE_CONTENT => 'Wygeneruj treść',
-        };
+        return __('workflows.step_types.' . $this->value);
     }
 }

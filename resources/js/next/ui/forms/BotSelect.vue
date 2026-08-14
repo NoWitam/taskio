@@ -99,6 +99,9 @@ const props = withDefaults(
     fetchOptions?: SelectFetchOptions;
   }>(),
   {
+    // Absence must stay `undefined` (no Boolean cast to `false`) so it defers
+    // to the surrounding FormField — see `formField.ts`.
+    ariaInvalid: undefined,
     multiple: false,
     summary: false,
     disabled: false,

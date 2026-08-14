@@ -68,6 +68,24 @@ class WorkflowScheduleService
      */
     private const LAST_WORKING_DAY_MONTH_STEPS = 24;
 
+    /**
+     * MEASURED, NOT ASSUMED: descriptor compilation is NOT this engine's cost, so it is deliberately
+     * NOT cached.
+     *
+     * A memoization of `toV2()` + `compile()` keyed on the descriptor was built, tested for parity and
+     * then REMOVED, because the profile said it could not pay. Per projection on the dev machine:
+     * `WorkflowScheduleCompiler::compile()` 0.0053 ms and `LegacyScheduleUpgrader::toV2()` 0.0001 ms,
+     * against ~0.29 ms for the whole projection — under 2%, and the cache's own `serialize()` key ate
+     * part of even that. End to end it measured SLOWER, not faster.
+     *
+     * The cost is the date arithmetic underneath (the cron library's run-date search and the Carbon
+     * timezone conversions around it), which happens per projection whatever is cached above it. Any
+     * future attempt belongs there — and this file is the sweep command's hot path, so it needs a
+     * measurement first and WorkflowScheduleSweepDeterminismTest green after.
+     *
+     * The way the calendar's cost was actually brought down was by projecting FEWER schedules
+     * (WorkflowScheduleCalendarSource), not by making each projection cheaper.
+     */
     public function __construct(
         private WorkflowScheduleCompiler $compiler = new WorkflowScheduleCompiler,
         private LegacyScheduleUpgrader $upgrader = new LegacyScheduleUpgrader,
