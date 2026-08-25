@@ -19,7 +19,7 @@ use Illuminate\Foundation\Http\FormRequest;
  * The `prompt` is UNTRUSTED free text — capped in length here, then treated purely as data by the
  * agent (which is instructed to ignore embedded instructions) and never trusted on its way back —
  * WorkflowScheduleAssistService re-validates whatever the model proposes against the SAME v2 rules
- * (WorkflowScheduleRulesValidator) and compiler (WorkflowScheduleCompiler) the write path uses,
+ * (WorkflowScheduleRulesValidator) and compiler (ScheduleCompiler) the write path uses,
  * upgrading a still-legacy `{ family, params }` proposal through LegacyScheduleUpgrader first.
  */
 class ScheduleAssistRequest extends FormRequest

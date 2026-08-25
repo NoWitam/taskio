@@ -2,7 +2,7 @@
 
 namespace Tests\Unit\Workflows;
 
-use App\Modules\Workflows\Services\LegacyScheduleUpgrader;
+use App\Support\Recurrence\LegacyScheduleUpgrader;
 use PHPUnit\Framework\TestCase;
 
 /**

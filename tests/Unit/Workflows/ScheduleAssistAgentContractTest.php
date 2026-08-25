@@ -3,7 +3,7 @@
 namespace Tests\Unit\Workflows;
 
 use App\Modules\Workflows\Agents\ScheduleAssistAgent;
-use App\Modules\Workflows\Enums\ScheduleLimits;
+use App\Support\Recurrence\Enums\ScheduleLimits;
 use PHPUnit\Framework\TestCase;
 
 /**

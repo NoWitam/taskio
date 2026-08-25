@@ -4,9 +4,9 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use App\Modules\Forms\Models\Form;
-use App\Modules\Workflows\Enums\ScheduleLimits;
 use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workspaces\Models\Workspace;
+use App\Support\Recurrence\Enums\ScheduleLimits;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;

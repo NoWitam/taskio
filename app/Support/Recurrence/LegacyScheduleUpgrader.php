@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Modules\Workflows\Services;
+namespace App\Support\Recurrence;
 
 /**
  * READ-SHIM: transparently upgrades a legacy `{ family, params }` schedule block to the v2

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Modules\Workflows\Enums;
+namespace App\Support\Recurrence\Enums;
 
 /**
  * The concrete rule of the DAY axis's `special` mode — a month-anchored day the plain dom/dow
@@ -11,7 +11,7 @@ namespace App\Modules\Workflows\Enums;
  *                        requires BOTH ordinal (1..5) and weekday (0..6).
  *   - last_weekday:      the last weekday of the month (cron dow = `{weekday}L`); requires weekday.
  *   - last_working_day:  the last Mon-Fri of the month — a BESPOKE cadence (the `LW` cron token is
- *                        broken in dragonmantank v3.6.0), computed in WorkflowScheduleService and
+ *                        broken in dragonmantank v3.6.0), computed in ScheduleEngine and
  *                        therefore RESTRICTED to time.mode=at (it fires at explicit HH:mm times,
  *                        never on a minute/hour grid).
  */

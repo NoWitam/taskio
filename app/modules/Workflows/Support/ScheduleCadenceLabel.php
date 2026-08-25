@@ -2,7 +2,7 @@
 
 namespace App\Modules\Workflows\Support;
 
-use App\Modules\Workflows\Enums\ScheduleTimeMode;
+use App\Support\Recurrence\Enums\ScheduleTimeMode;
 
 /**
  * How often a schedule repeats, in the reader's language — "Every 5 min", "Every 2 h, 09:00–17:00".

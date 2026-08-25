@@ -3,6 +3,8 @@
 namespace App\Modules\Workflows\Services;
 
 use App\Modules\Workflows\Agents\ScheduleAssistAgent;
+use App\Support\Recurrence\LegacyScheduleUpgrader;
+use App\Support\Recurrence\ScheduleCompiler;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
@@ -32,7 +34,7 @@ class WorkflowScheduleAssistService
 {
     public function __construct(
         private WorkflowScheduleRulesValidator $rules,
-        private WorkflowScheduleCompiler $compiler,
+        private ScheduleCompiler $compiler,
         private LegacyScheduleUpgrader $upgrader = new LegacyScheduleUpgrader,
     ) {}
 

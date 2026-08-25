@@ -2,8 +2,8 @@
 
 namespace Tests\Unit\Workflows;
 
-use App\Modules\Workflows\Services\CompiledSchedule;
-use App\Modules\Workflows\Services\WorkflowScheduleCompiler;
+use App\Support\Recurrence\CompiledSchedule;
+use App\Support\Recurrence\ScheduleCompiler;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -18,12 +18,12 @@ use PHPUnit\Framework\TestCase;
  */
 class WorkflowScheduleCompilerTest extends TestCase
 {
-    private WorkflowScheduleCompiler $compiler;
+    private ScheduleCompiler $compiler;
 
     protected function setUp(): void
     {
         parent::setUp();
-        $this->compiler = new WorkflowScheduleCompiler;
+        $this->compiler = new ScheduleCompiler;
     }
 
     private function compile(array $schedule): CompiledSchedule

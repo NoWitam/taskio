@@ -3,7 +3,7 @@
 namespace App\Modules\Workflows\Http\Resources;
 
 use App\Http\Resources\CreatorResource;
-use App\Modules\Workflows\Services\LegacyScheduleUpgrader;
+use App\Support\Recurrence\LegacyScheduleUpgrader;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 

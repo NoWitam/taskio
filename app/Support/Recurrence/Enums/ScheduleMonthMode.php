@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Modules\Workflows\Enums;
+namespace App\Support\Recurrence\Enums;
 
 /**
  * The MONTH axis of the compositional schedule descriptor — the WHICH-month restriction. Optional;

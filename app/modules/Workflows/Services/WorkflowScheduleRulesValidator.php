@@ -2,11 +2,12 @@
 
 namespace App\Modules\Workflows\Services;
 
-use App\Modules\Workflows\Enums\ScheduleDayMode;
-use App\Modules\Workflows\Enums\ScheduleDaySpecial;
-use App\Modules\Workflows\Enums\ScheduleLimits;
-use App\Modules\Workflows\Enums\ScheduleMonthMode;
-use App\Modules\Workflows\Enums\ScheduleTimeMode;
+use App\Support\Recurrence\Enums\ScheduleDayMode;
+use App\Support\Recurrence\Enums\ScheduleDaySpecial;
+use App\Support\Recurrence\Enums\ScheduleLimits;
+use App\Support\Recurrence\Enums\ScheduleMonthMode;
+use App\Support\Recurrence\Enums\ScheduleTimeMode;
+use App\Support\Recurrence\LegacyScheduleUpgrader;
 use Illuminate\Contracts\Validation\Validator as ValidatorContract;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;

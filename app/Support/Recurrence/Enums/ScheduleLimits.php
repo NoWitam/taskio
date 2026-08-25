@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Modules\Workflows\Enums;
+namespace App\Support\Recurrence\Enums;
 
 /**
  * The ONE place the compositional schedule descriptor's numeric bounds live. Every limit the

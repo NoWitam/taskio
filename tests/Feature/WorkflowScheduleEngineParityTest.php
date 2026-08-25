@@ -2,9 +2,9 @@
 
 namespace Tests\Feature;
 
-use App\Modules\Workflows\Services\LegacyScheduleUpgrader;
-use App\Modules\Workflows\Services\WorkflowScheduleCompiler;
 use App\Modules\Workflows\Services\WorkflowScheduleService;
+use App\Support\Recurrence\LegacyScheduleUpgrader;
+use App\Support\Recurrence\ScheduleCompiler;
 use Carbon\CarbonImmutable;
 use Tests\TestCase;
 
@@ -149,7 +149,7 @@ class WorkflowScheduleEngineParityTest extends TestCase
     /** A service that has never seen any descriptor. */
     private function coldService(): WorkflowScheduleService
     {
-        return new WorkflowScheduleService(new WorkflowScheduleCompiler(new LegacyScheduleUpgrader), new LegacyScheduleUpgrader);
+        return new WorkflowScheduleService(new ScheduleCompiler(new LegacyScheduleUpgrader), new LegacyScheduleUpgrader);
     }
 
     public function test_next_due_at_is_identical_cold_and_warm(): void

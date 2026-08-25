@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Modules\Workflows\Enums;
+namespace App\Support\Recurrence\Enums;
 
 /**
  * The DAY axis of the compositional schedule descriptor — the WHICH-day restriction. Optional;

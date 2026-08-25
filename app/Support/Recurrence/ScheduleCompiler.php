@@ -1,17 +1,17 @@
 <?php
 
-namespace App\Modules\Workflows\Services;
+namespace App\Support\Recurrence;
 
-use App\Modules\Workflows\Enums\ScheduleDayMode;
-use App\Modules\Workflows\Enums\ScheduleDaySpecial;
-use App\Modules\Workflows\Enums\ScheduleMonthMode;
-use App\Modules\Workflows\Enums\ScheduleTimeMode;
+use App\Support\Recurrence\Enums\ScheduleDayMode;
+use App\Support\Recurrence\Enums\ScheduleDaySpecial;
+use App\Support\Recurrence\Enums\ScheduleMonthMode;
+use App\Support\Recurrence\Enums\ScheduleTimeMode;
 use InvalidArgumentException;
 
 /**
  * The SINGLE source of truth that turns a validated v2 `trigger_config.schedule` descriptor into a
  * CompiledSchedule (a LIST of cron expressions, or a bespoke last-working-day cadence).
- * WorkflowScheduleService is the only consumer; it never contains a descriptor->cron mapping of its
+ * ScheduleEngine is the only consumer; it never contains a descriptor->cron mapping of its
  * own, so the cadence grammar lives in exactly one place.
  *
  * COMPOSITIONAL DESCRIPTOR (already validated by WorkflowScheduleRulesValidator):
@@ -46,7 +46,7 @@ use InvalidArgumentException;
  *   - month `*​/n` and every_n_hours `*​/n` are MODULO grids (they reset at the year/day boundary),
  *     so the gap across the boundary can be shorter than n.
  */
-class WorkflowScheduleCompiler
+class ScheduleCompiler
 {
     public function __construct(
         private LegacyScheduleUpgrader $upgrader = new LegacyScheduleUpgrader,

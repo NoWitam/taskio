@@ -1,18 +1,18 @@
 <?php
 
-namespace App\Modules\Workflows\Services;
+namespace App\Support\Recurrence;
 
 /**
  * The compiled form of a validated v2 `trigger_config.schedule` block. Two kinds:
  *   - a CRON cadence: a NON-EMPTY LIST of cron expressions (the union of every fire moment the
  *     { time, day, month } descriptor implies — one expression per fire time, or the ≤3-expression
- *     union of a minute window). WorkflowScheduleService takes the earliest strictly-after candidate
+ *     union of a minute window). ScheduleEngine takes the earliest strictly-after candidate
  *     across the list.
  *   - a BESPOKE last-working-day cadence (day.special = last_working_day): the last Mon-Fri of the
  *     month at one or MORE HH:mm times (from time.at), RESTRICTED to the months the month axis
  *     allows. It is NOT cron — see note below — so the service resolves it directly.
- * WorkflowScheduleService branches on `kind` to pick the right nextDueAt path.
- * WorkflowScheduleCompiler is the only producer.
+ * ScheduleEngine branches on `kind` to pick the right nextDueAt path.
+ * ScheduleCompiler is the only producer.
  *
  *   cron:             { kind: 'cron', expressions: str[] }              — earliest strictly-after
  *                                                                         across the expressions.
@@ -29,7 +29,7 @@ namespace App\Modules\Workflows\Services;
  *
  * NO INTERVAL KIND: every minute/hour cadence is now a WALL-CLOCK cron grid (a stepped minute grid,
  * or `m` on an every-n-hours grid), so there is no phase-from-activation interval to model. A
- * schedule preview is therefore always exact (WorkflowScheduleService::isApproximate is always false).
+ * schedule preview is therefore always exact (ScheduleEngine::isApproximate is always false).
  */
 readonly class CompiledSchedule
 {
