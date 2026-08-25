@@ -4,6 +4,13 @@
 **Status:** Accepted
 **Module:** Workflows (`app/modules/Workflows/`)
 
+> **Class location note (ADR-0052, 2026-08-25).** `WorkflowScheduleCompiler` and the `Schedule*`
+> enums this ADR describes under `app/modules/Workflows/` were later extracted to the shared
+> `App\Support\Recurrence` layer (`WorkflowScheduleCompiler` was also **renamed** to
+> `ScheduleCompiler` in the move — the old class no longer exists). The cadence design recorded below
+> is unchanged; only its file location and how a second module shares its validation changed. See
+> ADR-0052.
+
 ---
 
 ## Context

@@ -100,6 +100,15 @@ has it too: `workflow_schedule` is a first-class source. What is genuinely missi
 "repeat" on a one-off event in the UI — is deferred, deliberately, rather than solved with a
 second-rate copy of machinery that already exists one module over.
 
+> **Flagged by ADR-0052 (2026-08-25).** The stated workaround above — "a schedule-triggered workflow
+> with a `create_event` step" — **materializes rows**, which is exactly the second-source-of-truth
+> shape D2/D4 above reject for every other calendar source, with the matching failure mode: a disabled
+> or deleted workflow leaves its already-created `calendar_events` rows behind, and nothing sweeps
+> them. ADR-0052 extracted the schedule engine into a shared `App\Support\Recurrence` layer precisely
+> so the Calendar can eventually compute a recurring event's own projection instead of relying on this
+> workaround — recurrence itself is still deferred, but the reason this workaround looked acceptable
+> (no shared engine existed to use instead) no longer holds. See ADR-0052.
+
 **D6 — past and future are two separate sources, never one schedule projected in both directions.**
 `WorkflowScheduleCalendarSource` projects only forward from `max(now, window start)`; the past is
 served entirely from real rows by `WorkflowRunCalendarSource`. Projecting a schedule backwards would
@@ -268,7 +277,8 @@ the shape this decision rejects. *Planned, not implemented* — no category conc
 - Recurrence (D5) and event restore (soft-deleted but with no restore endpoint — see
   `docs/backend/calendar-api.md`) are both explicitly **planned, not implemented**. Neither is
   blocked on anything architectural; both are UI-shaped gaps (a repeat control, a trash screen) that
-  were not designed in this batch.
+  were not designed in this batch. Recurrence is no longer blocked on a shared engine either — ADR-0052
+  extracted one into `App\Support\Recurrence`; see D5's flagged note above.
 - Visual grouping of events by colour (D10) is likewise **planned, not implemented** — no
   CATEGORY concept exists on `calendar_events` or anywhere else in the module today. The gap
   is deliberate, not an oversight: do not close it by adding a `color` column or field back

@@ -1150,7 +1150,7 @@ directly:
 3. A `config` claimed `feasible:true` is upgraded through `LegacyScheduleUpgrader` (a no-op on an
    already-v2 block) and RE-VALIDATED against the exact same rules the write path uses
    (`WorkflowScheduleRulesValidator`) AND run through the real compiler
-   (`WorkflowScheduleCompiler::compile()`) as a final sanity gate. Either failing downgrades the
+   (`ScheduleCompiler::compile()`) as a final sanity gate. Either failing downgrades the
    response to `feasible:false`, `config:null`, with the validation failure appended to
    `unsupported`.
 4. An `alternative.config` that fails the same gate is dropped (`alternative:null`) rather than
@@ -1543,7 +1543,7 @@ reference; this table is the top-level shape only.
 
 Every field is validated by the ONE shared `WorkflowScheduleRulesValidator` (write path, AI-assist
 re-validation, and the preview endpoint all delegate to it), so the accepted shape can never drift
-from what `WorkflowScheduleCompiler` understands.
+from what `ScheduleCompiler` understands.
 
 `schedule` workflows are **never event-dispatched** — `WorkflowDispatchService::dispatch()`
 hard-refuses `WorkflowTriggerType::SCHEDULE` at the top. The ONLY path that starts a schedule run
@@ -3701,8 +3701,13 @@ optional `tz`. A fire happens only when time AND day AND month all match, minus 
 
 Every field is validated in ONE place, `WorkflowScheduleRulesValidator` (shared verbatim by the
 write path, the AI-assist re-validation, and the preview endpoint), and compiled in ONE place,
-`WorkflowScheduleCompiler`. All numeric bounds live in `App\Modules\Workflows\Enums\ScheduleLimits`
-— the single contract the frontend mirrors as a TypeScript constant. Validation errors are keyed
+`ScheduleCompiler`. Both the compiler and the SHAPE half of the grammar
+(`RecurrenceDescriptorValidator`, which `WorkflowScheduleRulesValidator` renders into this module's
+sentences) now live in the shared `App\Support\Recurrence` layer, extracted so the Calendar module can
+eventually reuse the same cadence engine without naming Workflows — see
+**ADR-0052-shared-recurrence-layer.md** for the design record; nothing about this wire contract
+changed. All numeric bounds live in `App\Support\Recurrence\Enums\ScheduleLimits` — the single
+contract the frontend mirrors as a TypeScript constant. Validation errors are keyed
 `trigger_config.schedule.{time,day,month,exclusions,tz}.*` (write path) or `schedule.*` (the
 AI-assist's standalone re-check).
 
@@ -3771,7 +3776,7 @@ day-of-week field (never both at once, so the classic cron dom/dow OR-trap canno
 `exclusions` and `tz` never reach the compiled cadence grammar: exclusions are applied as a
 POST-FILTER (below) and `tz` only resolves wall-clock fields before converting to UTC.
 
-**Compiled form (implementation detail).** `WorkflowScheduleCompiler` turns a validated descriptor
+**Compiled form (implementation detail).** `ScheduleCompiler` turns a validated descriptor
 into either a NON-EMPTY LIST of `dragonmantank/cron-expression` strings (one per `time.at` entry,
 or up to 3 for a minute window split across an hour boundary — `WorkflowScheduleService` takes the
 earliest strictly-after candidate across the whole list) or, for `day.special:last_working_day`,
@@ -3854,7 +3859,7 @@ day returns to a single 02:30 (01:30 UTC). This is the cron library's observed r
 A schedule stored BEFORE this revision in the pre-v2 `{ family, params }` shape (or the earlier
 Etap-5 preset shape) is upgraded to v2 TRANSPARENTLY at every read/compile boundary —
 `WorkflowResource` (so the FE editor always seeds from the v2 shape), `WorkflowScheduleService` /
-`WorkflowScheduleCompiler` (so an old row keeps firing), and the AI-assist re-validation (so a
+`ScheduleCompiler` (so an old row keeps firing), and the AI-assist re-validation (so a
 model that still answers in the old vocabulary is judged fairly). Detection is by the presence of
 a `family` key (v2 blocks never carry one); a v2 block is returned VERBATIM (the shim is
 idempotent), and an unknown/garbage family is returned unchanged too — it then fails v2 validation
@@ -3862,7 +3867,8 @@ honestly on its missing `time`, exactly like any malformed block. `exclusions`/`
 unchanged in both shapes. **No data migration or backfill was run** — every previously stored
 schedule keeps working through this shim; only a NEW write must use the v2 shape (the write path
 does not accept `{ family, params }` at all — see the BREAKING note at the top of this document).
-See `LegacyScheduleUpgrader`'s docblock for the complete family→axis mapping table.
+See `LegacyScheduleUpgrader`'s docblock for the complete family→axis mapping table. It now lives
+(like the rest of the compiler/engine) under `App\Support\Recurrence` — see ADR-0052.
 
 ### Live preview — `POST /workflows/meta/schedule-preview`
 
@@ -4208,13 +4214,16 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Workflows/Services/WorkflowTriggerPayloadFactory.php` — the whitelisted `{{trigger.*}}` payload builder
 - `app/modules/Variables/Services/VariableResolver.php` — the directive + `{kind}` union resolver (replaces the Etap-5 flat `ReferenceResolver`); relocated from `app/modules/Workflows/Services/WorkflowVariableResolver.php` in the R2 PR-1a down-move (ADR-0030)
 - `app/modules/Workflows/Services/WorkflowVariableCatalogService.php` — the typed variable/condition catalog
-- `app/modules/Workflows/Enums/ScheduleTimeMode.php`, `ScheduleDayMode.php`, `ScheduleMonthMode.php`, `ScheduleDaySpecial.php` — the v2 axis/mode enums
-- `app/modules/Workflows/Enums/ScheduleLimits.php` — the ONE place every numeric bound lives (the FE mirrors it verbatim)
-- `app/modules/Workflows/Services/WorkflowScheduleService.php` — cadence math + CAS claim + `nextOccurrences()`/`occurrencesFrom()` (the preview + anchor seam) + the `exclusions` post-filter loop
-- `app/modules/Workflows/Services/WorkflowScheduleCompiler.php` — the v2 descriptor → cron-list/last-working-day compiler (the one cadence grammar)
-- `app/modules/Workflows/Services/CompiledSchedule.php` — the compiled cadence value object (`cron` list / `last_working_day` kinds — no interval kind in v2)
-- `app/modules/Workflows/Services/WorkflowScheduleRulesValidator.php` — the ONE schedule-block rule set (write path + AI re-validation + preview, `checkEmpty` toggle)
-- `app/modules/Workflows/Services/LegacyScheduleUpgrader.php` — the read-shim upgrading a stored/proposed legacy `{ family, params }` block to v2 (no data migration was run)
+- `app/Support/Recurrence/Enums/ScheduleTimeMode.php`, `ScheduleDayMode.php`, `ScheduleMonthMode.php`, `ScheduleDaySpecial.php` — the v2 axis/mode enums (moved from `app/modules/Workflows/Enums/` — see ADR-0052)
+- `app/Support/Recurrence/Enums/ScheduleLimits.php` — the ONE place every numeric bound lives (the FE mirrors it verbatim; moved from `app/modules/Workflows/Enums/` — see ADR-0052)
+- `app/Support/Recurrence/Enums/RecurrenceViolationCode.php`, `app/Support/Recurrence/RecurrenceViolation.php` — the shared shape-grammar's violation codes and value object (ADR-0052)
+- `app/Support/Recurrence/ScheduleEngine.php` — the pure cadence arithmetic (`nextDueAt`, `nextOccurrences`, `occurrencesFrom`, `previousOrAtOccurrence`, `occurrencesBetween`, `occurrenceDaysBetween`, `isApproximate`, `timezone`); extracted from `WorkflowScheduleService` (ADR-0052)
+- `app/Support/Recurrence/RecurrenceDescriptorValidator.php` — the shared SHAPE grammar (`violations()`/`unreachable()`), answering in codes only; rendered into this module's sentences by `WorkflowScheduleRulesValidator` (ADR-0052)
+- `app/modules/Workflows/Services/WorkflowScheduleService.php` — the module-facing facade: CAS claim + `arm()`/`isArmable()` (the only members left that touch a `Workflow` model) delegating everything else to `ScheduleEngine`
+- `app/Support/Recurrence/ScheduleCompiler.php` — the v2 descriptor → cron-list/last-working-day compiler (the one cadence grammar); renamed from `WorkflowScheduleCompiler` and moved from `app/modules/Workflows/Services/` (ADR-0052)
+- `app/Support/Recurrence/CompiledSchedule.php` — the compiled cadence value object (`cron` list / `last_working_day` kinds — no interval kind in v2; moved from `app/modules/Workflows/Services/` — see ADR-0052)
+- `app/modules/Workflows/Services/WorkflowScheduleRulesValidator.php` — the ONE schedule-block rule set (write path + AI re-validation + preview, `checkEmpty` toggle); per-key type/range rules + the English-sentence renderer over the shared grammar's codes
+- `app/Support/Recurrence/LegacyScheduleUpgrader.php` — the read-shim upgrading a stored/proposed legacy `{ family, params }` block to v2 (no data migration was run; moved from `app/modules/Workflows/Services/` — see ADR-0052)
 - `app/modules/Workflows/Services/WorkflowScheduleAssistService.php` — AI assist orchestration + re-validation gate
 - `app/modules/Workflows/Agents/ScheduleAssistAgent.php` — the tool-less natural-language agent, prompt built from the v2 enums/limits
 - `app/modules/Workflows/Http/Requests/SchedulePreviewRequest.php`, `Http/Controllers/WorkflowSchedulePreviewController.php` — the live schedule-preview endpoint (incl. the `anchor` param)
@@ -4245,15 +4254,19 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `tests/Feature/WorkflowVariableCatalogTest.php`
 - `tests/Unit/Workflows/WorkflowConditionEvaluatorTest.php`
 - `tests/Unit/Workflows/WorkflowScheduleServiceTest.php` — includes the DST spring-forward AND fall-back pins, the `exclusions` post-filter loop, `last_working_day`
-- `tests/Unit/Workflows/WorkflowScheduleCompilerTest.php` — per-axis compiled-cron assertions, the `last_working_day` month-filter cases
+- `tests/Unit/Workflows/WorkflowScheduleCompilerTest.php` — per-axis compiled-cron assertions, the `last_working_day` month-filter cases (tests `App\Support\Recurrence\ScheduleCompiler`; the test class itself kept its pre-move name)
 - `tests/Unit/Workflows/WorkflowScheduleLegacyUpgraderTest.php` — the full legacy-family → v2 mapping table
+- `tests/Unit/Workflows/WorkflowScheduleRulesRendererTest.php` — the module's rendering half of the split validator: every shared `RecurrenceViolationCode` renders a sentence (exhaustive by test), plus the standalone `validate()` seam (ADR-0052)
 - `tests/Unit/Workflows/WorkflowVariableResolverTest.php`
+- `tests/Feature/RecurrenceLayerBoundaryTest.php` — the shared layer's own boundary guard: no module names, an allowlisted namespace ceiling, no executive surface (byte scan + reflection over public signatures) — ADR-0052
+- `tests/Unit/Recurrence/RecurrenceDayProjectionTest.php` — the day-projection anchor decision, re-derived from live tzdata rather than hardcoded (ADR-0052)
 - `resources/js/next/pages/workflows/__tests__/WorkflowEditorDrawer.spec.ts` — pins the exact create-payload wires reproduced above (incl. the v2 `schedule` wire)
 - `docs/decisions/ADR-0012-workflows-schedule-descriptor-v2.md` — this revision's schedule design decisions (compositional descriptor, read-shim, flat anchored preview, AI-modal-with-approval)
 - `docs/decisions/ADR-0010-workflows-schedule-rebuild.md` — the 12→16-family batch; §7 (frontend two-mode) is SUPERSEDED by ADR-0012, the rest stands as history
 - `docs/decisions/ADR-0009-workflows-rescope-typed-variables.md` — the 5.1 re-scope decisions
 - `docs/decisions/ADR-0008-workflows-module-design.md` — run-engine decisions that still hold (superseded sections marked)
 - `docs/decisions/ADR-0051-calendar-module-design.md` — the Calendar module's own design record (the `create_event` step crosses into it one-way); full API contract in `docs/backend/calendar-api.md`
+- `docs/decisions/ADR-0052-shared-recurrence-layer.md` — the schedule engine's extraction to `App\Support\Recurrence`, the shape-vs-prose validation split, and the day-projection anchor decision; zero wire-contract change
 - `docs/next/workflows-uxui-spec.md` — the frontend UX/UI specification (REVISION 4 — the v2 compositional builder)
 - `app/modules/Variables/Services/OperationExecutor.php` — the shared pipeline engine (72→77 ops; phase-1b's presence family + `date_format`)
 - `app/modules/Variables/DTOs/OperationResult.php` — pipeline outcome, incl. the `hard` flag (phase-1b)

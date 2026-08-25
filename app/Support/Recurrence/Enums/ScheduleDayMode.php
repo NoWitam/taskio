@@ -22,4 +22,22 @@ enum ScheduleDayMode: string
     case WEEKDAYS = 'weekdays';
     case MONTH_DAYS = 'month_days';
     case SPECIAL = 'special';
+
+    /**
+     * The keys this mode OWNS. `special` is the one mode whose real vocabulary depends on the RULE
+     * rather than on the mode (see ScheduleDaySpecial::allowedParams()), so the entry here is the
+     * superset and the rule narrows it.
+     *
+     * @return array<int, string>
+     */
+    public function allowedKeys(): array
+    {
+        return match ($this) {
+            self::EVERY_DAY => ['mode'],
+            self::EVERY_N_DAYS => ['mode', 'n', 'from', 'to'],
+            self::WEEKDAYS => ['mode', 'weekdays'],
+            self::MONTH_DAYS => ['mode', 'days'],
+            self::SPECIAL => ['mode', 'special', 'ordinal', 'weekday'],
+        };
+    }
 }

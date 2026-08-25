@@ -18,4 +18,19 @@ enum ScheduleMonthMode: string
     case EVERY_MONTH = 'every_month';
     case EVERY_N_MONTHS = 'every_n_months';
     case MONTHS = 'months';
+
+    /**
+     * The keys this mode OWNS — see ScheduleTimeMode::allowedKeys() for why this fact lives on the
+     * enum rather than in a validator.
+     *
+     * @return array<int, string>
+     */
+    public function allowedKeys(): array
+    {
+        return match ($this) {
+            self::EVERY_MONTH => ['mode'],
+            self::EVERY_N_MONTHS => ['mode', 'n', 'from', 'to'],
+            self::MONTHS => ['mode', 'months'],
+        };
+    }
 }

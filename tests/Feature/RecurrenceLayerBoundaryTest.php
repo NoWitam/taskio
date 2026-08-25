@@ -231,6 +231,15 @@ class RecurrenceLayerBoundaryTest extends TestCase
      * primitives it is arithmetic over. Nothing else — in particular nothing from a module, nothing
      * from Eloquent, nothing from the framework.
      *
+     * MIXED BY DESIGN, and the shape of each entry says how it is matched. An entry ending in `\` is a
+     * NAMESPACE and matches by prefix; an entry without one is a CLASS and matches EXACTLY. The three
+     * date classes are classes, and prefix-matching them would have granted every type whose name
+     * merely begins with theirs — `DateTime` alone would admit `DateTimeSomethingElse`, and it would
+     * do so silently, since the entry a reader checks is exactly the one they expect to find. This is
+     * the same rule ALLOWED_GLOBAL_IMPORTS is written under: "starts with a name we trust" is a
+     * category, and a category is not a permission. Enforced by {@see judge} and probed by
+     * {@see test_the_type_allowlist_does_not_prefix_match_a_class_entry}.
+     *
      * @var array<int, string>
      */
     private const ALLOWED_TYPE_NAMESPACES = [
@@ -560,6 +569,35 @@ class RecurrenceLayerBoundaryTest extends TestCase
         }
     }
 
+    /**
+     * THE TYPE MATCHER ITSELF, PROBED.
+     *
+     * The signature guard above is only as strong as the question it asks, and "does this type start
+     * with something we allow" is a weaker question than the list looks like it is asking. A class
+     * entry that prefix-matched would wave through every type whose name merely begins with it, while
+     * the allowlist a reader inspects would still read exactly as intended — the failure would be
+     * invisible from both ends. So the distinction is asserted, not assumed.
+     */
+    public function test_the_type_allowlist_does_not_prefix_match_a_class_entry(): void
+    {
+        // The class entries themselves are allowed...
+        $this->assertTrue($this->isAllowedType('DateTime'));
+        $this->assertTrue($this->isAllowedType('DateTimeImmutable'));
+        $this->assertTrue($this->isAllowedType('DateTimeInterface'));
+
+        // ...and nothing that merely starts like them is.
+        $this->assertFalse($this->isAllowedType('DateTimeSomethingElse'));
+        $this->assertFalse($this->isAllowedType('DateTimeZone'));
+        $this->assertFalse($this->isAllowedType('DateTimeInterfaceProxy'));
+
+        // A NAMESPACE entry keeps matching by prefix.
+        $this->assertTrue($this->isAllowedType('Carbon\\CarbonImmutable'));
+        $this->assertTrue($this->isAllowedType('App\\Support\\Recurrence\\CompiledSchedule'));
+        $this->assertFalse($this->isAllowedType('CarbonExtras\\Thing'));
+        $this->assertFalse($this->isAllowedType('App\\Support\\Pagination\\StagedCursorPaginator'));
+        $this->assertFalse($this->isAllowedType('Illuminate\\Http\\Request'));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────
 
     /**
@@ -722,12 +760,37 @@ class RecurrenceLayerBoundaryTest extends TestCase
      *
      * The trailing backslash is trimmed for the equality case so a bare `namespace App\Support\Recurrence;`
      * line matches the `App\Support\Recurrence\` prefix. Prefixes are WRITTEN with the trailing
-     * backslash on purpose — without it, `Carbon` would also allow a `CarbonExtras\` package.
+     * backslash on purpose — without it, `Carbon` would also allow a `CarbonExtras\` package. Every
+     * entry in ALLOWED_NAMESPACES is a namespace, so prefix matching is right for all of them; the
+     * TYPE list is the mixed one, and {@see isAllowedType} is where that distinction is made.
      */
     private function isAllowedNamespace(string $fqcn): bool
     {
         foreach (array_keys(self::ALLOWED_NAMESPACES) as $prefix) {
             if ($fqcn === rtrim($prefix, '\\') || str_starts_with($fqcn, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a type name is one the layer may speak in — namespace entries by prefix, class entries
+     * EXACTLY. See ALLOWED_TYPE_NAMESPACES for why the two are matched differently.
+     */
+    private function isAllowedType(string $type): bool
+    {
+        foreach (self::ALLOWED_TYPE_NAMESPACES as $entry) {
+            if (!str_ends_with($entry, '\\')) {
+                if ($type === $entry) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ($type === rtrim($entry, '\\') || str_starts_with($type, $entry)) {
                 return true;
             }
         }
@@ -794,15 +857,7 @@ class RecurrenceLayerBoundaryTest extends TestCase
         }
 
         // POSITIVE: is it something the layer is allowed to speak in at all?
-        $allowed = false;
-        foreach (self::ALLOWED_TYPE_NAMESPACES as $prefix) {
-            if ($type === $prefix || str_starts_with($type, $prefix)) {
-                $allowed = true;
-                break;
-            }
-        }
-
-        if (!$allowed) {
+        if (!$this->isAllowedType($type)) {
             $violations[] = $where . ' names ' . $type
                 . ', which is neither an allowed builtin nor one of ['
                 . implode(', ', self::ALLOWED_TYPE_NAMESPACES) . ']';

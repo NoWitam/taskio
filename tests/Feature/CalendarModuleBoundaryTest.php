@@ -136,6 +136,19 @@ class CalendarModuleBoundaryTest extends TestCase
      * reasoned about, and requiring "already used" would make it impossible to state a decision
      * BEFORE the code that relies on it — which is exactly what `App\Support\Recurrence` is here to do.
      *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * A TRAILING BACKSLASH IS PART OF THE ENTRY, NOT TYPOGRAPHY
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * An entry ENDING in `\` is a NAMESPACE and matches by prefix — that is the point of granting one.
+     * An entry that does not is a CLASS and matches EXACTLY, because a class name is not a namespace
+     * and prefix-matching one grants every name that merely starts with it: the single class entry
+     * below (`App\Http\Controllers\Controller`) would otherwise also admit `ControllerFactory`,
+     * `ControllerBase`, or an `App\Http\Controllers\ControllerHelpers\` tree nobody argued for. The
+     * distinction is enforced by {@see allows()} and probed by
+     * {@see test_the_allowlist_matcher_does_not_prefix_match_a_class_entry}, not left to a reader
+     * noticing the backslash. This is the same discipline the recurrence layer's global-import list
+     * applies for the same reason: a category ("anything starting with…") is not a permission.
+     *
      * @var array<string, string>
      */
     private const ALLOWED_FOREIGN_NAMESPACES = [
@@ -212,10 +225,8 @@ class CalendarModuleBoundaryTest extends TestCase
 
                 $foreign++;
 
-                foreach (array_keys(self::ALLOWED_FOREIGN_NAMESPACES) as $prefix) {
-                    if ($reference === $prefix || str_starts_with($reference, $prefix)) {
-                        continue 2;
-                    }
+                if ($this->allows($reference)) {
+                    continue;
                 }
 
                 $violations[] = $relative . ' names ' . $reference;
@@ -256,6 +267,61 @@ class CalendarModuleBoundaryTest extends TestCase
     private function normalize(string $source): string
     {
         return (string) preg_replace('/\\\\+/', '\\', $source);
+    }
+
+    /**
+     * Whether a fully-qualified name is covered by the allowlist, with the entry's own shape deciding
+     * HOW it is matched: a namespace (trailing `\`) matches by prefix, a class matches exactly. See
+     * the ALLOWED_FOREIGN_NAMESPACES docblock for why a class entry must not prefix-match.
+     *
+     * A namespace entry also matches the namespace itself with the trailing backslash trimmed, so a
+     * bare `namespace App\Support\Recurrence;` line satisfies the `App\Support\Recurrence\` grant.
+     */
+    private function allows(string $reference): bool
+    {
+        foreach (array_keys(self::ALLOWED_FOREIGN_NAMESPACES) as $entry) {
+            if (!str_ends_with($entry, '\\')) {
+                if ($reference === $entry) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ($reference === rtrim($entry, '\\') || str_starts_with($reference, $entry)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * THE MATCHER ITSELF, PROBED — because every other assertion in this file is only as strong as it.
+     *
+     * A class entry that prefix-matched would hand a silent grant to every name that merely starts
+     * with it, and nothing about the allowlist would look wrong: the entry a reader checks would be
+     * the one they expect to see. The probe below is what makes the difference between "matches by
+     * prefix" and "matches exactly" a fact rather than an intention.
+     */
+    public function test_the_allowlist_matcher_does_not_prefix_match_a_class_entry(): void
+    {
+        // The class entry itself is allowed...
+        $this->assertTrue($this->allows('App\\Http\\Controllers\\Controller'));
+
+        // ...and NOTHING that merely starts with it is.
+        $this->assertFalse($this->allows('App\\Http\\Controllers\\ControllerFactory'));
+        $this->assertFalse($this->allows('App\\Http\\Controllers\\Controllers\\Anything'));
+        $this->assertFalse($this->allows('App\\Http\\Controllers\\ControllerHelpers\\Secret'));
+
+        // A NAMESPACE entry keeps matching by prefix — that is what granting a namespace means.
+        $this->assertTrue($this->allows('App\\Support\\Recurrence\\ScheduleEngine'));
+        $this->assertTrue($this->allows('App\\Support\\Recurrence'));
+        $this->assertFalse($this->allows('App\\Support\\RecurrenceExtras\\Thing'));
+        $this->assertFalse($this->allows('App\\Support\\Pagination\\StagedCursorPaginator'));
+
+        // Anything nobody argued for stays out.
+        $this->assertFalse($this->allows('App\\Modules\\Workflows\\Models\\Workflow'));
     }
 
     /**

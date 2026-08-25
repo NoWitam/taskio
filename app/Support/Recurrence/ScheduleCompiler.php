@@ -14,7 +14,8 @@ use InvalidArgumentException;
  * ScheduleEngine is the only consumer; it never contains a descriptor->cron mapping of its
  * own, so the cadence grammar lives in exactly one place.
  *
- * COMPOSITIONAL DESCRIPTOR (already validated by WorkflowScheduleRulesValidator):
+ * COMPOSITIONAL DESCRIPTOR (already validated by RecurrenceDescriptorValidator + the consuming
+ * module's own per-key rules):
  *   { time: {mode,…}, day?: {mode,…}, month?: {mode,…}, tz?, exclusions? }
  * The three axes are INDEPENDENT: the day axis fills the cron day-of-month OR day-of-week field
  * (never both), the month axis fills the month field, and EVERY time expression carries the SAME

@@ -2,26 +2,53 @@
 
 namespace App\Modules\Workflows\Services;
 
+use App\Support\Recurrence\Enums\RecurrenceViolationCode;
 use App\Support\Recurrence\Enums\ScheduleDayMode;
 use App\Support\Recurrence\Enums\ScheduleDaySpecial;
 use App\Support\Recurrence\Enums\ScheduleLimits;
 use App\Support\Recurrence\Enums\ScheduleMonthMode;
 use App\Support\Recurrence\Enums\ScheduleTimeMode;
 use App\Support\Recurrence\LegacyScheduleUpgrader;
+use App\Support\Recurrence\RecurrenceDescriptorValidator;
+use App\Support\Recurrence\RecurrenceViolation;
 use Illuminate\Contracts\Validation\Validator as ValidatorContract;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
-use Throwable;
 
 /**
- * The ONE place the v2 compositional `trigger_config.schedule` descriptor
- * ({ time, day?, month?, exclusions?, tz? }) is validated.
+ * The WORKFLOWS-FACING face of schedule validation: the Laravel rule array a request composes, and
+ * the English sentences an automation's author reads.
  *
  * Extracted from StoreWorkflowRequest so the human write path AND the AI schedule-assist path
  * (WorkflowScheduleAssistService) enforce byte-identical rules: the assist service never trusts the
  * model's self-report, it re-runs THESE rules. The request delegates here for both its rule array
  * and its second-pass checks, so nothing is forked and its error keys stay under
  * `trigger_config.schedule.*` (the FE maps validation errors by that path prefix).
+ *
+ * WHAT IS NO LONGER DECIDED HERE — read this before adding a rule.
+ * The SHAPE grammar (which mode owns which keys, what each mode requires, how a window pairs and
+ * orders, which combinations contradict, whether the cadence can ever fire) lives in the shared
+ * recurrence layer, on RecurrenceDescriptorValidator, and answers in CODES. It had to move for the
+ * same reason the engine did: a second module accepting a recurrence descriptor may not name this
+ * one, so leaving the rules here would have produced a second definition of "valid" the day that
+ * module was written. What stayed is everything that is PRESENTATION rather than grammar:
+ *
+ *   - the per-key TYPE and RANGE rules below, expressed in Laravel's vocabulary because that is what
+ *     yields the per-field error paths the schedule form attaches to. Every bound is read from the
+ *     shared ScheduleLimits — including the exclusion lists' own bounds, which are the SAME facts as
+ *     the month and weekday axes' and must not be spelled twice — so the facts are still stated once;
+ *   - three checks that are neither type nor range and that the shared layer deliberately leaves to
+ *     each consumer: `time` is REQUIRED, `tz` must be a real zone, and the exclusion lists are capped
+ *     so they cannot exclude every month or every weekday. All three are in baseRules() below, and
+ *     RecurrenceDescriptorValidator's docblock names them as the consumer's job — a module that drops
+ *     one is still fail-closed, but it reports a missing time axis as "this schedule never fires";
+ *   - the MESSAGES, written for an automation author, in this module's words. The shared layer
+ *     deliberately returns no prose: the app is PL+EN switchable and the next consumer of the same
+ *     grammar has a different subject and a narrower subset to talk about.
+ *
+ * So a new WORDING belongs here; a new RULE belongs in the shared validator, and then here as one
+ * more line of {@see message()} — which is asserted exhaustive by test, so an unrendered code fails
+ * the suite instead of reaching a user as a missing error.
  *
  * Two entry points:
  *   - baseRules($prefix) + secondPass($validator, $schedule, $prefix): the request composes these
@@ -31,7 +58,7 @@ use Throwable;
  *     `{ family, params }` block to v2 first (the read-shim), so a model that still speaks the old
  *     vocabulary is validated against the same v2 rules.
  *
- * VALIDATION SHAPE (structural rules in baseRules, cross-field rules in secondPass):
+ * VALIDATION SHAPE (per-key rules in baseRules, grammar in the shared validator, rendered here):
  *   - time (REQUIRED): mode ∈ {at, every_minutes, every_hours}; each mode owns its fields; a field
  *     foreign to the chosen mode is a 422 (like the day/month axes).
  *   - day (OPTIONAL, default every_day) / month (OPTIONAL, default every_month): same mode-owns-its-
@@ -51,7 +78,7 @@ class WorkflowScheduleRulesValidator
     private const STANDALONE_PREFIX = 'schedule';
 
     public function __construct(
-        private WorkflowScheduleService $schedule = new WorkflowScheduleService,
+        private RecurrenceDescriptorValidator $descriptor = new RecurrenceDescriptorValidator,
         private LegacyScheduleUpgrader $upgrader = new LegacyScheduleUpgrader,
     ) {}
 
@@ -110,34 +137,34 @@ class WorkflowScheduleRulesValidator
             // bounded so it can never exclude EVERY value (months max 11, weekdays max 6).
             $p . '.exclusions' => ['nullable', 'array'],
             $p . '.exclusions.months' => ['nullable', 'array', 'max:' . ScheduleLimits::EXCLUSIONS_MONTHS_MAX],
-            $p . '.exclusions.months.*' => ['integer', 'min:1', 'max:12', 'distinct'],
+            $p . '.exclusions.months.*' => ['integer', 'min:' . ScheduleLimits::MONTH_MIN, 'max:' . ScheduleLimits::MONTH_MAX, 'distinct'],
             $p . '.exclusions.weekdays' => ['nullable', 'array', 'max:' . ScheduleLimits::EXCLUSIONS_WEEKDAYS_MAX],
-            $p . '.exclusions.weekdays.*' => ['integer', 'min:0', 'max:6', 'distinct'],
+            $p . '.exclusions.weekdays.*' => ['integer', 'min:' . ScheduleLimits::WEEKDAY_MIN, 'max:' . ScheduleLimits::WEEKDAY_MAX, 'distinct'],
             $p . '.exclusions.dates' => ['nullable', 'array', 'max:' . ScheduleLimits::EXCLUSIONS_DATES_MAX],
             $p . '.exclusions.dates.*' => ['date_format:Y-m-d', 'distinct'],
         ];
     }
 
     /**
-     * Cross-field checks the per-key rules cannot express, emitted under $prefix. No-ops for a part
-     * whose base rule already failed (a non-array time, an unknown mode) so a second confusing error
-     * is not stacked on top.
+     * The grammar checks the per-key rules cannot express, emitted under $prefix: every violation the
+     * shared descriptor validator finds, rendered into this module's wording at this request's paths.
+     *
+     * The shared validator no-ops for a part whose base rule already failed (a non-array time, an
+     * unknown mode), so a second confusing error is never stacked on top of the first.
      *
      * @param  array<string, mixed>  $schedule  the resolved v2 block
      * @param  bool  $checkEmpty  whether to reject a cadence with no reachable occurrence (default true)
      */
     public function secondPass(ValidatorContract $validator, array $schedule, string $prefix, bool $checkEmpty = true): void
     {
-        $this->validateTimeAxis($validator, $schedule, $prefix);
-        $this->validateDayAxis($validator, $schedule, $prefix);
-        $this->validateMonthAxis($validator, $schedule, $prefix);
-        $this->rejectForeignExclusionKeys($validator, $schedule, $prefix);
+        $this->report($validator, $this->descriptor->violations($schedule), $prefix);
 
         // Only worth checking emptiness once the block is otherwise structurally sound — a config that
-        // already failed above would emit a confusing second "no occurrences" error. The preview path
-        // opts out (checkEmpty:false) so emptiness surfaces as data instead of a 422.
+        // already failed above would emit a confusing second "no occurrences" error, and the check
+        // costs a real projection. The preview path opts out (checkEmpty:false) so emptiness surfaces
+        // as data instead of a 422.
         if ($checkEmpty && $validator->errors()->isEmpty()) {
-            $this->validateHasOccurrence($validator, $schedule, $prefix);
+            $this->report($validator, $this->descriptor->unreachable($schedule), $prefix);
         }
     }
 
@@ -168,425 +195,51 @@ class WorkflowScheduleRulesValidator
             : [];
     }
 
-    // ---- TIME axis ------------------------------------------------------------
+    /**
+     * Add each violation to the error bag under this request's prefix, in the order the shared
+     * validator found them (time axis, day axis, month axis, exclusions) — the order the FE's
+     * progressive-disclosure mapping walks.
+     *
+     * @param  array<int, RecurrenceViolation>  $violations
+     */
+    private function report(ValidatorContract $validator, array $violations, string $prefix): void
+    {
+        foreach ($violations as $violation) {
+            $validator->errors()->add($prefix . '.' . $violation->path, $this->message($violation));
+        }
+    }
 
     /**
-     * time mode-dependent checks: the required field for the mode, the from/to window, and rejection
-     * of any field foreign to the chosen mode.
+     * ONE violation as one sentence for an automation author.
      *
-     * @param  array<string, mixed>  $schedule
+     * A `match` over the enum with no default arm ON PURPOSE: a code added to the grammar makes this
+     * expression throw rather than fall through to something vague, and the exhaustiveness test turns
+     * that into a red suite at the moment the code is added instead of a blank error later.
      */
-    private function validateTimeAxis(ValidatorContract $validator, array $schedule, string $prefix): void
+    private function message(RecurrenceViolation $violation): string
     {
-        $time = $schedule['time'] ?? null;
+        $field = $violation->context('field');
+        $special = $violation->context('special');
 
-        if (!is_array($time)) {
-            return; // base 'time' required/array rule reported it
-        }
-
-        $tp = $prefix . '.time';
-        $mode = ScheduleTimeMode::tryFrom((string) ($time['mode'] ?? ''));
-
-        if ($mode === null) {
-            return; // base enum rule reported the bad/missing mode
-        }
-
-        match ($mode) {
-            ScheduleTimeMode::AT => $this->requireList($validator, $time, 'at', $tp),
-            ScheduleTimeMode::EVERY_MINUTES => $this->validateEveryMinutes($validator, $time, $tp),
-            ScheduleTimeMode::EVERY_HOURS => $this->validateEveryHours($validator, $time, $tp),
+        return match ($violation->code) {
+            RecurrenceViolationCode::MODE_REQUIRED => 'A mode is required for this axis.',
+            RecurrenceViolationCode::MODE_FIELD_REQUIRED => 'The ' . $field . ' field is required for this mode.',
+            RecurrenceViolationCode::MODE_LIST_REQUIRED => 'The ' . $field . ' list is required for this mode.',
+            RecurrenceViolationCode::FIELD_NOT_ALLOWED_FOR_MODE => 'The ' . $field . ' field is not allowed for this mode.',
+            RecurrenceViolationCode::WINDOW_INCOMPLETE => 'A window needs both a start and an end, or neither.',
+            RecurrenceViolationCode::WINDOW_START_NOT_TIME => 'The window start must be a HH:mm time.',
+            RecurrenceViolationCode::WINDOW_END_NOT_TIME => 'The window end must be a HH:mm time.',
+            RecurrenceViolationCode::WINDOW_TIMES_NOT_ASCENDING => 'The window end must be after its start (a window cannot wrap midnight).',
+            RecurrenceViolationCode::WINDOW_START_NOT_HOUR => 'The window start hour must be an integer 0..23.',
+            RecurrenceViolationCode::WINDOW_END_NOT_HOUR => 'The window end hour must be an integer 0..23.',
+            RecurrenceViolationCode::WINDOW_HOURS_NOT_ASCENDING => 'The window end hour must be after its start.',
+            RecurrenceViolationCode::WINDOW_BOUNDS_NOT_ASCENDING => 'The window end must be greater than its start.',
+            RecurrenceViolationCode::SPECIAL_REQUIRED => 'A special rule is required for the special day mode.',
+            RecurrenceViolationCode::SPECIAL_NEEDS_ORDINAL => 'An ordinal is required for the ' . $special . ' rule.',
+            RecurrenceViolationCode::SPECIAL_NEEDS_WEEKDAY => 'A weekday is required for the ' . $special . ' rule.',
+            RecurrenceViolationCode::SPECIAL_REQUIRES_AT_TIME => 'The ' . $special . ' rule requires explicit fire times (time.mode must be at).',
+            RecurrenceViolationCode::EXCLUSION_KEY_NOT_ALLOWED => 'The ' . $field . ' exclusion key is not allowed.',
+            RecurrenceViolationCode::NO_OCCURRENCE => 'The schedule has no occurrences — its rules and exclusions rule out every fire time.',
         };
-
-        $this->rejectForeignKeys($validator, $time, $this->timeAllowedKeys($mode), $tp);
-    }
-
-    /** every_minutes: a required `minutes` step plus an OPTIONAL HH:mm window (both-or-neither, from<to). */
-    private function validateEveryMinutes(ValidatorContract $validator, array $time, string $tp): void
-    {
-        $this->requireNumeric($validator, $time, 'minutes', $tp);
-        $this->validateHhmmWindow($validator, $time, $tp);
-    }
-
-    /** every_hours: a required `hours` step (minute optional) plus an OPTIONAL 0..23 hour window. */
-    private function validateEveryHours(ValidatorContract $validator, array $time, string $tp): void
-    {
-        $this->requireNumeric($validator, $time, 'hours', $tp);
-        $this->validateHourWindow($validator, $time, $tp);
-    }
-
-    /**
-     * The optional HH:mm window of an every_minutes time. from/to are BOTH-OR-NEITHER, each a valid
-     * HH:mm, and from < to (a minute window never wraps across midnight).
-     */
-    private function validateHhmmWindow(ValidatorContract $validator, array $time, string $tp): void
-    {
-        if (!$this->windowPresent($validator, $time, $tp)) {
-            return;
-        }
-
-        $fromOk = $this->isHhmm($time['from'] ?? null);
-        $toOk = $this->isHhmm($time['to'] ?? null);
-
-        if (!$fromOk) {
-            $validator->errors()->add($tp . '.from', 'The window start must be a HH:mm time.');
-        }
-
-        if (!$toOk) {
-            $validator->errors()->add($tp . '.to', 'The window end must be a HH:mm time.');
-        }
-
-        if ($fromOk && $toOk && $this->minutesOfDay($time['from']) >= $this->minutesOfDay($time['to'])) {
-            $validator->errors()->add($tp . '.to', 'The window end must be after its start (a window cannot wrap midnight).');
-        }
-    }
-
-    /**
-     * The optional 0..23 hour window of an every_hours time. from/to are BOTH-OR-NEITHER integers in
-     * 0..23 with from < to.
-     */
-    private function validateHourWindow(ValidatorContract $validator, array $time, string $tp): void
-    {
-        if (!$this->windowPresent($validator, $time, $tp)) {
-            return;
-        }
-
-        $fromOk = $this->isHour($time['from'] ?? null);
-        $toOk = $this->isHour($time['to'] ?? null);
-
-        if (!$fromOk) {
-            $validator->errors()->add($tp . '.from', 'The window start hour must be an integer 0..23.');
-        }
-
-        if (!$toOk) {
-            $validator->errors()->add($tp . '.to', 'The window end hour must be an integer 0..23.');
-        }
-
-        if ($fromOk && $toOk && (int) $time['from'] >= (int) $time['to']) {
-            $validator->errors()->add($tp . '.to', 'The window end hour must be after its start.');
-        }
-    }
-
-    /**
-     * The keys a time mode accepts — a foreign one (e.g. `minutes` on an `at` time) is a 422.
-     *
-     * @return array<int, string>
-     */
-    private function timeAllowedKeys(ScheduleTimeMode $mode): array
-    {
-        return match ($mode) {
-            ScheduleTimeMode::AT => ['mode', 'at'],
-            ScheduleTimeMode::EVERY_MINUTES => ['mode', 'minutes', 'from', 'to'],
-            ScheduleTimeMode::EVERY_HOURS => ['mode', 'hours', 'minute', 'from', 'to'],
-        };
-    }
-
-    // ---- DAY axis -------------------------------------------------------------
-
-    /**
-     * day mode-dependent checks. The day axis is optional (absent/empty => every_day); when present
-     * it must name a mode and satisfy that mode's required fields, with foreign fields rejected.
-     *
-     * @param  array<string, mixed>  $schedule
-     */
-    private function validateDayAxis(ValidatorContract $validator, array $schedule, string $prefix): void
-    {
-        $day = $schedule['day'] ?? null;
-
-        if (!is_array($day) || $day === []) {
-            return; // default every_day
-        }
-
-        $dp = $prefix . '.day';
-        $mode = ScheduleDayMode::tryFrom((string) ($day['mode'] ?? ''));
-
-        if ($mode === null) {
-            $this->requireMode($validator, $day, $dp);
-
-            return;
-        }
-
-        match ($mode) {
-            ScheduleDayMode::EVERY_DAY => null,
-            ScheduleDayMode::EVERY_N_DAYS => $this->validateEveryN($validator, $day, $dp, ScheduleLimits::EVERY_N_DAYS_MIN, ScheduleLimits::EVERY_N_DAYS_MAX),
-            ScheduleDayMode::WEEKDAYS => $this->requireList($validator, $day, 'weekdays', $dp),
-            ScheduleDayMode::MONTH_DAYS => $this->requireList($validator, $day, 'days', $dp),
-            ScheduleDayMode::SPECIAL => $this->validateSpecialDay($validator, $day, $schedule, $prefix),
-        };
-
-        if ($mode !== ScheduleDayMode::SPECIAL) {
-            $this->rejectForeignKeys($validator, $day, $this->dayAllowedKeys($mode), $dp);
-        }
-    }
-
-    /**
-     * The `special` day rule: the required rule value, its required sub-params (ordinal/weekday), the
-     * last_working_day time.mode=at restriction, and rejection of fields foreign to the chosen rule.
-     *
-     * @param  array<string, mixed>  $day
-     * @param  array<string, mixed>  $schedule
-     */
-    private function validateSpecialDay(ValidatorContract $validator, array $day, array $schedule, string $prefix): void
-    {
-        $dp = $prefix . '.day';
-        $special = ScheduleDaySpecial::tryFrom((string) ($day['special'] ?? ''));
-
-        if ($special === null) {
-            if (!array_key_exists('special', $day)) {
-                $validator->errors()->add($dp . '.special', 'A special rule is required for the special day mode.');
-            }
-
-            return; // a present-but-invalid special was reported by the base enum rule
-        }
-
-        if ($special->needsOrdinal() && !is_numeric($day['ordinal'] ?? null)) {
-            $validator->errors()->add($dp . '.ordinal', 'An ordinal is required for the ' . $special->value . ' rule.');
-        }
-
-        if ($special->needsWeekday() && !is_numeric($day['weekday'] ?? null)) {
-            $validator->errors()->add($dp . '.weekday', 'A weekday is required for the ' . $special->value . ' rule.');
-        }
-
-        // last_working_day is a bespoke HH:mm cadence — it only makes sense with explicit fire times.
-        if ($special->requiresAtTime() && ($schedule['time']['mode'] ?? null) !== ScheduleTimeMode::AT->value) {
-            $validator->errors()->add(
-                $prefix . '.time.mode',
-                'The last_working_day rule requires explicit fire times (time.mode must be at).',
-            );
-        }
-
-        $this->rejectForeignKeys($validator, $day, array_merge(['mode', 'special'], $special->allowedParams()), $dp);
-    }
-
-    /**
-     * The keys a (non-special) day mode accepts.
-     *
-     * @return array<int, string>
-     */
-    private function dayAllowedKeys(ScheduleDayMode $mode): array
-    {
-        return match ($mode) {
-            ScheduleDayMode::EVERY_DAY => ['mode'],
-            ScheduleDayMode::EVERY_N_DAYS => ['mode', 'n', 'from', 'to'],
-            ScheduleDayMode::WEEKDAYS => ['mode', 'weekdays'],
-            ScheduleDayMode::MONTH_DAYS => ['mode', 'days'],
-            ScheduleDayMode::SPECIAL => ['mode', 'special', 'ordinal', 'weekday'],
-        };
-    }
-
-    // ---- MONTH axis -----------------------------------------------------------
-
-    /**
-     * month mode-dependent checks. Optional (absent/empty => every_month); when present it must name a
-     * mode and satisfy it, with foreign fields rejected.
-     *
-     * @param  array<string, mixed>  $schedule
-     */
-    private function validateMonthAxis(ValidatorContract $validator, array $schedule, string $prefix): void
-    {
-        $month = $schedule['month'] ?? null;
-
-        if (!is_array($month) || $month === []) {
-            return; // default every_month
-        }
-
-        $mp = $prefix . '.month';
-        $mode = ScheduleMonthMode::tryFrom((string) ($month['mode'] ?? ''));
-
-        if ($mode === null) {
-            $this->requireMode($validator, $month, $mp);
-
-            return;
-        }
-
-        match ($mode) {
-            ScheduleMonthMode::EVERY_MONTH => null,
-            ScheduleMonthMode::EVERY_N_MONTHS => $this->validateEveryN($validator, $month, $mp, ScheduleLimits::MONTH_MIN, ScheduleLimits::MONTH_MAX),
-            ScheduleMonthMode::MONTHS => $this->requireList($validator, $month, 'months', $mp),
-        };
-
-        $this->rejectForeignKeys($validator, $month, $this->monthAllowedKeys($mode), $mp);
-    }
-
-    /**
-     * The keys a month mode accepts.
-     *
-     * @return array<int, string>
-     */
-    private function monthAllowedKeys(ScheduleMonthMode $mode): array
-    {
-        return match ($mode) {
-            ScheduleMonthMode::EVERY_MONTH => ['mode'],
-            ScheduleMonthMode::EVERY_N_MONTHS => ['mode', 'n', 'from', 'to'],
-            ScheduleMonthMode::MONTHS => ['mode', 'months'],
-        };
-    }
-
-    // ---- shared field checks --------------------------------------------------
-
-    /**
-     * An every_n_* axis: a required numeric `n` and an OPTIONAL integer window (both-or-neither,
-     * from<to). The from/to bounds are enforced by the base rules; here we pin the pairing + order.
-     *
-     * @param  array<string, mixed>  $block
-     */
-    private function validateEveryN(ValidatorContract $validator, array $block, string $bp, int $min, int $max): void
-    {
-        $this->requireNumeric($validator, $block, 'n', $bp);
-
-        if (!$this->windowPresent($validator, $block, $bp)) {
-            return;
-        }
-
-        $from = $block['from'] ?? null;
-        $to = $block['to'] ?? null;
-
-        if (is_numeric($from) && is_numeric($to) && (int) $from >= (int) $to) {
-            $validator->errors()->add($bp . '.to', 'The window end must be greater than its start.');
-        }
-    }
-
-    /**
-     * Whether an axis carries a window at all, reporting the both-or-neither violation. Returns true
-     * only when BOTH bounds are present (so the caller can validate their values/order).
-     *
-     * @param  array<string, mixed>  $block
-     */
-    private function windowPresent(ValidatorContract $validator, array $block, string $bp): bool
-    {
-        $hasFrom = $this->present($block, 'from');
-        $hasTo = $this->present($block, 'to');
-
-        if ($hasFrom !== $hasTo) {
-            $validator->errors()->add($bp . '.to', 'A window needs both a start and an end, or neither.');
-
-            return false;
-        }
-
-        return $hasFrom;
-    }
-
-    /**
-     * Require a numeric scalar field for the chosen mode (e.g. minutes/hours/n), reporting on its key.
-     *
-     * @param  array<string, mixed>  $block
-     */
-    private function requireNumeric(ValidatorContract $validator, array $block, string $key, string $bp): void
-    {
-        if (!is_numeric($block[$key] ?? null)) {
-            $validator->errors()->add($bp . '.' . $key, 'The ' . $key . ' field is required for this mode.');
-        }
-    }
-
-    /**
-     * Require a non-empty list field for the chosen mode (time.at, day.weekdays, day.days,
-     * month.months), reporting on its key. The element rules/bounds live in the base rules.
-     *
-     * @param  array<string, mixed>  $block
-     */
-    private function requireList(ValidatorContract $validator, array $block, string $key, string $bp): void
-    {
-        $value = $block[$key] ?? null;
-
-        if (!is_array($value) || $value === []) {
-            $validator->errors()->add($bp . '.' . $key, 'The ' . $key . ' list is required for this mode.');
-        }
-    }
-
-    /** Report a missing mode on a present day/month axis. */
-    private function requireMode(ValidatorContract $validator, array $block, string $bp): void
-    {
-        if (!array_key_exists('mode', $block)) {
-            $validator->errors()->add($bp . '.mode', 'A mode is required for this axis.');
-        }
-        // A present-but-invalid mode was already reported by the base enum rule.
-    }
-
-    /**
-     * Reject a key not in $allowed for the chosen mode — descriptor-driven consumers get explicit
-     * feedback, never a silent drop (mirrors the v1 foreign-param guard).
-     *
-     * @param  array<string, mixed>  $block
-     * @param  array<int, string>  $allowed
-     */
-    private function rejectForeignKeys(ValidatorContract $validator, array $block, array $allowed, string $bp): void
-    {
-        foreach (array_keys($block) as $key) {
-            if (!in_array((string) $key, $allowed, true)) {
-                $validator->errors()->add($bp . '.' . $key, 'The ' . $key . ' field is not allowed for this mode.');
-            }
-        }
-    }
-
-    /**
-     * Reject an `exclusions` key outside {months, weekdays, dates}. No-op when absent/not an array.
-     *
-     * @param  array<string, mixed>  $schedule
-     */
-    private function rejectForeignExclusionKeys(ValidatorContract $validator, array $schedule, string $prefix): void
-    {
-        $exclusions = $schedule['exclusions'] ?? null;
-
-        if (!is_array($exclusions)) {
-            return;
-        }
-
-        foreach (array_keys($exclusions) as $name) {
-            if (!in_array((string) $name, ['months', 'weekdays', 'dates'], true)) {
-                $validator->errors()->add($prefix . '.exclusions.' . $name, 'The ' . $name . ' exclusion key is not allowed.');
-            }
-        }
-    }
-
-    /**
-     * EMPTY-SCHEDULE guard: after every structural rule passes, the cadence must yield at least one
-     * concrete occurrence within the service's horizon. An over-constrained config (e.g. weekly-on-
-     * Monday that also excludes Mondays) produces NO occurrence, so we reject it on the exclusions key
-     * rather than persist an unfireable schedule. Reuses nextOccurrences(…, 1) — the SAME seam the
-     * preview endpoint renders — so "does the cadence have a first occurrence" is answered in one place.
-     *
-     * @param  array<string, mixed>  $schedule
-     */
-    private function validateHasOccurrence(ValidatorContract $validator, array $schedule, string $prefix): void
-    {
-        try {
-            $occurrences = $this->schedule->nextOccurrences($schedule, 1);
-        } catch (Throwable) {
-            $occurrences = [];
-        }
-
-        if ($occurrences === []) {
-            $validator->errors()->add(
-                $prefix . '.exclusions',
-                'The schedule has no occurrences — its rules and exclusions rule out every fire time.',
-            );
-        }
-    }
-
-    // ---- primitive predicates -------------------------------------------------
-
-    /** Whether a block carries a non-null value for $key. */
-    private function present(array $block, string $key): bool
-    {
-        return array_key_exists($key, $block) && $block[$key] !== null && $block[$key] !== '';
-    }
-
-    /** Whether a value is a well-formed 'HH:mm' string. */
-    private function isHhmm(mixed $value): bool
-    {
-        return is_string($value) && preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $value) === 1;
-    }
-
-    /** Whether a value is an integer hour 0..23. */
-    private function isHour(mixed $value): bool
-    {
-        return is_numeric($value) && (int) $value >= ScheduleLimits::HOUR_MIN && (int) $value <= ScheduleLimits::HOUR_MAX;
-    }
-
-    /** Minutes-of-day for an 'HH:mm' string (for window ordering). */
-    private function minutesOfDay(string $time): int
-    {
-        [$hour, $minute] = array_pad(explode(':', $time), 2, '0');
-
-        return (int) $hour * 60 + (int) $minute;
     }
 }

@@ -2,10 +2,12 @@
 
 namespace App\Support\Recurrence;
 
+use App\Support\Recurrence\Enums\ScheduleTimeMode;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Cron\CronExpression;
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -46,6 +48,23 @@ use Throwable;
  * bound the loop: at most MAX_ITERATIONS steps AND a HORIZON_YEARS window; exceeding either returns
  * null (a schedule with no reachable occurrence — e.g. weekly-Monday excluding Mondays).
  *
+ * TWO WAYS TO ASK FOR A SERIES, and the difference is WHAT BOUNDS THE WALK:
+ *   - BY COUNT (nextOccurrences, occurrencesFrom): walk forward until N occurrences are collected.
+ *     Right for "the next few"; WRONG for a screen. A sparse rule walks as far as it has to — a
+ *     yearly cadence read in August and asked for 66 occurrences advances SIXTY-SIX YEARS and hands
+ *     back 65 dates nobody asked for. The schedule trigger survives this only because its caller
+ *     pre-filters on a stored next-fire column; a caller without that column has no such protection.
+ *   - BY WINDOW (occurrencesBetween, occurrenceDaysBetween): walk forward until the window's END,
+ *     with a count cap kept only as a FUSE against a dense cadence. A yearly rule over a six-week
+ *     window costs ONE projection; a minute cadence stops at the cap. This is the seam a grid wants.
+ *
+ * DAY-SHAPED CADENCES (occurrenceDaysBetween): the contract is DAYS IN -> DAYS OUT, and no instant
+ * ever crosses the boundary in either direction. An all-day recurring subject has no fire time to
+ * speak of, so this layer supplies one internally — {@see DAY_ANCHOR} — compiles the cadence with it,
+ * and formats the results back to `Y-m-d` in the SAME timezone the descriptor named. A caller that
+ * received instants would have to re-derive the day itself, in a zone it would have to guess, which
+ * is precisely the arithmetic this method exists to keep in one place.
+ *
  * CONVENTIONS:
  *   - weekday: 0=Sunday .. 6=Saturday — matches Carbon::dayOfWeek AND cron's day-of-week 0=Sun.
  *   - tz: the schedule's own timezone; defaults to config('app.timezone') (UTC). Wall-clock fields
@@ -78,6 +97,47 @@ class ScheduleEngine
      * years of steps is a safe, cheap ceiling before giving up on a single candidate resolution.
      */
     private const LAST_WORKING_DAY_MONTH_STEPS = 24;
+
+    /**
+     * THE WALL-CLOCK HOUR A DAY-SHAPED CADENCE IS PROJECTED AT — noon, and the choice is a decision,
+     * not a formatting detail.
+     *
+     * A day has no time, but the engine underneath has nothing BUT times: a cadence is compiled to a
+     * cron grid, and a cron grid fires at an hour. So a day projection has to name an hour, and the
+     * only question is which hour is safe in every timezone a workspace might keep.
+     *
+     * MIDNIGHT IS NOT. It is the obvious choice and it is the one that breaks, because a DST
+     * transition at or across 00:00 is common:
+     *   - the day SKIPS midnight (a spring-forward from 00:00 to 01:00) — Africa/Cairo, Asia/Beirut,
+     *     America/Santiago, America/Havana and Asia/Tehran all do this. The hour the projection asked
+     *     for does not exist on that day, and what comes back is whatever the resolution rule invents.
+     *   - the day REPEATS midnight (a fall-back from 01:00 to 00:00) — America/Havana every November.
+     *     The cadence then fires TWICE at two distinct instants that print as the SAME day, so a
+     *     projection asked for 30 days returns 29 distinct ones and quietly spends a slot of its cap
+     *     on a duplicate square.
+     * Measured over every IANA zone for 2020-2035: 112 zone-days have no local 00:00 and 45 have two.
+     * For 12:00 both counts are ZERO — no zone in that span skips or repeats noon.
+     *
+     * Noon is also the furthest wall-clock hour from either edge of the day, so it stays inside its
+     * own date under any offset shift a transition can apply.
+     *
+     * THAT ZERO IS A STATEMENT ABOUT A WINDOW, NOT A LAW, and the difference matters to anyone who
+     * reaches for this constant for something other than a calendar. Noon has been moved: Sudan
+     * (Africa/Khartoum, Africa/Juba) shifted its clocks AT 12:00 on 2000-01-15, Morocco and Ceuta did
+     * on 1967-06-03, Havana on 1925-07-19, and the 1900 Alaskan re-basings did too — 21 zone-days
+     * skip noon and 4 repeat it across 1900-2020, several of them whole days that never existed at
+     * all because a zone jumped the date line (Apia 2011-12-30, Kiritimati 1994-12-31, Kwajalein
+     * 1993-08-21). Forwards, where a calendar actually projects, the count is zero for every zone
+     * through 2050. So the anchor is safe for THIS use and the guard's window is deliberate — it is
+     * not a claim that noon is unconditionally safe for arbitrary historical arithmetic.
+     *
+     * PUBLIC because the guard that pins this reads THIS constant and re-runs that scan over the live
+     * tzdata (RecurrenceDayProjectionTest). A test holding its own copy of
+     * '12:00' would keep passing after somebody edited the line above, which is the one failure this
+     * decision cannot afford: the damage from a bad anchor is a square on the wrong day, and nothing
+     * about that looks like a bug in a diff.
+     */
+    public const DAY_ANCHOR = '12:00';
 
     /**
      * MEASURED, NOT ASSUMED: descriptor compilation is NOT this engine's cost, so it is deliberately
@@ -215,6 +275,153 @@ class ScheduleEngine
         }
 
         return $occurrences;
+    }
+
+    /**
+     * WINDOWED projection: every occurrence in the CLOSED interval [$from, $until], ascending and UTC,
+     * with $cap as a fuse rather than as the bound.
+     *
+     * THE POINT OF THIS METHOD IS WHERE IT STOPS. {@see nextOccurrences} and {@see occurrencesFrom}
+     * are bounded by COUNT, so a sparse cadence asked for N occurrences walks however far N takes it:
+     * a yearly rule read in August and asked for 66 walks sixty-six years, spends 66 projections, and
+     * returns 65 dates outside any window a screen could be showing. This walk stops at the first
+     * candidate past $until — one projection for that same yearly rule over a six-week window.
+     *
+     * $cap therefore bounds the OTHER failure, the dense one: a one-minute cadence over a six-week
+     * grid is 60 480 occurrences, and no window can bound that. It is a fuse, and a caller that wants
+     * to know whether it blew should ask for ONE MORE than it can render — the same idiom the calendar
+     * sources use against their row limits — because a result of exactly $cap is indistinguishable
+     * from a series that happened to end there.
+     *
+     * BOTH EDGES ARE INCLUSIVE. That is not symmetry for its own sake: a caller projecting a day (or a
+     * month) hands over the edges of the thing it is drawing, and an occurrence exactly ON an edge
+     * belongs to it. Since {@see nextDueAt} is strictly-after by contract, the walk is seeded ONE
+     * MINUTE before $from — the cadence grid is minute-granular by construction (the compiler emits
+     * cron minute fields and HH:mm times, and one minute is the smallest cadence the grammar allows),
+     * so a step of one minute cannot admit anything except an occurrence at exactly $from. A $from
+     * carrying seconds is handled explicitly by the lower-bound test in the loop rather than by
+     * trusting that arithmetic.
+     *
+     * @param  array<string, mixed>  $schedule  the validated trigger_config.schedule block
+     * @param  int  $cap  the most occurrences to return; the fuse, not the window
+     * @return array<int, Carbon> ascending UTC instants inside [$from, $until], at most $cap
+     */
+    public function occurrencesBetween(array $schedule, CarbonInterface $from, CarbonInterface $until, int $cap): array
+    {
+        $cap = max(0, $cap);
+
+        $start = Carbon::instance($from->toImmutable())->setTimezone('UTC');
+        $end = Carbon::instance($until->toImmutable())->setTimezone('UTC');
+
+        if ($cap === 0 || $start->greaterThan($end)) {
+            return [];
+        }
+
+        $occurrences = [];
+        $cursor = $start->copy()->subMinute();
+
+        while (count($occurrences) < $cap) {
+            $next = $this->nextDueAt($schedule, $cursor);
+
+            if ($next === null || $next->greaterThan($end)) {
+                break;
+            }
+
+            // Strictly after $cursor by nextDueAt's contract, so the walk always advances and the loop
+            // always terminates — on the cap, on the window's end, or on an unreachable cadence.
+            $cursor = $next;
+
+            // The seeded minute can only yield ONE candidate below $from (the grid is minute-granular),
+            // and it is dropped rather than counted: it is outside the window the caller asked for.
+            if ($next->greaterThanOrEqualTo($start)) {
+                $occurrences[] = $next;
+            }
+        }
+
+        return $occurrences;
+    }
+
+    /**
+     * DAY-SHAPED projection: the calendar days in [$fromDate, $untilDate] on which the cadence falls,
+     * as `Y-m-d` strings reckoned in the descriptor's own timezone. Days in, days out — see the class
+     * docblock for why an instant never crosses this boundary in either direction.
+     *
+     * THE TIME AXIS OF THE DESCRIPTOR IS IGNORED AND REPLACED by {@see DAY_ANCHOR}. A day has no fire
+     * time, so honouring one here would let two descriptors that differ only in `time` produce
+     * identical day lists while claiming to differ — and would make the answer depend on an hour the
+     * caller has no reason to have set. Whether a day-shaped descriptor is ALLOWED to carry a time
+     * axis at all is a validation question, answered by whichever module accepts the descriptor;
+     * this method is arithmetic and simply supplies the hour it needs.
+     *
+     * The day/month axes, the exclusions and the timezone are untouched, so every cadence the grammar
+     * can express — weekdays, month-days, the nth weekday, the last working day — is expressible as a
+     * day series. A legacy `{ family, params }` block is upgraded BEFORE the anchor is injected,
+     * because injecting into an un-upgraded block would write a `time` key the upgrader then discards.
+     *
+     * NOT DEDUPED, deliberately. Under the noon anchor each day can appear at most once (see
+     * DAY_ANCHOR for the measurement), so a repeated day would mean the anchor had stopped being
+     * safe — and a defensive `array_unique` here would swallow exactly that signal while the cap
+     * silently paid for the duplicate. The guard test is what holds this, not a dedupe.
+     *
+     * @param  array<string, mixed>  $schedule  the validated schedule descriptor
+     * @param  string  $fromDate  inclusive first day, `Y-m-d`, read in the descriptor's timezone
+     * @param  string  $untilDate  inclusive last day, `Y-m-d`, read in the descriptor's timezone
+     * @param  int  $cap  the most days to return; the fuse, exactly as on occurrencesBetween
+     * @return array<int, string> ascending `Y-m-d` days, at most $cap
+     *
+     * @throws InvalidArgumentException when a bound is not a `Y-m-d` calendar day
+     */
+    public function occurrenceDaysBetween(array $schedule, string $fromDate, string $untilDate, int $cap): array
+    {
+        $tz = $this->timezone($schedule);
+
+        $occurrences = $this->occurrencesBetween(
+            $this->withDayAnchor($schedule),
+            $this->anchoredDay($fromDate, $tz),
+            $this->anchoredDay($untilDate, $tz),
+            $cap,
+        );
+
+        return array_map(
+            fn (Carbon $instant): string => $instant->copy()->setTimezone($tz)->format('Y-m-d'),
+            $occurrences,
+        );
+    }
+
+    /**
+     * A calendar day as the anchor instant inside it, in $tz — the SAME hour the projection fires at,
+     * which is what makes the closed interval of {@see occurrencesBetween} select exactly the days
+     * from/to name. Bounds taken at midnight would ask a day-shaped question in the one hour that is
+     * not guaranteed to exist (see DAY_ANCHOR), and would then have to reason about whether an
+     * occurrence at noon on the last day falls inside a window that ended at its start.
+     */
+    private function anchoredDay(string $date, string $tz): CarbonImmutable
+    {
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) !== 1) {
+            throw new InvalidArgumentException("recurrence day [{$date}] must be a Y-m-d calendar day");
+        }
+
+        return CarbonImmutable::parse($date . ' ' . self::DAY_ANCHOR, $tz);
+    }
+
+    /**
+     * The descriptor with its time axis replaced by the day anchor. Upgraded FIRST: a legacy block
+     * still carries `family`, and the read-shim rebuilds every axis from it — including the `time`
+     * this method just wrote. Upgrading is a no-op on a v2 block, so the order costs nothing.
+     *
+     * @param  array<string, mixed>  $schedule
+     * @return array<string, mixed>
+     */
+    private function withDayAnchor(array $schedule): array
+    {
+        $schedule = $this->upgrader->toV2($schedule);
+
+        $schedule['time'] = [
+            'mode' => ScheduleTimeMode::AT->value,
+            'at' => [self::DAY_ANCHOR],
+        ];
+
+        return $schedule;
     }
 
     /**
