@@ -17,7 +17,10 @@ use App\Modules\Workflows\Services\WorkflowScheduleService;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use PDOException;
 use RuntimeException;
 use Tests\TestCase;
 
@@ -1052,10 +1055,135 @@ class CalendarOccurrencesTest extends TestCase
         $this->assertSame(['still here'], array_column($response->json('data'), 'title'));
 
         // ...and the failure is NAMED, because "nothing scheduled" and "the source is broken" are
-        // different facts a user is entitled to tell apart — WITH the reason, because "it threw" is the
-        // one of the three failure modes where trying again is a sensible thing for a user to do.
+        // different facts a user is entitled to tell apart — WITH the reason, which here is the one that
+        // invites a retry.
+        //
+        // THIS IS ALSO THE PIN FOR "NOT A QUERY EXCEPTION". A plain RuntimeException carries no
+        // SQLSTATE to classify by, so it must land on the retryable side: an unrecognised failure gets
+        // the benefit of the doubt, and only a code that positively identifies itself as structural is
+        // allowed to withhold the button.
         $this->assertSame(
             [['source' => 'exploding', 'reason' => 'failed']],
+            $response->json('meta.unavailable_sources'),
+        );
+    }
+
+    /**
+     * THE DEFECT THIS SPLIT WAS WRITTEN FOR, reproduced end to end: a source whose table was never
+     * migrated. The interface used to answer that with "this is usually temporary — try again", over a
+     * button that could not conjure a table, because the registry classified EVERY throw as `failed`.
+     *
+     * The query is real rather than a stand-in, so the SQLSTATE under test is Postgres's own `42P01`
+     * and not one this test invented — the whole classification hangs on the driver actually reporting
+     * that code in `errorInfo`, which only a genuine failure can demonstrate.
+     *
+     * WHY THE NESTED TRANSACTION: Postgres aborts an entire transaction on error, and the suite runs
+     * each test inside one (`RefreshDatabase`). Without a SAVEPOINT to roll back to, every query AFTER
+     * this one — including the ones that build the response being asserted — would fail with `25P02`
+     * and the test would prove nothing about the classifier. `DB::transaction()` opens the savepoint,
+     * rolls back to it, and rethrows the original exception untouched.
+     */
+    public function test_a_missing_table_is_reported_as_broken_rather_than_as_a_bad_minute(): void
+    {
+        app(CalendarSourceRegistry::class)->register(new class implements CalendarSource
+        {
+            public function id(): string
+            {
+                return 'unmigrated';
+            }
+
+            public function label(): string
+            {
+                return 'Unmigrated';
+            }
+
+            public function occurrences(CalendarWindow $window): CalendarSourceResult
+            {
+                return DB::transaction(fn (): CalendarSourceResult => CalendarSourceResult::complete(
+                    DB::table('a_table_no_migration_ever_created')->get()->all(),
+                ));
+            }
+        });
+
+        $response = $this->actingAsMember()->read()->assertOk();
+
+        // `broken`, NOT `failed` — the frontend offers its retry button for `failed` alone, so this one
+        // value is the difference between an honest report and a promise nothing can keep.
+        $this->assertSame(
+            [['source' => 'unmigrated', 'reason' => 'broken']],
+            $response->json('meta.unavailable_sources'),
+        );
+    }
+
+    /**
+     * The other side of the split, and the reason it is drawn on the SQLSTATE rather than on "was it a
+     * database error": a statement timeout IS a database error and IS often a bad minute. Widening the
+     * structural label to every QueryException would have taken the retry away from precisely the
+     * failures where retrying works.
+     */
+    public function test_a_query_failure_outside_class_42_is_still_reported_as_retryable(): void
+    {
+        app(CalendarSourceRegistry::class)->register(new class implements CalendarSource
+        {
+            public function id(): string
+            {
+                return 'timing_out';
+            }
+
+            public function label(): string
+            {
+                return 'Timing out';
+            }
+
+            public function occurrences(CalendarWindow $window): CalendarSourceResult
+            {
+                // 57014 — `query_canceled`, what a statement timeout raises. Shaped exactly as PDO
+                // hands it over, because that is the field the classifier reads.
+                $driver = new PDOException('canceling statement due to statement timeout');
+                $driver->errorInfo = ['57014', 7, 'canceling statement due to statement timeout'];
+
+                throw new QueryException('pgsql', 'select 1', [], $driver);
+            }
+        });
+
+        $response = $this->actingAsMember()->read()->assertOk();
+
+        $this->assertSame(
+            [['source' => 'timing_out', 'reason' => 'failed']],
+            $response->json('meta.unavailable_sources'),
+        );
+    }
+
+    /**
+     * A QueryException whose previous is not a PDOException carries NO `errorInfo` at all, and the
+     * classifier must not read the absence as a structural code. It is the branch a null-safe access
+     * makes invisible: with `errorInfo` null there is nothing to compare, and the only safe reading of
+     * "no SQLSTATE" is the retryable one.
+     */
+    public function test_a_query_failure_with_no_sqlstate_at_all_is_still_reported_as_retryable(): void
+    {
+        app(CalendarSourceRegistry::class)->register(new class implements CalendarSource
+        {
+            public function id(): string
+            {
+                return 'stateless';
+            }
+
+            public function label(): string
+            {
+                return 'Stateless';
+            }
+
+            public function occurrences(CalendarWindow $window): CalendarSourceResult
+            {
+                throw new QueryException('pgsql', 'select 1', [], new RuntimeException('connection lost'));
+            }
+        });
+
+        $response = $this->actingAsMember()->read()->assertOk();
+
+        $this->assertSame(
+            [['source' => 'stateless', 'reason' => 'failed']],
             $response->json('meta.unavailable_sources'),
         );
     }
@@ -1106,7 +1234,7 @@ class CalendarOccurrencesTest extends TestCase
     }
 
     /**
-     * The third failure mode: a source that never comes up at all. Its factory throws, so there is
+     * A different failure mode: a source that never comes up at all. Its factory throws, so there is
      * nothing to ask — as distinct from a source that was asked and failed, which is the one a user
      * might reasonably retry.
      */

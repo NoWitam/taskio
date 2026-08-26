@@ -9,6 +9,7 @@ use App\Modules\Calendar\DTOs\CalendarTruncation;
 use App\Modules\Calendar\DTOs\CalendarWindow;
 use App\Modules\Calendar\Enums\CalendarUnavailableReason;
 use Closure;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -35,9 +36,14 @@ use Throwable;
  * data. The skip is not silent to the caller either — {@see occurrencesFor()} answers with a
  * {@see CalendarUnavailableReason} so the response can name the sources it could not reach AND say WHY.
  *
- * The three failure modes below were always distinguished HERE and then flattened at the boundary into
- * a bare list of ids. They are no longer: the reason rides out with the id, because "retry" and "do not
+ * The failure modes below were always distinguished HERE and then flattened at the boundary into a bare
+ * list of ids. They are no longer: the reason rides out with the id, because "retry" and "do not
  * bother" are different advice and the user was being given neither.
+ *
+ * A THROW IS NOT ONE EVENT, EITHER. Everything a source threw used to be reported as FAILED — the one
+ * reason that invites a retry — so a table that had never been migrated was described to the user as a
+ * bad minute, under a button that could not possibly help. {@see reasonFor()} reads the SQLSTATE and
+ * separates the structural failures out.
  */
 class CalendarSourceRegistry
 {
@@ -202,15 +208,58 @@ class CalendarSourceRegistry
 
             return $result;
         } catch (Throwable $e) {
+            $reason = $this->reasonFor($e);
+
             Log::error('Calendar source failed and was skipped.', [
                 'source' => $id,
+                // Logged because it is what the USER was told, and a report of "it said try again and
+                // trying again did nothing" has to be answerable from the log alone.
+                'reason' => $reason->value,
                 'from' => $window->startDate,
                 'to' => $window->endDate,
                 'timezone' => $window->timezone,
             ] + $this->describe($e));
 
+            return $reason;
+        }
+    }
+
+    /**
+     * Which kind of throw this was: a bad minute {@see CalendarUnavailableReason::FAILED} or an
+     * installation that does not fit its database {@see CalendarUnavailableReason::BROKEN}.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────────
+     * THE SQLSTATE, NOT THE MESSAGE
+     * ─────────────────────────────────────────────────────────────────────────────────────────────────
+     * The class is taken from `errorInfo[0]`, which is the driver's SQLSTATE — a five-character code
+     * fixed by the SQL standard. The obvious alternative, matching the exception MESSAGE for something
+     * like "does not exist", is wrong twice over: the message is composed by the server under its own
+     * `lc_messages`, so it is a different sentence in a different locale, and it is worded differently
+     * by every driver. A classifier that reads it works on the developer's machine and quietly stops
+     * classifying on a server installed in Polish.
+     *
+     * CLASS 42 — "syntax error or access rule violation" — is the structural family: undefined table
+     * (42P01, the missing migration this was written for), undefined column, invalid statement,
+     * insufficient privilege. None of them is a moment; all of them meet the same schema on the next
+     * request.
+     *
+     * EVERYTHING ELSE STAYS FAILED, deliberately including a query exception carrying no SQLSTATE at
+     * all. The two mistakes are not symmetrical: calling a genuine outage BROKEN withholds a retry that
+     * would have worked and sends someone hunting a deploy, while calling a structural fault FAILED
+     * costs one wasted click. Only a code that positively identifies itself as structural gets the
+     * heavier label.
+     */
+    private function reasonFor(Throwable $e): CalendarUnavailableReason
+    {
+        if (!$e instanceof QueryException) {
             return CalendarUnavailableReason::FAILED;
         }
+
+        $sqlState = $e->errorInfo[0] ?? null;
+
+        return is_string($sqlState) && str_starts_with($sqlState, '42')
+            ? CalendarUnavailableReason::BROKEN
+            : CalendarUnavailableReason::FAILED;
     }
 
     /**

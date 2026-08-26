@@ -467,13 +467,14 @@ module does not tell that one either.
 
 ### The unavailable-source report — a reason, not just an id
 
-A source can fail to answer in three structurally different ways, and only one of them is worth
+A source can fail to answer in four structurally different ways, and only one of them is worth
 retrying — so `meta.unavailable_sources` is a list of **`{ source, reason }`**, never bare ids
 (`CalendarUnavailableReason`):
 
 | `reason`          | What happened | Worth retrying? |
 |--------------------|----------------|------------------|
-| `failed`             | The source was asked and **threw** — a query failure, a timeout, a module having a bad minute. | **Yes** — the only one of the three. |
+| `failed`             | The source was asked and **threw** something that might not happen again — a statement timeout, a dropped connection, a deadlock, a module having a bad minute. Anything thrown that does not identify itself as structural lands here. | **Yes** — the only one that is. |
+| `broken`                    | The source was asked and threw a database error naming a **schema rather than a moment**: SQLSTATE class `42` — undefined table (`42P01`), undefined column, invalid statement, insufficient privilege. **A migration that was never run is the ordinary cause.** Classified off `errorInfo`, never off the message (which is driver-specific and translated by the server's locale). | No — the next identical query meets the identical schema. Someone has to migrate or deploy. |
 | `not_constructed`       | The source could not be brought up at all: its factory threw, or it was registered under an id it does not itself claim (a registration bug — `sources[]` naming an id the server does not know is a separate case, refused as a 422, and never reaches this report). | No — configuration or a broken boot, identical on the next request. |
 | `malformed`                 | The source answered with something that is **not** a calendar answer — a well-typed result full of the wrong things — caught at the registry boundary before it could take the whole merge down with a 500. | No — a defect in that source's code; retrying reproduces it exactly. |
 
@@ -484,11 +485,17 @@ retrying — so `meta.unavailable_sources` is a list of **`{ source, reason }`**
 ```
 
 **The reason exists to be branched on, not merely displayed.** A client that offers "retry" for
-all three, or for none, is wrong in two cases out of three; a bare list of ids could never tell
-them apart. **An unrecognised, future fourth `reason` is treated as not retryable** — "we do not
+all four, or for none, is wrong in three cases out of four; a bare list of ids could never tell
+them apart. **An unrecognised, future `reason` is treated as not retryable** — "we do not
 know whether this can recover" is not grounds to promise that it can — but the source is still
 named, never dropped for being unrecognised. `unavailable_sources` is always present, even when
 empty; its absence must never be read as "nothing is wrong."
+
+`broken` was split out of `failed` after a live screen described a table that had never been
+migrated as "usually temporary — try again", under a button that could not conjure a table. The
+split needed no client change precisely because of the unrecognised-reason rule above: `broken`
+arrives as a code the frontend does not know, and the frontend's floor for an unknown code is
+"name the source, offer nothing" — which is the correct handling for this one.
 
 ### Occurrence identity
 

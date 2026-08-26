@@ -12,7 +12,7 @@ namespace App\Modules\Calendar\Enums;
  * loaded and nothing else. That is a shrug in API form — the one thing a person actually wants to know
  * at that moment is whether to try again, and the list could not say.
  *
- * The registry has always DISTINGUISHED the three ways a source fails; it simply threw the distinction
+ * The registry has always DISTINGUISHED the ways a source fails; it simply threw the distinction
  * away at the boundary. This carries it out. Prose would not do: a client has to branch on the answer
  * (offer "retry" or not), and prose can only be displayed. The vocabulary is CLOSED and owned by the
  * Calendar for the same reason {@see CalendarTruncationKind} is — a new source describes its failure in
@@ -25,6 +25,12 @@ namespace App\Modules\Calendar\Enums;
  *   {@see FAILED}          — yes. Ask again; it may have been a bad minute.
  *   {@see NOT_CONSTRUCTED} — no. Nothing about this request will change the answer.
  *   {@see MALFORMED}       — no. The source is answering, wrongly; only a deploy fixes it.
+ *   {@see BROKEN}          — no. The source's query does not fit the database it was pointed at.
+ *
+ * FAILED IS THE ONLY "YES", AND IT USED TO BE OVER-CLAIMED. Every exception out of a source landed
+ * there, including the ones that are structurally impossible to recover from — a missing table read as
+ * "that's usually temporary, try again", over a retry button no number of presses could satisfy. The
+ * split is {@see BROKEN}: same throw, opposite advice.
  */
 enum CalendarUnavailableReason: string
 {
@@ -43,12 +49,30 @@ enum CalendarUnavailableReason: string
     case NOT_CONSTRUCTED = 'not_constructed';
 
     /**
-     * The source was asked and THREW. A failed query, a timeout, a module having a bad minute.
+     * The source was asked and THREW something that MIGHT not happen again: a statement timeout, a
+     * dropped connection, a deadlock, a module having a bad minute.
      *
-     * The only reason of the three where trying again is a reasonable thing for a user to do, which is
-     * exactly why the three had to stop being one.
+     * The only reason where trying again is a reasonable thing for a user to do, which is exactly why
+     * the reasons had to stop being one. Anything unrecognised stays here — an ordinary failure is the
+     * safer of the two things to be wrong about, since it costs a user one retry, where the opposite
+     * mistake sends them to look for a deploy that was never broken.
      */
     case FAILED = 'failed';
+
+    /**
+     * The source was asked and threw a database error that names a SCHEMA rather than a moment: the
+     * table is not there, the column is not there, the statement is not valid, the connection is not
+     * allowed to run it (SQLSTATE class 42 — "syntax error or access rule violation").
+     *
+     * A MIGRATION THAT WAS NEVER RUN IS THE ORDINARY CAUSE, and it is the case this reason was split
+     * out for. Under {@see FAILED} the interface told people a missing table was "usually temporary"
+     * and offered to retry it — advice that is not merely useless but actively misdirecting, since it
+     * points a user at their own connection instead of at the install nobody finished.
+     *
+     * Not retryable, and unlike {@see FAILED} that is a structural claim rather than a guess: the next
+     * identical query meets the identical schema. Someone has to migrate or deploy.
+     */
+    case BROKEN = 'broken';
 
     /**
      * The source ANSWERED, with something that is not a calendar answer — a well-typed result full of
