@@ -134,3 +134,46 @@ describe('TruncationNotices', () => {
     wrapper.unmount();
   });
 });
+
+/**
+ * THREE KINDS OF LOSS, AND ONLY ONE OF THEM EARNS A SHAPE.
+ *
+ * The rows live inside one `Alert variant="warning"`, which already draws `alert-triangle`
+ * beside its own title. Every row then drew a glyph of its own, and the row that mattered
+ * drew the SAME triangle — so the distinction the backend split loss into three kinds to
+ * preserve arrived as one repeated shape, and the block's alarm was spent on all three.
+ *
+ * `items_dropped` is the only loss at which trusting an empty square leads to a WRONG
+ * DECISION, so it is the only one marked — and marked with a shape the block has not used.
+ */
+describe('TruncationNotices — one glyph, for the one loss that differs in kind', () => {
+  it('marks items_dropped with a shape the surrounding alert has not already drawn', () => {
+    const wrapper = mountNotices([row('items_dropped', 2)]);
+
+    // Two glyphs on the whole block: the alert's own, and the row's.
+    const icons = wrapper.findAll('svg');
+    expect(icons).toHaveLength(2);
+    expect(wrapper.findAll('li svg')).toHaveLength(1);
+    // And they are not the same drawing — which is the entire point.
+    expect(icons[0].html()).not.toBe(icons[1].html());
+    wrapper.unmount();
+  });
+
+  it('gives the two recoverable kinds no glyph at all — their sentence is the whole message', () => {
+    for (const kind of ['window_trimmed', 'item_densified'] as const) {
+      const wrapper = mountNotices([row(kind, 2)]);
+      expect(wrapper.findAll('li svg'), `${kind} still repeats the block's glyph`).toHaveLength(0);
+      // The row is still a row, still named, still actionable.
+      expect(wrapper.findAll('li')).toHaveLength(1);
+      expect(wrapper.text()).toContain('Label:workflow_schedule');
+      wrapper.unmount();
+    }
+  });
+
+  it('keeps the distinction when all three arrive at once', () => {
+    const wrapper = mountNotices(KINDS.map((kind) => row(kind, 1)));
+    expect(wrapper.findAll('li')).toHaveLength(3);
+    expect(wrapper.findAll('li svg')).toHaveLength(1);
+    wrapper.unmount();
+  });
+});

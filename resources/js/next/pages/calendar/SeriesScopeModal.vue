@@ -61,6 +61,7 @@ import RadioGroup from '../../ui/forms/RadioGroup.vue';
 import Radio from '../../ui/forms/Radio.vue';
 import { useI18n } from '../../app/i18n';
 import { fromIsoDate, fullDateLabel } from '../../ui/forms/date/dateCore';
+import { prepositionalDateLabel } from './calendarDateText';
 import type { CalendarEventScope, IsoDay } from './types';
 
 const props = withDefaults(
@@ -94,9 +95,35 @@ const panelRef = ref<HTMLElement | null>(null);
 
 const isDelete = computed(() => props.mode === 'delete');
 
+const occurrenceDay = computed(() => fromIsoDate(props.occurrenceDate));
+
+/**
+ * The day as a SUBJECT — full, with its weekday. Used in the context line above the group
+ * and in the option descriptions, where the date opens the sentence ("{date} zniknie z
+ * serii") or follows a colon. Both are grammatical in the nominative, and both want the
+ * weekday: this is the reader's one chance to check that the day they clicked is the day
+ * the dialog is about.
+ */
 const dateLabel = computed(() => {
-  const date = fromIsoDate(props.occurrenceDate);
+  const date = occurrenceDay.value;
   return date ? fullDateLabel(date, props.locale) : (props.occurrenceDate ?? '');
+});
+
+/**
+ * The day for the CONFIRM BUTTON, which reads "…od {date}" / "…from {date}".
+ *
+ * Two defects at once, and one form fixes both. The weekday arrives from `Intl` in the
+ * nominative, so Polish rendered "Usuń wystąpienia od wtorek, 2 września 2026" — visibly
+ * wrong, in the module's central dialog. And a label that long does not fit a `size="sm"`
+ * panel beside a Cancel button: `Button` never wraps its label, so it simply overflowed,
+ * on a desktop, before the English translation made it worse.
+ *
+ * Dropping the weekday leaves a form Polish already declines correctly and costs the button
+ * nothing it was saying — the context line above still names the full day, weekday included.
+ */
+const prepositionDateLabel = computed(() => {
+  const date = occurrenceDay.value;
+  return date ? prepositionalDateLabel(date, props.locale) : (props.occurrenceDate ?? '');
 });
 
 const OPTIONS: CalendarEventScope[] = ['occurrence', 'following', 'series'];
@@ -150,11 +177,16 @@ function hintFor(value: CalendarEventScope): string {
   return hint;
 }
 
-/** The confirm button NAMES the choice — voice control needs something to say. */
+/**
+ * The confirm button NAMES the choice — voice control needs something to say.
+ *
+ * The only label carrying a date is the `following` pair, and it carries it after a
+ * preposition, so it gets the preposition form (see `prepositionDateLabel`).
+ */
 const confirmLabel = computed(() => {
   const verb = isDelete.value ? 'delete' : 'edit';
   const which = scope.value.charAt(0).toUpperCase() + scope.value.slice(1);
-  return t(`calendar.scope.confirm.${verb}${which}`, '', { date: dateLabel.value });
+  return t(`calendar.scope.confirm.${verb}${which}`, '', { date: prepositionDateLabel.value });
 });
 
 const errorId = 'next-series-scope-error';
@@ -241,20 +273,26 @@ function onCancel(): void {
     </div>
 
     <template #footer>
-      <Button variant="outline" :disabled="busy" @click="onCancel">
-        {{ t('calendar.event.cancel') }}
-      </Button>
-      <!-- Loading lives IN the button (fixed width, text stays). The options are deliberately
-           left enabled while a delete is in flight: the realistic failure names another option
-           of this same dialog as the remedy, so it has to stay one click away. Double-firing
-           is prevented by the guard in `onConfirm`, not by taking controls out of the tree. -->
-      <Button
-        :variant="isDelete ? 'danger' : 'primary'"
-        :loading="busy"
-        @click="onConfirm"
-      >
-        {{ confirmLabel }}
-      </Button>
+      <!-- WRAPPED, because the confirm button names a scope and a date and `Button` does not
+           break its own label. `Modal`'s footer is a single non-wrapping row, so this row of
+           its own is what lets the pair stack instead of overflowing the panel — on a phone,
+           and in whichever language ends up with the longest verb. -->
+      <div class="flex w-full flex-wrap items-center justify-end gap-next-2">
+        <Button variant="outline" :disabled="busy" @click="onCancel">
+          {{ t('calendar.event.cancel') }}
+        </Button>
+        <!-- Loading lives IN the button (fixed width, text stays). The options are deliberately
+             left enabled while a delete is in flight: the realistic failure names another option
+             of this same dialog as the remedy, so it has to stay one click away. Double-firing
+             is prevented by the guard in `onConfirm`, not by taking controls out of the tree. -->
+        <Button
+          :variant="isDelete ? 'danger' : 'primary'"
+          :loading="busy"
+          @click="onConfirm"
+        >
+          {{ confirmLabel }}
+        </Button>
+      </div>
     </template>
   </Modal>
 </template>

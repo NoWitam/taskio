@@ -102,6 +102,7 @@ import {
   workspaceToday,
 } from './calendarZone';
 import { fromIsoDate, fullDateLabel, monthYearLabel } from '../../ui/forms/date/dateCore';
+import { prepositionalDateLabel } from './calendarDateText';
 import type { CalendarEvent, CalendarEventPayload, CalendarEventScope, IsoDay } from './types';
 
 const props = withDefaults(
@@ -482,7 +483,7 @@ function hasControlFor(field: string): boolean {
 function savedMessage(scope: CalendarEventScope): string {
   if (scope === 'occurrence') return t('calendar.event.savedOccurrence');
   if (scope === 'following') {
-    return t('calendar.event.savedFollowing', '', { date: occurrenceLabel.value });
+    return t('calendar.event.savedFollowing', '', { date: occurrenceLabelAfterPreposition.value });
   }
   return isSeries.value ? t('calendar.event.savedSeries') : t('calendar.event.saved');
 }
@@ -612,7 +613,7 @@ async function onDeleteSingle(): Promise<void> {
 function deletedMessage(scope: CalendarEventScope): string {
   if (scope === 'occurrence') return t('calendar.event.deletedOccurrence');
   if (scope === 'following') {
-    return t('calendar.event.deletedFollowing', '', { date: occurrenceLabel.value });
+    return t('calendar.event.deletedFollowing', '', { date: occurrenceLabelAfterPreposition.value });
   }
   return t('calendar.event.deleted');
 }
@@ -670,6 +671,31 @@ function dayLabel(day: IsoDay | null): string {
 }
 
 const occurrenceLabel = computed(() => dayLabel(props.occurrenceDate));
+
+/**
+ * The same day, for the slots that follow a PREPOSITION — "…od {date}", "…from {date}".
+ *
+ * `fullDateLabel` leads with the weekday in the nominative, which `Intl` has no way to
+ * decline, so Polish read "Edytujesz wystąpienia od środa, 26 sierpnia 2026". The
+ * preposition form drops the weekday rather than inventing a genitive table for it (see
+ * `calendarDateText`); everywhere the date is a SUBJECT or a value after a colon — the
+ * `occurrence` banner, the two toasts about a single day, the series' start/end rows — keeps
+ * the full label, because there the nominative is what Polish wants.
+ */
+const occurrenceLabelAfterPreposition = computed(() => {
+  const date = fromIsoDate(props.occurrenceDate);
+  return date ? prepositionalDateLabel(date, props.locale) : (props.occurrenceDate ?? '');
+});
+
+/**
+ * Which of the two forms the scope banner interpolates. The three banner sentences are one
+ * key with a scope suffix, but they do not agree on where the date sits: `occurrence` puts
+ * it after a colon, `following` after "od" / "from". So the FORM follows the sentence, not
+ * the component.
+ */
+const scopeBannerDate = computed(() =>
+  effectiveScope.value === 'following' ? occurrenceLabelAfterPreposition.value : occurrenceLabel.value,
+);
 
 /**
  * The series' cadence sentence — SERVER PROSE, from whichever source has it.
@@ -862,7 +888,7 @@ const startMin = computed<IsoDay | null>(() =>
            state, not an event, and an assertive announcement would interrupt typing. -->
       <Alert v-if="isEdit && isSeries" variant="info" size="sm">
         {{
-          t(`calendar.scope.banner.${effectiveScope}`, '', { date: occurrenceLabel })
+          t(`calendar.scope.banner.${effectiveScope}`, '', { date: scopeBannerDate })
         }}
         <template #actions>
           <Button variant="ghost" size="xs" @click="openScopeModal('edit')">

@@ -379,3 +379,64 @@ describe('SeriesScopeModal — Polish', () => {
 // The dialog is a Modal, so Escape / scrim behaviour is the design system's and is covered by
 // Modal's own spec. Asserting it again here would only give this file a way to fail for
 // reasons that are not about scopes.
+
+/**
+ * THE CONFIRM BUTTON NAMES A SCOPE AND A DAY, AND HAD ROOM FOR NEITHER.
+ *
+ * Two defects met in one label. `fullDateLabel` leads with the weekday, which `Intl` gives
+ * in the nominative — so Polish read "Usuń wystąpienia od wtorek, 2 września 2026", wrong
+ * after "od", in the module's central dialog. And a string that long does not fit a
+ * `size="sm"` panel beside a Cancel button: `Button` never wraps its own label, so the
+ * footer simply overflowed, on a desktop, before English made it longer still.
+ *
+ * Dropping the weekday fixes the grammar and shortens the label; letting the footer wrap
+ * covers whatever the longest translation turns out to be.
+ */
+describe('SeriesScopeModal — the confirm label fits, and is grammatical', () => {
+  it('drops the weekday from the label that follows a preposition', async () => {
+    const wrapper = mountModal();
+    await wrapper.vm.$nextTick();
+
+    choose('following');
+    await wrapper.vm.$nextTick();
+
+    expect(confirmButton().textContent?.trim()).toBe('Edit from September 14, 2026');
+    expect(confirmButton().textContent).not.toContain('Monday');
+    wrapper.unmount();
+  });
+
+  it('keeps the weekday where the date is a SUBJECT, not an object of "from"', async () => {
+    // The context line above the options is the reader's one chance to check that the day
+    // they clicked is the day this dialog is about, and there the nominative is correct.
+    const wrapper = mountModal();
+    await wrapper.vm.$nextTick();
+
+    expect(text()).toContain('Monday, September 14, 2026');
+    wrapper.unmount();
+  });
+
+  it('lets the footer stack instead of overflowing the panel', async () => {
+    const wrapper = mountModal();
+    await wrapper.vm.$nextTick();
+
+    // `Modal`'s own footer is a single non-wrapping row, so the pair needs a row of its own.
+    const row = panel().querySelector('footer > div');
+    expect(row?.className).toContain('flex-wrap');
+    expect(row?.querySelectorAll('button')).toHaveLength(2);
+    wrapper.unmount();
+  });
+
+  it('is grammatical in Polish, which is where the nominative showed', async () => {
+    setLocale('pl');
+    // The catalog and the DATE locale are two different inputs; both are Polish here.
+    const wrapper = mountModal({ mode: 'delete', locale: 'pl' });
+    await wrapper.vm.$nextTick();
+
+    choose('following');
+    await wrapper.vm.$nextTick();
+
+    expect(confirmButton().textContent?.trim()).toBe('Usuń wystąpienia od 14 września 2026');
+    expect(confirmButton().textContent).not.toContain('poniedziałek');
+    wrapper.unmount();
+  });
+});

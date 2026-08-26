@@ -127,9 +127,14 @@ describe('truncation copy selection', () => {
     expect(truncationCount('window_trimmed', null, 9)).toBeNull();
   });
 
-  it('gives the alarming glyph ONLY to the loss a user can act wrongly on', () => {
-    expect(truncationIcon('items_dropped')).toBe('alert-triangle');
-    expect(truncationIcon('window_trimmed')).toBe('info');
-    expect(truncationIcon('item_densified')).toBe('info');
+  it('gives a glyph ONLY to the loss a user can act wrongly on, and never the block’s own', () => {
+    // The rows are rendered inside one `Alert variant="warning"`, which already draws
+    // `alert-triangle` beside its title. A row repeating that triangle spends the block's
+    // alarm on every kind and then distinguishes none of them — which is what this map did.
+    expect(truncationIcon('items_dropped')).toBe('eye-off');
+    expect(truncationIcon('items_dropped')).not.toBe('alert-triangle');
+    // Silence, not a quieter glyph: their sentence is the whole of what they have to say.
+    expect(truncationIcon('window_trimmed')).toBeNull();
+    expect(truncationIcon('item_densified')).toBeNull();
   });
 });

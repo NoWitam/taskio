@@ -226,3 +226,111 @@ describe('MonthGrid', () => {
     wrapper.unmount();
   });
 });
+
+/**
+ * THE CHIP AND THE SQUARE IT SITS ON ARE PAINTED FROM THE SAME TOKEN.
+ *
+ * `DayCell` tints "today" with `bg-next-primary-subtle`, and `colorTokens('primary').surface`
+ * is `bg-next-primary-subtle`. Not near it — it. In both themes, because dark mode swaps the
+ * token's value and not the token. And the event source stamps `primary` on EVERY occurrence
+ * it emits, so this is not a corner: it is the one source this module owns, drawn on the one
+ * square that is on screen every day of the year.
+ *
+ * The fix lives on the chip rather than on the cell, which is what this pins: a cell-side fix
+ * would have separated the chip from TODAY and left it dissolving into the next surface
+ * somebody tints.
+ */
+describe('MonthGrid — a chip must not dissolve into the square under it', () => {
+  it('draws its own hairline on the today cell, whose tint is the SAME token', () => {
+    const wrapper = mountGrid([
+      occurrence({
+        id: 'launch',
+        source: 'event',
+        color: 'primary',
+        title: 'Launch',
+        start_date: '2026-08-09',
+        subject: { type: 'calendar_event', id: 'launch' },
+      }),
+    ]);
+
+    const todayCell = wrapper.find('[aria-current="date"]');
+    const chip = todayCell.find('.next-occurrence-chip');
+    expect(chip.exists()).toBe(true);
+
+    // The collision, stated rather than assumed — so that changing either token fails HERE
+    // rather than on somebody's screen.
+    expect(todayCell.classes()).toContain('bg-next-primary-subtle');
+    expect(chip.classes()).toContain('bg-next-primary-subtle');
+
+    // …and the separation, which belongs to the chip and therefore holds on every surface.
+    expect(chip.classes()).toContain('ring-1');
+    expect(chip.classes()).toContain('ring-inset');
+
+    wrapper.unmount();
+  });
+
+  it('keeps the same hairline on an ordinary square — the edge is not a today-only patch', () => {
+    const wrapper = mountGrid([occurrence({ id: 'deadline', start_date: '2026-08-12' })]);
+    const cell = wrapper.find('[data-iso="2026-08-12"]');
+
+    expect(cell.attributes('aria-current')).toBeUndefined();
+    expect(cell.find('.next-occurrence-chip').classes()).toContain('ring-1');
+    wrapper.unmount();
+  });
+});
+
+/**
+ * PRIORITY AND STATE ARE TWO AXES, AND THE GRID USED TO DRAW ONE.
+ *
+ * A task deadline's colour is its PRIORITY and its badge is its STATE. The grid hides badges
+ * (spec D5) because their prose eats the title — so an urgent task that is DONE and an urgent
+ * task that is NOT drew as the same red square. Past days dim, so the overdue urgent one drew
+ * fainter than a future low-priority one: less visible for being more wrong.
+ */
+describe('MonthGrid — the state axis survives a month cell', () => {
+  it('separates a finished urgent deadline from an unfinished one', () => {
+    const wrapper = mountGrid([
+      occurrence({
+        id: 'done',
+        color: 'danger',
+        title: 'Ship it',
+        badge: { label: 'Done', color: 'success' },
+      }),
+      occurrence({
+        id: 'open',
+        color: 'danger',
+        title: 'Ship it too',
+        badge: { label: 'In progress', color: 'danger' },
+      }),
+    ]);
+
+    const cell = wrapper.find('[data-iso="2026-08-09"]');
+    const dots = cell.findAll('[data-marker="status"]');
+
+    // One dot, on the row whose state says something its colour does not.
+    expect(dots).toHaveLength(1);
+    expect(dots[0].classes()).toContain('bg-next-success');
+    // And both states remain in the accessible names, as they already were.
+    expect(cell.html()).toContain('Done');
+    expect(cell.html()).toContain('In progress');
+    wrapper.unmount();
+  });
+
+  it('leaves the dimming of past days alone — it says "this was", and now says it truthfully', () => {
+    // The chips of a past day still dim; what changed is that the state is no longer carried
+    // by the dimming's absence.
+    const wrapper = mountGrid([
+      occurrence({
+        id: 'overdue',
+        color: 'danger',
+        start_date: '2026-08-03',
+        badge: { label: 'Overdue', color: 'warning' },
+      }),
+    ]);
+    const chip = wrapper.find('[data-iso="2026-08-03"] .next-occurrence-chip');
+
+    expect(chip.classes()).toContain('opacity-70');
+    expect(chip.find('[data-marker="status"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+});

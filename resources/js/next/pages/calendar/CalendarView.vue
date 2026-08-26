@@ -560,7 +560,17 @@ function focusFilters(selector: string): void {
   root.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   root.querySelector<HTMLElement>(selector)?.focus();
 }
-const onNarrowFilters = (): void => focusFilters('[role="checkbox"]');
+/**
+ * "Narrow the filters" must land on a control that can NARROW.
+ *
+ * `SegmentedControl multiple select-all` renders its "Select all" card as the FIRST
+ * `role="checkbox"` in the bar, so the plain selector landed there every time — and a space
+ * on that card switches EVERY source on, which is the opposite of what the notice asked
+ * for. It is excluded by its own marker (`data-seg-select-all`) rather than by an index,
+ * because which card comes first is the control's business, not this screen's.
+ */
+const onNarrowFilters = (): void =>
+  focusFilters('[role="checkbox"]:not([data-seg-select-all])');
 const onSearchByName = (): void => focusFilters('input[type="search"]');
 
 /**
@@ -766,20 +776,27 @@ onBeforeUnmount(() => store.resetAll());
           :variant="zoneMismatch ? 'warning' : 'neutral'"
           tone="subtle"
           :icon="zoneMismatch ? 'alert-triangle' : 'clock'"
-          :aria-label="
-            zoneMismatch
-              ? t('calendar.timezone.mismatch', '', { tz: timezone, localTz: browserZone ?? '' })
-              : undefined
-          "
-          :title="
-            zoneMismatch
-              ? t('calendar.timezone.mismatch', '', { tz: timezone, localTz: browserZone ?? '' })
-              : undefined
-          "
         >
           {{ t('calendar.timezone.chip', '', { tz: timezone }) }}
         </Badge>
       </span>
+
+      <!-- WHY the chip turned into a warning, as REAL TEXT rather than as attributes on it.
+           The explanation used to live in `aria-label` + `title` on the Badge, which renders
+           a bare `<span>`: with no role, an author-supplied name is not exposed at all, so
+           a screen reader announced only "Time zone: Europe/Warsaw" — and `title` reaches
+           neither the keyboard nor touch. That left the sentence available to exactly one
+           input device, in the one situation the chip exists for.
+
+           `basis-full` gives it its own line inside the wrapping nav row, so it neither
+           squeezes the month heading nor needs a margin fighting the row's gap. It appears
+           only on a genuine mismatch: for everyone else the chip alone is the whole fact. -->
+      <p
+        v-if="zoneMismatch"
+        class="basis-full text-next-xs text-next-muted-foreground"
+      >
+        {{ t('calendar.timezone.mismatch', '', { tz: timezone, localTz: browserZone ?? '' }) }}
+      </p>
     </div>
 
     <!-- LOADING: the skeleton IS the grid — weekday header, real cells, chip-shaped blocks

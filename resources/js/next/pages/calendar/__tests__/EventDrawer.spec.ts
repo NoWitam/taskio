@@ -699,7 +699,10 @@ describe('EventDrawer — the scope dialog comes first', () => {
 
     chooseScope('following');
     await flushPromises();
-    modalButton('Edit from Monday, September 14, 2026')?.click();
+    // NO WEEKDAY in a label that follows a preposition: `Intl` hands weekdays back in the
+    // nominative and Polish wants a genitive after "od", which no formatter option supplies.
+    // The dialog's context line above still names the full day, weekday included.
+    modalButton('Edit from September 14, 2026')?.click();
     await flushPromises();
 
     expect(wrapper.emitted('request-edit')?.[0]).toEqual(['following']);

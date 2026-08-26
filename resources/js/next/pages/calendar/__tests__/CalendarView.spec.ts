@@ -91,6 +91,7 @@ vi.mock('vue-router', () => ({
 import CalendarView from '../CalendarView.vue';
 import { setLocale } from '../../../app/i18n';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
+import { browserTimeZone } from '../calendarZone';
 import type { CalendarOccurrence } from '../types';
 
 function occurrence(id: string, over: Partial<CalendarOccurrence> = {}): CalendarOccurrence {
@@ -461,6 +462,107 @@ describe('CalendarView — pointing at one occurrence of a series', () => {
     expect(routeQuery.value).toMatchObject({ event: 'evt-2' });
     expect(routeQuery.value.on).toBeUndefined();
     expect(routeQuery.value.at).toBeUndefined();
+    wrapper.unmount();
+  });
+});
+
+/**
+ * A WARNING THAT ONLY A MOUSE COULD READ.
+ *
+ * The zone chip escalates to `variant="warning"` when the workspace's zone and the
+ * browser's disagree, and the sentence explaining WHY sat in `aria-label` + `title` on the
+ * `Badge`. `Badge` renders a bare `<span>`: an element with no role takes no author-supplied
+ * name, so assistive technology announced "Time zone: …" and nothing else, while `title`
+ * reached neither the keyboard nor touch. The explanation was available to exactly one input
+ * device — in the one situation the chip exists for.
+ */
+describe('CalendarView — the foreign-zone warning is text, not attributes', () => {
+  /** Chosen against the machine's own zone, so the mismatch is real wherever this runs. */
+  function foreignZone(): string {
+    return browserTimeZone() === 'Pacific/Kiritimati' ? 'Europe/Warsaw' : 'Pacific/Kiritimati';
+  }
+
+  it('says why the chip turned into a warning, in the document', async () => {
+    const restore = storeMock.timezone;
+    storeMock.timezone = foreignZone();
+    try {
+      const wrapper = mountView();
+      await flushPromises();
+
+      // Real text, reachable by every input device and by the accessibility tree.
+      expect(wrapper.text()).toContain('The calendar shows days and times in the team’s time zone');
+      expect(wrapper.text()).toContain(storeMock.timezone);
+      wrapper.unmount();
+    } finally {
+      storeMock.timezone = restore;
+    }
+  });
+
+  it('does not leave the sentence on the badge, where nothing could reach it', async () => {
+    const restore = storeMock.timezone;
+    storeMock.timezone = foreignZone();
+    try {
+      const wrapper = mountView();
+      await flushPromises();
+
+      const badge = wrapper.find('.next-badge');
+      expect(badge.exists()).toBe(true);
+      // A `<span>` with no role: an aria-label here is dropped by the accessibility tree, so
+      // putting one back would look like a fix and change nothing.
+      expect(badge.attributes('aria-label')).toBeUndefined();
+      wrapper.unmount();
+    } finally {
+      storeMock.timezone = restore;
+    }
+  });
+
+  it('stays silent for the ordinary case — the chip alone is the whole fact', async () => {
+    const restore = storeMock.timezone;
+    storeMock.timezone = browserTimeZone() ?? 'Europe/Warsaw';
+    try {
+      const wrapper = mountView();
+      await flushPromises();
+
+      expect(wrapper.text()).toContain(storeMock.timezone);
+      expect(wrapper.text()).not.toContain('Your browser is in');
+      wrapper.unmount();
+    } finally {
+      storeMock.timezone = restore;
+    }
+  });
+});
+
+/**
+ * "NARROW THE FILTERS" LANDED ON THE CONTROL THAT WIDENS THEM.
+ *
+ * `SegmentedControl multiple select-all` renders its "Select all" card as the FIRST
+ * `role="checkbox"` in the bar, so a selector asking for the first one focused it every
+ * time — and a space there switches EVERY source on, the exact opposite of what the notice
+ * asked for. The remedy excludes it by its own marker rather than by an index, because
+ * which card comes first is the control's business.
+ */
+describe('CalendarView — the loss notice sends the keyboard somewhere useful', () => {
+  it('focuses a SOURCE, never the card that turns them all on', async () => {
+    storeMock.sources = [
+      { id: 'task', label: 'Task deadlines' },
+      { id: 'event', label: 'Events' },
+    ];
+    storeMock.truncations = [
+      { source: 'task', kind: 'window_trimmed', omitted_occurrences: 4, affected_items: null },
+    ];
+    const wrapper = mountView();
+    await flushPromises();
+
+    const narrow = Array.from(document.querySelectorAll('button')).find(
+      (b) => (b.textContent ?? '').trim() === 'Narrow the filters',
+    );
+    expect(narrow, 'the notice offered no way to narrow anything').toBeTruthy();
+    narrow?.click();
+    await flushPromises();
+
+    const focused = document.activeElement as HTMLElement | null;
+    expect(focused?.getAttribute('role')).toBe('checkbox');
+    expect(focused?.hasAttribute('data-seg-select-all')).toBe(false);
     wrapper.unmount();
   });
 });

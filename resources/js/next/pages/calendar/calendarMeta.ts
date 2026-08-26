@@ -218,13 +218,24 @@ export function truncationCount(
 }
 
 /**
- * `items_dropped` is the only loss at which a user can make a WRONG DECISION by trusting
- * an empty square: they are not looking at a partial view of everything, they are looking
- * at a complete view of some things and no view at all of others. It gets the alarming
- * glyph; the other two get `info`.
+ * The glyph for ONE truncation row — or `null`, which is the answer for two kinds out of
+ * three.
+ *
+ * `items_dropped` is the only loss at which a user can make a WRONG DECISION by trusting an
+ * empty square: they are not looking at a partial view of everything, they are looking at a
+ * complete view of some things and no view at all of others. So it is the only one that
+ * earns a glyph.
+ *
+ * IT MUST NOT BE THE BLOCK'S OWN GLYPH. The rows live inside one `Alert variant="warning"`,
+ * which already draws `alert-triangle` beside its title. Repeating that triangle on a row —
+ * which is what this map used to return — spent the block's alarm on all three kinds and
+ * then said nothing new about the one that differs: three structurally different losses,
+ * one repeated shape. `eye-off` states the actual distinction ("these are not on the screen
+ * at all"), and the two recoverable kinds carry no glyph, because their sentence is the
+ * whole of what they have to say.
  */
-export function truncationIcon(kind: string): IconName {
-  return kind === 'items_dropped' ? 'alert-triangle' : 'info';
+export function truncationIcon(kind: string): IconName | null {
+  return kind === 'items_dropped' ? 'eye-off' : null;
 }
 
 // ── 4. Unavailability: is trying again worth anything? ───────────────────────

@@ -16,7 +16,10 @@
 //                     sentence of that message is required, not decorative.
 //   items_dropped   — whole items are ABSENT. Not truncated: absent. This is the only kind
 //                     at which a user can make a WRONG DECISION by trusting an empty
-//                     square, so it alone gets the alarming glyph.
+//                     square, so it alone carries a glyph — and one the surrounding
+//                     `Alert variant="warning"` has not already drawn beside its own
+//                     title. Two identical triangles, one on the block and one on the row,
+//                     marked all three kinds as the same thing and distinguished none.
 //
 // `meta.truncated` decides only whether this section EXISTS. It never contributes a word:
 // the text always comes from the per-(source, kind) rows.
@@ -97,7 +100,12 @@ const rows = computed<NoticeRow[]>(() =>
   <Alert v-if="rows.length" variant="warning" size="sm" :title="t('calendar.truncation.title')">
     <ul class="flex flex-col gap-next-2">
       <li v-for="row in rows" :key="row.key" class="flex flex-wrap items-start gap-next-2">
-        <Icon :name="row.icon" class="mt-px shrink-0" aria-hidden="true" />
+        <!-- ONE glyph for the ONE kind that differs in KIND, not in degree. The block above
+             is already a warning triangle; a second identical triangle on a row spends that
+             alarm without adding a fact. `items_dropped` is the loss a user can act wrongly
+             on, so it alone is marked — and marked with a shape the block has not already
+             used. The other two rows are text, which is all they have to say. -->
+        <Icon v-if="row.icon" :name="row.icon" class="mt-px shrink-0" aria-hidden="true" />
         <span class="min-w-0 flex-1">{{ row.text }}</span>
         <Button
           v-if="row.action"
