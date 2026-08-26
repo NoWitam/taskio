@@ -14,6 +14,32 @@
 // disabled links use `aria-disabled` + a prevented handler (anchors can't be
 // natively disabled). Enter/Space activation is native to <button>.
 //
+// Inert (disabled/loading) controls stay HIT-TESTABLE — they are deliberately NOT
+// `pointer-events: none`. The house rule is that a disabled control explains itself
+// (component-state-matrix.md: "Disabled controls … their reason should be explained
+// where useful (tooltip / helper text)"), and callers carry that reason in the native
+// `title` fallthrough attribute. A browser only paints a `title` tooltip for an element
+// it hit-tests, so `pointer-events: none` made every such explanation in the app
+// unreachable — the rule was satisfied at the call site and cancelled here.
+// Activation is blocked the honest way instead:
+//   - real disabled buttons: the native `disabled` attribute — no click event is
+//     dispatched at all, and none reaches ancestors either (strictly safer than
+//     `pointer-events: none`, which let the click fall THROUGH to whatever sits behind);
+//   - loading buttons: unchanged — not natively disabled (so they keep their place in
+//     the tab order and `aria-busy`), activation stopped by the `onClick` guard;
+//   - anchors: `href` is dropped while inert (also removes them from the tab order)
+//     plus the same guard.
+// Because the control is hit-tested again, `hover:`/`active:` utilities would start
+// firing on a dead control, so `withoutInteractiveStates()` strips them while inert;
+// `cursor-not-allowed` now actually applies (under `pointer-events: none` the cursor
+// was inherited from the PARENT and the not-allowed cursor never showed).
+//
+// Deliberate limit: a native `title` tooltip is pointer-only — it is never announced by
+// a screen reader and a natively disabled control cannot be focused to reveal it. It is
+// the necessary minimum, not a sufficient answer. A reason that must reach keyboard and
+// AT users belongs on screen as real text next to the action (or the action should stay
+// enabled and fail with a message), which is a screen-level decision, not a Button prop.
+//
 // Split button („przybornik"): pass `menuItems` to attach a chevron segment on the
 // right that opens a DropdownMenu of secondary actions (e.g. Save / Save as…).
 // The main segment keeps emitting `click`; picking an item emits
@@ -134,14 +160,33 @@ const baseClass =
   'whitespace-nowrap select-none transition-colors duration-[var(--duration-next-fast)] ' +
   'ease-[var(--ease-next-standard)]';
 
+// Shared inert styling. NOTE: no `pointer-events-none` — see the header note.
+const INERT_CLASS = 'opacity-60 cursor-not-allowed';
+
+// Drop `hover:` / `active:` utilities so an inert (but hit-testable) control never
+// lights up under the pointer. Filtering an existing literal keeps every surviving
+// class a token Tailwind already saw in this file — no class names are synthesized.
+function withoutInteractiveStates(value: string): string {
+  return value
+    .split(' ')
+    .filter((c) => !c.startsWith('hover:') && !c.startsWith('active:'))
+    .join(' ');
+}
+
+const variantClass = computed(() =>
+  isInert.value
+    ? withoutInteractiveStates(VARIANT_CLASS[props.variant])
+    : VARIANT_CLASS[props.variant],
+);
+
 const classes = computed(() => [
   baseClass,
-  VARIANT_CLASS[props.variant],
+  variantClass.value,
   // `link` variant manages its own height/padding.
   props.variant === 'link' ? '' : SIZE_CLASS[props.size],
   props.variant === 'link' && isIconOnly.value ? SIZE_CLASS[props.size] : '',
   props.fullWidth ? 'w-full' : '',
-  isInert.value ? 'opacity-60 pointer-events-none cursor-not-allowed' : 'cursor-pointer',
+  isInert.value ? INERT_CLASS : 'cursor-pointer',
 ]);
 
 // Spinner size tuned to each control size.
@@ -162,11 +207,11 @@ const hasMenu = computed(
 // stretches the SEGMENT (the wrapper owns w-full), never the whole classes list.
 const mainSegmentClasses = computed(() => [
   baseClass,
-  VARIANT_CLASS[props.variant],
+  variantClass.value,
   SIZE_CLASS[props.size],
   'rounded-r-none',
   props.fullWidth ? 'flex-1' : '',
-  isInert.value ? 'opacity-60 pointer-events-none cursor-not-allowed' : 'cursor-pointer',
+  isInert.value ? INERT_CLASS : 'cursor-pointer',
 ]);
 
 // Chevron segment: a square of the control's height, squared left edge, with a
@@ -193,11 +238,11 @@ const MENU_DIVIDER: Record<ButtonVariant, string> = {
 
 const chevronClasses = computed(() => [
   baseClass,
-  VARIANT_CLASS[props.variant],
+  variantClass.value,
   CHEVRON_SIZE[props.size],
   'rounded-l-none',
   MENU_DIVIDER[props.variant],
-  isInert.value ? 'opacity-60 pointer-events-none cursor-not-allowed' : 'cursor-pointer',
+  isInert.value ? INERT_CLASS : 'cursor-pointer',
 ]);
 
 // DropdownMenu's trigger props type 'aria-expanded' as a plain string; a native <button> wants
