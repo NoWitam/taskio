@@ -36,6 +36,35 @@
 > `docs/decisions/ADR-0016-workflows-global-runs-and-schedule-reason.md` for the backend/design
 > record this revision implements against.
 
+> **REVISION 7 — five REV5 schedule-builder components moved to a shared `ui/recurrence/`
+> layer, reused by the Calendar module (commit `62a73e4`, 2026-08-26) — STATUS: IMPLEMENTED.**
+> Nothing in REV5's DESIGN below changed — the cards, the sentence weaving, the keyboard
+> model, the window pattern are all still exactly as REV5 built them (§4.5.5–§4.5.6 stand as
+> written). Only WHERE five of REV5's files live and what they are called changed, because the
+> Calendar event drawer's repeat control adopted the identical axis editor on a narrower
+> `profile` (day + month only — no time axis, no modulo cadences, no `last_working_day`):
+>
+> | REV5 name (no longer exists) | AS-BUILT (`resources/js/next/ui/recurrence/`) |
+> | --- | --- |
+> | `WorkflowScheduleOptionCards.vue` | `RecurrenceOptionCards.vue` |
+> | `WorkflowScheduleTimePanel.vue` | `RecurrenceTimePanel.vue` |
+> | `WorkflowScheduleDayPanel.vue` | `RecurrenceDayPanel.vue` |
+> | `WorkflowScheduleMonthPanel.vue` | `RecurrenceMonthPanel.vue` |
+> | `WorkflowScheduleWindowField.vue` | `RecurrenceWindowField.vue` |
+>
+> `WorkflowScheduleBuilder.vue` (the host, §4.5.2 row 2), `WorkflowScheduleSummary.vue`,
+> `WorkflowSchedulePreviewStrip.vue`, and `WorkflowScheduleAssistModal.vue` stayed exactly
+> where REV5 put them, unrenamed — all four are wired to Workflows' own store/endpoints
+> (`schedulePreview`, `scheduleAssist`), which the shared layer owns none of. The host now
+> WRAPS the shared `RecurrenceAxisEditor.vue`, which renders the five moved files. **Not
+> corrected below, out of scope for this pass:** every `workflows.schedule.time/day/month.*`,
+> `.field.*`, `.window.*` and per-axis-note i18n key this section cites moved together with
+> the five components to a shared `recurrenceEditor.*` namespace — see
+> `resources/js/next/docs/pages/WorkflowsPage.vue`'s "Schedule i18n" block for the current
+> key map. Full reasoning for the reversal this move is part of, and the Calendar-side
+> profile it mirrors: `docs/next/calendar-uxui-spec.md` §24.5 (banner) + §24.17 poz. 10;
+> `docs/decisions/ADR-0052-shared-recurrence-layer.md`, "Addendum — the mirror in the UI".
+
 > **REVISION 5 — step 2a `schedule` builder UX compaction (fresh user feedback on the
 > shipped REV4) — STATUS: PLANNED (this spec drives it), date 2026-07-13.** REV5 is a
 > SURGICAL delta on REV4's schedule builder — the compositional descriptor v2
@@ -748,10 +777,12 @@ flatter one actually shipped, for simplicity of the wire contract. One call —
 > rows BELOW the cards. The user's feedback: "if you pick an option in the tabs, the
 > inputs for its settings should be placed visually INSIDE that option, phrased in
 > natural language." REV5 therefore replaces the `SegmentedControl`+below-controls
-> per tab with a new LOCAL component **`WorkflowScheduleOptionCards.vue`** — a vertical
-> radio-group of selection cards where the SELECTED card EXPANDS to reveal its own
-> inputs woven into a sentence. The `SegmentedControl` PRIMITIVE is UNTOUCHED (its
-> other consumers stay pinned to their specs — `§4.4`, `§4.6`, `§5.2`).
+> per tab with a new component **`WorkflowScheduleOptionCards.vue`** (at the time, LOCAL to
+> Workflows; REV7 above moved it — as `RecurrenceOptionCards.vue` — to the shared
+> `ui/recurrence/`, reused by the Calendar module) — a vertical radio-group of selection
+> cards where the SELECTED card EXPANDS to reveal its own inputs woven into a sentence. The
+> `SegmentedControl` PRIMITIVE is UNTOUCHED (its other consumers stay pinned to their specs
+> — `§4.4`, `§4.6`, `§5.2`).
 
 The builder body is still a **`Tabs` (`variant="underline"`, `size="md"`,
 `ariaLabel=workflows.schedule.tabsAria`)** with exactly three tabs, one per axis:
@@ -1371,18 +1402,20 @@ state line goes through `t()`.
 > **REV5 supersede marker.** The REV4 files below already EXIST and shipped. This is a
 > DELTA table: the "Kind" column is what REV5 does to each. ONE new component
 > (`WorkflowScheduleOptionCards.vue`); the rest are targeted MODIFYs. No file is deleted.
+> **REV7 moved five of these rows out of Workflows** — see the REV7 banner at the top of
+> this document; the "File" cell below names where each one lives TODAY.
 
 | File | REV5 kind | What REV5 changes |
 | --- | --- | --- |
-| `WorkflowScheduleOptionCards.vue` | **CREATE** | The radio-group of selection cards (`§4.5.5`): a `role=radiogroup` of card headers (`role=radio`, arrow-key select, roving tabindex) each with an OPTIONAL expanding body region OUTSIDE the button; `v-model` the sub-mode; a per-option `#body-<value>` scoped slot the panels fill; unselected cards show title only; disabled cards keep a visible explanation; Tab from the selected header enters that card's body. Owns the card chrome + radio a11y + the focus model, NOT axis logic. May host the `{slot}`-split renderer for in-sentence templates (or that lives in `workflowSchedule.ts`). |
-| `WorkflowScheduleBuilder.vue` | MODIFY | Own the single `Surface bg="muted" border radius="lg"` **header segment** wrapping the summary row + preview rail (`§4.5.2`); own the shared `anchor` for the jump-to-date; **remove the tz `FormField`** and the **exclusions weekday/month chip groups** (`§4.5.7`/`§4.5.8`); the Exceptions `Accordion` body = dates only. Still exposes `isValid`/`validationErrors`. |
-| `WorkflowScheduleSummary.vue` | MODIFY | Drop its own `Surface bg="muted"` band + the `h-9` bubble; render as the segment's TOP ROW (`§4.5.3`): inline icon + sentence + the compact "Skocz do daty" `DateTimePicker` field (REV5.1) + the "Zaplanuj z AI" button (icon-only on mobile). |
-| `WorkflowSchedulePreviewStrip.vue` | MODIFY | COMPACT two-line tiles (`w-[7rem]`, weekday+date on line 1, time on line 2; previous tile = dashed + leading glyph, "poprzednie" in `aria-label` only); drop the visible `<h4>` heading → rail region `aria-label = preview.title`; the jump-to-date trigger moves to the segment row (accept the `anchor` as a prop/`v-model` from the host); render inside the segment frame (`§4.5.4`). Paging/edge-fades/states unchanged. |
-| `WorkflowScheduleTimePanel.vue` | MODIFY | Render its 3 sub-modes via `WorkflowScheduleOptionCards` (not `SegmentedControl`); move the `at` list / `every_*` controls into per-option `#body` slots woven into slotted sentences (`§4.5.5a`); keep the `last_working_day` lock + auto-reset; window inline (`§4.5.6`). |
-| `WorkflowScheduleDayPanel.vue` | MODIFY | Same via option-cards, 7 cards; ordinal + weekday `Select`s woven into "w {ordinal} {weekday} miesiąca"; `last_working_day` note moves into the SELECTED body (`§4.5.5b`). |
-| `WorkflowScheduleMonthPanel.vue` | MODIFY | Same via option-cards, 3 cards; `every_n_months` head + inline month-range window (`§4.5.5c`). |
-| `WorkflowScheduleWindowField.vue` | MODIFY | Render INLINE (`§4.5.6`, REV5.2): a bare `Switch` (aria-label = `window.toggle.*`, no visible text) + the ALWAYS-visible "od {from} do {to}" fragment on the SAME wrapping line as the head sentence; the switch flips the pair's `disabled` (exposed as a `{ disabled }` slot prop), it never hides the fragment — not a `pl-next-6` stacked block. |
-| `WorkflowScheduleAssistModal.vue` | MODIFY (light) | UNCHANGED except its compact in-modal preview inherits the REV5 compact two-line tiles (`§4.5.9`). |
+| `WorkflowScheduleOptionCards.vue` — **AS-BUILT (REV7): `ui/recurrence/RecurrenceOptionCards.vue`** | **CREATE** | The radio-group of selection cards (`§4.5.5`): a `role=radiogroup` of card headers (`role=radio`, arrow-key select, roving tabindex) each with an OPTIONAL expanding body region OUTSIDE the button; `v-model` the sub-mode; a per-option `#body-<value>` scoped slot the panels fill; unselected cards show title only; disabled cards keep a visible explanation; Tab from the selected header enters that card's body. Owns the card chrome + radio a11y + the focus model, NOT axis logic. May host the `{slot}`-split renderer for in-sentence templates (or that lives in `workflowSchedule.ts`). |
+| `WorkflowScheduleBuilder.vue` — **still here, unrenamed (REV7)** | MODIFY | Own the single `Surface bg="muted" border radius="lg"` **header segment** wrapping the summary row + preview rail (`§4.5.2`); own the shared `anchor` for the jump-to-date; **remove the tz `FormField`** and the **exclusions weekday/month chip groups** (`§4.5.7`/`§4.5.8`); the Exceptions `Accordion` body = dates only. Still exposes `isValid`/`validationErrors`. |
+| `WorkflowScheduleSummary.vue` — **still here, unrenamed (REV7)** | MODIFY | Drop its own `Surface bg="muted"` band + the `h-9` bubble; render as the segment's TOP ROW (`§4.5.3`): inline icon + sentence + the compact "Skocz do daty" `DateTimePicker` field (REV5.1) + the "Zaplanuj z AI" button (icon-only on mobile). |
+| `WorkflowSchedulePreviewStrip.vue` — **still here, unrenamed (REV7)** | MODIFY | COMPACT two-line tiles (`w-[7rem]`, weekday+date on line 1, time on line 2; previous tile = dashed + leading glyph, "poprzednie" in `aria-label` only); drop the visible `<h4>` heading → rail region `aria-label = preview.title`; the jump-to-date trigger moves to the segment row (accept the `anchor` as a prop/`v-model` from the host); render inside the segment frame (`§4.5.4`). Paging/edge-fades/states unchanged. |
+| `WorkflowScheduleTimePanel.vue` — **AS-BUILT (REV7): `ui/recurrence/RecurrenceTimePanel.vue`** | MODIFY | Render its 3 sub-modes via `WorkflowScheduleOptionCards` (not `SegmentedControl`); move the `at` list / `every_*` controls into per-option `#body` slots woven into slotted sentences (`§4.5.5a`); keep the `last_working_day` lock + auto-reset; window inline (`§4.5.6`). |
+| `WorkflowScheduleDayPanel.vue` — **AS-BUILT (REV7): `ui/recurrence/RecurrenceDayPanel.vue`** | MODIFY | Same via option-cards, 7 cards; ordinal + weekday `Select`s woven into "w {ordinal} {weekday} miesiąca"; `last_working_day` note moves into the SELECTED body (`§4.5.5b`). |
+| `WorkflowScheduleMonthPanel.vue` — **AS-BUILT (REV7): `ui/recurrence/RecurrenceMonthPanel.vue`** | MODIFY | Same via option-cards, 3 cards; `every_n_months` head + inline month-range window (`§4.5.5c`). |
+| `WorkflowScheduleWindowField.vue` — **AS-BUILT (REV7): `ui/recurrence/RecurrenceWindowField.vue`** | MODIFY | Render INLINE (`§4.5.6`, REV5.2): a bare `Switch` (aria-label = `window.toggle.*`, no visible text) + the ALWAYS-visible "od {from} do {to}" fragment on the SAME wrapping line as the head sentence; the switch flips the pair's `disabled` (exposed as a `{ disabled }` slot prop), it never hides the fragment — not a `pl-next-6` stacked block. |
+| `WorkflowScheduleAssistModal.vue` — **still here, unrenamed (REV7)** | MODIFY (light) | UNCHANGED except its compact in-modal preview inherits the REV5 compact two-line tiles (`§4.5.9`). |
 | `workflowSchedule.ts` | MODIFY | `emptyScheduleDraft.tz` SEEDS the resolved browser zone (fallback `''`) — the "nowe = strefa przeglądarki" behavior (`§4.5.8`); `describeSchedule` gains optional `activeTz` + the conditional tz clause (`§4.5.10`). KEEP the weekday/month exclusion validators + their clause rendering (the model/wire still supports them). `configToDraft`/`draftToConfig` UNCHANGED. May host the `{slot}`-split template helper. Update its Vitest spec for the seed + tz-clause. |
 | `app/stores/workflows.ts` | UNCHANGED | `schedulePreview`/`scheduleAssist` unchanged; the config it forwards still MAY carry `exclusions.weekdays/months` (backend support retained; the FE just stops authoring them). |
 
@@ -1390,8 +1423,10 @@ state line goes through `t()`.
 > **primitive** — the schedule components compose `Tabs`, `TimePicker`, `DatePicker`,
 > `DateTimePicker`, `NumberInput`, `Select`, `Checkbox`, `Accordion`, `Surface`,
 > `Modal`, `Popover` (REV5, for jump-to-date), `Button`, `Alert`, `Skeleton`, `Badge`,
-> `Icon`. `WorkflowScheduleOptionCards.vue` is a LOCAL workflows component, NOT a
-> promoted primitive; `SegmentedControl` is no longer used by the schedule panels but is
+> `Icon`. `WorkflowScheduleOptionCards.vue` (as `RecurrenceOptionCards.vue`, REV7 above) is
+> a shared design-system component now, `ui/recurrence/`, NOT a promoted **primitive** —
+> its consumers are the Calendar and Workflows recurrence editors specifically, not every
+> page; `SegmentedControl` is no longer used by the schedule panels but is
 > UNTOUCHED for its other consumers. This inventory supersedes the schedule rows of
 > §8.3/§8.4; the non-schedule rows there stand.
 

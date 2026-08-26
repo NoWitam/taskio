@@ -250,7 +250,7 @@ Odpowiedź — `meta`:
 | `truncated` | `bool` | Wyłącznie „czy renderować sekcję komunikatów" (D7). |
 | `truncations[]` | `{ source, kind, omitted_occurrences, affected_items }` | §13. `kind ∈ { window_trimmed, item_densified, items_dropped }`. Liczby są `int` **albo `null` = nieznane** (nigdy 0). Maks. jeden wpis na parę `(source, kind)`. |
 | `sources[]` | `{ id, label }` | **Katalog WSZYSTKICH zarejestrowanych źródeł**, niezależny od filtra `sources` (lista nie kurczy się do zaznaczenia). Źródło Kalendarza używa `label` z `calendar.sources.event`; pozostałe — z własnych modułów. |
-| `unavailable_sources[]` | `{ source, reason }[]` | Źródła zapytane, które nie odpowiedziały — **z powodem**, nie sama lista id. `reason ∈ { failed, not_constructed, malformed }` (`CalendarUnavailableReason`), zamknięty słownik. Zawsze obecne (pusta tablica ≠ brak klucza). §14. |
+| `unavailable_sources[]` | `{ source, reason }[]` | Źródła zapytane, które nie odpowiedziały — **z powodem**, nie sama lista id. `reason ∈ { failed, not_constructed, malformed, broken }` (`CalendarUnavailableReason`), zamknięty słownik. Zawsze obecne (pusta tablica ≠ brak klucza). §14. |
 
 > **Uwaga o `label`.** Gdy źródło nie da się skonstruować, `CalendarSourceRegistry::labelFor()`
 > zwraca `null`, a serwis wstawia **surowe id** jako etykietę. UI renderuje `label`
@@ -979,9 +979,10 @@ zachowanie UI, nie tylko treść komunikatu**.
 
 | `reason` | Znaczenie | Ponowienie |
 | --- | --- | --- |
-| `failed` | Źródło zapytano i **rzuciło** — chwilowa awaria, timeout. | **Tak — jedyny z trzech.** |
+| `failed` | Źródło zapytano i **rzuciło** — chwilowa awaria, timeout. | **Tak — jedyny z czterech.** |
 | `not_constructed` | Źródło nigdy nie powstało (konfiguracja, zepsuty boot). | Nie — identyczny wynik za chwilę. |
 | `malformed` | Źródło odpowiedziało, ale nie kalendarzowym kształtem. | Nie — defekt kodu źródła, powtórzy się dokładnie. |
+| `broken` | Źródło zapytano i rzuciło błędem bazy, który nazywa **schemat**, nie chwilę: brak tabeli, brak kolumny, brak uprawnienia (SQLSTATE klasy 42). Zwykła przyczyna — migracja, której nikt nie uruchomił. | **Nie — i to jest twierdzenie strukturalne, nie zgadywanie**, w przeciwieństwie do `failed`: następne identyczne zapytanie trafia na identyczny schemat. Ktoś musi zmigrować albo wdrożyć. Wydzielony z `failed`, bo brak tabeli renderował się jako „to zwykle chwilowe — spróbuj ponownie" — rada nie tylko bezużyteczna, ale wprost myląca (kieruje użytkownika na własne połączenie, zamiast na niedokończony install) |
 | *(nieznany, przyszły kod)* | Backend nowszy niż ten frontend. | **Traktowany jako nieponawialny** — „nie wiemy, czy się naprawi" nie jest podstawą, by obiecać, że tak. Źródło i tak jest **nazwane**, nigdy nie pomijane za nierozpoznanie. |
 
 | Reguła | Szczegół |
@@ -1716,7 +1717,7 @@ dlatego, że kto je wysyła, sądzi, że coś ustawia.
 
 | Reguła | Ścieżka błędu | Kiedy realnie wystąpi w UI |
 | --- | --- | --- |
-| **Początek wydarzenia musi być pierwszym wystąpieniem reguły** | `start_date` / `starts_at` (`anchor_not_an_occurrence`) | **Nigdy**, jeżeli preset jest wyprowadzany z daty i re-wyprowadzany przy jej zmianie (§24.5.2) |
+| **Początek wydarzenia musi być pierwszym wystąpieniem reguły** | `start_date` / `starts_at` (`anchor_not_an_occurrence`) | **Nigdy** dla zwykłej ścieżki (wybór sub-trybu / zmiana daty), jeżeli oś jest seedowana z kotwicy i re-seedowana przy jej zmianie (§24.5.2 — AS-BUILT: profil osi zastąpił presety, §24.17 poz. 10); **oraz nigdy** dla reguły NIETKNIĘTEJ w tej sesji, niezależnie od dryfu strefy (§24.5.6) |
 | **Seria musi mieć choć jedno wystąpienie** (kadencja MINUS pominięte dni, w granicach `until`) | `recurrence.until` albo `recurrence.exclusions.dates` (`series_has_no_occurrences`) | Skrócenie `until` serii, z której powycinano dni |
 | **Wydarzenie cykliczne z godziną zaczyna się o pełnej minucie** | `starts_at` (`whole_minute`) | `TimePicker` daje `HH:mm`, więc nie |
 
@@ -1967,66 +1968,119 @@ maksymalną liczbę pominiętych dni (50). Podziel serię zamiast pomijać kolej
 
 ### 24.5 Kontrolka powtarzalności
 
+> **AS-BUILT (2026-08-26, commit `62a73e4`) — §24.5 świadomie odmówiło reużycia komponentu z
+> edytora przepływu; owner tę decyzję ODWRÓCIŁ po obejrzeniu modułu na żywo. Pełne uzasadnienie
+> i rejestr rozbieżności: §24.17 poz. 10.** Krótko: obawa, którą §24.5.4 zapisało jako powód
+> odmowy ("słownictwo automatyzacji w oknie o spotkaniu"), była **słuszna** — i pozostaje
+> słuszna. Nie zniknęła; **odpowiedzią okazał się PROFIL, nie odmowa reużycia**. Kontrolka
+> wydarzenia i edytor harmonogramu przepływu są dziś **tym samym komponentem**
+> (`ui/recurrence/RecurrenceAxisEditor.vue`), różnią je wyłącznie dane, jakie ten komponent
+> przyjmuje jako `profile` (`ui/recurrence/recurrenceAxes.ts`): kalendarz dostaje profil, który
+> **ukrywa** całą oś czasu (serwer sam ją autoryzuje — `recurrence.time` jest `prohibited`),
+> tryby modulo („co N dni"/„co N miesięcy" — siatka resetowana co miesiąc i co rok), „ostatni
+> dzień roboczy" i — bo to żyje w Workflows, nie w tym komponencie — asystenta AI oraz pasek
+> podglądu najbliższych odpaleń. Ten podrozdział opisuje **aktualny** stan; poniższe tabele
+> zastępują opis presetowej kontrolki, którą B6 zbudowało i którą ten refaktor usunął
+> (`pages/calendar/recurrencePresets.ts` — skasowany plik).
+>
+> Poniższy opis jest celowo **zwięzły**: mechanika (seedowanie z kotwicy, walidacja,
+> mapowanie na drut) jest wyczerpująco udokumentowana w kodzie —
+> `resources/js/next/ui/recurrence/recurrenceAxes.ts`,
+> `resources/js/next/pages/calendar/calendarRecurrence.ts` i
+> `resources/js/next/pages/calendar/RecurrenceField.vue` — i ta dokumentacja **linkuje** do
+> nich zamiast je powielać.
+
 Jedna kontrolka w formularzu wydarzenia, poniżej pola początku/końca, powyżej opisu.
-`FormField label="Powtarzanie"` + `Select` (statyczne `options`) + warunkowa kontrolka końca.
+`FormField label="Powtarzanie"` + `Switch` „Powtarza się" + (gdy włączony) `fieldset` z
+`RecurrenceAxisEditor` na `CALENDAR_RECURRENCE_PROFILE` + warunkowa kontrolka końca
+(niezmieniona, §24.5.3).
 
-#### 24.5.1 Słownictwo
+#### 24.5.1 Słownictwo — dziś: profil osi, nie lista presetów
 
-**Dla osoby planującej spotkanie, nie dla autora automatyzacji.** Etykiety trzymają
-frazeologię serwerowego zdania o kadencji (`lang/*/calendar.php` → `calendar.cadence.*`),
-żeby to, co użytkownik wybrał, i to, co potem pokazuje kafelek, brzmiało jak jedno zdanie,
-a nie dwa.
+**AS-BUILT.** Zamiast listy gotowych presetów o pełnych, odmienionych etykietach ("W każdy
+wtorek", "Co miesiąc: 4. wtorek"…), kontrolka renderuje `RecurrenceAxisEditor` w DWÓCH
+zakładkach — **Dzień** i **Miesiąc** (bez zakładki Czas — profil kalendarza jej nie
+wymienia). Każda zakładka to `RecurrenceOptionCards`: radiogrupa kart, gdzie ZAZNACZONA
+karta rozwija się o swoje pola wplecione w zdanie (`{n}` = `NumberInput`, "od–do" = wspólne
+`RecurrenceWindowField`). Tytuły kart są **ogólnymi** kluczami i18n
+(`recurrenceEditor.day.mode.*` / `recurrenceEditor.month.mode.*`, np. "On weekdays", "On days
+of the month") — kontrolka **nie składa już żadnego zdania o kadencji**. Jedyne zdanie o
+**zapisanej** regule, jakie użytkownik kiedykolwiek czyta, pochodzi z serwera
+(`cadence_label` / `recurrence_label`) — fakt 4 nagłówka `RecurrenceField.vue`; klient nie
+komponuje prozy kadencji w żadnym miejscu.
 
-| Preset | Deskryptor na drucie | Etykieta (przykład dla **wtorku, 25 sierpnia 2026**) |
-| --- | --- | --- |
-| — | brak klucza `recurrence` | **Nie powtarza się** |
-| codziennie | `day: { mode: 'every_day' }` | **Codziennie** |
-| tygodniowo | `day: { mode: 'weekdays', weekdays: [2] }` | **W każdy wtorek** |
-| miesięcznie, dnia N | `day: { mode: 'month_days', days: [25] }` | **Co miesiąc, dnia 25** |
-| miesięcznie, N-ty dzień tygodnia | `day: { mode: 'special', special: 'nth_weekday', ordinal: 4, weekday: 2 }` | **Co miesiąc: 4. wtorek** |
-| miesięcznie, ostatni dzień | `day: { mode: 'special', special: 'last_day' }` | **Co miesiąc, ostatniego dnia** |
-| rocznie | `day: { mode: 'month_days', days: [25] }` + `month: { mode: 'months', months: [8] }` | **Co roku, 25 sierpnia** |
+Mapowanie starego słownictwa presetów na dzisiejszy mechanizm — dla ciągłości z resztą tego
+dokumentu:
 
-Trzy zachowania **warunkowe**, obecne tylko wtedy, gdy data je uzasadnia:
+| Dawny preset (usunięty) | Dziś |
+| --- | --- |
+| — (brak) | `Switch` „Powtarza się" wyłączony — nieobecny klucz `recurrence`, bez zmian |
+| codziennie | Zakładka Dzień → karta „Every day" (`day: { mode: 'every_day' }`, bez zmian kształtu) |
+| tygodniowo | Zakładka Dzień → karta „On weekdays", chip = dzień tygodnia kotwicy — **dziś można zaznaczyć więcej niż jeden chip** (AS-BUILT, §24.17 poz. 10) |
+| miesięcznie, dnia N | Zakładka Dzień → karta „On days of the month", chip = dzień miesiąca kotwicy — **dziś można zaznaczyć więcej niż jeden dzień** |
+| miesięcznie, N-ty dzień tygodnia | Zakładka Dzień → karta „A specific weekday": `Select` **ordynału** (1.–5. + jawna pozycja „ostatni") + `Select` dnia tygodnia — jawnie edytowalne, nie tylko wyprowadzone |
+| miesięcznie, ostatni dzień | Zakładka Dzień → karta „Last day of the month" (`special: 'last_day'`) — **wciąż nazywa regułę, nie ją wyprowadza z kotwicy** (patrz §24.5.2, ostatni akapit) |
+| rocznie | Zakładka Dzień „On days of the month" **razem z** zakładką Miesiąc „In selected months" — dwa niezależne wybory osi, nie jeden preset |
+| ostatni {dzień tygodnia} (piąty) | Karta „A specific weekday" seeduje się na `last_weekday`, gdy kotwica jest piątym takim dniem w miesiącu — dokładnie jak dawniej — ale teraz **edytowalna** z powrotem na jawne „5." (z tą samą notką ostrzegawczą) |
 
-| Warunek | Zachowanie | Dlaczego |
-| --- | --- | --- |
-| `ordinal === 5` (data wypada w piątym takim dniu tygodnia w miesiącu) | **Co miesiąc: ostatni wtorek** (`special: 'last_weekday'`) — **zamiast** „5. wtorek", nigdy obok | „Co miesiąc 5. wtorek" to reguła, która nie odpala w większości miesięcy, a wygląda jak miesięczna. Kto wskazał ostatni wtorek, prawie na pewno miał na myśli **ostatni**, a `last_weekday` jest w przyjmowanym podzbiorze |
-| dzień miesiąca ≥ 29 | pod presetem „Co miesiąc, dnia 31" trwała notka: *„Miesiące bez 31. dnia zostaną pominięte."*; preset **ostatniego dnia** stoi obok | Reguła jest prawdziwa i tak działa (silnik po prostu nie odpala), ale bez tego zdania wygląda na zgubione wystąpienia. Lek — „ostatniego dnia" — jest w tej samej liście |
-| kotwica **NIE** jest ostatnim dniem swojego miesiąca | Preset **„Co miesiąc, ostatniego dnia" nie pojawia się w liście wcale** — **AS-BUILT, §24.17 poz. 2** | Tylko dzień, który JEST ostatnim dniem swojego miesiąca, może być pierwszym wystąpieniem reguły `special: 'last_day'` (§24.5.2, fakt 1). Zaproponowanie presetu na dzień, który go nie spełnia, byłoby gwarantowaną odmową serwera (`anchor_not_an_occurrence`) na polu początku, przy pierwszym zapisie — dokładnie tej klasy błąd, który §24.5.2 istnieje, żeby zamknąć. `presetsFor()` dopisuje ten wpis do listy wyłącznie warunkiem `dayOfMonth === lengthOfMonth` |
+Trzy z warunkowych zachowań dawnego §24.5.1 przeżyły w nowej postaci:
 
-Preset „ostatni {dzień tygodnia}" **wykracza poza listę z briefu** i jest tu **propozycją do
-akceptacji** — mieści się w podzbiorze przyjmowanym przez `CalendarRecurrence::daySpecials()`
-i zastępuje preset, który w innym wypadku kłamie o częstotliwości. Jeżeli owner go odrzuci,
-alternatywą jest zostawienie „5. wtorek" **z notką**, że nie każdy miesiąc go ma — **nie**
-milczące pominięcie presetu (data z piątego tygodnia straciłaby wtedy regułę „dzień tygodnia
-w miesiącu" w ogóle).
+| Warunek | Zachowanie dziś |
+| --- | --- |
+| ordynał piątego dnia tygodnia w miesiącu | Karta „A specific weekday" seeduje się na `last_weekday` (`seedDay`, `ordinal === 5`) — to samo automatyczne podstawienie, teraz odwracalne ręcznie na jawne „5." z `recurrenceEditor.day.fifthWeekdayNote` |
+| dzień miesiąca ≥ 29 wybrany na karcie „On days of the month" | `calendar.recurrence.shortMonthsNote` pod kontrolką, nie zmieniło się |
+| kotwica nie jest ostatnim dniem swojego miesiąca, a wybrano „Last day of the month" | **Inaczej niż dawniej.** Karta jest zawsze dostępna do wyboru (nie ma już warunkowego chowania jednego wiersza listy) — konsekwencje przeniosły się do §24.5.2 |
 
-**AS-BUILT — jak etykiety są złożone, patrz §24.17 poz. 3 i 4.** Ten podrozdział pokazuje
-etykiety jako przykłady dla jednej daty; nie mówi, jak są SKŁADANE. Dwa miejsca w tej
-tabeli powielają, na potrzeby przykładu, słownictwo, którego kontrolka **nie** implementuje
-jako pojedynczego klucza z podstawieniem:
+Prawdziwe klucze i18n: §24.13. Kart/zakładek edytora (`recurrenceEditor.*`) ta kontrolka
+**nie zawiera** we własnym namespace — patrz §24.13, akapit o dwóch namespace'ach.
 
-- **„W każdy wtorek" / „ostatni wtorek"** — po polsku odmienia się przez rodzaj („W każdy
-  wtorek", ale „W każdą środę"), więc nie ma jednego szablonu `"W każdy {weekday}"`, który
-  dałby poprawną frazę dla wszystkich siedmiu dni. Kontrolka trzyma **osobny wpis
-  katalogowy na dzień tygodnia** — `calendar.recurrence.weeklyDays.0..6` i
-  `calendar.recurrence.monthlyLastWeekdays.0..6` — dokładnie z tego samego powodu, dla
-  którego serwerowy `lang/{pl,en}/calendar.php` robi to samo dla własnej prozy (ADR-0051
-  D12). `calendar.recurrence.monthlyNth` („Co miesiąc: {ordinal} {weekday}") **zostaje**
-  szablonem, bo liczebnik przed nazwą dnia omija odmianę („4. wtorek", „4. środa" — obie
-  formy nominalne poprawne), a nazwa dnia w tej pozycji pochodzi z `Intl.DateTimeFormat`
-  (`weekday: 'long'`), nie z katalogu.
-- **„Co roku, 25 sierpnia"** — nie jest złożone z osobnego dnia i osobnej nazwy miesiąca po
-  stronie klienta (co wymagałoby powielenia serwerowego katalogu miesięcy w dopełniaczu,
-  `cadence.months_in_date`, ADR-0051 D12). Klucz niesie **jeden** token —
-  `calendar.recurrence.yearly = "Co roku, {date}"` — a `{date}` to gotowy napis z
-  `Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long' })`, który po polsku sam
-  stawia miesiąc w dopełniaczu.
+#### 24.5.2 Kotwica seeduje wybór sub-trybu — i przy zmianie daty RE-SEEDUJE, ale tylko to, czego nie ruszył człowiek
 
-Prawdziwe klucze i18n: §24.13.
+**AS-BUILT — mechanizm zastąpiony, skutek zachowany.** Zamiast przeliczać "który gotowy
+preset pasuje do tej daty" (dawny algorytm poniżej — usunięty razem z
+`recurrencePresets.ts`), każdy sub-tryb ma teraz własną funkcję seedu
+(`ui/recurrence/recurrenceAxes.ts` — `seedDay(mode, anchorDay)` / `seedMonth(mode,
+anchorDay)`), wywoływaną w DWÓCH momentach: gdy użytkownik dopiero WYBIERA ten sub-tryb (kartę),
+i — dla RecurrenceField.vue, przez `watch(() => props.anchorDay, …)` — gdy data początku się
+ZMIENIA.
 
-#### 24.5.2 Preset wyprowadza się z daty — i przy zmianie daty wyprowadza się PONOWNIE
+**Re-seed przy zmianie daty jest WARUNKOWY, nie bezwarunkowy — to jest krawędź, której dawny
+algorytm nie miał, bo nie musiał: gdy jedynym sposobem uzyskania reguły był preset, każda
+reguła BYŁA tym, co preset by wyprowadził.** Dziś oś edytuje się swobodnie (kilka dni
+tygodnia naraz, kilka dni miesiąca naraz…), więc re-seed musi odróżnić "to, co ten sub-tryb
+sam by podstawił" od "to, co użytkownik świadomie ułożył". Test jest strukturalny: `RecurrenceField.vue`
+re-seeduje daną oś **tylko** gdy jej bieżąca wartość równa się temu, co ten sam sub-tryb
+wyprodukowałby dla POPRZEDNIEJ kotwicy — czyli tylko wtedy, gdy nikt jej ręcznie nie
+zmienił od czasu ostatniego seedu. Reguła, którą ktoś świadomie ułożył (np. "poniedziałek i
+środa"), **nigdy nie jest po cichu przepisywana** — jeśli nowa data ją unieważnia, o tym mówi
+błąd kotwicy (§24.5.6), nie cicha podmiana.
+
+**Efekt widoczny — dokładnie ten sam, co dawniej.** Dla nietkniętej reguły: wybór
+tygodniowy zostaje tygodniowy (na nowym dniu tygodnia), dnia-N-miesiąca zostaje na nowym
+dniu, N-ty-dzień-tygodnia zostaje na nowym `ordinal`/`weekday` (z tym samym automatycznym
+podstawieniem piątego tygodnia na "ostatni", §24.5.1), miesięczny w wybranych miesiącach —
+na nowym miesiącu; „codziennie" i „co miesiąc" nie mają czego przeliczać. **To wciąż jest
+mechanizm, przez który 422 `anchor_not_an_occurrence` staje się nieosiągalny z interfejsu**
+dla ścieżki, którą przechodzi każdy zwykły użytkownik (wybierz tryb, ewentualnie przesuń
+datę) — bez niego wybór „w każdy wtorek" plus zmiana daty na środę kończyłaby się odmową na
+polu **początku**, którego nikt nie kojarzy z kontrolką powtarzania.
+
+**Jeden przypadek z dawnej krawędzi (§24.17 poz. 7) NIE przeżył — AS-BUILT, §24.17 poz. 11.**
+Karta „Last day of the month" **nie jest** seedowana z kotwicy — `seedDay('last_day', …)`
+zwraca tę samą wartość niezależnie od daty, bo ta karta **nazywa** regułę ("ostatni dzień
+miesiąca"), a nie **wyprowadza** ją z konkretnego dnia. Dawny preset "Co miesiąc, ostatniego
+dnia" po przesunięciu daty poza koniec miesiąca CICHO zamieniał się w "Co miesiąc, dnia N"
+(`remapPreset`'s `fallbackId`); dzisiejsza karta **zostaje wybrana**, a data, która przestała
+być ostatnim dniem miesiąca, po prostu przestaje spełniać kotwicę — błąd renderuje się pod
+regułą (§24.5.6), zamiast reguły zmienić się same. Sprawdzone testem
+(`calendarRecurrence.spec.ts`, opis „the anchor rule" — `last_day` jest jedynym sub-trybem
+jawnie wyłączonym z asercji „każdy seed spełnia dzień, z którego powstał", bo **nazywa**
+regułę zamiast ją wyprowadzać). Para „N-ty dzień tygodnia" ↔ „ostatni dzień tygodnia" przy
+piątym tygodniu — druga połowa poz. 7 — **przeżyła bez zmian**, bo ten sub-tryb JEST
+seedowany z kotwicy.
+
+<details>
+<summary>Historyczny algorytm presetów (usunięty, dla porównania)</summary>
 
 Wyliczane z **daty początku, jaką trzyma formularz** (`draft.start_date` dla całodniowego,
 `draft.starts_day` dla wydarzenia z godziną — czyli dnia w strefie workspace'u, tej samej,
@@ -2041,30 +2095,18 @@ ordinal    = Math.floor((dayOfMonth - 1) / 7) + 1        // 1..5
 lastOfKind = dayOfMonth + 7 > daysInMonth(rok, d.getMonth())
 ```
 
-**Przy każdej zmianie daty preset jest przeliczany, a bieżący wybór MAPOWANY na swój
-odpowiednik** dla nowej daty: tygodniowy zostaje tygodniowym (na nowym dniu tygodnia),
-miesięczny-N-tego zostaje miesięcznym-N-tego (na nowym dniu), N-ty dzień tygodnia zostaje
-N-tym dniem tygodnia (na nowym `ordinal`/`weekday`), roczny zostaje rocznym; „codziennie"
-i „nie powtarza się" nie mają czego przeliczać.
+Przy każdej zmianie daty preset był przeliczany bezwarunkowo, a bieżący wybór MAPOWANY na
+swój odpowiednik dla nowej daty.
 
-**Jeden wybór NIE mapuje się na swój własny kształt — celowo, AS-BUILT, §24.17 poz. 7.**
-„Co miesiąc, ostatniego dnia" (`monthlyLastDay`) mapuje się na **„Co miesiąc, dnia N"**
-(`monthlyDay`, na nowym dniu miesiąca), gdy nowa data przestaje być ostatnim dniem swojego
-miesiąca — bo `monthlyLastDay` w ogóle nie istnieje jako opcja dla dnia, który nie jest
-ostatni (§24.5.1, trzecie zachowanie warunkowe). Bez tej krawędzi wybór po prostu
-zniknąłby z listy przy przesunięciu daty o jeden dzień, zamiast zamienić się w najbliższy
-uczciwy odpowiednik — to samo traktowanie, które dostają para „N-ty dzień tygodnia" ↔
-„ostatni dzień tygodnia" przy piątym tygodniu (`remapPreset`'s `fallbackId`).
-
-**To jest mechanizm, przez który 422 `anchor_not_an_occurrence` staje się nieosiągalne
-z interfejsu.** Bez niego użytkownik wybiera „w każdy wtorek", potem zmienia datę na środę
-i dostaje odmowę na polu **początku**, którego nie kojarzy z regułą.
-Zmiana etykiety jest **widoczna** (select przerysowuje się na „W każdą środę") — cicha
-podmiana byłaby gorsza niż odmowa.
+</details>
 
 #### 24.5.3 Koniec serii
 
-Widoczny wtw wybrano jakikolwiek preset. `RadioGroup` (`orientation="horizontal"`):
+**Nietknięte tym refaktorem** (commit `62a73e4` zostawił ten kontrolkę i jej testy bez
+zmian — "Kontrolka końca serii, reguła kotwicy i dialog zakresu — kalendarzowe, nietknięte",
+z opisu commita). Widoczny wtw `Switch` "Powtarza się" jest włączony (dawniej: "wybrano
+jakikolwiek preset" — terminologia nieaktualna, mechanizm ten sam). `RadioGroup`
+(`orientation="horizontal"`):
 
 | Wybór | Kontrolka | Na drut |
 | --- | --- | --- |
@@ -2103,16 +2145,20 @@ lutego". Renderować pod polem liczby, dosłownie: serwer nazywa lek (podaj dat�
 Wypisane wprost, żeby nikt nie uzupełnił tego jako przeoczenia. Podzbiór jest wąski
 **świadomie**; rozszerzenie później jest addytywne i bezpieczne, zwężenie po wydaniu nie.
 
+> **AS-BUILT — trzy wiersze tej tabeli zostały ODWRÓCONE przez commit `62a73e4` (§24.17
+> poz. 10) i są tu zachowane, przekreślone w treści, dla ciągłości z resztą dokumentu —
+> **nie** jako coś, co dziś obowiązuje.
+
 | Nie ma | Powód |
 | --- | --- |
-| **Trybu „własne" / budowania reguły z osi** | Pierwsze cięcie ma dowieźć zakresy operacji, a nie edytor gramatyki. Presety pokrywają to, co człowiek mówi o spotkaniu |
-| **Kadencji „co N dni" / „co N miesięcy"** (`every_n_days`, `every_n_months`) | Backend ich **nie przyjmuje** i to jest decyzja, nie brak: kompilują się do siatki **resetowanej co miesiąc** (i co rok), więc znaczą co innego, niż użytkownik przeczyta („co 3 dni od dziś"). Tryb, który znaczy co innego, niż brzmi, jest gorszy od trybu, którego nie ma |
-| **Kadencji poddobowych** („co 5 minut", „co 2 godziny") | Backend ich nie przyjmuje: adnotacja co 5 minut to generator obciążenia (>60 000 wystąpień na jednej siatce), a oś czasu serii kalendarza jest **z konstrukcji jedną godziną** |
-| **„Ostatniego dnia roboczego"** (`last_working_day`) | Poza podzbiorem Kalendarza; trywialnie dodawalne później, jeśli ktoś tego zażąda |
-| **Wielu dni tygodnia naraz** („poniedziałki i środy") — mimo że API to przyjmuje | Wymagałoby zablokowania dnia tygodnia kotwicy jako niemożliwego do odznaczenia (inaczej odznaczenie własnego dnia początku daje 422 na polu **początku**, którego użytkownik z tą listą nie skojarzy). Do rozważenia jako osobna, mała iteracja — z zablokowanym chipem i zdaniem, dlaczego jest zablokowany |
-| **Pomijania miesięcy / dni tygodnia** (`exclusions.months`, `exclusions.weekdays`) | Backend **odrzuca oba klucze** — każde takie pominięcie jest wyrażalne jako zbiór dopełniający na osi dnia albo miesiąca, a powiedziane odwrotnie potrafi wykluczyć cały wymiar |
-| **Ręcznej edycji listy pominiętych dni** | Rośnie wyłącznie przez „usuń to wystąpienie"; przywracanie — §24.14 |
-| **Kreatora harmonogramu z edytora workflow** | Technicznie dałoby się, kontrakt jest wspólny. Wystawiłby jednak w oknie „powtórz to spotkanie" tryby „co 5 minut", „ostatni dzień roboczy", okna godzinowe i **asystenta AI** — słownictwo automatyzacji w oknie o spotkaniu. Osobne, wąskie presety to nie duplikat: to **inny profil tej samej gramatyki**, dokładnie tak jak `CalendarRecurrence` jest profilem `App\Support\Recurrence` po stronie serwera |
+| ~~**Trybu „własne" / budowania reguły z osi**~~ — **AS-BUILT: DZIŚ TO JEST KONTROLKA.** Zakładki Dzień/Miesiąc + karty sub-trybów **SĄ** edytorem reguły z osi, ograniczonym profilem (§24.5.1) | *(historyczne, poz. 10)* Pierwsze cięcie miało dowieźć zakresy operacji, a nie edytor gramatyki; presety miały pokrywać to, co człowiek mówi o spotkaniu |
+| **Kadencji „co N dni" / „co N miesięcy"** (`every_n_days`, `every_n_months`) | Backend ich **nie przyjmuje** i to jest decyzja, nie brak — **nadal aktualne**: kompilują się do siatki **resetowanej co miesiąc** (i co rok), więc znaczą co innego, niż użytkownik przeczyta („co 3 dni od dziś"). `CALENDAR_RECURRENCE_PROFILE` po prostu nie wymienia tych sub-trybów w `dayModes`/`monthModes` |
+| **Kadencji poddobowych** („co 5 minut", „co 2 godziny") | **Nadal aktualne** — backend ich nie przyjmuje, a profil kalendarza w ogóle nie wymienia zakładki Czas |
+| **„Ostatniego dnia roboczego"** (`last_working_day`) | **Nadal aktualne** — poza `CALENDAR_RECURRENCE_PROFILE.dayModes`; trywialnie dodawalne później (dopisanie jednej wartości do listy), jeśli ktoś tego zażąda |
+| ~~**Wielu dni tygodnia naraz**~~ — **AS-BUILT: DZIŚ MOŻNA.** Karty „On weekdays" / „On days of the month" to zwykłe chip-grupy wielokrotnego wyboru; żaden chip nie jest zablokowany | *(historyczne, poz. 10)* Obawa o odznaczenie dnia kotwicy była słuszna — rozwiązana **inaczej**, niż ten wiersz proponował: nie blokadą chipa, tylko błędem kotwicy na samej regule (§24.5.6), gdy odznaczenie sprawia, że dzień początku przestaje być wystąpieniem |
+| **Pomijania miesięcy / dni tygodnia** (`exclusions.months`, `exclusions.weekdays`) | **Nadal aktualne** — backend odrzuca oba klucze; każde takie pominięcie jest wyrażalne jako zbiór dopełniający na osi dnia albo miesiąca |
+| **Ręcznej edycji listy pominiętych dni** | **Nadal aktualne** — rośnie wyłącznie przez „usuń to wystąpienie"; przywracanie — §24.14 |
+| ~~**Kreatora harmonogramu z edytora workflow**~~ — **AS-BUILT: DZIŚ TO TEN SAM KOMPONENT.** `ui/recurrence/RecurrenceAxisEditor.vue`, na dwóch różnych `profile` | *(historyczne, poz. 10)* Ten wiersz **był powodem odmowy** reużycia — patrz banner na początku §24.5 i §24.17 poz. 10 dla pełnego uzasadnienia odwrócenia |
 
 #### 24.5.5 Godzina i strefa serii
 
@@ -2124,6 +2170,45 @@ powtarzania pola godziny, którego tam nigdy nie będzie (serwer odrzuca `recurr
 
 Dla serii całodniowej — **nic**. Nie ma godziny do pokazania, a dorobienie „00:00" byłoby
 tym samym defektem, którego zakazuje §6.2.
+
+#### 24.5.6 Reguła NIETKNIĘTA nie jest ponownie osądzana — inaczej edycja tytułu blokuje się sama
+
+**AS-BUILT, dodane commitem `62a73e4`.** §24.5.2 opisuje, kiedy oś jest RE-SEEDOWANA przy
+zmianie daty. Ten podrozdział opisuje coś inne, ale sąsiednie: kiedy zapisana reguła jest w
+ogóle **oceniana** wobec kotwicy — a odpowiedź nie może być "zawsze", bo o kotwicę osądza się
+też edycję, która reguły w ogóle nie dotyka (np. sama zmiana tytułu wydarzenia).
+
+**Zasada, do zapamiętania przez każdego, kto następnym razem doda pole do tego formularza:
+reguła, której formularz nie dotknął w tej sesji, nie jest ponownie osądzana wobec kotwicy —
+bo serwer ocenił ją na zegarze SERII (`recurrence_timezone`), a formularz czyta kotwicę na
+zegarze BIEŻĄCYM workspace'u (`meta.timezone`).** Te dwa zegary są tym samym zegarem tylko
+dopóki nikt nie zmienił strefy workspace'u od czasu ostatniego zapisu reguły — a zmiana strefy
+o tyle, by przesunąć instant przez północ, potrafi sprawić, że idealnie poprawna, niedotknięta
+seria "co poniedziałek" **wygląda** z dzisiejszego zegara na niedzielę. Osądzenie jej wobec
+tego złego odczytu zablokowałoby zapis TYTUŁU nad regułą, z którą serwer nie ma żadnego
+problemu.
+
+**Mechanizm (`recurrenceAnchorSatisfied`, `pages/calendar/calendarRecurrence.ts`):** trzy
+przypadki odpowiadają „kotwica spełniona" **bez oglądania kadencji w ogóle** — seria się nie
+powtarza; reguła jest tylko ECHOWANA (§24.5.1, „Inna reguła" — dziś `state.unsupported`,
+patrz §24.8.5); albo bieżąca kadencja formularza jest **strukturalnie równa** tej, jaką GET
+właśnie załadował (`state.accepted`). Dopiero gdy żaden z trzech nie zachodzi — czyli
+kadencja w TEJ sesji **zmieniła się** względem tego, co przyszło z serwera — reguła jest
+faktycznie sprawdzana wobec bieżącej kotwicy, na bieżącym zegarze. Innymi słowy: kotwica
+osądza **zmianę**, nigdy stan spoczynku.
+
+**To jest ta sama zasada, którą — po stronie serwera — naprawiał wcześniejszy przegląd tego
+rozdziału (C2).** Pierwsza wersja tej kontrolki po stronie klienta odtworzyła dokładnie ten
+sam defekt (blokada edycji tytułu serii ze strefą inną niż bieżąca) — złapana istniejącym
+testem, zanim trafiła do przeglądu. Serwerowy odpowiednik tego faktu:
+`CalendarRecurrenceService`'s „stamped clock" — reguła jest zawsze czytana/oceniana na
+zegarze, którym ją ostemplowano przy zapisie, nigdy na zegarze bieżącym, chyba że *to właśnie
+ten zapis* stempluje ją na nowo (`docs/backend/calendar-api.md` §„A series occurrence"; kod:
+`App\Modules\Calendar\Services\CalendarRecurrenceService`, komentarze przy `anchorDay()` /
+`isOccurrenceDay()`). **Reguła dla następnego autora formularza:** jeżeli dodajesz pole do tego
+formularza, i to pole NIE jest ani kotwicą, ani samą kadencją — nie każ go osądzać wobec
+reguły, którą użytkownik nie dotknął. Jeżeli osądzasz kadencję, osądzaj **zmianę** (bieżąca
+wartość ≠ to, co przyszło z GET-a), nigdy stan spoczynku.
 
 ---
 
@@ -2379,19 +2464,25 @@ odczytane z zasobu i nic więcej.
 
 #### 24.8.5 Reguła, której kontrolka nie umie wyrazić
 
-Kontrakt przyjmuje szerszy podzbiór niż presety z §24.5 (wiele dni tygodnia, wiele dni
-miesiąca, lista miesięcy, `last_weekday` poza warunkiem). Taka reguła może powstać z API,
-z kroku `create_event` albo z przyszłej, szerszej kontrolki. **Formularz nie może jej po
-cichu przepisać na najbliższy preset.**
+> **AS-BUILT, §24.17 poz. 10.** Ta sekcja opisywała stan Select-owej kontrolki presetowej;
+> mechanizm poniżej jest AKTUALNY (`state.unsupported`, `pages/calendar/calendarRecurrence.ts`
+> / `RecurrenceField.vue`), ale **zakres, w jakim się włącza, radykalnie się skurczył** — patrz
+> "Wykrycie" niżej — bo dzisiejsza kontrolka jest edytorem osi, nie listą presetów.
+
+Kontrakt przyjmuje szerszy podzbiór niż to, co kontrolka umie edytować (`every_n_days`,
+`every_n_months`, `last_working_day` — dokładnie to, czego `CALENDAR_RECURRENCE_PROFILE` nie
+wymienia, §24.5.1/§24.5.4). Taka reguła może powstać z ręcznie edytowanego wiersza albo z
+backendu, który poszerzy gramatykę wcześniej niż ta kontrolka. **Formularz nie może jej po
+cichu przepisać na najbliższą wyrażalną regułę.**
 
 | Wymóg | Zachowanie |
 | --- | --- |
-| Wykrycie | Zapisany deskryptor **nie jest równy** żadnemu, jaki presety potrafią wyprodukować dla dzisiejszej daty początku |
-| Select | Dodatkowa, **zaznaczona i `disabled`** pozycja **„Inna reguła"** — nigdy ciche wskoczenie na „Codziennie" |
-| Zdanie | `cadence_label` klikniętego wystąpienia, jeśli jest; inaczej `event.recurrence_label` z `GET`-a (odkąd L9 jest zamknięta — §24.15); dopiero gdy **oba** są `null` — *„Ta seria ma regułę, której ten formularz nie edytuje."* — sama „Inna reguła" nie gwarantuje pustego zdania: wielodniowa reguła spoza presetów zwykle ma swoje `recurrence_label` (np. „Weekly on Mon, Wed"), tylko kontrolka nie umie jej **wyprodukować** |
-| Zapis | Blok `recurrence` z GET-a jedzie **dosłownie**, razem z `exclusions` i `until` |
+| Wykrycie | **AS-BUILT — inny test niż dawniej.** Nie „nie jest równy żadnemu presetowi dla dzisiejszej daty" (presety już nie istnieją), tylko: `dayFromWire`/`monthFromWire` zwraca `null` dla trybu/`special`, którego `CALENDAR_RECURRENCE_PROFILE` nie wymienia. **Skutek:** reguła, która dawniej BYŁA „Inną regułą" — np. `weekdays: [1, 3]` (dwa dni tygodnia) — dziś **nie jest** `unsupported` wcale: `weekdays` z wieloma dniami to zwykła, edytowalna wartość karty „On weekdays" (§24.5.1, §24.5.4). Stan przeżywa **wyłącznie** jako strażnik deskryptora spoza profilu, nieosiągalnego którąkolwiek dzisiejszą ścieżką zapisu (fakt 6, nagłówek `calendarRecurrence.ts`) |
+| UI | **AS-BUILT — nie Select.** `Alert variant="info"` (`calendar.recurrence.unsupportedNote`) + `Button` „Replace with a new rule" (`unsupportedReplace`) — **zamiast** `RecurrenceAxisEditor`, nie jako jego dodatkowa, zablokowana pozycja (nie ma już Selecta z listą presetów) |
+| Zdanie | `cadence_label` klikniętego wystąpienia, jeśli jest; inaczej `event.recurrence_label` z `GET`-a (odkąd L9 jest zamknięta — §24.15); dopiero gdy **oba** są `null` — `t('calendar.series.unknownRule')`. Sama `unsupported` nie gwarantuje pustego zdania: reguła spoza profilu zwykle ma swoje `recurrence_label` (np. „Weekly on Mon, Wed, Fri"), tylko kontrolka nie umie jej **wyedytować** |
+| Zapis | Blok `recurrence` jedzie **dosłownie** — `state.unsupported.day` / `.month`, razem z `exclusions` i `until` (`recurrenceStateToWire`) |
 | Reszta formularza | **Działa normalnie** — tytuł, opis, godzinę i koniec serii da się poprawić bez ruszania reguły |
-| Wyjście | Wybranie dowolnego presetu **nadpisuje** regułę; opcja „Inna reguła" znika z listy i **nie da się do niej wrócić** bez anulowania edycji. Zdanie pod kontrolką mówi to wprost: *„Wybranie innego powtarzania zastąpi obecną regułę."* |
+| Wyjście | Przycisk „Replace with a new rule" (`replaceUnsupported()`) **nadpisuje** regułę wartością neutralną (`every_day` / `every_month`) i pokazuje edytor osi; nie da się wrócić do echowanej reguły bez anulowania edycji |
 
 ---
 
@@ -2467,12 +2558,20 @@ Z `calendarZone`: `instantToZonedParts`, `instantToWallClock`, `monthOf`.
 
 #### 24.12.3 Create
 
+> **AS-BUILT, §24.17 poz. 10 — `recurrencePresets.ts` nie istnieje.** Skasowany
+> w `62a73e4` i zastąpiony przez `pages/calendar/calendarRecurrence.ts` (wire mapping +
+> stan końca serii + kotwica) opierający się na **wspólnym** `ui/recurrence/` (siedem
+> plików: rdzeń osi + trzy panele + karty opcji + pole okna), reużytym z Workflows zamiast
+> zbudowanym od nowa dla Kalendarza. Wiersze tej tabeli poniżej zostawione jako historyczny
+> plan B6; aktualna lista plików — §24.5 banner + inwentarz w tej samej sekcji, niżej.
+
 | Plik | Rola |
 | --- | --- |
 | `pages/calendar/SeriesScopeModal.vue` | Dialog zakresu — dwa tryby (edycja / usuwanie), dynamiczna etykieta potwierdzenia, miejsce na błąd serwera |
-| `pages/calendar/RecurrenceField.vue` | Kontrolka powtarzania: presety wyprowadzone z daty + kontrolka końca + notki warunkowe |
-| `pages/calendar/recurrencePresets.ts` | **Czysty, testowalny.** `presetsFor(day)` → lista presetów z etykietami i deskryptorami; `descriptorOf(preset, day)`; `presetOf(descriptor, day)` (rozpoznanie zapisanej reguły, `null` = „Inna reguła"); `remapPreset(preset, newDay)` |
+| ~~`pages/calendar/RecurrenceField.vue` — presety wyprowadzone z daty~~ | **AS-BUILT: plik istnieje, ale mechanizm inny.** Kontrolka powtarzania: `RecurrenceAxisEditor` na `CALENDAR_RECURRENCE_PROFILE` + kontrolka końca (nietknięta) + notki warunkowe (nietknięte) — §24.5.1 |
+| ~~`pages/calendar/recurrencePresets.ts`~~ | **AS-BUILT: SKASOWANY.** Zastąpiony `pages/calendar/calendarRecurrence.ts` (`RecurrenceState`, `recurrenceStateFrom`/`recurrenceStateToWire`, `recurrenceAnchorSatisfied` — §24.5.6) — dziś **bez** `presetsFor`/`descriptorOf`/`presetOf`/`remapPreset`, bo nie ma już czego rozpoznawać jako "preset" |
 | `pages/calendar/occurrenceDate.ts` | **Zredukowany od L8 (§24.15): backend zwraca `occurrence_date` bezpośrednio, więc nie ma już czego liczyć.** Jeśli powstaje, to jako jeden trywialny getter (`occurrenceDateOf(occurrence) → occurrence.occurrence_date`) dla jednego miejsca importu — nie jako moduł z logiką derywacji z §24.3. Frontend-agent decyduje, czy taki plik w ogóle jest wart tworzenia, czy odczyt idzie inline |
+| `ui/recurrence/{recurrenceAxes.ts, RecurrenceAxisEditor.vue, RecurrenceTimePanel.vue, RecurrenceDayPanel.vue, RecurrenceMonthPanel.vue, RecurrenceOptionCards.vue, RecurrenceWindowField.vue}` | **AS-BUILT, nowe od `62a73e4` — WSPÓLNE z Workflows, nie kalendarzowe.** Home + uzasadnienie umiejscowienia: §24.5 banner na początku tego rozdziału; pełny opis — component-state-matrix.md „Tier 4+" |
 
 **Zero nowych zależności npm.**
 
@@ -2509,6 +2608,16 @@ Z `calendarZone`: `instantToZonedParts`, `instantToWallClock`, `monthOf`.
 
 Namespace `calendar.*` (`resources/js/next/app/i18n/{en,pl}.ts`, `en.ts` źródłem typu,
 `pl.ts` 1:1). **Bez odmiany liczebników** — kształt „Etykieta: {n}".
+
+> **AS-BUILT (commit `62a73e4`) — `calendar.recurrence.*` wyprowadzony na nowo z bloku
+> `recurrence: {…}` w obu katalogach, klucz po kluczu (obie wersje wciąż 1:1).** Cały
+> słownik presetów (`daily`, `weeklyDays.0..6`, `monthlyDay`, `monthlyNth`,
+> `monthlyLastDay`, `monthlyLastWeekdays.0..6`, `ordinals.1..5`, `yearly`, `other`,
+> `otherReplaces`) jest **usunięty z katalogu** — zastąpiony przez `unsupportedNote` /
+> `unsupportedReplace` / `anchorMismatch`, trzy klucze, których dawny słownik nie miał, bo
+> nie miał pojęcia „reguła spoza profilu" (§24.5.1, §24.8.5). Kart/zakładek edytora osi
+> (dawnych etykiet presetów) ten namespace **już nie niesie** — patrz akapit o dwóch
+> namespace'ach poniżej.
 
 ```
 calendar.series.badge                  "Seria"
@@ -2549,17 +2658,10 @@ calendar.scope.fallbackNotice          "Otwarto bez wskazania wystąpienia — e
 
 calendar.recurrence.label              "Powtarzanie"
 calendar.recurrence.none               "Nie powtarza się"
-calendar.recurrence.daily              "Codziennie"
-calendar.recurrence.weeklyDays.0..6    "W każdą niedzielę" … "W każdą sobotę"   (katalog, NIE szablon — §24.17 poz. 3)
-calendar.recurrence.monthlyDay         "Co miesiąc, dnia {day}"
-calendar.recurrence.monthlyNth         "Co miesiąc: {ordinal} {weekday}"        ({weekday}: nazwa z Intl, nie z katalogu)
-calendar.recurrence.monthlyLastDay     "Co miesiąc, ostatniego dnia"
-calendar.recurrence.monthlyLastWeekdays.0..6  "Co miesiąc: ostatnia niedziela" … "Co miesiąc: ostatnia sobota"  (katalog — §24.17 poz. 3)
-calendar.recurrence.ordinals.1..5      "1." … "5."                          (bez odmiany — liczebnik przed nazwą dnia)
-calendar.recurrence.yearly             "Co roku, {date}"                    ({date}: gotowy z Intl, §24.17 poz. 4 — NIE {day}+{month})
-calendar.recurrence.other              "Inna reguła"
-calendar.recurrence.otherReplaces      "Wybranie innego powtarzania zastąpi obecną regułę."
-calendar.recurrence.shortMonthsNote    "Miesiące bez {day}. dnia zostaną pominięte."
+calendar.recurrence.unsupportedNote    "Tej reguły nie da się tu edytować. Reszta wydarzenia zapisuje się normalnie, a reguła zostaje bez zmian."
+calendar.recurrence.unsupportedReplace "Zastąp nową regułą"
+calendar.recurrence.anchorMismatch     "Dzień początkowy nie jest wystąpieniem tej reguły. Dostosuj regułę albo przesuń początek."
+calendar.recurrence.shortMonthsNote    "Miesiące bez dnia {day} zostaną pominięte."
 calendar.recurrence.hourNote           "Każde wystąpienie zaczyna się o {time} ({tz})."
 calendar.recurrence.detachNote         "To wystąpienie przestanie należeć do serii. Reszta serii zachowa swoją regułę."
 
@@ -2589,11 +2691,24 @@ wystąpieniu, `recurrence_label` na zasobie wydarzenia — oba proza serwera), n
 treści plakietek, komunikaty walidacji. Trwałe, nie tymczasowe: żadne z tych pól nigdy nie
 potrzebuje klucza i18n, bo klient go nie tłumaczy — tylko renderuje.
 
-**`calendar.recurrence.*` to etykiety WYBORU, nie opis reguły zapisanej** — i to jest
-jedyne rozróżnienie, które utrzymuje obie zasady naraz: kontrolka opisuje **zamiar** (serwer
-nie ma o nim zdania, bo reguła jeszcze nie istnieje), a kafelek i podgląd opisują **stan**
-(i biorą zdanie z serwera). Etykiety presetów **nie wolno** użyć do opisania reguły, która
-już jest zapisana.
+**Dwa namespace'y niosą dziś kontrolkę powtarzania — AS-BUILT, commit `62a73e4`.**
+`calendar.*` (ten, katalogowany powyżej) niesie tylko to, co jest **specyficznie
+kalendarzowe**: przełącznik „Powtarza się", notki (godzina serii, krótkie miesiące,
+strażnik reguły spoza profilu) i kontrolkę końca serii. Etykiety **kart i zakładek** samego
+edytora osi (dawne etykiety presetów — „Every day", „On weekdays", „A specific weekday"…)
+żyją pod **wspólnym**, nie-kalendarzowym namespace'em `recurrenceEditor.*`
+(`resources/js/next/app/i18n/{en,pl}.ts`, sekcja `recurrenceEditor: {…}`) — bo ten sam
+komponent, z tymi samymi kartami, renderuje się też w edytorze harmonogramu przepływów
+(§24.5, banner na początku; `docs/next/component-state-matrix.md`, „Tier 4+"). Ta
+dokumentacja nie kataloguje `recurrenceEditor.*` tutaj drugi raz — pełny katalog kluczy tego
+namespace'u (i tego, co z niego zostało w `workflows.schedule.*`) jest w
+`resources/js/next/docs/pages/WorkflowsPage.vue`, blok „Schedule i18n".
+
+**Rozróżnienie, które oba namespace'y razem wciąż utrzymują: żaden klucz wyboru nie opisuje
+reguły zapisanej.** Kontrolka (oba namespace'y razem) opisuje **zamiar** (serwer nie ma o nim
+zdania, bo reguła jeszcze nie istnieje), a kafelek i podgląd opisują **stan** (i biorą zdanie
+z serwera, `cadence_label`/`recurrence_label`). Etykiety kart **nie wolno** użyć do opisania
+reguły, która już jest zapisana — fakt 4 nagłówka `RecurrenceField.vue`.
 
 ---
 
@@ -3027,3 +3142,91 @@ wynikał, byłby gorszy lub niemożliwy do zbudować zgodnie z resztą dokumentu
 anchor_not_an_occurrence, odmiana przez rodzaj — więc agent uważnie
 czytający CAŁĄ specyfikację, nie tylko jedną tabelę, trafiłby na sprzeczność i zatrzymał się
 pytaniem), nie cichą pułapką jak poz. 5.
+
+---
+
+**Druga runda, po B6 — nie rozjazd specyfikacji z kodem zbudowanym z niej, tylko OWNER
+odwracający wcześniej zapisaną, świadomą decyzję po obejrzeniu modułu na żywo.** Inny rodzaj
+zdarzenia niż poz. 1-9 (tam kod, budowany z tej specyfikacji, powiedział co innego niż
+zapisane zdanie; tu zapisane zdanie było zbudowane dokładnie tak, jak specyfikacja kazała —
+i słowo właściciela je unieważniło), ale ten sam mechanizm rejestru, z tego samego powodu:
+żeby następny czytelnik nie natrafił na dwie sprzeczne wersje faktu bez wskazówki, która
+wygrywa.
+
+**10 — Kontrolka powtarzalności wydarzenia i edytor harmonogramu wyzwalacza przepływu są
+dziś TYM SAMYM komponentem; §24.5.4 świadomie odmówiło tego reużycia.** *Specyfikacja
+(§24.5.4, ostatni wiersz) mówiła:* "Kreatora harmonogramu z edytora workflow" **nie ma** w
+kontrolce Kalendarza — "technicznie dałoby się, kontrakt jest wspólny", ale reużycie
+"wystawiłoby w oknie 'powtórz to spotkanie' tryby 'co 5 minut', 'ostatni dzień roboczy', okna
+godzinowe i asystenta AI — słownictwo automatyzacji w oknie o spotkaniu"; "osobne, wąskie
+presety to nie duplikat: to inny profil tej samej gramatyki". *Co faktycznie powstało
+(commit `62a73e4`, 2026-08-26):* owner obejrzał moduł na żywo i **zdecydował inaczej** —
+wybór powtarzania w szufladzie wydarzenia ma być tym samym komponentem, co w edytorze
+przepływu. `RecurrenceAxisEditor.vue` (+ sześć towarzyszących plików) przeniesiony do
+`ui/recurrence/` — wspólnego domu obu stron, żyjącego pod `ui/**`, które (test
+`uiLayerImportBoundary.spec.ts`) **nie może** importować z `pages/**` w żadną stronę; obie
+strony (`pages/calendar/RecurrenceField.vue`, `pages/workflows/WorkflowScheduleBuilder.vue`)
+importują W DÓŁ do niego, co jest jedynym dozwolonym kierunkiem. *Dlaczego kod wygrał — i co
+z uzasadnienia odmowy PRZETRWAŁO.* Obawa zapisana w §24.5.4 była **słuszna w chwili
+napisania i pozostaje słuszna dziś** — nie została odrzucona, tylko rozwiązana **inaczej**,
+niż odmowa reużycia sugerowała jako jedyną opcję. Odpowiedzią okazał się **PROFIL**, dokładnie
+ten sam mechanizm, którym `CalendarRecurrence` jest podzbiorem `App\Support\Recurrence` po
+stronie serwera (ADR-0052) — teraz odtworzony w UI: `RecurrenceAxisEditor` przyjmuje
+`profile: RecurrenceProfile` (`ui/recurrence/recurrenceAxes.ts`), a `CALENDAR_RECURRENCE_PROFILE`
+**ukrywa całą zakładkę Czas** (serwer sam autoryzuje godzinę wystąpienia — `recurrence.time`
+jest `prohibited`), tryby modulo (`every_n_days`/`every_n_months` — siatka resetowana co
+miesiąc i co rok, więc "co 5 minut"/"co N dni" nigdy nie trafiają do okna o spotkaniu) i
+`last_working_day`. Asystent AI i pasek podglądu odpaleń **nie przeniosły się w ogóle** — to
+były zawsze sprzężenia ze store'em Workflows (endpoint asystenta, endpoint podglądu), więc
+zostały w `WorkflowScheduleBuilder.vue`, który OTACZA wspólny edytor, dokładnie tak jak
+`RecurrenceField.vue` otacza go po stronie Kalendarza. Profil jest **czytany z kontraktu
+backendu** (`CalendarRecurrence::dayModes()`/`daySpecials()`/`monthModes()`), nie przepisany z
+pamięci — łącznie z tym, że parametry przypadków specjalnych są per rodzaj (`last_day` nie
+bierze żadnych; spory parametr to `field_not_allowed_for_mode`, fakt 2 nagłówka
+`calendarRecurrence.ts`). **Konsekwencje dla trzech innych wierszy §24.5.4**, odwrócone tym
+samym commitem: "Trybu 'własne'" i "Wielu dni tygodnia naraz" — poprawione w miejscu, §24.5.4.
+**Konsekwencja dla "Innej reguły"** (dawne §24.8.5): ciasnota słownika, która czyniła
+`weekdays: [1, 3]` nieedytowalną regułą, zniknęła — edytor wyraża każdą regułę, którą
+endpoint przyjmuje (round-trip po dziewięciu kształtach deskryptora, `calendarRecurrence.spec.ts`).
+Stan `unsupported` przeżywa **wyłącznie** jako strażnik deskryptora spoza profilu —
+nieosiągalnego którąkolwiek dzisiejszą ścieżką zapisu, zachowany na wypadek ręcznie
+edytowanego wiersza albo backendu, który poszerzy gramatykę wcześniej niż ten frontend.
+Poprawione w miejscu: banner na początku §24.5, §24.5.1, §24.5.4, §24.8.5, §24.12.3.
+
+**11 — "Ostatniego dnia miesiąca" przestało cicho zamieniać się w "dnia N", gdy data
+przesuwa się poza koniec miesiąca; dziś blokuje zapis błędem kotwicy.** *Poz. 7 wyżej
+opisywała `remapPreset()`'s `fallbackId`:* `monthlyLastDay` mapowało się na `monthlyDay` (na
+nowym dniu miesiąca) automatycznie, tym samym traktowaniem co para `nth_weekday`↔`last_weekday`
+przy piątym tygodniu. *Co faktycznie powstało:* tylko POŁOWA tego zachowania przeżyła.
+`seedDay('weekday_in_month', anchorDay)` wciąż przełącza się między `nth_weekday` i
+`last_weekday` przy zmianie kotwicy — ta część poz. 7 jest nadal prawdziwa, bez zmian.
+Ale `seedDay('last_day', anchorDay)` **ignoruje** `anchorDay` całkowicie i zawsze zwraca tę
+samą wartość: karta „Last day of the month" **nazywa** regułę, zamiast ją **wyprowadzać**
+z konkretnego dnia. *Dlaczego kod wygrał.* Dopóki jedynym sposobem uzyskania reguły był
+preset, "ostatni dzień miesiąca" i "dnia 31" były różnymi PRESETAMI z różnymi warunkami
+pojawienia się na liście (§24.5.1) — więc "ten preset przestał pasować, podstaw najbliższy"
+miało sens jako pojedyncza, spójna operacja. Dziś "Last day of the month" jest KARTĄ, którą
+użytkownik wybiera świadomie i która ma jedno, ustalone znaczenie niezależnie od kotwicy —
+podmiana jej w locie na inny sub-tryb, gdy data przesunie się o jeden dzień, byłaby dokładnie
+tym rodzajem cichej rewriteʼy reguły, którego ta kontrolka (fakt z nagłówka
+`RecurrenceField.vue`) unika wszędzie indziej: "reguła, którą ktoś świadomie ułożył, nigdy nie
+jest po cichu przepisywana". Sprawdzone testem: `calendarRecurrence.spec.ts`, opis „the anchor
+rule" wyklucza jawnie `last_day` z pętli „każdy seed spełnia dzień, z którego powstał", bo
+`last_day` **nazywa** regułę, a nie ją wyprowadza. Poprawione w miejscu: §24.5.2.
+
+**Odpowiedź na pytanie tej rundy: czy po niej w specyfikacji zostaje jakakolwiek instrukcja,
+którą agent wykonałby błędnie?** Największe ryzyko było nie w treści, tylko w KOLEJNOŚCI: bez
+banneru na początku §24.5 i bez przekreśleń w §24.5.4, agent czytający ten rozdział od góry —
+zwłaszcza tylko §24.5.4, tak jak poz. 5 ostrzega, że się zdarza — powtórzyłby dokładnie tę
+samą odmowę reużycia, którą owner właśnie unieważnił, i zbudowałby DRUGI, wąski komponent
+zamiast rozszerzyć profil na wspólnym. Oba mechanizmy (banner + przekreślenia z odsyłaczem do
+poz. 10) są teraz w miejscu, gdzie agent na nie trafi, zanim dotrze do starej treści.
+
+**Domknięcie (ten sam commit).** Jedyna rzecz zostawiona wtedy świadomie otwarta — §24.13
+(katalog kluczy i18n) nieprzeliczony po przenosinach `workflows.schedule.* →
+recurrenceEditor.*` — jest teraz domknięta: `calendar.recurrence.*` wyprowadzony na nowo
+klucz po kluczu z obu katalogów (§24.13, banner + kod), słownik presetów usunięty z
+dokumentu tak jak z kodu, i dopisany akapit tłumaczący, że karty/zakładki edytora osi żyją
+pod OSOBNYM, współdzielonym namespace'em (`recurrenceEditor.*`), katalogowanym w
+`WorkflowsPage.vue`, nie tutaj — więc nie ma już nazwy w tym pliku, którą ktoś skopiowałby
+i trafił na klucz, którego katalog nie zna.

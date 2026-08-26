@@ -1562,19 +1562,37 @@ WHERE id = ? AND state = 'pending'</pre>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
           <p class="mb-next-1 font-next-semibold text-next-fg">Schedule builder — a three-tab surface over time/day/month</p>
-          <p class="text-next-xs text-next-muted-foreground">
-            <code class="font-next-mono">WorkflowScheduleBuilder.vue</code> is the host: a summary
-            sentence + "Zaplanuj z AI" opener (<code class="font-next-mono">WorkflowScheduleSummary</code>),
-            an upcoming-runs preview strip (<code class="font-next-mono">WorkflowSchedulePreviewStrip</code>),
-            three tabs — Czas / Dzień / Miesiąc — each rendering a `SegmentedControl` of sub-modes
-            over ONE shared draft (<code class="font-next-mono">WorkflowScheduleTimePanel</code>,
-            <code class="font-next-mono">WorkflowScheduleDayPanel</code>,
-            <code class="font-next-mono">WorkflowScheduleMonthPanel</code>, all sharing the "od–do"
-            window pattern via <code class="font-next-mono">WorkflowScheduleWindowField</code>), a
-            collapsed-by-default Exceptions section, and an optional timezone field. There is no
-            simple/advanced split anymore — every schedule is built from the same three tabs,
-            whether it is "daily at 9" or "the 15th and last day of the month, except August, at 8
-            and 17".
+          <Alert variant="info" size="sm">
+            AS-BUILT (commit <code class="font-next-mono">62a73e4</code>, 2026-08-26): the three axis
+            panels + option cards + window field below are no longer Workflows-local files. They
+            moved to <code class="font-next-mono">ui/recurrence/</code> — the same components the
+            Calendar event drawer's repeat control now mounts, on a narrower
+            <code class="font-next-mono">profile</code>. See
+            <code class="font-next-mono">docs/next/calendar-uxui-spec.md</code> §24.5 (the reversal
+            banner + §24.17 poz. 10) for the full "why".
+          </Alert>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <code class="font-next-mono">WorkflowScheduleBuilder.vue</code> is still the Workflows
+            HOST: a summary sentence + "Zaplanuj z AI" opener
+            (<code class="font-next-mono">WorkflowScheduleSummary</code>), an upcoming-runs preview
+            strip (<code class="font-next-mono">WorkflowSchedulePreviewStrip</code>) — both stayed
+            here because both are wired to Workflows' own store/endpoints, which the shared editor
+            deliberately owns nothing of. What it now WRAPS is
+            <code class="font-next-mono">ui/recurrence/RecurrenceAxisEditor.vue</code> on
+            <code class="font-next-mono">WORKFLOW_SCHEDULE_PROFILE</code> (the full grammar — all
+            three axis tabs, Czas / Dzień / Miesiąc): each tab renders a
+            <code class="font-next-mono">RecurrenceOptionCards</code> radiogroup (not a
+            <code class="font-next-mono">SegmentedControl</code>) of sub-mode cards over ONE shared
+            draft, via <code class="font-next-mono">RecurrenceTimePanel</code>,
+            <code class="font-next-mono">RecurrenceDayPanel</code>,
+            <code class="font-next-mono">RecurrenceMonthPanel</code>, all sharing the "od–do" window
+            pattern via <code class="font-next-mono">RecurrenceWindowField</code> — the five files
+            this page used to name under Workflows-local
+            (<code class="font-next-mono">WorkflowSchedule*</code>) names. Below the shared editor,
+            a collapsed-by-default Exceptions section (skip-dates only — REV5) and an optional
+            timezone field stay Workflows' own. There is no simple/advanced split — every schedule
+            is built from the same three tabs, whether it is "daily at 9" or "the 15th and last day
+            of the month, except August, at 8 and 17".
           </p>
           <p class="mt-next-2 text-next-xs text-next-muted-foreground">
             The preview strip supports a "Skocz do daty" (jump to date) anchor: setting it re-seeds
@@ -1584,32 +1602,59 @@ WHERE id = ? AND state = 'pending'</pre>
             summary's "Zaplanuj z AI" button) rather than an inline panel: it composes a
             natural-language prompt, shows the result as a reviewable proposal (sentence + compact
             preview), and only changes the builder's draft once the user presses "Zastosuj" — it
-            never applies a result automatically. The pure helpers behind all of this
-            (<code class="font-next-mono">workflowSchedule.ts</code>: the draft type, client-side
-            validators, the <code class="font-next-mono">describeSchedule</code> sentence grammar
-            in Polish and English, and the draft ⇄ wire config mapping) own every numeric bound and
-            every label — there is no discovery call to a backend vocabulary endpoint.
+            never applies a result automatically. Neither the preview strip nor the AI modal moved
+            with the axis panels — both talk to Workflows-only endpoints, so both stayed exactly
+            where they were. The pure helpers behind all of this
+            (<code class="font-next-mono">workflowSchedule.ts</code>) are now a THINNER,
+            Workflows-only remainder: the local <code class="font-next-mono">ScheduleDraft</code>
+            shape + <code class="font-next-mono">emptyScheduleDraft</code>,
+            <code class="font-next-mono">validateScheduleDraft</code> (the exclusions rules — the
+            axis rules themselves moved down too), the
+            <code class="font-next-mono">describeSchedule</code> sentence grammar in Polish and
+            English (kept here — the Calendar composes no cadence prose at all, its sentence about a
+            stored rule is always the server's own), and the draft ⇄ wire config mapping. The axis
+            TYPES, numeric bounds, per-axis validators and the shared draft type re-export from
+            <code class="font-next-mono">ui/recurrence/recurrenceAxes.ts</code> so existing import
+            paths kept working. There is still no discovery call to a backend vocabulary endpoint.
           </p>
         </div>
 
         <div class="rounded-next-lg border border-next-border bg-next-card p-next-3">
-          <p class="mb-next-1 font-next-semibold text-next-fg">Schedule i18n — <code class="font-next-mono">workflows.schedule.*</code></p>
+          <p class="mb-next-1 font-next-semibold text-next-fg">Schedule i18n — <code class="font-next-mono">recurrenceEditor.*</code> (shared) + <code class="font-next-mono">workflows.schedule.*</code> (Workflows-only)</p>
           <p class="text-next-xs text-next-muted-foreground">
-            Every visible string is a translation key, grouped by concern:
-            <code class="font-next-mono">tab.*</code> (the three tab labels),
+            AS-BUILT: 114 keys moved from <code class="font-next-mono">workflows.schedule.*</code> to
+            the shared <code class="font-next-mono">recurrenceEditor.*</code> namespace in
+            <code class="font-next-mono">62a73e4</code> — both Calendar and Workflows read them now.
+            Moved: <code class="font-next-mono">tab.*</code> (the axis tab labels),
             <code class="font-next-mono">time.*</code> / <code class="font-next-mono">day.*</code> /
-            <code class="font-next-mono">month.*</code> (each mode's label + its own helper notes,
-            e.g. the "last working day" restriction note or the "fifth occurrence can skip a month"
-            note), <code class="font-next-mono">field.*</code> / <code class="font-next-mono">unit.*</code>
-            (control labels and units), <code class="font-next-mono">window.*</code> (the shared
-            "od–do" pattern), <code class="font-next-mono">weekday.*</code> / <code class="font-next-mono">month.*</code>
-            (day/month names, short and long forms), <code class="font-next-mono">exclusions.*</code>,
-            <code class="font-next-mono">tz.*</code>, <code class="font-next-mono">preview.*</code>
-            (the strip's states and labels), <code class="font-next-mono">assist.*</code> (the AI
-            modal's copy), <code class="font-next-mono">validation.*</code> (client-side error
-            copy), and <code class="font-next-mono">describe.*</code> (the sentence-grammar
-            templates, including the Polish plural/case tables the grammar needs). PL and EN are
-            kept in full parity.
+            <code class="font-next-mono">month.*</code> (each sub-mode's card title + its own helper
+            notes, e.g. the "last working day" restriction note or the "fifth occurrence can skip a
+            month" note), <code class="font-next-mono">field.*</code> (control labels — e.g. "Every N
+            minutes"), <code class="font-next-mono">window.*</code> (the shared "od–do" pattern),
+            <code class="font-next-mono">weekday.*</code> / <code class="font-next-mono">month.*</code>
+            (day/month names, short and long forms), and <code class="font-next-mono">validation.*</code>
+            (client-side error copy).
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            Stayed under <code class="font-next-mono">workflows.schedule.*</code> — Workflows-only
+            concerns the shared editor has no opinion about:
+            <code class="font-next-mono">summary.*</code>, <code class="font-next-mono">exclusions.*</code>,
+            <code class="font-next-mono">preview.*</code> (the strip's states and labels),
+            <code class="font-next-mono">assist.*</code> (the AI modal's copy), and
+            <code class="font-next-mono">describe.*</code> (the sentence-grammar templates,
+            including the Polish plural/case tables the grammar needs — this is the ONLY place that
+            composes a cadence sentence client-side; the Calendar never does, §24.5.1 of the
+            calendar spec). PL and EN are kept in full parity (4311 → 4288 keys after the move — 26
+            deleted with the Calendar's old preset-label dictionary, 3 added, 1 deliberate reword,
+            zero unexplained drift).
+          </p>
+          <p class="mt-next-2 text-next-xs text-next-muted-foreground">
+            <strong>Known dead key:</strong> <code class="font-next-mono">workflows.schedule.unit.min</code>
+            / <code class="font-next-mono">.h</code> have zero references anywhere in
+            <code class="font-next-mono">resources/js/next</code> — pre-existing, not introduced by
+            this move (the live unit-plural tables the sentence grammar actually reads are
+            <code class="font-next-mono">workflows.schedule.describe.unit.*</code>, a different,
+            still-used key). Not removed here — flagged for the next i18n sweep.
           </p>
         </div>
 

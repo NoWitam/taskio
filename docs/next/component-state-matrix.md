@@ -1236,6 +1236,31 @@ Patterns). The **advanced Markdown editor** core is specced above (Tier 7 —
 Editor); its directive layer (mentions/variables/if-blocks/AI) is **implemented**
 there (PART 2).
 
+**`ui/recurrence/` — the shared recurrence editor (added `62a73e4`, 2026-08-26).**
+Not given its own Tier here, the same way `ui/variables/` (`VariableBrowser`,
+`TypedLiteralInput`, …) is not: both are multi-file clusters with a pure core,
+consumed by exactly the pages that need them, and fully specced where they are
+used rather than duplicated in this matrix. Home: `resources/js/next/ui/recurrence/`
+— seven files (`recurrenceAxes.ts` the pure axis grammar + `RecurrenceAxisEditor.vue`
+the tabbed host + three axis panels + `RecurrenceOptionCards.vue` +
+`RecurrenceWindowField.vue`). It exists here, under `ui/**`, for the same reason
+`ui/editor/` and `ui/variables/` do: two callers — the Calendar event drawer's
+repeat control and the Workflows schedule trigger's builder — need the identical
+grammar with only their accepted subset differing, and `ui/**` is the layer both
+may import DOWN from (enforced, not just documented — see
+`__tests__/uiLayerImportBoundary.spec.ts`: no file under `ui/` may import from
+`pages/`, whether the import is type-only or a runtime one — a type-only escape
+was the actual hole the test was written to close). The real constraint this
+enforces is **`ui/` never imports from a page** — there is no rule, and never was
+one, against Calendar's pages and Workflows' pages importing from each other's
+page-local files; they simply have no reason to, since what they'd share already
+lives one layer down. States/variants live in the pages that consume it:
+`docs/next/calendar-uxui-spec.md` §24.5 (the Calendar profile — day/month axes
+only, no time axis) and `docs/next/workflows-uxui-spec.md` §4.5 (the Workflows
+profile — the full grammar; that doc's REV5 component names/files are now stale,
+superseded by this move — not yet corrected in that file, see the recurrence
+refactor's documentation-agent report for what's still open).
+
 **Implemented overlay behavior (locked in):**
 
 - **Modal / ConfirmDialog:** the scrim is **translucent** (`--color-next-overlay`,

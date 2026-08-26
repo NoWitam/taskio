@@ -331,3 +331,64 @@ a substitute for it.
   `CalendarRecurrenceService` (B5), in place of the `create_event` workaround. ADR-0051 D5 has been
   annotated in place to point here, and ADR-0051 D11 records the one projection-semantics decision —
   past-drawing — this shared layer made possible but did not itself decide.
+
+---
+
+## Addendum — the mirror in the UI (2026-08-26, commit `62a73e4`)
+
+**Recorded here rather than under a new ADR number, deliberately.** The frontend event below is a
+CONSEQUENCE of Decision 2 below, not an independent architectural choice: it is the same "one
+grammar, several consumers" shape this ADR already decided for validation, arriving one layer up,
+in the layer this ADR's own Decision 1 named as the reason a second engine would have been wrong
+("two independent implementations of 'every other Tuesday' ... drifting apart from the day the
+second one is written"). A new ADR number would dress a consequence up as a fresh decision; this
+addendum keeps the reasoning where the reasoning already lives.
+
+**What happened.** The Calendar event drawer's repeat control and the Workflows schedule trigger's
+builder started as two unrelated frontend controls — a narrow, date-derived preset list
+(`pages/calendar/recurrencePresets.ts`) on one side, a full three-axis editor
+(`pages/workflows/*Schedule*.vue`) on the other — a split `docs/next/calendar-uxui-spec.md` §24.5
+made DELIBERATELY, on the grounds that the shared editor would expose automation vocabulary
+("every 5 minutes", "last working day", an AI assist) inside a "repeat this meeting" dialog. The
+owner watched the shipped module and reversed that call: the two controls are now **the same
+component**, `resources/js/next/ui/recurrence/RecurrenceAxisEditor.vue`, plus six files beside it
+(the pure axis grammar, three per-axis panels, the option-card radiogroup, the shared "od–do"
+window field). Full reasoning for the reversal, and what survived of the original concern, is
+recorded where the reversal happened: `docs/next/calendar-uxui-spec.md` §24.5 (banner) and §24.17
+poz. 10 — not repeated here.
+
+**Why this is Decision 2's shape, not a new one.** Decision 2 above splits backend validation into
+a shared, codes-only grammar (`RecurrenceDescriptorValidator`, no prose, no per-consumer
+vocabulary) and a per-module rendering layer (`WorkflowScheduleRulesValidator`'s `message()`,
+framework rules, a consumer's own field paths). The frontend split drawn on `62a73e4` is the
+identical cut, one layer up:
+
+| | Backend (Decision 2) | Frontend (this addendum) |
+| --- | --- | --- |
+| Shared, consumer-blind | `RecurrenceDescriptorValidator` — shape grammar as `RecurrenceViolationCode`, no language, no vocabulary | `ui/recurrence/recurrenceAxes.ts` — the axis TYPES, `ScheduleLimits`-mirrored numeric bounds, per-axis client validators, the `{slot}`-sentence splitter; Vue-free and i18n-free at its core |
+| Per-consumer | Each module's own Laravel rules + rendered `message()` prose | Each page supplies its own `RecurrenceProfile` (`WORKFLOW_SCHEDULE_PROFILE` — the whole grammar; `CALENDAR_RECURRENCE_PROFILE` — day+month only, no time axis, no modulo cadences, no `last_working_day`) — read from the backend's own admitted subset (`CalendarRecurrence::dayModes()`/`daySpecials()`/`monthModes()`), not re-typed from memory |
+| What a profile can never do | A module cannot validate a shape the shared grammar has no code for | A profile cannot render a card the shared component has no sub-mode for — the editor cannot compose a rule its own endpoint would 422 on |
+
+The property Decision 1 protects — ONE definition of "every other Tuesday", never two — now holds
+end to end: one engine (`App\Support\Recurrence`), one validation grammar over it (Decision 2), and
+now one UI grammar over THAT (`recurrenceAxes.ts`), with every consumer on either side of the stack
+supplying nothing but its own admitted subset.
+
+**What did NOT move.** The Workflows-only surface — the upcoming-runs preview strip
+(`WorkflowSchedulePreviewStrip.vue`) and the AI assist modal (`WorkflowScheduleAssistModal.vue`) —
+stayed in `pages/workflows/`, unmoved, because both are wired to Workflows' own store and endpoints
+(`schedulePreview`, `scheduleAssist`); a component with a store dependency and an endpoint call is
+not a candidate for the shared layer by the same test Decision 1 applies to the backend ("no
+executive surface"). `WorkflowScheduleBuilder.vue` (the host) and `RecurrenceField.vue` (the
+Calendar host) also stayed page-local — each still owns what only its own module has an opinion
+about: Workflows' preview/assist/exclusions-with-weekdays-and-months; Calendar's "does it repeat at
+all" switch, its end-of-series control, and its anchor-invariant (§24.5.6 of the calendar spec).
+
+**The boundary is enforced, not merely documented — the frontend analogue of this ADR's
+`RecurrenceLayerBoundaryTest`.** `resources/js/next/__tests__/uiLayerImportBoundary.spec.ts` fails
+the suite if any file under `ui/**` imports from `pages/**`, type-only imports included. There is
+no frontend equivalent of the backend's module-naming ban (`App\Modules` in any spelling) — the two
+pages here (`pages/calendar/`, `pages/workflows/`) have no rule against naming each other and never
+needed one, since neither imports the other; the one enforced invariant is strictly directional:
+the shared layer must never import UP into a page. Both pages import DOWN into
+`ui/recurrence/`, which is the only direction the boundary test allows.
