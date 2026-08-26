@@ -1,20 +1,39 @@
-// workflowSchedule — the PURE, testable core of the v2 compositional schedule
-// (§4.5, REVISION 4). The 16-family model is RETIRED: a schedule is now a
-// composition of three independent axes — a TIME rule, a DAY rule and a MONTH rule
-// (AND-semantics) — minus a set of `exclusions`, in a `tz`. This module owns:
-//   • the local `ScheduleDraft` shape (nested, editor-friendly) + `emptyScheduleDraft`,
-//   • CLIENT-side validators (axis bounds + the window `from < to` invariant) so an
-//     invalid schedule is caught BEFORE a 422 (§4.5.11),
+// workflowSchedule — the WORKFLOWS-SPECIFIC half of the v2 compositional schedule
+// (§4.5, REVISION 4). The 16-family model is RETIRED: a schedule is a composition of
+// three independent axes — a TIME rule, a DAY rule and a MONTH rule (AND-semantics) —
+// minus a set of `exclusions`, in a `tz`.
+//
+// THE AXIS GRAMMAR ITSELF NO LONGER LIVES HERE. It moved DOWN into the design system
+// (`ui/recurrence/recurrenceAxes`) when the Calendar event drawer adopted the same
+// editor: one grammar, two PROFILES, mirroring the backend's own split between
+// `app/Support/Recurrence` and each module's admitted subset (ADR-0052). The axis
+// types, the numeric bounds, the per-axis validators and the slotted-sentence splitter
+// are RE-EXPORTED below so every existing importer keeps its import path.
+//
+// What remains genuinely Workflows':
+//   • the local `ScheduleDraft` shape (axes + `exclusions` + `tz`) + `emptyScheduleDraft`,
+//   • `validateScheduleDraft` — the per-axis rules composed with the exclusions rules
+//     (weekday/month exclusions exist ONLY here; the Calendar refuses both),
 //   • `describeSchedule(draft, t)` — the human cadence sentence with FULL PL/EN
-//     grammar (cased month/weekday names + Polish plurals; ZERO cron jargon, §4.5.10),
+//     grammar (cased month/weekday names + Polish plurals; ZERO cron jargon, §4.5.10).
+//     The Calendar composes no cadence prose at all: its sentence about a stored rule
+//     is the server's `recurrence_label`.
 //   • `configToDraft` / `draftToConfig` — the wire ⇄ draft mapping (FLAT wire ⇄ nested
 //     draft; a tolerant read-shim upgrades a legacy `{family, params}` block only to
 //     seed a draft from GET),
 //   • occurrence formatting helpers (shared by the preview strip + the AI modal) and
 //     `isPreviousOccurrence` (the strip's prev-or-at tile marker).
-//
-// The FE owns ALL numeric bounds (mirrored from `App\Modules\Workflows\Enums\
-// ScheduleLimits` — a single contract, no meta endpoint) and ALL labels (i18n).
+import {
+  RECURRENCE_LIMITS,
+  validateDayAxis,
+  validateMonthAxis,
+  validateTimeAxis,
+  VALIDATION_KEY,
+  type DayAxis,
+  type MonthAxis,
+  type ScheduleValidationError,
+  type TimeAxis,
+} from '../../ui/recurrence/recurrenceAxes';
 import type {
   ScheduleDayConfig,
   ScheduleDaySpecialKind,
@@ -26,34 +45,20 @@ import type {
 
 type Translate = (key: string, defaultValue?: string, params?: Record<string, string | number>) => string;
 
-// ── Draft model (§4.5.1) ─────────────────────────────────────────────────────
-// The nested, editor-friendly shape the whole builder manipulates. It differs from
-// the FLAT wire (`WorkflowScheduleConfig`) on purpose: the interval `n` is named `n`
-// here (wire: `minutes`/`hours`), the optional bound is a nested `window` (wire: flat
-// `from`/`to`), and a day `special` is an object union (wire: a string + flat params).
-
-export type TimeAxis =
-  | { mode: 'at'; at: string[] }
-  | { mode: 'every_minutes'; n: number; window?: { from: string; to: string } }
-  | { mode: 'every_hours'; n: number; minute: number; window?: { from: number; to: number } };
-
-export type DaySpecial =
-  | { kind: 'last_day' }
-  | { kind: 'last_working_day' }
-  | { kind: 'nth_weekday'; ordinal: number; weekday: number }
-  | { kind: 'last_weekday'; weekday: number };
-
-export type DayAxis =
-  | { mode: 'every_day' }
-  | { mode: 'every_n_days'; n: number; window?: { from: number; to: number } }
-  | { mode: 'weekdays'; weekdays: number[] }
-  | { mode: 'month_days'; days: number[] }
-  | { mode: 'special'; special: DaySpecial };
-
-export type MonthAxis =
-  | { mode: 'every_month' }
-  | { mode: 'every_n_months'; n: number; window?: { from: number; to: number } }
-  | { mode: 'months'; months: number[] };
+// ── Re-exports: the shared axis grammar, under the names this module always used ──
+// `SCHEDULE_LIMITS` keeps its Workflows name (it is the same table of bounds — both
+// modules read `ScheduleLimits` — so there is one object, not a copy per module).
+export const SCHEDULE_LIMITS = RECURRENCE_LIMITS;
+export {
+  isValidTime,
+  splitSentenceTemplate,
+  type DayAxis,
+  type DaySpecial,
+  type MonthAxis,
+  type ScheduleValidationError,
+  type SentenceSegment,
+  type TimeAxis,
+} from '../../ui/recurrence/recurrenceAxes';
 
 export interface ScheduleExclusions {
   months: number[];
@@ -68,41 +73,6 @@ export interface ScheduleDraft {
   exclusions: ScheduleExclusions;
   /** '' ⇒ omit ⇒ server UTC. */
   tz: string;
-}
-
-// ── Numeric bounds — mirror `ScheduleLimits` verbatim (a single contract) ─────
-export const SCHEDULE_LIMITS = {
-  atTimesMax: 6,
-  everyMinutesMin: 1,
-  everyMinutesMax: 59,
-  everyHoursMin: 1,
-  everyHoursMax: 23,
-  minuteMin: 0,
-  minuteMax: 59,
-  hourMin: 0,
-  hourMax: 23,
-  everyNDaysMin: 1,
-  everyNDaysMax: 31,
-  monthDayMin: 1,
-  monthDayMax: 31,
-  weekdayMin: 0,
-  weekdayMax: 6,
-  ordinalMin: 1,
-  ordinalMax: 5,
-  everyNMonthsMin: 1,
-  everyNMonthsMax: 12,
-  monthMin: 1,
-  monthMax: 12,
-  exclusionsMonthsMax: 11,
-  exclusionsWeekdaysMax: 6,
-  exclusionsDatesMax: 50,
-} as const;
-
-const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-/** True when a string is a valid 'HH:mm' 24h time. */
-export function isValidTime(value: string): boolean {
-  return TIME_RE.test(value);
 }
 
 /** A fresh, empty exclusions block. */
@@ -141,38 +111,13 @@ export function emptyScheduleDraft(): ScheduleDraft {
   };
 }
 
-// ── Client-side validation (§4.5.11) ─────────────────────────────────────────
+// ── Client-side validation (§4.5.11) ───────────────────────
+// The per-AXIS rules live in `ui/recurrence/recurrenceAxes` (both modules enforce the
+// same bounds, read from the same `ScheduleLimits`). What is composed here is the part
+// only a Workflows schedule has: the `exclusions` block, whose weekday/month lists the
+// Calendar refuses outright.
 
-/** One client-side validation error: an axis path + an i18n key (+ interp params). */
-export interface ScheduleValidationError {
-  /** The offending control's path, e.g. 'time.at' / 'day.weekdays' / 'exclusions.dates'. */
-  path: string;
-  /** The i18n key the builder renders via t(). */
-  key: string;
-  messageParams?: Record<string, string | number>;
-}
-
-const K = 'workflows.schedule.validation.';
-
-function inRange(n: number, min: number, max: number): boolean {
-  return Number.isFinite(n) && n >= min && n <= max;
-}
-
-/** Validate an integer field against bounds, pushing number/min/max errors. */
-function checkInt(
-  errors: ScheduleValidationError[],
-  value: number,
-  path: string,
-  min: number,
-  max: number,
-): void {
-  if (!Number.isFinite(value)) {
-    errors.push({ path, key: K + 'number' });
-    return;
-  }
-  if (value < min) errors.push({ path, key: K + 'min', messageParams: { min } });
-  if (value > max) errors.push({ path, key: K + 'max', messageParams: { max } });
-}
+const K = VALIDATION_KEY;
 
 /**
  * Validate a schedule DRAFT against the same rules the backend enforces, run
@@ -182,117 +127,13 @@ function checkInt(
  */
 export function validateScheduleDraft(draft: ScheduleDraft): ScheduleValidationError[] {
   const errors: ScheduleValidationError[] = [];
-  validateTime(errors, draft);
-  validateDay(errors, draft);
-  validateMonth(errors, draft.month);
+  validateTimeAxis(errors, draft.time);
+  // The time MODE is handed over so the one cross-axis rule (`last_working_day` needs
+  // set times) still fires; a profile with no time axis passes nothing instead.
+  validateDayAxis(errors, draft.day, draft.time.mode);
+  validateMonthAxis(errors, draft.month);
   validateExclusions(errors, draft.exclusions);
   return errors;
-}
-
-function validateTime(errors: ScheduleValidationError[], draft: ScheduleDraft): void {
-  const time = draft.time;
-  if (time.mode === 'at') {
-    const at = time.at ?? [];
-    const nonEmpty = at.filter((s) => s !== '');
-    if (nonEmpty.length === 0) {
-      errors.push({ path: 'time.at', key: K + 'timeRequired' });
-    } else if (at.length > SCHEDULE_LIMITS.atTimesMax) {
-      errors.push({ path: 'time.at', key: K + 'timesMax', messageParams: { max: SCHEDULE_LIMITS.atTimesMax } });
-    } else if (at.some((s) => !isValidTime(s))) {
-      errors.push({ path: 'time.at', key: K + 'timeFormat' });
-    } else if (new Set(at).size !== at.length) {
-      errors.push({ path: 'time.at', key: K + 'timeDuplicate' });
-    }
-    return;
-  }
-  if (time.mode === 'every_minutes') {
-    checkInt(errors, time.n, 'time.n', SCHEDULE_LIMITS.everyMinutesMin, SCHEDULE_LIMITS.everyMinutesMax);
-    if (time.window) {
-      const { from, to } = time.window;
-      if (!isValidTime(from) || !isValidTime(to)) {
-        errors.push({ path: 'time.window', key: K + 'timeFormat' });
-      } else if (minutesOfDay(from) >= minutesOfDay(to)) {
-        errors.push({ path: 'time.window', key: K + 'windowOrder' });
-      }
-    }
-    return;
-  }
-  // every_hours
-  checkInt(errors, time.n, 'time.n', SCHEDULE_LIMITS.everyHoursMin, SCHEDULE_LIMITS.everyHoursMax);
-  checkInt(errors, time.minute, 'time.minute', SCHEDULE_LIMITS.minuteMin, SCHEDULE_LIMITS.minuteMax);
-  if (time.window) {
-    const { from, to } = time.window;
-    if (!inRange(from, SCHEDULE_LIMITS.hourMin, SCHEDULE_LIMITS.hourMax) || !inRange(to, SCHEDULE_LIMITS.hourMin, SCHEDULE_LIMITS.hourMax)) {
-      errors.push({ path: 'time.window', key: K + 'number' });
-    } else if (from >= to) {
-      errors.push({ path: 'time.window', key: K + 'windowOrder' });
-    }
-  }
-}
-
-function validateDay(errors: ScheduleValidationError[], draft: ScheduleDraft): void {
-  const day = draft.day;
-  switch (day.mode) {
-    case 'every_day':
-      return;
-    case 'every_n_days': {
-      checkInt(errors, day.n, 'day.n', SCHEDULE_LIMITS.everyNDaysMin, SCHEDULE_LIMITS.everyNDaysMax);
-      if (day.window) {
-        const { from, to } = day.window;
-        if (!inRange(from, SCHEDULE_LIMITS.monthDayMin, SCHEDULE_LIMITS.monthDayMax) || !inRange(to, SCHEDULE_LIMITS.monthDayMin, SCHEDULE_LIMITS.monthDayMax)) {
-          errors.push({ path: 'day.window', key: K + 'number' });
-        } else if (from >= to) {
-          errors.push({ path: 'day.window', key: K + 'windowOrder' });
-        }
-      }
-      return;
-    }
-    case 'weekdays':
-      if ((day.weekdays ?? []).length === 0) errors.push({ path: 'day.weekdays', key: K + 'pickAtLeastOne' });
-      return;
-    case 'month_days':
-      if ((day.days ?? []).length === 0) errors.push({ path: 'day.days', key: K + 'pickAtLeastOne' });
-      return;
-    case 'special': {
-      const s = day.special;
-      if (s.kind === 'nth_weekday') {
-        checkInt(errors, s.ordinal, 'day.special.ordinal', SCHEDULE_LIMITS.ordinalMin, SCHEDULE_LIMITS.ordinalMax);
-        if (!inRange(s.weekday, SCHEDULE_LIMITS.weekdayMin, SCHEDULE_LIMITS.weekdayMax)) {
-          errors.push({ path: 'day.special.weekday', key: K + 'pickAtLeastOne' });
-        }
-      } else if (s.kind === 'last_weekday') {
-        if (!inRange(s.weekday, SCHEDULE_LIMITS.weekdayMin, SCHEDULE_LIMITS.weekdayMax)) {
-          errors.push({ path: 'day.special.weekday', key: K + 'pickAtLeastOne' });
-        }
-      } else if (s.kind === 'last_working_day' && draft.time.mode !== 'at') {
-        // Belt-and-braces: the builder auto-resets time to `at`, so this is unreachable.
-        errors.push({ path: 'time.mode', key: K + 'lastWorkingDayNeedsAt' });
-      }
-      return;
-    }
-  }
-}
-
-function validateMonth(errors: ScheduleValidationError[], month: MonthAxis): void {
-  switch (month.mode) {
-    case 'every_month':
-      return;
-    case 'every_n_months': {
-      checkInt(errors, month.n, 'month.n', SCHEDULE_LIMITS.everyNMonthsMin, SCHEDULE_LIMITS.everyNMonthsMax);
-      if (month.window) {
-        const { from, to } = month.window;
-        if (!inRange(from, SCHEDULE_LIMITS.monthMin, SCHEDULE_LIMITS.monthMax) || !inRange(to, SCHEDULE_LIMITS.monthMin, SCHEDULE_LIMITS.monthMax)) {
-          errors.push({ path: 'month.window', key: K + 'number' });
-        } else if (from >= to) {
-          errors.push({ path: 'month.window', key: K + 'windowOrder' });
-        }
-      }
-      return;
-    }
-    case 'months':
-      if ((month.months ?? []).length === 0) errors.push({ path: 'month.months', key: K + 'pickAtLeastOne' });
-      return;
-  }
 }
 
 function validateExclusions(errors: ScheduleValidationError[], ex: ScheduleExclusions): void {
@@ -321,12 +162,6 @@ function langOf(t: Translate): string {
 /** Zero-pad a number to 2 digits. */
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
-}
-
-/** Minutes-of-day for an 'HH:mm' string (window ordering). */
-function minutesOfDay(time: string): number {
-  const [h, m] = time.split(':');
-  return Number(h) * 60 + Number(m);
 }
 
 /** The Polish plural CATEGORY of a count: one / few / many. EN keys resolve one form. */
@@ -363,11 +198,14 @@ function ordinalDay(n: number, t: Translate): string {
 
 // Cased-name accessors — one i18n key per grammatical case; each locale supplies the
 // right form so `describeSchedule` stays locale-unaware (it only holds `t`).
-const weekdayLong = (i: number, t: Translate): string => t(`workflows.schedule.weekday.long.${i}`);
+// The weekday/month NAME tables moved with the editor (`recurrenceEditor.*`) — the sentence
+// grammar stayed here, so these two accessors reach across into the shared catalog rather
+// than a second copy of twelve month names being kept in step by hand.
+const weekdayLong = (i: number, t: Translate): string => t(`recurrenceEditor.weekday.long.${i}`);
 const weekdayPlural = (i: number, t: Translate): string => t(`${D}weekdayPlural.${i}`);
 const weekdayAcc = (i: number, t: Translate): string => t(`${D}weekdayAcc.${i}`);
 const lastWeekdayClause = (i: number, t: Translate): string => t(`${D}lastWeekdayClause.${i}`);
-const monthLong = (i: number, t: Translate): string => t(`workflows.schedule.month.long.${i}`);
+const monthLong = (i: number, t: Translate): string => t(`recurrenceEditor.month.long.${i}`);
 const monthLocative = (i: number, t: Translate): string => t(`${D}monthIn.${i}`);
 const monthGenitive = (i: number, t: Translate): string => t(`${D}monthGen.${i}`);
 
@@ -959,34 +797,6 @@ export function isPreviousOccurrence(iso: string, anchorIso: string | null): boo
   return occ <= anchor;
 }
 
-// ── In-card slotted sentences (§4.5.5/§4.5.12, REV5) ──────────────────────────
-// The `next` i18n is string-only (no component slots), so each in-card sentence is a
-// normal translated string with `{slot}` tokens (e.g. "co {n} minut"). The FE renders
-// it by SPLITTING on the token regex into an ORDERED list of literal-text and slot
-// segments — a `<span>` per literal, the mapped control per slot. Because WORD ORDER
-// lives in the locale STRING (not in component markup), PL and EN reorder slots freely
-// and the panels NEVER hardcode order. Slot ids: n, minute, from, to, ordinal, weekday.
-
-/** One segment of a split sentence template: a literal run or a `{slot}` placeholder. */
-export type SentenceSegment =
-  | { type: 'text'; value: string }
-  | { type: 'slot'; name: string };
-
-// A capturing group so `String.prototype.split` KEEPS the `{slot}` delimiters.
-const SENTENCE_SLOT_RE = /(\{[a-z]+\})/;
-const SENTENCE_SLOT_EXACT = /^\{([a-z]+)\}$/;
-
-/**
- * Split a slotted i18n template into an ordered text/slot segment list (§4.5.12).
- * Pass the RAW template (call `t(key)` WITHOUT params so the `{slot}` tokens survive).
- * Empty runs (adjacent slots / leading-or-trailing tokens) are dropped.
- */
-export function splitSentenceTemplate(template: string): SentenceSegment[] {
-  return template
-    .split(SENTENCE_SLOT_RE)
-    .filter((part) => part !== '')
-    .map((part) => {
-      const match = SENTENCE_SLOT_EXACT.exec(part);
-      return match ? { type: 'slot', name: match[1] } : { type: 'text', value: part };
-    });
-}
+// The in-card slotted-sentence splitter (§4.5.5/§4.5.12) moved to
+// `ui/recurrence/recurrenceAxes` with the panels that render through it; it is re-exported
+// at the top of this file so callers keep their import path.

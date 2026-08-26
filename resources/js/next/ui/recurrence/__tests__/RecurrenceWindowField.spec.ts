@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// WorkflowScheduleWindowField.spec — the shared "od–do" window pattern (§4.5.6). REV5.1
+// RecurrenceWindowField.spec — the shared "od–do" window pattern (§4.5.6). REV5.1
 // (user feedback): a bare Switch (accessible name ONLY, no visible text) toggles `enabled`;
 // the "from {from} to {to}" fragment is ALWAYS rendered and the two woven inputs receive a
 // `disabled` slot-prop (= !enabled) instead of being mounted/unmounted. The order error
@@ -10,15 +10,15 @@ import { h } from 'vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 import { setLocale } from '../../../app/i18n';
 import { en } from '../../../app/i18n/en';
-import WorkflowScheduleWindowField from '../WorkflowScheduleWindowField.vue';
+import RecurrenceWindowField from '../RecurrenceWindowField.vue';
 
-const W = en.workflows.schedule.window;
+const W = en.recurrenceEditor.window;
 // The window text is a SLOTTED template ("from {from} to {to}") — the fragment weaves the
 // two inputs at {from}/{to}.
-const WINDOW_TEMPLATE = en.workflows.schedule.time.card.everyMinutes.window;
+const WINDOW_TEMPLATE = en.recurrenceEditor.time.card.everyMinutes.window;
 
 function mountField(props: Record<string, unknown>) {
-  return mount(WorkflowScheduleWindowField, {
+  return mount(RecurrenceWindowField, {
     // `enabled` is a REQUIRED prop — default it so the spread only overrides.
     props: { enabled: false, toggleLabel: W.toggle.time, windowTemplate: WINDOW_TEMPLATE, ...props },
     slots: {
@@ -31,7 +31,7 @@ function mountField(props: Record<string, unknown>) {
   });
 }
 
-describe('WorkflowScheduleWindowField', () => {
+describe('RecurrenceWindowField', () => {
   beforeEach(() => {
     installBrowserMocks();
     setLocale('en');
@@ -79,7 +79,7 @@ describe('WorkflowScheduleWindowField', () => {
   });
 
   it('shows the order error only while enabled', () => {
-    const err = en.workflows.schedule.validation.windowOrder;
+    const err = en.recurrenceEditor.validation.windowOrder;
     const off = mountField({ enabled: false, error: err });
     expect(off.text()).not.toContain(err);
     off.unmount();

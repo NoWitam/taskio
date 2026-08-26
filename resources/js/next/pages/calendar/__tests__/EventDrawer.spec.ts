@@ -91,7 +91,7 @@ vi.mock('../../../ui/forms/TimePicker.vue', () => ({
 import EventDrawer from '../EventDrawer.vue';
 import { setLocale } from '../../../app/i18n';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
-import { RECURRENCE_COUNT_MAX } from '../recurrencePresets';
+import { RECURRENCE_COUNT_MAX } from '../calendarRecurrence';
 import type { CalendarEvent } from '../types';
 
 const TIMEZONE = 'Europe/Warsaw';
@@ -935,10 +935,23 @@ describe('EventDrawer — what a scoped save puts on the wire', () => {
   });
 });
 
-describe('EventDrawer — a rule this form cannot express is not rewritten', () => {
-  it('shows "Another rule" and echoes the descriptor byte for byte', async () => {
+/**
+ * THE STATE THIS BLOCK USED TO GUARD IS GONE, AND ITS DISAPPEARANCE IS THE POINT.
+ *
+ * "Another rule" existed because the repeat control was NARROWER than the endpoint: it offered
+ * one weekday, so "Mondays and Wednesdays" had to be frozen, shown read-only and echoed back,
+ * or a title edit would have silently narrowed somebody's cadence. The control is now the same
+ * axis editor the Workflows schedule trigger uses, on a profile that admits EXACTLY what
+ * `StoreCalendarEventRequest` admits — so there is no longer a rule it can store and cannot
+ * speak, and the frozen state has nothing to freeze.
+ *
+ * What must NOT change is the outcome the frozen state was protecting: the descriptor still
+ * round-trips untouched through an edit that never went near it.
+ */
+describe('EventDrawer — the wider grammar is now editable, and still round-trips', () => {
+  it('renders a two-weekday rule in the editor instead of freezing it', async () => {
     storeMock.eventDetail = seriesEvent({
-      // Two weekdays: accepted by the API, outside this control's vocabulary.
+      // Two weekdays: accepted by the API, and now by this control too.
       recurrence: {
         day: { mode: 'weekdays', weekdays: [1, 3] },
         month: null,
@@ -950,10 +963,30 @@ describe('EventDrawer — a rule this form cannot express is not rewritten', () 
     const wrapper = mountDrawer({ mode: 'edit', scope: 'series' });
     await flushPromises();
 
-    expect(text()).toContain('Another rule');
-    // The SERVER's sentence about it, not one composed here.
-    expect(text()).toContain('Weekly on Mon, Wed');
-    expect(text()).toContain('Choosing a different repeat will replace the current rule.');
+    // Both weekdays are shown as SET, on live chips — not as prose the user cannot touch.
+    const pressed = Array.from(panel().querySelectorAll<HTMLElement>('button[aria-pressed="true"]')).map(
+      (el) => (el.textContent ?? '').trim(),
+    );
+    expect(pressed).toEqual(expect.arrayContaining(['Mon', 'Wed']));
+
+    // …and the frozen state's copy is nowhere, because the state is nowhere.
+    expect(text()).not.toContain('Another rule');
+    expect(text()).not.toContain('This rule can’t be edited here.');
+    wrapper.unmount();
+  });
+
+  it('still echoes the descriptor byte for byte when only the title is edited', async () => {
+    storeMock.eventDetail = seriesEvent({
+      recurrence: {
+        day: { mode: 'weekdays', weekdays: [1, 3] },
+        month: null,
+        exclusions: { dates: ['2026-08-24'] },
+        until: '2026-12-31',
+      },
+      recurrence_label: 'Weekly on Mon, Wed',
+    } as Partial<CalendarEvent>);
+    const wrapper = mountDrawer({ mode: 'edit', scope: 'series' });
+    await flushPromises();
 
     // Editing the title must not narrow "Mondays and Wednesdays" to "Mondays".
     await type('Title', 'Renamed');
@@ -963,6 +996,9 @@ describe('EventDrawer — a rule this form cannot express is not rewritten', () 
     const [payload] = saveEvent.mock.calls[0];
     expect(payload.recurrence.day).toEqual({ mode: 'weekdays', weekdays: [1, 3] });
     expect(payload.recurrence.until).toBe('2026-12-31');
+    // Carried, never authored: a whole-event write that dropped this would resurrect the day
+    // somebody removed one at a time.
+    expect(payload.recurrence.exclusions).toEqual({ dates: ['2026-08-24'] });
     wrapper.unmount();
   });
 });
@@ -1216,25 +1252,32 @@ describe('EventDrawer — "after N times" is a way of saying a date', () => {
     panel().querySelector<HTMLInputElement>(`[data-radio-value="${value}"]`)?.click();
   }
 
-  /** Open the repeat select and click the option with this exact label. */
-  async function chooseRepeat(label: string): Promise<void> {
-    panel().querySelector<HTMLElement>('[role="combobox"][aria-label="Repeats"]')?.click();
+  /**
+   * Turn the series on and pick a day sub-mode card by its title.
+   *
+   * "Every Monday" is no longer an option someone picks — it is what "On weekdays" SEEDS from
+   * a Monday start, which is the mechanism that keeps `anchor_not_an_occurrence` off the
+   * ordinary path now that the editor is as wide as the endpoint.
+   */
+  async function chooseRepeat(dayModeTitle: string): Promise<void> {
+    panel().querySelector<HTMLElement>('button[role="switch"][aria-label="Repeats"]')?.click();
     await flushPromises();
-    const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find(
-      (el) => (el.textContent ?? '').trim() === label,
+    const card = Array.from(panel().querySelectorAll<HTMLElement>('button[role="radio"]')).find(
+      (el) => (el.textContent ?? '').trim() === dayModeTitle,
     );
-    if (!option) throw new Error(`no repeat option labelled "${label}"`);
-    option.click();
+    if (!card) throw new Error(`no day sub-mode card titled "${dayModeTitle}"`);
+    card.click();
     await flushPromises();
   }
 
   it('puts `count` alone on the wire, and SAYS up front that it will come back as a date', async () => {
-    // 2026-08-10 is a Monday, so "Every Monday" is a preset this day can anchor.
+    // 2026-08-10 is a Monday, so "On weekdays" seeds Monday — the anchor satisfies its own
+    // rule without the user doing anything, which is the whole design of the seeding.
     const wrapper = mountDrawer({ mode: 'create', eventId: null, seedDate: '2026-08-10' });
     await flushPromises();
     await type('Title', 'Standup');
 
-    await chooseRepeat('Every Monday');
+    await chooseRepeat('On weekdays');
     chooseEndMode('count');
     await flushPromises();
     await type('After a number of repeats', '10');
@@ -1278,7 +1321,7 @@ describe('EventDrawer — "after N times" is a way of saying a date', () => {
     const wrapper = mountDrawer({ mode: 'create', eventId: null, seedDate: '2026-08-10' });
     await flushPromises();
 
-    await chooseRepeat('Every Monday');
+    await chooseRepeat('On weekdays');
     chooseEndMode('count');
     await flushPromises();
 
@@ -1305,7 +1348,7 @@ describe('EventDrawer — "after N times" is a way of saying a date', () => {
     await flushPromises();
     await type('Title', 'Standup');
 
-    await chooseRepeat('Every Monday');
+    await chooseRepeat('On weekdays');
     chooseEndMode('count');
     await flushPromises();
     await type('After a number of repeats', String(RECURRENCE_COUNT_MAX + 1));
@@ -1400,7 +1443,7 @@ describe('EventDrawer — a rule stamped on another clock is frozen, not re-read
     } as Partial<CalendarEvent>);
   }
 
-  it('shows the rule as one it cannot claim, with the SERVER’s sentence about it', async () => {
+  it('does not refuse a cadence it never touched, however the clocks disagree', async () => {
     storeMock.eventDetail = foreignClockSeries();
     const wrapper = mountDrawer({ mode: 'edit', scope: 'series' });
     await flushPromises();
@@ -1409,10 +1452,33 @@ describe('EventDrawer — a rule stamped on another clock is frozen, not re-read
     // disagreement, and asserting it here is what stops this test passing for an unrelated reason.
     expect(inputLabelled('Start date').value).toBe('2026-08-09');
 
-    expect(text()).toContain('Another rule');
-    // The sentence about a stored rule is the SERVER's, always. This client composes no cadence prose.
-    expect(text()).toContain('Weekly on Mon');
-    expect(text()).toContain('Choosing a different repeat will replace the current rule.');
+    // A naive anchor check fires exactly here: a Sunday cannot anchor "every Monday". But the
+    // server checked this rule against the SERIES' OWN clock and accepted it, so refusing it
+    // now would block a title edit over a cadence nothing is wrong with.
+    expect(text()).not.toContain('The start day is not one of this rule’s occurrences');
+    expect(buttonLabelled('Save')?.hasAttribute('disabled')).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('DOES refuse the same shape once the user composes it themselves', async () => {
+    // The control test for the one above: the leniency is about an UNTOUCHED cadence, not about
+    // the anchor rule being off. Clearing Monday and setting Wednesday — still a Sunday anchor,
+    // but now a rule this session composed — is refused, and said under the rule.
+    storeMock.eventDetail = foreignClockSeries();
+    const wrapper = mountDrawer({ mode: 'edit', scope: 'series' });
+    await flushPromises();
+
+    const chip = (label: string) =>
+      Array.from(panel().querySelectorAll<HTMLElement>('button[aria-pressed]')).find(
+        (el) => (el.textContent ?? '').trim() === label,
+      );
+    chip('Mon')?.click();
+    await flushPromises();
+    chip('Wed')?.click();
+    await flushPromises();
+
+    expect(text()).toContain('The start day is not one of this rule’s occurrences');
+    expect(buttonLabelled('Save')?.hasAttribute('disabled')).toBe(true);
     wrapper.unmount();
   });
 
@@ -1436,16 +1502,20 @@ describe('EventDrawer — a rule stamped on another clock is frozen, not re-read
     wrapper.unmount();
   });
 
-  it('is a state of THIS clock only — the same rule on the grid’s own clock is recognised', async () => {
-    // The control test. Same rule, same anchor weekday, stamped on the zone the grid is drawn in:
-    // recognition succeeds and the select names the preset. Without this, the pair above would pass
-    // just as happily against a control that could never recognise anything at all.
+  it('renders the rule either way — the clocks change the VERDICT, never the reading', async () => {
+    // Same rule, stamped on the zone the grid is drawn in. The editor shows the identical
+    // control in both cases; what the foreign clock changes is only whether the anchor rule is
+    // this form's to enforce. Without this, the pair above would pass just as happily against a
+    // control that rendered nothing at all.
     storeMock.eventDetail = seriesEvent();
     const wrapper = mountDrawer({ mode: 'edit', scope: 'series' });
     await flushPromises();
 
-    expect(text()).toContain('Every Monday');
-    expect(text()).not.toContain('Another rule');
+    const pressed = Array.from(panel().querySelectorAll<HTMLElement>('button[aria-pressed="true"]')).map(
+      (el) => (el.textContent ?? '').trim(),
+    );
+    expect(pressed).toContain('Mon');
+    expect(text()).not.toContain('The start day is not one of this rule’s occurrences');
     wrapper.unmount();
   });
 });

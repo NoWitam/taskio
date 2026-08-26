@@ -1,52 +1,63 @@
 <script setup lang="ts">
-// RecurrenceField — "does this repeat, and until when?", in the vocabulary of somebody
-// planning a meeting rather than somebody writing an automation.
+// RecurrenceField — "does this repeat, how, and until when?", for somebody planning a meeting.
 //
-// ─────────────────────────────────────────────────────────────────────────────────────────
-// FOUR THINGS HERE ARE LOAD-BEARING
-// ─────────────────────────────────────────────────────────────────────────────────────────
+// THE CADENCE ITSELF IS NO LONGER AUTHORED HERE. It is the SAME editor the Workflows schedule
+// trigger uses (`ui/recurrence/RecurrenceAxisEditor`), mounted on the Calendar PROFILE — the
+// subset `StoreCalendarEventRequest` accepts. What this file still owns is everything that
+// profile has no opinion about, and each of those is a fact about the Calendar's contract
+// rather than a layout choice:
 //
-// 1. THE PRESET IS DERIVED FROM THE START DAY, AND RE-DERIVED WHEN THAT DAY MOVES.
-//    The server requires the event's own start to be the rule's FIRST occurrence and refuses
-//    otherwise — on the START field (`anchor_not_an_occurrence`), which is not the control the
-//    user just touched. Re-deriving turns that refusal into something unreachable: pick "every
-//    Tuesday", move the date to a Wednesday, and the select VISIBLY redraws as "every
-//    Wednesday". Visibly, deliberately — a silent substitution would be worse than the refusal.
+// 1. WHETHER IT REPEATS AT ALL. A schedule trigger always repeats, so the axis grammar cannot
+//    say "once": `every_day` + `every_month` is "every day forever". An absent `recurrence`
+//    key is the only way to say once, so the switch below decides between sending the key and
+//    omitting it — never between two shapes of it.
 //
-// 2. A RULE THIS CONTROL CANNOT PRODUCE IS NEVER REWRITTEN INTO THE NEAREST ONE IT CAN.
-//    The API accepts a wider grammar (several weekdays, several months, …). Such a rule shows
-//    as "Another rule" — selected, disabled — and is echoed back verbatim, so editing the
-//    TITLE of such a series cannot quietly reshape its cadence. Everything else on the form
-//    keeps working; only the cadence is frozen, and choosing any preset replaces it for good.
+// 2. WHERE THE SERIES ENDS. Workflows has no notion of an end; the whole never/until/count
+//    control is the Calendar's, composed AROUND the shared editor rather than pushed into it.
 //
-// 3. THE SENTENCE ABOUT A STORED RULE COMES FROM THE SERVER, ALWAYS.
-//    The preset labels below describe an INTENT — a rule that does not exist yet, which the
-//    server therefore has no opinion about. They are never used to describe a rule that is
-//    already saved: that sentence is `recurrence_label` / `cadence_label`, finished and
-//    translated, and this client composes no cadence prose of its own anywhere.
+// 3. THE ANCHOR RULE. The server requires the event's own start to be the rule's FIRST
+//    occurrence and refuses otherwise — on the START field (`anchor_not_an_occurrence`), which
+//    is not the control the user just touched. The old preset control made that unreachable by
+//    never OFFERING a rule the start day fails; a full editor cannot, so the guarantee is
+//    rebuilt from two halves. Every sub-mode SEEDS from the start day, so the ordinary path
+//    never produces a mismatch. And when a deliberate edit does produce one — "every Monday
+//    and Wednesday" on a Tuesday — it is said HERE, under the rule, and it blocks the save,
+//    instead of arriving later on a field nobody connects with "repeat weekly".
 //
-// 4. "AFTER N REPEATS" IS A WAY OF SAYING A DATE.
-//    The server walks the count to a real day once, at write time, and only that day is ever
-//    stored or returned. So the control says so UP FRONT instead of keeping a counter that
-//    would drift from the row on the first edit made from anywhere else.
+// 4. THE SENTENCE ABOUT A STORED RULE COMES FROM THE SERVER, ALWAYS. This client composes no
+//    cadence prose anywhere: that sentence is `recurrence_label` / `cadence_label`, finished
+//    and translated. The editor's card titles describe a CHOICE, which is a different thing —
+//    the server has no opinion about a rule that does not exist yet.
+//
+// 5. "AFTER N REPEATS" IS A WAY OF SAYING A DATE. The server walks the count to a real day
+//    once, at write time, and only that day is ever stored or returned. So the control says so
+//    UP FRONT instead of keeping a counter that would drift on the first edit made elsewhere.
 import { computed, watch } from 'vue';
 import FormField from '../../ui/forms/FormField.vue';
-import Select, { type SelectOption } from '../../ui/forms/Select.vue';
+import Switch from '../../ui/forms/Switch.vue';
 import RadioGroup from '../../ui/forms/RadioGroup.vue';
 import Radio from '../../ui/forms/Radio.vue';
 import DatePicker from '../../ui/forms/DatePicker.vue';
 import NumberInput from '../../ui/forms/NumberInput.vue';
+import Alert from '../../ui/feedback/Alert.vue';
+import Button from '../../ui/primitives/Button.vue';
+import RecurrenceAxisEditor from '../../ui/recurrence/RecurrenceAxisEditor.vue';
+import {
+  CALENDAR_RECURRENCE_PROFILE,
+  daySubmodeOf,
+  monthSubmodeOf,
+  seedDay,
+  seedMonth,
+  type DayAxis,
+  type MonthAxis,
+} from '../../ui/recurrence/recurrenceAxes';
 import { useI18n } from '../../app/i18n';
 import {
   RECURRENCE_COUNT_MAX,
-  presetLabel,
-  presetsFor,
-  remapPreset,
+  recurrenceAnchorSatisfied,
   type RecurrenceEndMode,
-  type RecurrencePresetId,
-  type RecurrenceSelection,
   type RecurrenceState,
-} from './recurrencePresets';
+} from './calendarRecurrence';
 import type { IsoDay } from './types';
 
 const props = withDefaults(
@@ -69,91 +80,113 @@ const state = defineModel<RecurrenceState>({ required: true });
 
 const { t } = useI18n();
 
-// ── Presets ─────────────────────────────────────────────────────────────────
-const presets = computed(() => presetsFor(props.anchorDay));
-
-const options = computed<SelectOption[]>(() => {
-  const list: SelectOption[] = [{ value: 'none', label: t('calendar.recurrence.none') }];
-  for (const preset of presets.value) {
-    list.push({ value: preset.id, label: presetLabel(preset, t, props.locale) });
-  }
-  // Present ONLY while it is the current value, and never selectable: this is the state a
-  // rule from outside this vocabulary sits in, and there is no way back into it once a preset
-  // has replaced the rule (which the note under the control says out loud).
-  if (state.value.selection === 'other') {
-    list.push({ value: 'other', label: t('calendar.recurrence.other'), disabled: true });
-  }
-  return list;
-});
-
-const selection = computed<string>({
-  get: () => state.value.selection,
+// ── Does it repeat? ─────────────────────────────────────────────────────────
+const repeats = computed<boolean>({
+  get: () => state.value.repeats,
   set: (value) => {
-    const next = (value || 'none') as RecurrenceSelection;
     state.value = {
       ...state.value,
-      selection: next,
+      repeats: value,
       // Leaving "does not repeat" behind clears an end nobody chose; entering it keeps the
       // carried values so flipping back does not lose them.
-      endMode: next === 'none' ? 'never' : state.value.endMode,
+      endMode: value ? state.value.endMode : 'never',
     };
   },
 });
 
-/** Fact 1. Runs on every start-day change, including the one that seeds a create. */
+// ── The cadence, through the shared editor ──────────────────────────────────
+const day = computed<DayAxis>({
+  get: () => state.value.day,
+  set: (value) => {
+    state.value = { ...state.value, day: value };
+  },
+});
+const month = computed<MonthAxis>({
+  get: () => state.value.month,
+  set: (value) => {
+    state.value = { ...state.value, month: value };
+  },
+});
+
+/**
+ * THE START DAY MOVED — RE-DERIVE ONLY WHAT THIS CONTROL DERIVED.
+ *
+ * Pick "every Tuesday", move the date to a Wednesday, and the rule VISIBLY redraws as "every
+ * Wednesday", exactly as the old preset control did. What is deliberately NOT re-derived is
+ * anything the user composed themselves: a rule that says Monday AND Wednesday is left alone
+ * and the mismatch is reported, because silently dropping a weekday somebody chose is worse
+ * than refusing — the whole reason a rule outside the old vocabulary was frozen rather than
+ * rewritten.
+ *
+ * The test for "this control derived it" is exact: the axis equals what the editor itself
+ * would have seeded for the PREVIOUS anchor.
+ */
 watch(
   () => props.anchorDay,
-  () => {
-    const current = state.value.selection;
-    if (current === 'none' || current === 'other') return;
-    const remapped = remapPreset(current as RecurrencePresetId, props.anchorDay);
-    // A day that can anchor nothing at all (an unparseable value mid-typing) leaves the
-    // choice alone rather than silently dropping it.
-    if (remapped && remapped.id !== current) {
-      state.value = { ...state.value, selection: remapped.id };
+  (next, previous) => {
+    if (!state.value.repeats || state.value.unsupported) return;
+    const patch: Partial<RecurrenceState> = {};
+
+    const daySeed = seedDay(daySubmodeOf(state.value.day), next);
+    if (same(state.value.day, seedDay(daySubmodeOf(state.value.day), previous ?? null)) && !same(state.value.day, daySeed)) {
+      patch.day = daySeed;
     }
+    const monthSeed = seedMonth(monthSubmodeOf(state.value.month), next);
+    if (same(state.value.month, seedMonth(monthSubmodeOf(state.value.month), previous ?? null)) && !same(state.value.month, monthSeed)) {
+      patch.month = monthSeed;
+    }
+
+    // Only when something actually MOVES: `every_day` re-seeds to itself on every keystroke in
+    // the date field, and rewriting the state with an equal value would churn the model for no
+    // reason — and make an untouched cadence look edited to anything watching identity.
+    if (Object.keys(patch).length > 0) state.value = { ...state.value, ...patch };
   },
 );
 
-const chosenPreset = computed(() =>
-  presets.value.find((preset) => preset.id === state.value.selection) ?? null,
+/** Structural equality for an axis value — small, closed objects of scalars and number lists. */
+function same(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Drop a rule this editor cannot render and start composing a fresh one (never automatic). */
+function replaceUnsupported(): void {
+  state.value = {
+    ...state.value,
+    unsupported: null,
+    day: { mode: 'every_day' },
+    month: { mode: 'every_month' },
+  };
+}
+
+// ── Notes under the rule ────────────────────────────────────────────────────
+/**
+ * The days-of-month a rule names that some months simply do not have. The engine does not
+ * fire on them — true, and harmless — but without saying so the missing squares read as lost
+ * occurrences.
+ */
+const shortMonthDays = computed<number[]>(() =>
+  state.value.day.mode === 'month_days' ? state.value.day.days.filter((d) => d >= 29) : [],
 );
 
-const repeats = computed(() => state.value.selection !== 'none');
-
 /**
- * Everything the reader has to know about the rule they picked, as ONE field description —
+ * Everything the reader has to know about the rule they composed, as ONE field description —
  * which is what wires it to the control through `aria-describedby`. Deliberately not a
- * `title=`, and deliberately not a loose paragraph beside the field: these are conditions of
- * the rule, and somebody who cannot see the layout has to get them WITH the control.
- *
- * Three sentences can appear, none of them ever together with the first:
- *
- *   • THE RULE IS NOT ONE THIS CONTROL SPEAKS. Then the sentence about it is the SERVER's
- *     (`recurrence_label`) — a wider rule usually has one ("Weekly on Mon, Wed"); the control
- *     simply cannot PRODUCE it. Only when the server has none too does this say that much,
- *     which is a statement about the FORM, not about the cadence. Plus the consequence:
- *     picking any preset replaces the rule for good.
- *   • THE RULE SKIPS SHORT MONTHS. True, and the engine simply does not fire — but without
- *     saying so the missing squares read as lost occurrences.
- *   • THE SERIES HAS ONE HOUR, AND IT IS SET ABOVE. The server authors the series' hour from
- *     the event's own and REFUSES a `recurrence.time`, so there will never be an hour field
- *     here; without this, a user hunts for one.
+ * `title=` and not a loose paragraph beside the field: these are conditions of the rule, and
+ * somebody who cannot see the layout has to get them WITH the control.
  */
-const description = computed<string | undefined>(() => {
-  if (state.value.selection === 'other') {
-    const sentence = props.storedLabel?.trim() || t('calendar.series.unknownRule');
-    return `${sentence} ${t('calendar.recurrence.otherReplaces')}`;
-  }
+const ruleDescription = computed<string | undefined>(() => {
   const notes: string[] = [];
-  if (chosenPreset.value?.skipsShortMonths) {
-    notes.push(t('calendar.recurrence.shortMonthsNote', '', { day: chosenPreset.value.dayOfMonth ?? 0 }));
+  if (shortMonthDays.value.length > 0) {
+    notes.push(t('calendar.recurrence.shortMonthsNote', '', { day: shortMonthDays.value.join(', ') }));
   }
-  if (repeats.value && props.hour) {
-    notes.push(t('calendar.recurrence.hourNote', '', { time: props.hour.time, tz: props.hour.tz }));
-  }
+  // The server authors the series' hour from the event's own and REFUSES a `recurrence.time`,
+  // so there will never be an hour field here; without this, a user hunts for one.
+  if (props.hour) notes.push(t('calendar.recurrence.hourNote', '', { time: props.hour.time, tz: props.hour.tz }));
   return notes.length > 0 ? notes.join(' ') : undefined;
 });
+
+/** The server's sentence about a rule this editor is only echoing, or an honest admission. */
+const unsupportedSentence = computed(() => props.storedLabel?.trim() || t('calendar.series.unknownRule'));
 
 // ── End of the series ───────────────────────────────────────────────────────
 const endMode = computed<string>({
@@ -177,18 +210,67 @@ const count = computed<number | null>({
   },
 });
 
-// ── Server messages ─────────────────────────────────────────────────────────
-// The map from 422 paths to controls (UX spec §24.2.4). Anything about the CADENCE belongs
-// under the select; anything about the END belongs under the end control — including
-// `exclusions.dates`, because when a series has been emptied out the remedy is to relax its
-// end, and the message says so.
-const ruleError = computed<string | undefined>(() => {
+// ── Messages ────────────────────────────────────────────────────────────────
+/**
+ * The client reading of `anchor_not_an_occurrence`, said where the cause is.
+ *
+ * The server reports it on `start_date`/`starts_at`, and it still would — this only makes
+ * sure the user never gets that far: the drawer's own save gate asks the same question
+ * (`recurrenceAnchorSatisfied`), so the refusal is a message under the rule rather than a
+ * failed request pointing at the date field.
+ */
+const anchorError = computed<string | undefined>(() =>
+  recurrenceAnchorSatisfied(state.value, props.anchorDay)
+    ? undefined
+    : t('calendar.recurrence.anchorMismatch'),
+);
+
+/**
+ * The map from 422 paths to controls (UX spec §24.2.4). Anything about the CADENCE belongs
+ * under the editor; anything about the END belongs under the end control — including
+ * `exclusions.dates`, because when a series has been emptied out the remedy is to relax its
+ * end, and the message says so.
+ */
+const serverRuleError = computed<string | undefined>(() => {
   const errors = props.errors;
   if (errors.recurrence) return errors.recurrence;
   const key = Object.keys(errors).find(
-    (path) => path.startsWith('recurrence.day') || path.startsWith('recurrence.month'),
+    (path) =>
+      // Anything about an axis, EXCEPT the paths the editor renders on the offending control
+      // itself — those would otherwise say the same sentence twice, once beside the chips and
+      // once under the whole field.
+      !ROUTED_TO_A_CONTROL.has(path) &&
+      (path.startsWith('recurrence.day') || path.startsWith('recurrence.month')),
   );
   return key ? errors[key] : undefined;
+});
+
+/** The 422 paths the shared editor puts under a specific control (see `axisErrors`). */
+const ROUTED_TO_A_CONTROL = new Set([
+  'recurrence.day.weekdays',
+  'recurrence.day.days',
+  'recurrence.day.ordinal',
+  'recurrence.day.weekday',
+  'recurrence.month.months',
+]);
+
+/** The client rule first — it is the one the user can act on without a round trip. */
+const ruleError = computed<string | undefined>(() => anchorError.value ?? serverRuleError.value);
+
+/**
+ * The per-axis messages the shared editor routes to its own panels, keyed AXIS-RELATIVE.
+ * The Calendar's block is called `recurrence`, so that prefix is stripped here — the editor
+ * is shared with a module whose block is called something else entirely.
+ */
+const axisErrors = computed<Record<string, string | undefined>>(() => {
+  const e = props.errors;
+  return {
+    'day.weekdays': e['recurrence.day.weekdays'],
+    'day.days': e['recurrence.day.days'],
+    'day.special.ordinal': e['recurrence.day.ordinal'],
+    'day.special.weekday': e['recurrence.day.weekday'],
+    'month.months': e['recurrence.month.months'],
+  };
 });
 
 /**
@@ -209,17 +291,57 @@ const endError = computed<string | undefined>(
 
 <template>
   <div class="flex flex-col gap-next-3">
-    <FormField :label="t('calendar.recurrence.label')" :error="ruleError" :description="description">
-      <Select
-        v-model="selection"
-        :options="options"
-        :readonly="readonly"
-        leading-icon="repeat"
-        :aria-label="t('calendar.recurrence.label')"
-      />
+    <!-- 1. Does it repeat? A switch, because the answer is not a cadence: "no" is the ABSENCE
+         of the whole block, and no rule in the grammar below can say it. -->
+    <FormField :label="t('calendar.recurrence.label')" :error="ruleError" :description="ruleDescription">
+      <div class="flex flex-col gap-next-3">
+        <!-- The switch carries the FIELD's name, not the state — a switch's accessible name
+             has to be stable, and `aria-checked` is what says which way it is set. The state
+             is still readable in words below, for the off case where nothing else shows it. -->
+        <div class="flex items-center gap-next-2">
+          <Switch
+            v-model="repeats"
+            :disabled="readonly"
+            :aria-invalid="!!ruleError"
+            :aria-label="t('calendar.recurrence.label')"
+          />
+          <span v-if="!repeats" class="text-next-sm text-next-muted-foreground">
+            {{ t('calendar.recurrence.none') }}
+          </span>
+        </div>
+
+        <template v-if="repeats">
+          <!-- A rule from outside this editor's vocabulary: shown as the SERVER's sentence,
+               frozen, and echoed back untouched on save. Replacing it is a deliberate act
+               with its own button — never a side effect of editing the title. -->
+          <div v-if="state.unsupported" class="flex flex-col items-start gap-next-2">
+            <Alert variant="info" size="sm">
+              {{ unsupportedSentence }} {{ t('calendar.recurrence.unsupportedNote') }}
+            </Alert>
+            <Button variant="secondary" size="sm" :disabled="readonly" @click="replaceUnsupported">
+              {{ t('calendar.recurrence.unsupportedReplace') }}
+            </Button>
+          </div>
+
+          <!-- 2. THE SHARED EDITOR. `fieldset[disabled]` is what makes the whole tree
+               read-only while a save is in flight: the HTML rule disables every descendant
+               control — the option-card radios included — with no prop to thread through
+               four components and no chance of one of them being missed. -->
+          <fieldset v-else :disabled="readonly" class="min-w-0">
+            <RecurrenceAxisEditor
+              v-model:day="day"
+              v-model:month="month"
+              :profile="CALENDAR_RECURRENCE_PROFILE"
+              :errors="axisErrors"
+              :anchor-day="anchorDay"
+              :aria-label="t('recurrenceEditor.tabsAria')"
+            />
+          </fieldset>
+        </template>
+      </div>
     </FormField>
 
-    <!-- ONE FIELD for the whole end of the series — the mode and its value together.
+    <!-- 3. ONE FIELD for the whole end of the series — the mode and its value together.
          Not two, and that is not tidiness: `series_has_no_occurrences` arrives on
          `recurrence.exclusions.dates` when the series has NO end date, and the form has no
          exclusions control at all. Split into two fields, that message would have had nowhere
@@ -259,7 +381,7 @@ const endError = computed<string | undefined>(
              (`calendar.recurrence_count_max`, env-driven) and why this side can only mirror it.
              Not a literal here: one number in one place, so a drift is a one-line fix rather
              than a hunt. No counter is kept anywhere either: this number becomes a DATE at
-             write time and never comes back (fact 4), which the field's description says
+             write time and never comes back (fact 5), which the field's description says
              before anyone is surprised. -->
         <NumberInput
           v-else-if="endMode === 'count'"

@@ -1,99 +1,75 @@
 <script setup lang="ts">
-// WorkflowScheduleDayPanel — the "Dzień" tab (§4.5.5b, REV5). The day axis's `special{}`
-// union is presented FLAT as 7 sub-mode cards through `WorkflowScheduleOptionCards`; the
-// SELECTED card expands with its inputs (chips / the ordinal+weekday Selects woven into
-// "w {ordinal} {weekday} miesiąca"). The last card UNIFIES `nth_weekday` (ordinal 1..5)
-// and `last_weekday` under ONE ordinal Select whose options are {first…fifth, last} —
-// "fifth" and "last" are two explicit options so a 5th-occurrence is never mislabelled
-// "last". The `last_working_day` note + its time restriction live in that card's SELECTED
-// body (unselected cards show title only).
+// RecurrenceDayPanel — the "Day" axis. The day axis's `special{}` union is presented FLAT as
+// sub-mode cards through `RecurrenceOptionCards`; the SELECTED card expands with its inputs
+// (chips / the ordinal+weekday Selects woven into "on the {ordinal} {weekday} of the month").
+//
+// The last card UNIFIES `nth_weekday` (ordinal 1..5) and `last_weekday` under ONE ordinal
+// Select whose options are {first…fifth, last} — "fifth" and "last" are two explicit options
+// so a 5th-occurrence is never mislabelled "last". The `last_working_day` note + its time
+// restriction live in that card's SELECTED body (unselected cards show title only).
+//
+// WHICH CARDS EXIST IS THE PROFILE'S DECISION, not this component's: the Calendar hides
+// `every_n_days` and `last_working_day` because its endpoint refuses both. The order of
+// `profile.dayModes` is the card order.
 import { computed } from 'vue';
-import Select, { type SelectOption } from '../../ui/forms/Select.vue';
-import NumberInput from '../../ui/forms/NumberInput.vue';
-import Button from '../../ui/primitives/Button.vue';
-import Alert from '../../ui/feedback/Alert.vue';
-import WorkflowScheduleOptionCards, { type OptionCard } from './WorkflowScheduleOptionCards.vue';
-import WorkflowScheduleWindowField from './WorkflowScheduleWindowField.vue';
+import Select, { type SelectOption } from '../forms/Select.vue';
+import NumberInput from '../forms/NumberInput.vue';
+import Button from '../primitives/Button.vue';
+import Alert from '../feedback/Alert.vue';
+import RecurrenceOptionCards, { type OptionCard } from './RecurrenceOptionCards.vue';
+import RecurrenceWindowField from './RecurrenceWindowField.vue';
 import { useI18n } from '../../app/i18n';
-import { SCHEDULE_LIMITS, splitSentenceTemplate, type DayAxis } from './workflowSchedule';
+import {
+  RECURRENCE_LIMITS,
+  daySubmodeOf,
+  seedDay,
+  splitSentenceTemplate,
+  type DayAxis,
+  type DaySubmode,
+  type RecurrenceProfile,
+} from './recurrenceAxes';
 
-type DaySubmode =
-  | 'every_day'
-  | 'every_n_days'
-  | 'weekdays'
-  | 'month_days'
-  | 'last_day'
-  | 'last_working_day'
-  | 'weekday_in_month';
-
-withDefaults(defineProps<{ errors?: Record<string, string | undefined> }>(), { errors: () => ({}) });
+const props = withDefaults(
+  defineProps<{
+    profile: RecurrenceProfile;
+    errors?: Record<string, string | undefined>;
+    /** The start day a newly-picked sub-mode seeds from (Calendar); null ⇒ neutral seeds. */
+    anchorDay?: string | null;
+  }>(),
+  { errors: () => ({}), anchorDay: null },
+);
 
 const model = defineModel<DayAxis>({ required: true });
 const { t } = useI18n();
-const L = SCHEDULE_LIMITS;
+const L = RECURRENCE_LIMITS;
 
 /** Monday-first display order (the wire array stays 0 = Sunday). */
 const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const MONTH_DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
 
-function daySubmodeOf(day: DayAxis): DaySubmode {
-  switch (day.mode) {
-    case 'every_day':
-      return 'every_day';
-    case 'every_n_days':
-      return 'every_n_days';
-    case 'weekdays':
-      return 'weekdays';
-    case 'month_days':
-      return 'month_days';
-    case 'special':
-      if (day.special.kind === 'last_day') return 'last_day';
-      if (day.special.kind === 'last_working_day') return 'last_working_day';
-      return 'weekday_in_month';
-  }
-}
+const TITLE_KEY: Record<DaySubmode, string> = {
+  every_day: 'recurrenceEditor.day.mode.everyDay',
+  every_n_days: 'recurrenceEditor.day.mode.everyNDays',
+  weekdays: 'recurrenceEditor.day.mode.weekdays',
+  month_days: 'recurrenceEditor.day.mode.monthDays',
+  last_day: 'recurrenceEditor.day.mode.lastDay',
+  last_working_day: 'recurrenceEditor.day.mode.lastWorkingDay',
+  weekday_in_month: 'recurrenceEditor.day.mode.weekdayInMonth',
+};
 
-const modeOptions = computed<OptionCard<DaySubmode>[]>(() => [
-  { value: 'every_day', title: t('workflows.schedule.day.mode.everyDay') },
-  { value: 'every_n_days', title: t('workflows.schedule.day.mode.everyNDays') },
-  { value: 'weekdays', title: t('workflows.schedule.day.mode.weekdays') },
-  { value: 'month_days', title: t('workflows.schedule.day.mode.monthDays') },
-  { value: 'last_day', title: t('workflows.schedule.day.mode.lastDay') },
-  { value: 'last_working_day', title: t('workflows.schedule.day.mode.lastWorkingDay') },
-  { value: 'weekday_in_month', title: t('workflows.schedule.day.mode.weekdayInMonth') },
-]);
+const modeOptions = computed<OptionCard<DaySubmode>[]>(() =>
+  props.profile.dayModes.map((value) => ({ value, title: t(TITLE_KEY[value]) })),
+);
 
-// In-card head sentences, split so PL/EN word order lives in the string (§4.5.12).
-const everyNDaysHead = computed(() => splitSentenceTemplate(t('workflows.schedule.day.card.everyNDays.head')));
-const weekdayInMonthHead = computed(() => splitSentenceTemplate(t('workflows.schedule.day.card.weekdayInMonth.head')));
+// In-card head sentences, split so PL/EN word order lives in the string.
+const everyNDaysHead = computed(() => splitSentenceTemplate(t('recurrenceEditor.day.card.everyNDays.head')));
+const weekdayInMonthHead = computed(() => splitSentenceTemplate(t('recurrenceEditor.day.card.weekdayInMonth.head')));
 
 const submode = computed<DaySubmode>({
   get: () => daySubmodeOf(model.value),
   set: (m) => {
     if (m === daySubmodeOf(model.value)) return;
-    switch (m) {
-      case 'every_day':
-        model.value = { mode: 'every_day' };
-        break;
-      case 'every_n_days':
-        model.value = { mode: 'every_n_days', n: 1 };
-        break;
-      case 'weekdays':
-        model.value = { mode: 'weekdays', weekdays: [] };
-        break;
-      case 'month_days':
-        model.value = { mode: 'month_days', days: [] };
-        break;
-      case 'last_day':
-        model.value = { mode: 'special', special: { kind: 'last_day' } };
-        break;
-      case 'last_working_day':
-        model.value = { mode: 'special', special: { kind: 'last_working_day' } };
-        break;
-      case 'weekday_in_month':
-        model.value = { mode: 'special', special: { kind: 'nth_weekday', ordinal: 1, weekday: 1 } };
-        break;
-    }
+    model.value = seedDay(m, props.anchorDay);
   },
 });
 
@@ -150,11 +126,11 @@ function toggleMonthDay(d: number): void {
 
 // --- weekday_in_month: ordinal {first..fifth, last} + weekday ----------------
 const ordinalOptions = computed<SelectOption[]>(() => [
-  ...([1, 2, 3, 4, 5] as const).map((n) => ({ value: String(n), label: t(`workflows.schedule.day.ordinal.${n}`) })),
-  { value: 'last', label: t('workflows.schedule.day.ordinal.last') },
+  ...([1, 2, 3, 4, 5] as const).map((n) => ({ value: String(n), label: t(`recurrenceEditor.day.ordinal.${n}`) })),
+  { value: 'last', label: t('recurrenceEditor.day.ordinal.last') },
 ]);
 const weekdayOptions = computed<SelectOption[]>(() =>
-  WEEKDAY_ORDER.map((w) => ({ value: String(w), label: t(`workflows.schedule.weekday.long.${w}`) })),
+  WEEKDAY_ORDER.map((w) => ({ value: String(w), label: t(`recurrenceEditor.weekday.long.${w}`) })),
 );
 
 /** The special's current weekday (nth_weekday | last_weekday), default Monday. */
@@ -209,12 +185,12 @@ function chipClass(active: boolean): string {
 
 <template>
   <div class="flex flex-col gap-next-3">
-    <WorkflowScheduleOptionCards
+    <RecurrenceOptionCards
       v-model="submode"
       :options="modeOptions"
-      :aria-label="t('workflows.schedule.tab.day')"
+      :aria-label="t('recurrenceEditor.tab.day')"
     >
-      <!-- every_n_days — "co {n} dni [☐ od {from} do {to} dnia miesiąca]" — ONE flow (REV5). -->
+      <!-- every_n_days — "co {n} dni [☐ od {from} do {to} dnia miesiąca]" — ONE flow. -->
       <template #body-every_n_days>
         <div class="flex flex-wrap items-center gap-next-1_5 text-next-sm text-next-fg">
           <template v-for="(seg, i) in everyNDaysHead" :key="'h' + i">
@@ -225,13 +201,13 @@ function chipClass(active: boolean): string {
               :min="L.everyNDaysMin"
               :max="L.everyNDaysMax"
               class="w-20 shrink-0 basis-20"
-              :aria-label="t('workflows.schedule.field.daysEvery')"
+              :aria-label="t('recurrenceEditor.field.daysEvery')"
             />
           </template>
-          <WorkflowScheduleWindowField
+          <RecurrenceWindowField
             :enabled="daysWindowOn"
-            :toggle-label="t('workflows.schedule.window.toggle.days')"
-            :window-template="t('workflows.schedule.day.card.everyNDays.window')"
+            :toggle-label="t('recurrenceEditor.window.toggle.days')"
+            :window-template="t('recurrenceEditor.day.card.everyNDays.window')"
             :error="errors.window"
             @toggle="toggleDaysWindow"
           >
@@ -242,7 +218,7 @@ function chipClass(active: boolean): string {
                 :max="L.monthDayMax"
                 :disabled="disabled"
                 class="w-20 shrink-0 basis-20"
-                :aria-label="t('workflows.schedule.window.fromDay')"
+                :aria-label="t('recurrenceEditor.window.fromDay')"
                 @update:model-value="setDaysWindow('from', $event)"
               />
             </template>
@@ -253,21 +229,21 @@ function chipClass(active: boolean): string {
                 :max="L.monthDayMax"
                 :disabled="disabled"
                 class="w-20 shrink-0 basis-20"
-                :aria-label="t('workflows.schedule.window.toDay')"
+                :aria-label="t('recurrenceEditor.window.toDay')"
                 @update:model-value="setDaysWindow('to', $event)"
               />
             </template>
-          </WorkflowScheduleWindowField>
+          </RecurrenceWindowField>
           <p v-if="errors.n" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.n }}</p>
         </div>
       </template>
 
-      <!-- weekdays — ONE wrapping flow (REV5): the lead sits INSIDE the chip group, the
-           presets trail as a cluster, the error breaks to its own row. -->
+      <!-- weekdays — ONE wrapping flow: the lead sits INSIDE the chip group, the presets
+           trail as a cluster, the error breaks to its own row. -->
       <template #body-weekdays>
         <div class="flex flex-wrap items-center gap-next-2">
-          <div class="flex flex-wrap items-center gap-next-1_5" role="group" :aria-label="t('workflows.schedule.day.mode.weekdays')">
-            <p class="text-next-sm text-next-fg">{{ t('workflows.schedule.day.card.weekdays.lead') }}</p>
+          <div class="flex flex-wrap items-center gap-next-1_5" role="group" :aria-label="t('recurrenceEditor.day.mode.weekdays')">
+            <p class="text-next-sm text-next-fg">{{ t('recurrenceEditor.day.card.weekdays.lead') }}</p>
             <button
               v-for="w in WEEKDAY_ORDER"
               :key="w"
@@ -276,26 +252,26 @@ function chipClass(active: boolean): string {
               :aria-pressed="weekdaySelected(w)"
               @click="toggleWeekday(w)"
             >
-              {{ t(`workflows.schedule.weekday.short.${w}`) }}
+              {{ t(`recurrenceEditor.weekday.short.${w}`) }}
             </button>
           </div>
           <div class="flex items-center gap-next-1">
             <Button variant="ghost" size="sm" @click="setWeekdays([1, 2, 3, 4, 5])">
-              {{ t('workflows.schedule.day.preset.workdays') }}
+              {{ t('recurrenceEditor.day.preset.workdays') }}
             </Button>
             <Button variant="ghost" size="sm" @click="setWeekdays([0, 6])">
-              {{ t('workflows.schedule.day.preset.weekend') }}
+              {{ t('recurrenceEditor.day.preset.weekend') }}
             </Button>
           </div>
           <p v-if="errors.weekdays" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.weekdays }}</p>
         </div>
       </template>
 
-      <!-- month_days — ONE wrapping flow (REV5): the lead sits INSIDE the 1..31 chip grid. -->
+      <!-- month_days — ONE wrapping flow: the lead sits INSIDE the 1..31 chip grid. -->
       <template #body-month_days>
         <div class="flex flex-wrap items-center gap-next-2">
-          <div class="flex flex-wrap items-center gap-next-1_5" role="group" :aria-label="t('workflows.schedule.day.mode.monthDays')">
-            <p class="text-next-sm text-next-fg">{{ t('workflows.schedule.day.card.monthDays.lead') }}</p>
+          <div class="flex flex-wrap items-center gap-next-1_5" role="group" :aria-label="t('recurrenceEditor.day.mode.monthDays')">
+            <p class="text-next-sm text-next-fg">{{ t('recurrenceEditor.day.card.monthDays.lead') }}</p>
             <button
               v-for="d in MONTH_DAYS"
               :key="d"
@@ -315,13 +291,13 @@ function chipClass(active: boolean): string {
       <!-- last_working_day — note-only body (public holidays note + time restriction). -->
       <template #body-last_working_day>
         <div class="flex flex-col gap-next-2">
-          <Alert variant="info" size="sm">{{ t('workflows.schedule.day.lastWorkingDayNote') }}</Alert>
-          <p class="text-next-xs text-next-muted-foreground">{{ t('workflows.schedule.time.lockedByLastWorkingDay') }}</p>
+          <Alert variant="info" size="sm">{{ t('recurrenceEditor.day.lastWorkingDayNote') }}</Alert>
+          <p class="text-next-xs text-next-muted-foreground">{{ t('recurrenceEditor.time.lockedByLastWorkingDay') }}</p>
         </div>
       </template>
 
-      <!-- weekday_in_month — "w {ordinal} {weekday} miesiąca" — ONE flow (REV5); the note +
-           error break to their own rows (w-full). -->
+      <!-- weekday_in_month — "w {ordinal} {weekday} miesiąca" — ONE flow; the note + error
+           break to their own rows (w-full). -->
       <template #body-weekday_in_month>
         <div class="flex flex-wrap items-center gap-next-1_5 text-next-sm text-next-fg">
           <template v-for="(seg, i) in weekdayInMonthHead" :key="'h' + i">
@@ -331,22 +307,22 @@ function chipClass(active: boolean): string {
               v-model="ordinalModel"
               :options="ordinalOptions"
               class="w-36 shrink-0 basis-36"
-              :aria-label="t('workflows.schedule.day.ordinalLabel')"
+              :aria-label="t('recurrenceEditor.day.ordinalLabel')"
             />
             <Select
               v-else-if="seg.name === 'weekday'"
               v-model="weekdayModel"
               :options="weekdayOptions"
               class="w-40 shrink-0 basis-40"
-              :aria-label="t('workflows.schedule.day.weekdayLabel')"
+              :aria-label="t('recurrenceEditor.day.weekdayLabel')"
             />
           </template>
-          <Alert v-if="showFifthNote" variant="info" size="sm" class="w-full">{{ t('workflows.schedule.day.fifthWeekdayNote') }}</Alert>
+          <Alert v-if="showFifthNote" variant="info" size="sm" class="w-full">{{ t('recurrenceEditor.day.fifthWeekdayNote') }}</Alert>
           <p v-if="errors.ordinal || errors.weekday" class="w-full text-next-xs text-next-danger" role="alert">
             {{ errors.ordinal || errors.weekday }}
           </p>
         </div>
       </template>
-    </WorkflowScheduleOptionCards>
+    </RecurrenceOptionCards>
   </div>
 </template>

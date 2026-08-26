@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// WorkflowScheduleTimePanel.spec — the "Czas" tab `at` editor (§4.5.5a, REV5.2). User
+// RecurrenceTimePanel.spec — the "Czas" tab `at` editor (§4.5.5a, REV5.2). User
 // feedback: the times are no longer a row of editable pickers — there is ONE draft
 // TimePicker fused with the "Add time" button (a single entry group), and the added
 // times render as compact chips on the same wrapping line. Each chip carries its own
@@ -11,15 +11,18 @@ import { nextTick } from 'vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
 import { setLocale } from '../../../app/i18n';
 import { en } from '../../../app/i18n/en';
-import WorkflowScheduleTimePanel from '../WorkflowScheduleTimePanel.vue';
-import TimePicker from '../../../ui/forms/TimePicker.vue';
-import type { TimeAxis } from '../workflowSchedule';
+import RecurrenceTimePanel from '../RecurrenceTimePanel.vue';
+import TimePicker from '../../forms/TimePicker.vue';
+import { WORKFLOW_SCHEDULE_PROFILE, type TimeAxis } from '../recurrenceAxes';
 
-const SCH = en.workflows.schedule;
+const SCH = en.recurrenceEditor;
 
 function mountPanel(axis: TimeAxis) {
-  const wrapper: VueWrapper = mount(WorkflowScheduleTimePanel, {
+  const wrapper: VueWrapper = mount(RecurrenceTimePanel, {
     props: {
+      // The Workflows profile is the one that shows a time axis at all — the Calendar
+      // hides it, so every case below is exercised on the full vocabulary.
+      profile: WORKFLOW_SCHEDULE_PROFILE,
       modelValue: axis,
       'onUpdate:modelValue': (v: TimeAxis) => wrapper.setProps({ modelValue: v }),
     },
@@ -41,7 +44,7 @@ async function setDraft(w: VueWrapper, value: string): Promise<void> {
   await nextTick();
 }
 
-describe('WorkflowScheduleTimePanel — `at` chips editor (REV5.2)', () => {
+describe('RecurrenceTimePanel — `at` chips editor (REV5.2)', () => {
   beforeEach(() => {
     installBrowserMocks();
     setLocale('en');

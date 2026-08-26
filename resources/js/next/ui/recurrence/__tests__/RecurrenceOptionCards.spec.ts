@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// WorkflowScheduleOptionCards.spec — the REV5 radio-group of self-configuring selection
+// RecurrenceOptionCards.spec — the REV5 radio-group of self-configuring selection
 // cards (§4.5.5/§4.5.13). Pins the a11y + focus MODEL the axis panels depend on:
 //   • a role=radiogroup of role=radio headers; only the SELECTED card renders a body;
 //   • the body is a role=group SIBLING of the header — NEVER inside the radio button
@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { nextTick, h } from 'vue';
 import { installBrowserMocks, restoreBrowserMocks } from '../../../__tests__/helpers/dom';
-import WorkflowScheduleOptionCards from '../WorkflowScheduleOptionCards.vue';
+import RecurrenceOptionCards from '../RecurrenceOptionCards.vue';
 
 const OPTIONS = [
   { value: 'a', title: 'Alpha' },
@@ -21,7 +21,7 @@ const OPTIONS = [
 ];
 
 function mountCards(modelValue = 'a', options = OPTIONS) {
-  const wrapper: VueWrapper = mount(WorkflowScheduleOptionCards, {
+  const wrapper: VueWrapper = mount(RecurrenceOptionCards, {
     props: {
       modelValue,
       options,
@@ -47,7 +47,7 @@ async function arrow(w: VueWrapper, key: string): Promise<void> {
   await nextTick();
 }
 
-describe('WorkflowScheduleOptionCards', () => {
+describe('RecurrenceOptionCards', () => {
   beforeEach(() => installBrowserMocks());
   afterEach(() => restoreBrowserMocks());
 

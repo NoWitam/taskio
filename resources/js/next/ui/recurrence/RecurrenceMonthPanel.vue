@@ -1,43 +1,60 @@
 <script setup lang="ts">
-// WorkflowScheduleMonthPanel — the "Miesiąc" tab (§4.5.5c, REV5). Three sub-modes via
-// `WorkflowScheduleOptionCards`: Every month (neutral, no body) / Every N months ("co
-// {n} miesięcy" + an optional month-range window as two month Selects) / In selected
-// months (a lead + month chip grid). The `everyNNote` warns when the interval doesn't
-// divide the year evenly (the grid counts from January and resets at year end).
+// RecurrenceMonthPanel — the "Month" axis. Sub-modes via `RecurrenceOptionCards`: Every month
+// (neutral, no body) / Every N months ("every {n} months" + an optional month-range window as
+// two month Selects) / In selected months (a lead + month chip grid). The `everyNNote` warns
+// when the interval doesn't divide the year evenly (the grid counts from January and resets
+// at year end) — which is also precisely why the Calendar profile omits that mode: its
+// endpoint refuses `every_n_months` rather than store a cadence that means something other
+// than it says.
 import { computed } from 'vue';
-import Select, { type SelectOption } from '../../ui/forms/Select.vue';
-import NumberInput from '../../ui/forms/NumberInput.vue';
-import Alert from '../../ui/feedback/Alert.vue';
-import WorkflowScheduleOptionCards, { type OptionCard } from './WorkflowScheduleOptionCards.vue';
-import WorkflowScheduleWindowField from './WorkflowScheduleWindowField.vue';
+import Select, { type SelectOption } from '../forms/Select.vue';
+import NumberInput from '../forms/NumberInput.vue';
+import Alert from '../feedback/Alert.vue';
+import RecurrenceOptionCards, { type OptionCard } from './RecurrenceOptionCards.vue';
+import RecurrenceWindowField from './RecurrenceWindowField.vue';
 import { useI18n } from '../../app/i18n';
-import { SCHEDULE_LIMITS, splitSentenceTemplate, type MonthAxis } from './workflowSchedule';
+import {
+  RECURRENCE_LIMITS,
+  seedMonth,
+  splitSentenceTemplate,
+  type MonthAxis,
+  type MonthSubmode,
+  type RecurrenceProfile,
+} from './recurrenceAxes';
 
-type MonthSubmode = 'every_month' | 'every_n_months' | 'months';
-
-withDefaults(defineProps<{ errors?: Record<string, string | undefined> }>(), { errors: () => ({}) });
+const props = withDefaults(
+  defineProps<{
+    profile: RecurrenceProfile;
+    errors?: Record<string, string | undefined>;
+    /** The start day a newly-picked sub-mode seeds from (Calendar); null ⇒ neutral seeds. */
+    anchorDay?: string | null;
+  }>(),
+  { errors: () => ({}), anchorDay: null },
+);
 
 const model = defineModel<MonthAxis>({ required: true });
 const { t } = useI18n();
-const L = SCHEDULE_LIMITS;
+const L = RECURRENCE_LIMITS;
 
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
-const modeOptions = computed<OptionCard<MonthSubmode>[]>(() => [
-  { value: 'every_month', title: t('workflows.schedule.month.mode.everyMonth') },
-  { value: 'every_n_months', title: t('workflows.schedule.month.mode.everyNMonths') },
-  { value: 'months', title: t('workflows.schedule.month.mode.months') },
-]);
+const TITLE_KEY: Record<MonthSubmode, string> = {
+  every_month: 'recurrenceEditor.month.mode.everyMonth',
+  every_n_months: 'recurrenceEditor.month.mode.everyNMonths',
+  months: 'recurrenceEditor.month.mode.months',
+};
 
-const everyNMonthsHead = computed(() => splitSentenceTemplate(t('workflows.schedule.month.card.everyNMonths.head')));
+const modeOptions = computed<OptionCard<MonthSubmode>[]>(() =>
+  props.profile.monthModes.map((value) => ({ value, title: t(TITLE_KEY[value]) })),
+);
+
+const everyNMonthsHead = computed(() => splitSentenceTemplate(t('recurrenceEditor.month.card.everyNMonths.head')));
 
 const mode = computed<MonthSubmode>({
   get: () => model.value.mode,
   set: (m) => {
     if (m === model.value.mode) return;
-    if (m === 'every_month') model.value = { mode: 'every_month' };
-    else if (m === 'every_n_months') model.value = { mode: 'every_n_months', n: 1 };
-    else model.value = { mode: 'months', months: [] };
+    model.value = seedMonth(m, props.anchorDay);
   },
 });
 
@@ -57,7 +74,7 @@ const showEveryNNote = computed(
 
 // --- month-range window (two month Selects) ---------------------------------
 const monthOptions = computed<SelectOption[]>(() =>
-  MONTHS.map((m) => ({ value: String(m), label: t(`workflows.schedule.month.long.${m}`) })),
+  MONTHS.map((m) => ({ value: String(m), label: t(`recurrenceEditor.month.long.${m}`) })),
 );
 const monthsWindowOn = computed(() => model.value.mode === 'every_n_months' && !!model.value.window);
 function toggleMonthsWindow(checked: boolean): void {
@@ -97,13 +114,13 @@ function chipClass(active: boolean): string {
 
 <template>
   <div class="flex flex-col gap-next-3">
-    <WorkflowScheduleOptionCards
+    <RecurrenceOptionCards
       v-model="mode"
       :options="modeOptions"
-      :aria-label="t('workflows.schedule.tab.month')"
+      :aria-label="t('recurrenceEditor.tab.month')"
     >
-      <!-- every_n_months — "co {n} miesięcy [☐ od {from} do {to}]" — ONE flow (REV5); the
-           divisor note + error break to their own rows (w-full). -->
+      <!-- every_n_months — "co {n} miesięcy [☐ od {from} do {to}]" — ONE flow; the divisor
+           note + error break to their own rows (w-full). -->
       <template #body-every_n_months>
         <div class="flex flex-wrap items-center gap-next-1_5 text-next-sm text-next-fg">
           <template v-for="(seg, i) in everyNMonthsHead" :key="'h' + i">
@@ -114,13 +131,13 @@ function chipClass(active: boolean): string {
               :min="L.everyNMonthsMin"
               :max="L.everyNMonthsMax"
               class="w-20 shrink-0 basis-20"
-              :aria-label="t('workflows.schedule.field.monthsEvery')"
+              :aria-label="t('recurrenceEditor.field.monthsEvery')"
             />
           </template>
-          <WorkflowScheduleWindowField
+          <RecurrenceWindowField
             :enabled="monthsWindowOn"
-            :toggle-label="t('workflows.schedule.window.toggle.months')"
-            :window-template="t('workflows.schedule.month.card.everyNMonths.window')"
+            :toggle-label="t('recurrenceEditor.window.toggle.months')"
+            :window-template="t('recurrenceEditor.month.card.everyNMonths.window')"
             :error="errors.window"
             @toggle="toggleMonthsWindow"
           >
@@ -130,7 +147,7 @@ function chipClass(active: boolean): string {
                 :options="monthOptions"
                 :disabled="disabled"
                 class="w-36 shrink-0 basis-36"
-                :aria-label="t('workflows.schedule.window.fromMonth')"
+                :aria-label="t('recurrenceEditor.window.fromMonth')"
                 @update:model-value="setMonthsWindow('from', $event)"
               />
             </template>
@@ -140,21 +157,21 @@ function chipClass(active: boolean): string {
                 :options="monthOptions"
                 :disabled="disabled"
                 class="w-36 shrink-0 basis-36"
-                :aria-label="t('workflows.schedule.window.toMonth')"
+                :aria-label="t('recurrenceEditor.window.toMonth')"
                 @update:model-value="setMonthsWindow('to', $event)"
               />
             </template>
-          </WorkflowScheduleWindowField>
-          <Alert v-if="showEveryNNote" variant="info" size="sm" class="w-full">{{ t('workflows.schedule.month.everyNNote') }}</Alert>
+          </RecurrenceWindowField>
+          <Alert v-if="showEveryNNote" variant="info" size="sm" class="w-full">{{ t('recurrenceEditor.month.everyNNote') }}</Alert>
           <p v-if="errors.n" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.n }}</p>
         </div>
       </template>
 
-      <!-- months — ONE wrapping flow (REV5): the lead sits INSIDE the month chip grid. -->
+      <!-- months — ONE wrapping flow: the lead sits INSIDE the month chip grid. -->
       <template #body-months>
         <div class="flex flex-wrap items-center gap-next-2">
-          <div class="flex flex-wrap items-center gap-next-1_5" role="group" :aria-label="t('workflows.schedule.month.mode.months')">
-            <p class="text-next-sm text-next-fg">{{ t('workflows.schedule.month.card.months.lead') }}</p>
+          <div class="flex flex-wrap items-center gap-next-1_5" role="group" :aria-label="t('recurrenceEditor.month.mode.months')">
+            <p class="text-next-sm text-next-fg">{{ t('recurrenceEditor.month.card.months.lead') }}</p>
             <button
               v-for="m in MONTHS"
               :key="m"
@@ -163,12 +180,12 @@ function chipClass(active: boolean): string {
               :aria-pressed="monthSelected(m)"
               @click="toggleMonth(m)"
             >
-              {{ t(`workflows.schedule.month.short.${m}`) }}
+              {{ t(`recurrenceEditor.month.short.${m}`) }}
             </button>
           </div>
           <p v-if="errors.months" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.months }}</p>
         </div>
       </template>
-    </WorkflowScheduleOptionCards>
+    </RecurrenceOptionCards>
   </div>
 </template>

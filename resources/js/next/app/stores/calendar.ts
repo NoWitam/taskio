@@ -95,7 +95,7 @@ export interface CalendarEventDraft {
   ends_day: string | null;
   ends_time: string | null;
   /**
-   * The series' rule, ALREADY IN WIRE SHAPE (`recurrencePresets.recurrenceStateToWire`), or
+   * The series' rule, ALREADY IN WIRE SHAPE (`calendarRecurrence.recurrenceStateToWire`), or
    * null for an event that happens once.
    *
    * `null` and "absent" are ONE case here and the builder emits no key for either — because

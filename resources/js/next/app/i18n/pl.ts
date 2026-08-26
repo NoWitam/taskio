@@ -1138,41 +1138,18 @@ export const pl: MessageSchema = {
     recurrence: {
       label: 'Powtarzanie',
       none: 'Nie powtarza się',
-      daily: 'Codziennie',
-      // Po jednym wpisie na dzień tygodnia zamiast „W każdy {weekday}", z tego samego powodu,
-      // dla którego serwerowy katalog jest rozpisany: polski odmienia („W każdy wtorek", ale
-      // „W każdą środę"), a język, który odmienia, nie złoży frazy z nazwy plus szczeliny.
-      weeklyDays: {
-        0: 'W każdą niedzielę',
-        1: 'W każdy poniedziałek',
-        2: 'W każdy wtorek',
-        3: 'W każdą środę',
-        4: 'W każdy czwartek',
-        5: 'W każdy piątek',
-        6: 'W każdą sobotę',
-      },
-      monthlyDay: 'Co miesiąc, dnia {day}',
-      monthlyNth: 'Co miesiąc: {ordinal} {weekday}',
-      monthlyLastDay: 'Co miesiąc, ostatniego dnia',
-      monthlyLastWeekdays: {
-        0: 'Co miesiąc: ostatnia niedziela',
-        1: 'Co miesiąc: ostatni poniedziałek',
-        2: 'Co miesiąc: ostatni wtorek',
-        3: 'Co miesiąc: ostatnia środa',
-        4: 'Co miesiąc: ostatni czwartek',
-        5: 'Co miesiąc: ostatni piątek',
-        6: 'Co miesiąc: ostatnia sobota',
-      },
-      ordinals: { 1: '1.', 2: '2.', 3: '3.', 4: '4.', 5: '5.' },
-      // Data jest formatowana przez `Intl`, a nie składana z dnia i nazwy miesiąca: polski
-      // stawia miesiąc w dacie w dopełniaczu („25 sierpnia", nigdy „25 sierpień").
-      yearly: 'Co roku, {date}',
-      // API przyjmuje szerszą gramatykę, niż mówi ta kontrolka. Reguła z API, z kroku
-      // `create_event` albo z przyszłej, szerszej kontrolki dostaje TO — zaznaczone
-      // i zablokowane — zamiast być po cichu przepisana na najbliższy preset.
-      other: 'Inna reguła',
-      otherReplaces: 'Wybranie innego powtarzania zastąpi obecną regułę.',
-      shortMonthsNote: 'Miesiące bez {day}. dnia zostaną pominięte.',
+      // Reguła, której nie da się wyrazić w profilu kalendarzowym wspólnego edytora. Nie
+      // powinna się pojawić: profil dopuszcza dokładnie to, co endpoint, a endpoint odrzuca
+      // resztę i w regułach żądania, i w DTO. Zostaje na wypadek ręcznie zmienionego wiersza
+      // albo backendu, który poszerzy gramatykę wcześniej niż ten ekran — wtedy reguła jest
+      // ODDAWANA bez zmian, nigdy spłaszczana do najbliższej wyrażalnej.
+      unsupportedNote: 'Tej reguły nie da się tu edytować. Reszta wydarzenia zapisuje się normalnie, a reguła zostaje bez zmian.',
+      unsupportedReplace: 'Zastąp nową regułą',
+      // Kotwica: serwer wymaga, by początek wydarzenia był PIERWSZYM wystąpieniem reguły,
+      // i odmawia na polu POCZĄTKU (`anchor_not_an_occurrence`) — czyli nie na tej kontrolce,
+      // której użytkownik właśnie dotknął. Dlatego zdanie stoi pod regułą i blokuje zapis.
+      anchorMismatch: 'Dzień początkowy nie jest wystąpieniem tej reguły. Dostosuj regułę albo przesuń początek.',
+      shortMonthsNote: 'Miesiące bez dnia {day} zostaną pominięte.',
       // Godzinę ustawia się w polu POCZĄTKU i tutaj jej nie ma — serwer odrzuca
       // `recurrence.time`. Bez tego zdania użytkownik szuka w tej kontrolce godziny, której
       // nigdy w niej nie będzie.
@@ -4851,8 +4828,183 @@ export const pl: MessageSchema = {
     },
   },
 
-  // Moduł przepływów (automatyzacji) — lista, przegląd szczegółów, podsumowania
-  // wyzwalaczy/kroków oraz monitorowanie uruchomień (Etap 5).
+  // ── recurrenceEditor ────────────────────────────────────────────────────────
+  // The vocabulary of the SHARED recurrence editor (`ui/recurrence/`), which the Workflows
+  // schedule trigger and the Calendar event drawer both mount. It sits at the top level, in
+  // a module-neutral namespace, because it belongs to NEITHER of them: keys under
+  // `workflows.*` read as workflow copy, and a Calendar screen rendering them would be one
+  // rename away from losing its labels.
+  //
+  // What stayed behind in `workflows.schedule.*` is what only Workflows has: the summary
+  // band, the upcoming-runs preview, the AI assist, the exceptions list and the cadence
+  // SENTENCE grammar (`describe.*`). The Calendar never composes cadence prose — its
+  // sentence about a stored rule is the server's `recurrence_label`.
+  recurrenceEditor: {
+    // Zakładkowy builder ręczny (§4.5.5).
+    tabsAria: 'Osie harmonogramu',
+    tab: {
+      time: 'Czas',
+      day: 'Dzień',
+      month: 'Miesiąc',
+    },
+    // Oś czasu (§4.5.5a).
+    time: {
+      mode: {
+        at: 'O określonych godzinach',
+        everyMinutes: 'Co kilka minut',
+        everyHours: 'Co kilka godzin',
+      },
+      // Zdania w kartach (REV5, §4.5.5a) — {…} = slot renderowany kontrolką.
+      card: {
+        at: { lead: 'Uruchom o wskazanych godzinach:' },
+        everyMinutes: { head: 'co {n} minut', window: 'od {from} do {to}' },
+        everyHours: { head: 'co {n} godz. o {minute} min po pełnej godzinie', window: 'od {from} do {to}' },
+      },
+      lockedByLastWorkingDay: 'Reguła „ostatni dzień roboczy” działa tylko z określonymi godzinami.',
+      switchedToAt: 'Przełączono na określone godziny — wymaga ich reguła „ostatni dzień roboczy”.',
+    },
+    // Oś dnia (§4.5.5b).
+    day: {
+      mode: {
+        everyDay: 'Codziennie',
+        everyNDays: 'Co kilka dni',
+        weekdays: 'W dni tygodnia',
+        monthDays: 'W dni miesiąca',
+        lastDay: 'Ostatni dzień miesiąca',
+        lastWorkingDay: 'Ostatni dzień roboczy',
+        weekdayInMonth: 'Określony dzień tygodnia',
+      },
+      // Zdania w kartach (REV5, §4.5.5b).
+      card: {
+        everyNDays: { head: 'co {n} dni', window: 'od {from} do {to} dnia miesiąca' },
+        weekdays: { lead: 'W wybrane dni tygodnia:' },
+        monthDays: { lead: 'W wybrane dni miesiąca:' },
+        weekdayInMonth: { head: 'w {ordinal} {weekday} miesiąca' },
+      },
+      preset: {
+        workdays: 'Dni robocze',
+        weekend: 'Weekend',
+      },
+      ordinal: {
+        '1': 'pierwszy',
+        '2': 'drugi',
+        '3': 'trzeci',
+        '4': 'czwarty',
+        '5': 'piąty',
+        last: 'ostatni',
+      },
+      ordinalLabel: 'Który',
+      weekdayLabel: 'Dzień tygodnia',
+      fifthWeekdayNote: '„Piąty” występuje nie w każdym miesiącu — wtedy uruchomienie zostaje pominięte.',
+      lastWorkingDayNote: 'Dni ustawowo wolne nie są uwzględniane.',
+    },
+    // Etykiety pól + jednostki (§4.5.5, §4.5.12).
+    field: {
+      minutesEvery: 'Co ile minut',
+      hoursEvery: 'Co ile godzin',
+      daysEvery: 'Co ile dni',
+      monthsEvery: 'Co ile miesięcy',
+      minute: 'Minuta',
+      minuteHint: 'liczona od pełnej godziny',
+      times: 'Godziny',
+      addTime: 'Dodaj godzinę',
+      removeTime: 'Usuń godzinę',
+    },
+    // Wzorzec okna „od–do” (§4.5.6). REV5: etykiety toggli przeformułowane na
+    // kontynuację zdania (kontynuują slotowaną głowę „co {n} …”).
+    window: {
+      toggle: {
+        time: 'w wybranych godzinach',
+        hours: 'w wybranych godzinach',
+        days: 'w wybranych dniach miesiąca',
+        months: 'w wybranych miesiącach',
+      },
+      from: 'od',
+      to: 'do',
+      fromHour: 'Od godziny',
+      toHour: 'Do godziny',
+      fromDay: 'Od dnia',
+      toDay: 'Do dnia',
+      fromMonth: 'Od miesiąca',
+      toMonth: 'Do miesiąca',
+    },
+    // Nazwy dni tygodnia / miesięcy (mianownik długie + krótkie) — gramatyka + chipy.
+    weekday: {
+      long: {
+        '0': 'niedziela',
+        '1': 'poniedziałek',
+        '2': 'wtorek',
+        '3': 'środa',
+        '4': 'czwartek',
+        '5': 'piątek',
+        '6': 'sobota',
+      },
+      short: {
+        '0': 'nd',
+        '1': 'pn',
+        '2': 'wt',
+        '3': 'śr',
+        '4': 'cz',
+        '5': 'pt',
+        '6': 'sb',
+      },
+    },
+    month: {
+      long: {
+        '1': 'styczeń',
+        '2': 'luty',
+        '3': 'marzec',
+        '4': 'kwiecień',
+        '5': 'maj',
+        '6': 'czerwiec',
+        '7': 'lipiec',
+        '8': 'sierpień',
+        '9': 'wrzesień',
+        '10': 'październik',
+        '11': 'listopad',
+        '12': 'grudzień',
+      },
+      short: {
+        '1': 'sty',
+        '2': 'lut',
+        '3': 'mar',
+        '4': 'kwi',
+        '5': 'maj',
+        '6': 'cze',
+        '7': 'lip',
+        '8': 'sie',
+        '9': 'wrz',
+        '10': 'paź',
+        '11': 'lis',
+        '12': 'gru',
+      },
+      mode: {
+        everyMonth: 'Co miesiąc',
+        everyNMonths: 'Co kilka miesięcy',
+        months: 'W wybrane miesiące',
+      },
+      // Zdania w kartach (REV5, §4.5.5c).
+      card: {
+        everyNMonths: { head: 'co {n} miesięcy', window: 'od {from} do {to}' },
+        months: { lead: 'W wybrane miesiące:' },
+      },
+      everyNNote: 'Miesiące liczone są od stycznia i resetują się z końcem roku.',
+    },
+    // Walidacja kliencka (§4.5.11).
+    validation: {
+      timeRequired: 'Podaj godzinę',
+      timeFormat: 'Nieprawidłowa godzina',
+      timeDuplicate: 'Godzina się powtarza',
+      timesMax: 'Maksymalnie {max} godzin',
+      pickAtLeastOne: 'Wybierz co najmniej jeden',
+      windowOrder: '„Od” musi być wcześniejsze niż „do”',
+      number: 'Podaj liczbę',
+      min: 'Min. {min}',
+      max: 'Maks. {max}',
+      lastWorkingDayNeedsAt: 'Ta reguła wymaga określonych godzin.',
+    },
+  },
+
   workflows: {
     title: 'Przepływy',
     subtitle: 'Zautomatyzuj swój proces: uruchamia się wyzwalacz, sprawdzane są warunki, a następnie wykonują się kolejne kroki.',
@@ -4988,97 +5140,9 @@ export const pl: MessageSchema = {
       summary: {
         assist: 'Zaplanuj z AI',
       },
-      // Zakładkowy builder ręczny (§4.5.5).
-      tabsAria: 'Osie harmonogramu',
-      tab: {
-        time: 'Czas',
-        day: 'Dzień',
-        month: 'Miesiąc',
-      },
-      // Oś czasu (§4.5.5a).
-      time: {
-        mode: {
-          at: 'O określonych godzinach',
-          everyMinutes: 'Co kilka minut',
-          everyHours: 'Co kilka godzin',
-        },
-        // Zdania w kartach (REV5, §4.5.5a) — {…} = slot renderowany kontrolką.
-        card: {
-          at: { lead: 'Uruchom o wskazanych godzinach:' },
-          everyMinutes: { head: 'co {n} minut', window: 'od {from} do {to}' },
-          everyHours: { head: 'co {n} godz. o {minute} min po pełnej godzinie', window: 'od {from} do {to}' },
-        },
-        lockedByLastWorkingDay: 'Reguła „ostatni dzień roboczy” działa tylko z określonymi godzinami.',
-        switchedToAt: 'Przełączono na określone godziny — wymaga ich reguła „ostatni dzień roboczy”.',
-      },
-      // Oś dnia (§4.5.5b).
-      day: {
-        mode: {
-          everyDay: 'Codziennie',
-          everyNDays: 'Co kilka dni',
-          weekdays: 'W dni tygodnia',
-          monthDays: 'W dni miesiąca',
-          lastDay: 'Ostatni dzień miesiąca',
-          lastWorkingDay: 'Ostatni dzień roboczy',
-          weekdayInMonth: 'Określony dzień tygodnia',
-        },
-        // Zdania w kartach (REV5, §4.5.5b).
-        card: {
-          everyNDays: { head: 'co {n} dni', window: 'od {from} do {to} dnia miesiąca' },
-          weekdays: { lead: 'W wybrane dni tygodnia:' },
-          monthDays: { lead: 'W wybrane dni miesiąca:' },
-          weekdayInMonth: { head: 'w {ordinal} {weekday} miesiąca' },
-        },
-        preset: {
-          workdays: 'Dni robocze',
-          weekend: 'Weekend',
-        },
-        ordinal: {
-          '1': 'pierwszy',
-          '2': 'drugi',
-          '3': 'trzeci',
-          '4': 'czwarty',
-          '5': 'piąty',
-          last: 'ostatni',
-        },
-        ordinalLabel: 'Który',
-        weekdayLabel: 'Dzień tygodnia',
-        fifthWeekdayNote: '„Piąty” występuje nie w każdym miesiącu — wtedy uruchomienie zostaje pominięte.',
-        lastWorkingDayNote: 'Dni ustawowo wolne nie są uwzględniane.',
-      },
-      // Etykiety pól + jednostki (§4.5.5, §4.5.12).
-      field: {
-        minutesEvery: 'Co ile minut',
-        hoursEvery: 'Co ile godzin',
-        daysEvery: 'Co ile dni',
-        monthsEvery: 'Co ile miesięcy',
-        minute: 'Minuta',
-        minuteHint: 'liczona od pełnej godziny',
-        times: 'Godziny',
-        addTime: 'Dodaj godzinę',
-        removeTime: 'Usuń godzinę',
-      },
       unit: {
         min: 'min',
         h: 'godz.',
-      },
-      // Wzorzec okna „od–do” (§4.5.6). REV5: etykiety toggli przeformułowane na
-      // kontynuację zdania (kontynuują slotowaną głowę „co {n} …”).
-      window: {
-        toggle: {
-          time: 'w wybranych godzinach',
-          hours: 'w wybranych godzinach',
-          days: 'w wybranych dniach miesiąca',
-          months: 'w wybranych miesiącach',
-        },
-        from: 'od',
-        to: 'do',
-        fromHour: 'Od godziny',
-        toHour: 'Do godziny',
-        fromDay: 'Od dnia',
-        toDay: 'Do dnia',
-        fromMonth: 'Od miesiąca',
-        toMonth: 'Do miesiąca',
       },
       // Akordeon wyjątków (§4.5.7).
       exclusions: {
@@ -5114,81 +5178,6 @@ export const pl: MessageSchema = {
         throttled: 'Za dużo prób. Odczekaj chwilę i spróbuj ponownie.',
         failed: 'Nie udało się przygotować propozycji. Spróbuj ponownie lub ustaw ręcznie.',
         appliedToast: 'Zastosowano harmonogram z propozycji AI.',
-      },
-      // Nazwy dni tygodnia / miesięcy (mianownik długie + krótkie) — gramatyka + chipy.
-      weekday: {
-        long: {
-          '0': 'niedziela',
-          '1': 'poniedziałek',
-          '2': 'wtorek',
-          '3': 'środa',
-          '4': 'czwartek',
-          '5': 'piątek',
-          '6': 'sobota',
-        },
-        short: {
-          '0': 'nd',
-          '1': 'pn',
-          '2': 'wt',
-          '3': 'śr',
-          '4': 'cz',
-          '5': 'pt',
-          '6': 'sb',
-        },
-      },
-      month: {
-        long: {
-          '1': 'styczeń',
-          '2': 'luty',
-          '3': 'marzec',
-          '4': 'kwiecień',
-          '5': 'maj',
-          '6': 'czerwiec',
-          '7': 'lipiec',
-          '8': 'sierpień',
-          '9': 'wrzesień',
-          '10': 'październik',
-          '11': 'listopad',
-          '12': 'grudzień',
-        },
-        short: {
-          '1': 'sty',
-          '2': 'lut',
-          '3': 'mar',
-          '4': 'kwi',
-          '5': 'maj',
-          '6': 'cze',
-          '7': 'lip',
-          '8': 'sie',
-          '9': 'wrz',
-          '10': 'paź',
-          '11': 'lis',
-          '12': 'gru',
-        },
-        mode: {
-          everyMonth: 'Co miesiąc',
-          everyNMonths: 'Co kilka miesięcy',
-          months: 'W wybrane miesiące',
-        },
-        // Zdania w kartach (REV5, §4.5.5c).
-        card: {
-          everyNMonths: { head: 'co {n} miesięcy', window: 'od {from} do {to}' },
-          months: { lead: 'W wybrane miesiące:' },
-        },
-        everyNNote: 'Miesiące liczone są od stycznia i resetują się z końcem roku.',
-      },
-      // Walidacja kliencka (§4.5.11).
-      validation: {
-        timeRequired: 'Podaj godzinę',
-        timeFormat: 'Nieprawidłowa godzina',
-        timeDuplicate: 'Godzina się powtarza',
-        timesMax: 'Maksymalnie {max} godzin',
-        pickAtLeastOne: 'Wybierz co najmniej jeden',
-        windowOrder: '„Od” musi być wcześniejsze niż „do”',
-        number: 'Podaj liczbę',
-        min: 'Min. {min}',
-        max: 'Maks. {max}',
-        lastWorkingDayNeedsAt: 'Ta reguła wymaga określonych godzin.',
       },
       // Gramatyka zdania (§4.5.10). `lang` to sonda czytana przez describeSchedule;
       // polskie przypadki i liczba mnoga (one/few/many) rozstrzygane w kodzie.

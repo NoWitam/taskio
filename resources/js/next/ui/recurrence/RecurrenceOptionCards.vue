@@ -1,11 +1,11 @@
 <script setup lang="ts" generic="T extends string = string">
-// WorkflowScheduleOptionCards — the REV5 radio-group of self-configuring selection
-// cards (§4.5.5). It REPLACES the per-tab `SegmentedControl` + below-controls pattern:
-// each axis panel renders its sub-modes through this component, where the SELECTED card
-// EXPANDS to reveal that sub-mode's inputs woven into a natural-language sentence.
+// RecurrenceOptionCards — the radio-group of self-configuring selection cards used by every
+// axis panel of the shared recurrence editor. Each axis renders its sub-modes through this
+// component, where the SELECTED card EXPANDS to reveal that sub-mode's inputs woven into a
+// natural-language sentence.
 //
-// Anatomy (decision B) — each card splits into TWO parts inside ONE bordered container
-// (visual continuity via the shared border + tint):
+// Anatomy — each card splits into TWO parts inside ONE bordered container (visual continuity
+// via the shared border + tint):
 //   • a RADIO HEADER — a `button role="radio"` with `aria-checked` + a radio-dot + the
 //     option TITLE. An UNSELECTED card shows the title ONLY (compact vertical list).
 //   • an OPTIONAL BODY — a `role="group"` region that is a SIBLING of the header
@@ -15,14 +15,14 @@
 //     body. Because only the selected card has a body, the tab path is unambiguous:
 //     Tab from the selected header lands on its first body input (pure DOM order).
 //
-// A11y (§4.5.13): the headers form ONE `role=radiogroup` — roving tabindex (only the
-// selected header is a tab stop), arrow keys (↑/↓ AND ←/→) MOVE + SELECT (skipping
-// disabled, wrapping), Home/End jump, Space/Enter (re)select. Disabled headers keep
-// `aria-disabled` (+ native `disabled` so they drop out of the tab order) and are
-// skipped by arrows; their EXPLANATION lives with the consumer (never a bare gray-out).
+// A11y: the headers form ONE `role=radiogroup` — roving tabindex (only the selected header is
+// a tab stop), arrow keys (↑/↓ AND ←/→) MOVE + SELECT (skipping disabled, wrapping), Home/End
+// jump, Space/Enter (re)select. Disabled headers keep `aria-disabled` (+ native `disabled` so
+// they drop out of the tab order) and are skipped by arrows; their EXPLANATION lives with the
+// consumer (never a bare gray-out).
 //
-// It owns the card chrome + the radio a11y + the focus model — NOT axis logic (the
-// panels keep their mutation logic and fill the per-option `#body-<value>` slot).
+// It owns the card chrome + the radio a11y + the focus model — NOT axis logic (the panels keep
+// their mutation logic and fill the per-option `#body-<value>` slot).
 import { computed, nextTick, ref, useSlots } from 'vue';
 
 export interface OptionCard<V extends string = string> {
@@ -186,7 +186,7 @@ function headerTabIndex(opt: OptionCard<T>): number {
       </button>
 
       <!-- Expanding body — SIBLING of the header, only for the SELECTED card that has a
-           `#body-<value>` slot. The in-sentence inputs live here (§4.5.5). -->
+           `#body-<value>` slot. The in-sentence inputs live here. -->
       <div
         v-if="isSelected(opt.value) && hasBody(opt.value)"
         role="group"

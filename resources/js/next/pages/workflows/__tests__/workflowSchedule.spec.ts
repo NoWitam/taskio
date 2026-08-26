@@ -222,8 +222,8 @@ describe('splitSentenceTemplate — {slot} split, order lives in the string (§4
 
     // The day-window template differs in LITERAL placement between PL and EN, yet both
     // carry the {from}/{to} slots in the same read order — order is the string's job.
-    const plDay = splitSentenceTemplate(pl.workflows.schedule.day.card.everyNDays.window);
-    const enDay = splitSentenceTemplate(en.workflows.schedule.day.card.everyNDays.window);
+    const plDay = splitSentenceTemplate(pl.recurrenceEditor.day.card.everyNDays.window);
+    const enDay = splitSentenceTemplate(en.recurrenceEditor.day.card.everyNDays.window);
     expect(slotNames(plDay)).toEqual(['from', 'to']);
     expect(slotNames(enDay)).toEqual(['from', 'to']);
     // PL ends with a trailing literal ("dnia miesiąca"); EN leads with "from day".
@@ -231,7 +231,7 @@ describe('splitSentenceTemplate — {slot} split, order lives in the string (§4
     expect(enDay[0]).toEqual({ type: 'text', value: 'from day ' });
 
     // The weekday-in-month head carries the ordinal + weekday slots in order.
-    expect(slotNames(splitSentenceTemplate(en.workflows.schedule.day.card.weekdayInMonth.head))).toEqual([
+    expect(slotNames(splitSentenceTemplate(en.recurrenceEditor.day.card.weekdayInMonth.head))).toEqual([
       'ordinal',
       'weekday',
     ]);
@@ -304,39 +304,39 @@ describe('validateScheduleDraft — client rules (§4.5.11)', () => {
   });
 
   it('time.at: required / format / duplicate / max', () => {
-    expect(keys(draft(time({ mode: 'at', at: [''] })))).toContain('workflows.schedule.validation.timeRequired');
-    expect(keys(draft(time({ mode: 'at', at: ['9am'] })))).toContain('workflows.schedule.validation.timeFormat');
-    expect(keys(draft(time({ mode: 'at', at: ['09:00', '09:00'] })))).toContain('workflows.schedule.validation.timeDuplicate');
+    expect(keys(draft(time({ mode: 'at', at: [''] })))).toContain('recurrenceEditor.validation.timeRequired');
+    expect(keys(draft(time({ mode: 'at', at: ['9am'] })))).toContain('recurrenceEditor.validation.timeFormat');
+    expect(keys(draft(time({ mode: 'at', at: ['09:00', '09:00'] })))).toContain('recurrenceEditor.validation.timeDuplicate');
     expect(keys(draft(time({ mode: 'at', at: ['1:00', '2:00', '3:00', '4:00', '5:00', '6:00', '7:00'] })))).toContain(
-      'workflows.schedule.validation.timesMax',
+      'recurrenceEditor.validation.timesMax',
     );
   });
 
   it('interval bounds + window order', () => {
-    expect(keys(draft(time({ mode: 'every_minutes', n: 0 })))).toContain('workflows.schedule.validation.min');
-    expect(keys(draft(time({ mode: 'every_minutes', n: 99 })))).toContain('workflows.schedule.validation.max');
+    expect(keys(draft(time({ mode: 'every_minutes', n: 0 })))).toContain('recurrenceEditor.validation.min');
+    expect(keys(draft(time({ mode: 'every_minutes', n: 99 })))).toContain('recurrenceEditor.validation.max');
     expect(keys(draft(time({ mode: 'every_minutes', n: 15, window: { from: '17:00', to: '09:00' } })))).toContain(
-      'workflows.schedule.validation.windowOrder',
+      'recurrenceEditor.validation.windowOrder',
     );
     expect(keys(draft(day({ mode: 'every_n_days', n: 2, window: { from: 20, to: 5 } })))).toContain(
-      'workflows.schedule.validation.windowOrder',
+      'recurrenceEditor.validation.windowOrder',
     );
   });
 
   it('non-empty sets + ordinal bounds', () => {
-    expect(keys(draft(day({ mode: 'weekdays', weekdays: [] })))).toContain('workflows.schedule.validation.pickAtLeastOne');
-    expect(keys(draft(day({ mode: 'month_days', days: [] })))).toContain('workflows.schedule.validation.pickAtLeastOne');
-    expect(keys(draft(month({ mode: 'months', months: [] })))).toContain('workflows.schedule.validation.pickAtLeastOne');
+    expect(keys(draft(day({ mode: 'weekdays', weekdays: [] })))).toContain('recurrenceEditor.validation.pickAtLeastOne');
+    expect(keys(draft(day({ mode: 'month_days', days: [] })))).toContain('recurrenceEditor.validation.pickAtLeastOne');
+    expect(keys(draft(month({ mode: 'months', months: [] })))).toContain('recurrenceEditor.validation.pickAtLeastOne');
     expect(keys(draft(day({ mode: 'special', special: { kind: 'nth_weekday', ordinal: 6, weekday: 1 } })))).toContain(
-      'workflows.schedule.validation.max',
+      'recurrenceEditor.validation.max',
     );
   });
 
   it('exclusions.dates: over-limit + duplicate', () => {
     const many = Array.from({ length: 51 }, (_, i) => `2026-01-${String((i % 28) + 1).padStart(2, '0')}#${i}`);
-    expect(keys(draft({ exclusions: { months: [], weekdays: [], dates: many } }))).toContain('workflows.schedule.validation.max');
+    expect(keys(draft({ exclusions: { months: [], weekdays: [], dates: many } }))).toContain('recurrenceEditor.validation.max');
     expect(keys(draft({ exclusions: { months: [], weekdays: [], dates: ['2026-01-01', '2026-01-01'] } }))).toContain(
-      'workflows.schedule.validation.timeDuplicate',
+      'recurrenceEditor.validation.timeDuplicate',
     );
   });
 });

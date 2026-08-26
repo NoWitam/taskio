@@ -1,16 +1,15 @@
 <script setup lang="ts">
-// WorkflowScheduleWindowField — the shared "od–do" window pattern (§4.5.6), reused by
-// all four bounded axes (every_minutes / every_hours / every_n_days / every_n_months)
-// so it is learned ONCE. It renders INLINE — the toggle and the "od {from} do {to}"
-// fragment sit on the SAME wrapping line as the head sentence.
+// RecurrenceWindowField — the shared "od–do" window pattern, reused by all four bounded axes
+// (every_minutes / every_hours / every_n_days / every_n_months) so it is learned ONCE. It
+// renders INLINE — the toggle and the "od {from} do {to}" fragment sit on the SAME wrapping
+// line as the head sentence.
 //
-// REV5.1 (user feedback): the fragment is ALWAYS in the DOM. A bare `Switch` (NO visible
-// label in the sentence) flips the two inputs between enabled and DISABLED instead of
-// mounting/unmounting them — matching the user's original "od Y do Z, where Y and Z are
-// disabled by default". Switch is chosen over Checkbox because it exposes a reliable
-// accessible name ON the interactive element via its `ariaLabel` prop with NO visible
-// text; the bare Checkbox has no aria-label path to its (visually hidden) input. So the
-// previously VISIBLE toggle string survives ONLY as the switch's accessible name.
+// The fragment is ALWAYS in the DOM. A bare `Switch` (NO visible label in the sentence) flips
+// the two inputs between enabled and DISABLED instead of mounting/unmounting them. Switch is
+// chosen over Checkbox because it exposes a reliable accessible name ON the interactive
+// element via its `ariaLabel` prop with NO visible text; the bare Checkbox has no aria-label
+// path to its (visually hidden) input. So the previously VISIBLE toggle string survives ONLY
+// as the switch's accessible name.
 //
 // The fragment text comes from a SLOTTED template (`<axis>.card.<mode>.window`, e.g.
 // "od {from} do {to} dnia miesiąca") SPLIT so PL/EN word order lives in the string; the
@@ -20,17 +19,21 @@
 // caller keeps its own typed axis slice and drops `window` back to undefined in its
 // `toggle` handler.
 //
-// It uses `display: contents` so its children flow directly into the caller's
-// `flex-wrap` sentence line; the error line is `w-full` so it breaks onto its own row.
+// It uses `display: contents` so its children flow directly into the caller's `flex-wrap`
+// sentence line; the error line is `w-full` so it breaks onto its own row.
+//
+// NOTE: no profile that hides `every_n_days`/`every_n_months` ever mounts this — those two
+// modes are the only carriers of a window, which is exactly why the Calendar profile needs no
+// separate statement about windows.
 import { computed } from 'vue';
-import Switch from '../../ui/forms/Switch.vue';
-import { splitSentenceTemplate } from './workflowSchedule';
+import Switch from '../forms/Switch.vue';
+import { splitSentenceTemplate } from './recurrenceAxes';
 
 const props = withDefaults(
   defineProps<{
     /** Whether the window is active (switch on → the from/to inputs are enabled). */
     enabled: boolean;
-    /** The toggle's ACCESSIBLE NAME (`workflows.schedule.window.toggle.<axis>`). It has
+    /** The toggle's ACCESSIBLE NAME (`recurrenceEditor.window.toggle.<axis>`). It has
      *  NO visible text in the sentence, so this is the switch's aria-label only. */
     toggleLabel: string;
     /** The slotted "od {from} do {to}…" template for THIS axis (`<mode>.window`). */
@@ -50,7 +53,7 @@ defineSlots<{
   to(props: { disabled: boolean }): any;
 }>();
 
-/** The window sentence split into ordered literal/slot segments (§4.5.12). */
+/** The window sentence split into ordered literal/slot segments. */
 const segments = computed(() => splitSentenceTemplate(props.windowTemplate));
 </script>
 

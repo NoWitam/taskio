@@ -89,10 +89,11 @@ import {
 } from '../../app/stores/calendar';
 import {
   emptyRecurrenceState,
+  recurrenceAnchorSatisfied,
   recurrenceStateFrom,
   recurrenceStateToWire,
   type RecurrenceState,
-} from './recurrencePresets';
+} from './calendarRecurrence';
 import {
   composeWallClock,
   instantToWallClock,
@@ -342,7 +343,7 @@ function seedFrom(loaded: CalendarEvent): void {
   draft.description = loaded.description ?? '';
   draft.all_day = loaded.all_day;
   seedTime(loaded);
-  recurrence.value = recurrenceStateFrom(loaded.recurrence, draftAnchorDay.value);
+  recurrence.value = recurrenceStateFrom(loaded.recurrence);
 }
 
 /**
@@ -409,8 +410,25 @@ const blockedReason = computed<string | null>(() => {
   // Only a COMPLETE end is judged: half an end (a day with no time) is simply not an end
   // yet, and refusing to save over it would block a user who is mid-thought.
   if (startLocal && endLocal && endLocal < startLocal) return t('calendar.event.validation.endBeforeStart');
-  return null;
+  return anchorBlocked.value;
 });
+
+/**
+ * THE ANCHOR RULE, ASKED BEFORE THE SERVER ASKS IT.
+ *
+ * `anchor_not_an_occurrence` comes back on `start_date`/`starts_at` — a control the user does
+ * not associate with "repeat weekly" — so a rule that excludes its own start day is refused
+ * HERE, where `RecurrenceField` also renders the same sentence under the rule itself. The
+ * ordinary path cannot reach this at all: every sub-mode the editor offers seeds from the
+ * start day. It takes a deliberate edit ("every Monday and Wednesday" on a Tuesday) to get
+ * here, which is exactly the case that used to be unreachable only because the old control
+ * could not express it.
+ */
+const anchorBlocked = computed<string | null>(() =>
+  recurrenceAnchorSatisfied(recurrence.value, draftAnchorDay.value)
+    ? null
+    : t('calendar.recurrence.anchorMismatch'),
+);
 
 // --- Payload ----------------------------------------------------------------
 // The assembly itself lives in the store as a PURE function (`buildEventPayload`): it is
@@ -419,7 +437,7 @@ const blockedReason = computed<string | null>(() => {
 // rather than trusted.
 function buildPayload(): CalendarEventPayload {
   return buildEventPayload(
-    { ...draft, recurrence: recurrenceStateToWire(recurrence.value, draftAnchorDay.value) },
+    { ...draft, recurrence: recurrenceStateToWire(recurrence.value) },
     event.value,
     props.timezone,
     writeScope.value,

@@ -1147,41 +1147,18 @@ export const en = {
     recurrence: {
       label: 'Repeats',
       none: 'Does not repeat',
-      daily: 'Every day',
-      // One entry per weekday rather than "Every {weekday}", for the same reason the server's
-      // own catalogue is written out: Polish inflects ("W każdy wtorek" vs "W każdą środę")
-      // and a language that inflects cannot compose the phrase from a name plus a slot.
-      weeklyDays: {
-        0: 'Every Sunday',
-        1: 'Every Monday',
-        2: 'Every Tuesday',
-        3: 'Every Wednesday',
-        4: 'Every Thursday',
-        5: 'Every Friday',
-        6: 'Every Saturday',
-      },
-      monthlyDay: 'Monthly, on day {day}',
-      monthlyNth: 'Monthly: the {ordinal} {weekday}',
-      monthlyLastDay: 'Monthly, on the last day',
-      monthlyLastWeekdays: {
-        0: 'Monthly: the last Sunday',
-        1: 'Monthly: the last Monday',
-        2: 'Monthly: the last Tuesday',
-        3: 'Monthly: the last Wednesday',
-        4: 'Monthly: the last Thursday',
-        5: 'Monthly: the last Friday',
-        6: 'Monthly: the last Saturday',
-      },
-      ordinals: { 1: 'first', 2: 'second', 3: 'third', 4: 'fourth', 5: 'fifth' },
-      // The date is formatted by `Intl` rather than assembled from a day and a month name:
-      // Polish puts a date's month in the genitive ("25 sierpnia", never "25 sierpień").
-      yearly: 'Every year, on {date}',
-      // The API accepts a wider grammar than this control speaks. A rule from the API, from
-      // the `create_event` step or from a future wider control gets this — SELECTED and
-      // DISABLED — rather than being silently rewritten into the nearest preset.
-      other: 'Another rule',
-      otherReplaces: 'Choosing a different repeat will replace the current rule.',
-      shortMonthsNote: 'Months that have no day {day} will be skipped.',
+      // A rule the shared editor's Calendar profile cannot express. It should never appear:
+      // the profile admits exactly what the endpoint admits, and the endpoint refuses the
+      // rest at BOTH the request rules and the DTO. It stays for the hand-edited row and for
+      // a backend that widens the grammar before this screen does — in which case the rule is
+      // ECHOED BACK untouched, never flattened into the nearest expressible one.
+      unsupportedNote: 'This rule can’t be edited here. The rest of the event saves normally and the rule is kept as it is.',
+      unsupportedReplace: 'Replace with a new rule',
+      // The anchor: the server requires the event’s start to be the rule’s FIRST occurrence
+      // and refuses on the START field (`anchor_not_an_occurrence`) — not on the control the
+      // user just touched. So the sentence sits under the rule, and it blocks the save.
+      anchorMismatch: 'The start day is not one of this rule’s occurrences. Adjust the rule, or move the start.',
+      shortMonthsNote: 'Months without day {day} will be skipped.',
       // The hour is set in the START field and there is none here — the server refuses a
       // `recurrence.time`. Without this sentence a user hunts for an hour that will never be
       // in this control.
@@ -4882,8 +4859,183 @@ export const en = {
     },
   },
 
-  // Workflows (automation) module — the list, detail overview, trigger/step
-  // summaries, and run monitoring (Etap 5).
+  // ── recurrenceEditor ────────────────────────────────────────────────────────
+  // The vocabulary of the SHARED recurrence editor (`ui/recurrence/`), which the Workflows
+  // schedule trigger and the Calendar event drawer both mount. It sits at the top level, in
+  // a module-neutral namespace, because it belongs to NEITHER of them: keys under
+  // `workflows.*` read as workflow copy, and a Calendar screen rendering them would be one
+  // rename away from losing its labels.
+  //
+  // What stayed behind in `workflows.schedule.*` is what only Workflows has: the summary
+  // band, the upcoming-runs preview, the AI assist, the exceptions list and the cadence
+  // SENTENCE grammar (`describe.*`). The Calendar never composes cadence prose — its
+  // sentence about a stored rule is the server's `recurrence_label`.
+  recurrenceEditor: {
+    // Tabbed manual builder (§4.5.5).
+    tabsAria: 'Schedule axes',
+    tab: {
+      time: 'Time',
+      day: 'Day',
+      month: 'Month',
+    },
+    // Time axis (§4.5.5a).
+    time: {
+      mode: {
+        at: 'At set times',
+        everyMinutes: 'Every few minutes',
+        everyHours: 'Every few hours',
+      },
+      // In-card sentences (REV5, §4.5.5a) — {…} = a slot rendered as a control.
+      card: {
+        at: { lead: 'Run at the listed times:' },
+        everyMinutes: { head: 'every {n} minutes', window: 'from {from} to {to}' },
+        everyHours: { head: 'every {n} h, at {minute} min past the hour', window: 'from {from} to {to}' },
+      },
+      lockedByLastWorkingDay: 'The “last working day” rule only works with set times.',
+      switchedToAt: 'Switched to set times — the “last working day” rule needs them.',
+    },
+    // Day axis (§4.5.5b).
+    day: {
+      mode: {
+        everyDay: 'Every day',
+        everyNDays: 'Every few days',
+        weekdays: 'On weekdays',
+        monthDays: 'On days of the month',
+        lastDay: 'Last day of the month',
+        lastWorkingDay: 'Last working day',
+        weekdayInMonth: 'A specific weekday',
+      },
+      // In-card sentences (REV5, §4.5.5b).
+      card: {
+        everyNDays: { head: 'every {n} days', window: 'from day {from} to day {to}' },
+        weekdays: { lead: 'On selected weekdays:' },
+        monthDays: { lead: 'On selected days of the month:' },
+        weekdayInMonth: { head: 'on the {ordinal} {weekday} of the month' },
+      },
+      preset: {
+        workdays: 'Workdays',
+        weekend: 'Weekend',
+      },
+      ordinal: {
+        '1': 'first',
+        '2': 'second',
+        '3': 'third',
+        '4': 'fourth',
+        '5': 'fifth',
+        last: 'last',
+      },
+      ordinalLabel: 'Which',
+      weekdayLabel: 'Weekday',
+      fifthWeekdayNote: 'A “fifth” doesn’t occur every month — those months are skipped.',
+      lastWorkingDayNote: 'Public holidays are not taken into account.',
+    },
+    // Field labels + units (§4.5.5, §4.5.12).
+    field: {
+      minutesEvery: 'Every N minutes',
+      hoursEvery: 'Every N hours',
+      daysEvery: 'Every N days',
+      monthsEvery: 'Every N months',
+      minute: 'Minute',
+      minuteHint: 'Counted from the top of the hour',
+      times: 'Times',
+      addTime: 'Add time',
+      removeTime: 'Remove time',
+    },
+    // The “od–do” window pattern (§4.5.6). REV5: toggle labels reworded to read as a
+    // sentence continuation (they continue the slotted "every {n} …" head).
+    window: {
+      toggle: {
+        time: 'within set hours',
+        hours: 'within set hours',
+        days: 'within set month days',
+        months: 'within set months',
+      },
+      from: 'from',
+      to: 'to',
+      fromHour: 'From hour',
+      toHour: 'To hour',
+      fromDay: 'From day',
+      toDay: 'To day',
+      fromMonth: 'From month',
+      toMonth: 'To month',
+    },
+    // Weekday / month names (long nominative + short) used by the grammar + chips.
+    weekday: {
+      long: {
+        '0': 'Sunday',
+        '1': 'Monday',
+        '2': 'Tuesday',
+        '3': 'Wednesday',
+        '4': 'Thursday',
+        '5': 'Friday',
+        '6': 'Saturday',
+      },
+      short: {
+        '0': 'Sun',
+        '1': 'Mon',
+        '2': 'Tue',
+        '3': 'Wed',
+        '4': 'Thu',
+        '5': 'Fri',
+        '6': 'Sat',
+      },
+    },
+    month: {
+      long: {
+        '1': 'January',
+        '2': 'February',
+        '3': 'March',
+        '4': 'April',
+        '5': 'May',
+        '6': 'June',
+        '7': 'July',
+        '8': 'August',
+        '9': 'September',
+        '10': 'October',
+        '11': 'November',
+        '12': 'December',
+      },
+      short: {
+        '1': 'Jan',
+        '2': 'Feb',
+        '3': 'Mar',
+        '4': 'Apr',
+        '5': 'May',
+        '6': 'Jun',
+        '7': 'Jul',
+        '8': 'Aug',
+        '9': 'Sep',
+        '10': 'Oct',
+        '11': 'Nov',
+        '12': 'Dec',
+      },
+      mode: {
+        everyMonth: 'Every month',
+        everyNMonths: 'Every few months',
+        months: 'In selected months',
+      },
+      // In-card sentences (REV5, §4.5.5c).
+      card: {
+        everyNMonths: { head: 'every {n} months', window: 'from {from} to {to}' },
+        months: { lead: 'In selected months:' },
+      },
+      everyNNote: 'Months are counted from January and reset at year end.',
+    },
+    // Client validation (§4.5.11).
+    validation: {
+      timeRequired: 'Enter a time',
+      timeFormat: 'Invalid time',
+      timeDuplicate: 'Duplicate time',
+      timesMax: 'Up to {max} times',
+      pickAtLeastOne: 'Pick at least one',
+      windowOrder: '“From” must be earlier than “to”',
+      number: 'Enter a number',
+      min: 'Min {min}',
+      max: 'Max {max}',
+      lastWorkingDayNeedsAt: 'This rule requires set times.',
+    },
+  },
+
   workflows: {
     title: 'Workflows',
     subtitle: 'Automate your process: a trigger fires, conditions are checked, then ordered steps run.',
@@ -5019,97 +5171,9 @@ export const en = {
       summary: {
         assist: 'Plan with AI',
       },
-      // Tabbed manual builder (§4.5.5).
-      tabsAria: 'Schedule axes',
-      tab: {
-        time: 'Time',
-        day: 'Day',
-        month: 'Month',
-      },
-      // Time axis (§4.5.5a).
-      time: {
-        mode: {
-          at: 'At set times',
-          everyMinutes: 'Every few minutes',
-          everyHours: 'Every few hours',
-        },
-        // In-card sentences (REV5, §4.5.5a) — {…} = a slot rendered as a control.
-        card: {
-          at: { lead: 'Run at the listed times:' },
-          everyMinutes: { head: 'every {n} minutes', window: 'from {from} to {to}' },
-          everyHours: { head: 'every {n} h, at {minute} min past the hour', window: 'from {from} to {to}' },
-        },
-        lockedByLastWorkingDay: 'The “last working day” rule only works with set times.',
-        switchedToAt: 'Switched to set times — the “last working day” rule needs them.',
-      },
-      // Day axis (§4.5.5b).
-      day: {
-        mode: {
-          everyDay: 'Every day',
-          everyNDays: 'Every few days',
-          weekdays: 'On weekdays',
-          monthDays: 'On days of the month',
-          lastDay: 'Last day of the month',
-          lastWorkingDay: 'Last working day',
-          weekdayInMonth: 'A specific weekday',
-        },
-        // In-card sentences (REV5, §4.5.5b).
-        card: {
-          everyNDays: { head: 'every {n} days', window: 'from day {from} to day {to}' },
-          weekdays: { lead: 'On selected weekdays:' },
-          monthDays: { lead: 'On selected days of the month:' },
-          weekdayInMonth: { head: 'on the {ordinal} {weekday} of the month' },
-        },
-        preset: {
-          workdays: 'Workdays',
-          weekend: 'Weekend',
-        },
-        ordinal: {
-          '1': 'first',
-          '2': 'second',
-          '3': 'third',
-          '4': 'fourth',
-          '5': 'fifth',
-          last: 'last',
-        },
-        ordinalLabel: 'Which',
-        weekdayLabel: 'Weekday',
-        fifthWeekdayNote: 'A “fifth” doesn’t occur every month — those months are skipped.',
-        lastWorkingDayNote: 'Public holidays are not taken into account.',
-      },
-      // Field labels + units (§4.5.5, §4.5.12).
-      field: {
-        minutesEvery: 'Every N minutes',
-        hoursEvery: 'Every N hours',
-        daysEvery: 'Every N days',
-        monthsEvery: 'Every N months',
-        minute: 'Minute',
-        minuteHint: 'Counted from the top of the hour',
-        times: 'Times',
-        addTime: 'Add time',
-        removeTime: 'Remove time',
-      },
       unit: {
         min: 'min',
         h: 'h',
-      },
-      // The “od–do” window pattern (§4.5.6). REV5: toggle labels reworded to read as a
-      // sentence continuation (they continue the slotted "every {n} …" head).
-      window: {
-        toggle: {
-          time: 'within set hours',
-          hours: 'within set hours',
-          days: 'within set month days',
-          months: 'within set months',
-        },
-        from: 'from',
-        to: 'to',
-        fromHour: 'From hour',
-        toHour: 'To hour',
-        fromDay: 'From day',
-        toDay: 'To day',
-        fromMonth: 'From month',
-        toMonth: 'To month',
       },
       // Exceptions disclosure (§4.5.7).
       exclusions: {
@@ -5145,81 +5209,6 @@ export const en = {
         throttled: 'Too many attempts. Wait a moment and try again.',
         failed: 'Couldn’t prepare a suggestion. Try again or set it manually.',
         appliedToast: 'Applied the AI-suggested schedule.',
-      },
-      // Weekday / month names (long nominative + short) used by the grammar + chips.
-      weekday: {
-        long: {
-          '0': 'Sunday',
-          '1': 'Monday',
-          '2': 'Tuesday',
-          '3': 'Wednesday',
-          '4': 'Thursday',
-          '5': 'Friday',
-          '6': 'Saturday',
-        },
-        short: {
-          '0': 'Sun',
-          '1': 'Mon',
-          '2': 'Tue',
-          '3': 'Wed',
-          '4': 'Thu',
-          '5': 'Fri',
-          '6': 'Sat',
-        },
-      },
-      month: {
-        long: {
-          '1': 'January',
-          '2': 'February',
-          '3': 'March',
-          '4': 'April',
-          '5': 'May',
-          '6': 'June',
-          '7': 'July',
-          '8': 'August',
-          '9': 'September',
-          '10': 'October',
-          '11': 'November',
-          '12': 'December',
-        },
-        short: {
-          '1': 'Jan',
-          '2': 'Feb',
-          '3': 'Mar',
-          '4': 'Apr',
-          '5': 'May',
-          '6': 'Jun',
-          '7': 'Jul',
-          '8': 'Aug',
-          '9': 'Sep',
-          '10': 'Oct',
-          '11': 'Nov',
-          '12': 'Dec',
-        },
-        mode: {
-          everyMonth: 'Every month',
-          everyNMonths: 'Every few months',
-          months: 'In selected months',
-        },
-        // In-card sentences (REV5, §4.5.5c).
-        card: {
-          everyNMonths: { head: 'every {n} months', window: 'from {from} to {to}' },
-          months: { lead: 'In selected months:' },
-        },
-        everyNNote: 'Months are counted from January and reset at year end.',
-      },
-      // Client validation (§4.5.11).
-      validation: {
-        timeRequired: 'Enter a time',
-        timeFormat: 'Invalid time',
-        timeDuplicate: 'Duplicate time',
-        timesMax: 'Up to {max} times',
-        pickAtLeastOne: 'Pick at least one',
-        windowOrder: '“From” must be earlier than “to”',
-        number: 'Enter a number',
-        min: 'Min {min}',
-        max: 'Max {max}',
-        lastWorkingDayNeedsAt: 'This rule requires set times.',
       },
       // Sentence grammar (§4.5.10). `lang` is a probe read by describeSchedule; EN uses
       // ONE form throughout (the unit plural buckets all resolve to the same word).

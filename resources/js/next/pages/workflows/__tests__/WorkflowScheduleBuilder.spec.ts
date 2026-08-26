@@ -23,6 +23,9 @@ vi.mock('../../../app/stores/workflows', () => ({
 import WorkflowScheduleBuilder from '../WorkflowScheduleBuilder.vue';
 
 const SCH = en.workflows.schedule;
+// The axis vocabulary moved to the shared editor's module-neutral namespace; the summary,
+// preview and exceptions strings above stayed with Workflows.
+const RE = en.recurrenceEditor;
 
 // Applied by the (stubbed) AI modal → proves apply(draft) flows into the v-model.
 const APPLIED: ScheduleDraft = {
@@ -112,15 +115,15 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
   it('renders the summary sentence + the three axis tabs', () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
     expect(wrapper.text()).toContain('Daily at 09:00');
-    expect(tab(wrapper, SCH.tab.time)).toBeTruthy();
-    expect(tab(wrapper, SCH.tab.day)).toBeTruthy();
-    expect(tab(wrapper, SCH.tab.month)).toBeTruthy();
+    expect(tab(wrapper, RE.tab.time)).toBeTruthy();
+    expect(tab(wrapper, RE.tab.day)).toBeTruthy();
+    expect(tab(wrapper, RE.tab.month)).toBeTruthy();
     wrapper.unmount();
   });
 
   it('switching a Time sub-mode reshapes ONLY the time axis (foreign fields drop)', async () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
-    await radio(wrapper, SCH.time.mode.everyMinutes)!.trigger('click');
+    await radio(wrapper, RE.time.mode.everyMinutes)!.trigger('click');
     await nextTick();
     // `at` is gone; a fresh every_minutes axis (n default 1) with no window.
     expect(draftOf(wrapper).time).toEqual({ mode: 'every_minutes', n: 1 });
@@ -131,12 +134,12 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
 
   it('switching Day → weekdays clears foreign fields; a weekday chip toggles membership', async () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
-    await radio(wrapper, SCH.day.mode.weekdays)!.trigger('click');
+    await radio(wrapper, RE.day.mode.weekdays)!.trigger('click');
     await nextTick();
     expect(draftOf(wrapper).day).toEqual({ mode: 'weekdays', weekdays: [] });
     // The weekday chip group (scoped by its aria-label, distinct from the exclusions group).
-    const group = wrapper.findAll('[role="group"]').find((g) => g.attributes('aria-label') === SCH.day.mode.weekdays)!;
-    const mon = group.findAll('button').find((b) => b.text() === SCH.weekday.short['1'])!;
+    const group = wrapper.findAll('[role="group"]').find((g) => g.attributes('aria-label') === RE.day.mode.weekdays)!;
+    const mon = group.findAll('button').find((b) => b.text() === RE.weekday.short['1'])!;
     await mon.trigger('click');
     await nextTick();
     expect((draftOf(wrapper).day as { weekdays: number[] }).weekdays).toEqual([1]);
@@ -165,7 +168,7 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
     draft.time = { mode: 'every_minutes', n: 5, window: { from: '18:00', to: '09:00' } };
     const wrapper = mountBuilder(draft);
     await flushPreview();
-    expect(wrapper.text()).toContain(SCH.validation.windowOrder);
+    expect(wrapper.text()).toContain(RE.validation.windowOrder);
     expect((wrapper.vm as unknown as { isValid: boolean }).isValid).toBe(false);
     wrapper.unmount();
   });
@@ -174,21 +177,21 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
     const draft = emptyScheduleDraft();
     draft.time = { mode: 'every_minutes', n: 10 };
     const wrapper = mountBuilder(draft);
-    await radio(wrapper, SCH.day.mode.lastWorkingDay)!.trigger('click');
+    await radio(wrapper, RE.day.mode.lastWorkingDay)!.trigger('click');
     await nextTick();
     // Time auto-reset to `at` (§4.5.5a).
     expect(draftOf(wrapper).time).toEqual({ mode: 'at', at: ['09:00'] });
     // The every_* time cards are disabled + the explanation is shown (never a bare gray-out).
-    expect(radio(wrapper, SCH.time.mode.everyMinutes)!.attributes('disabled')).toBeDefined();
-    expect(wrapper.text()).toContain(SCH.time.lockedByLastWorkingDay);
+    expect(radio(wrapper, RE.time.mode.everyMinutes)!.attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain(RE.time.lockedByLastWorkingDay);
     wrapper.unmount();
   });
 
   it('the at[] list caps at the schedule limit (add disabled at 6)', async () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
-    const addBtn = () => wrapper.findAll('button').find((b) => b.text().includes(SCH.field.addTime))!;
+    const addBtn = () => wrapper.findAll('button').find((b) => b.text().includes(RE.field.addTime))!;
     const draftInput = () =>
-      wrapper.findAll('input').find((i) => i.attributes('aria-label') === SCH.field.times)!;
+      wrapper.findAll('input').find((i) => i.attributes('aria-label') === RE.field.times)!;
     // REV5.2: adding goes through the DRAFT picker (a unique time each round).
     for (let i = 0; i < 5; i += 1) {
       await draftInput().setValue(`1${i}:00`);
@@ -205,10 +208,10 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
 
   it('a 422 under trigger_config.schedule.day.* switches to the Day tab', async () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
-    expect(tab(wrapper, SCH.tab.time)!.attributes('aria-selected')).toBe('true');
+    expect(tab(wrapper, RE.tab.time)!.attributes('aria-selected')).toBe('true');
     await wrapper.setProps({ errors: { 'trigger_config.schedule.day.weekdays': 'bad' } });
     await nextTick();
-    expect(tab(wrapper, SCH.tab.day)!.attributes('aria-selected')).toBe('true');
+    expect(tab(wrapper, RE.tab.day)!.attributes('aria-selected')).toBe('true');
     wrapper.unmount();
   });
 
@@ -270,23 +273,23 @@ describe('WorkflowScheduleBuilder (Phase 4b — three-tab builder)', () => {
   it('REV5.2: the `at` editor is ONE wrapping row — the fused draft group + the time chips inline', async () => {
     const wrapper = mountBuilder(emptyScheduleDraft());
     // Add a 2nd time through the DRAFT picker so two chips sit side by side.
-    const draftInput = wrapper.findAll('input').find((i) => i.attributes('aria-label') === SCH.field.times)!;
+    const draftInput = wrapper.findAll('input').find((i) => i.attributes('aria-label') === RE.field.times)!;
     await draftInput.setValue('12:00');
     await nextTick();
-    const addBtn = wrapper.findAll('button').find((b) => b.text().includes(SCH.field.addTime))!;
+    const addBtn = wrapper.findAll('button').find((b) => b.text().includes(RE.field.addTime))!;
     await addBtn.trigger('click');
     await nextTick();
     // The `at` card body (role=group, labelled by the mode title) holds ONE wrapping row…
-    const atBody = wrapper.findAll('[role="group"]').find((g) => g.attributes('aria-label') === SCH.time.mode.at)!;
+    const atBody = wrapper.findAll('[role="group"]').find((g) => g.attributes('aria-label') === RE.time.mode.at)!;
     const row = atBody.find('.flex.flex-wrap');
     expect(row.exists()).toBe(true);
     // …holding exactly ONE draft picker (the fused entry group) + BOTH times as chips.
-    expect(row.findAll(`input[aria-label="${SCH.field.times}"]`).length).toBe(1);
+    expect(row.findAll(`input[aria-label="${RE.field.times}"]`).length).toBe(1);
     expect(row.text()).toContain('09:00');
     expect(row.text()).toContain('12:00');
     // Each chip carries its own remove ✕ (two times → two removable chips).
-    expect(row.find(`button[aria-label="${SCH.field.removeTime} 09:00"]`).exists()).toBe(true);
-    expect(row.find(`button[aria-label="${SCH.field.removeTime} 12:00"]`).exists()).toBe(true);
+    expect(row.find(`button[aria-label="${RE.field.removeTime} 09:00"]`).exists()).toBe(true);
+    expect(row.find(`button[aria-label="${RE.field.removeTime} 12:00"]`).exists()).toBe(true);
     wrapper.unmount();
   });
 

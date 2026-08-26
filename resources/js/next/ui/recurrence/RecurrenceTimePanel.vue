@@ -1,25 +1,34 @@
 <script setup lang="ts">
-// WorkflowScheduleTimePanel — the "Czas" tab (§4.5.5a, REV5). Renders its three
-// sub-modes through `WorkflowScheduleOptionCards`: the SELECTED card expands with its
-// controls woven into a natural-language SENTENCE (the `{n}`/`{minute}` slots are
-// NumberInputs; the "od {from} do {to}" window is the inline WindowField). Switching a
-// sub-mode reshapes ONLY the time axis. The `last_working_day` day rule LOCKS this to
-// `at`: the every_* cards render disabled (with a panel-level explanation, never a bare
-// gray-out) and the host auto-resets the axis + flags `switchedToAt`.
+// RecurrenceTimePanel — the "Time" axis. Renders its sub-modes through
+// `RecurrenceOptionCards`: the SELECTED card expands with its controls woven into a
+// natural-language SENTENCE (the `{n}`/`{minute}` slots are NumberInputs; the "from {from} to
+// {to}" window is the inline WindowField). Switching a sub-mode reshapes ONLY the time axis.
+// The `last_working_day` day rule LOCKS this to `at`: the every_* cards render disabled (with
+// a panel-level explanation, never a bare gray-out) and the host auto-resets the axis + flags
+// `switchedToAt`.
+//
+// NO PROFILE THAT OMITS THE TIME AXIS EVER MOUNTS THIS. The Calendar has no time axis at all
+// — `recurrence.time` is `prohibited` and the server stamps the event's own hour — so its
+// profile lists no `time` tab and this file is simply never reached from there.
 import { computed, ref } from 'vue';
-import NumberInput from '../../ui/forms/NumberInput.vue';
-import TimePicker from '../../ui/forms/TimePicker.vue';
-import Button from '../../ui/primitives/Button.vue';
-import Alert from '../../ui/feedback/Alert.vue';
-import WorkflowScheduleOptionCards, { type OptionCard } from './WorkflowScheduleOptionCards.vue';
-import WorkflowScheduleWindowField from './WorkflowScheduleWindowField.vue';
+import NumberInput from '../forms/NumberInput.vue';
+import TimePicker from '../forms/TimePicker.vue';
+import Button from '../primitives/Button.vue';
+import Alert from '../feedback/Alert.vue';
+import RecurrenceOptionCards, { type OptionCard } from './RecurrenceOptionCards.vue';
+import RecurrenceWindowField from './RecurrenceWindowField.vue';
 import { useI18n } from '../../app/i18n';
-import { SCHEDULE_LIMITS, splitSentenceTemplate, type TimeAxis } from './workflowSchedule';
-
-type TimeSubmode = 'at' | 'every_minutes' | 'every_hours';
+import {
+  RECURRENCE_LIMITS,
+  splitSentenceTemplate,
+  type RecurrenceProfile,
+  type TimeAxis,
+  type TimeSubmode,
+} from './recurrenceAxes';
 
 const props = withDefaults(
   defineProps<{
+    profile: RecurrenceProfile;
     /** True while the day axis is `last_working_day` — locks this to `at`. */
     locked?: boolean;
     /** Show the one-time "switched to set times" note after an auto-reset. */
@@ -32,19 +41,28 @@ const props = withDefaults(
 
 const model = defineModel<TimeAxis>({ required: true });
 const { t } = useI18n();
-const L = SCHEDULE_LIMITS;
+const L = RECURRENCE_LIMITS;
 
-const modeOptions = computed<OptionCard<TimeSubmode>[]>(() => [
-  { value: 'at', title: t('workflows.schedule.time.mode.at') },
-  { value: 'every_minutes', title: t('workflows.schedule.time.mode.everyMinutes'), disabled: props.locked },
-  { value: 'every_hours', title: t('workflows.schedule.time.mode.everyHours'), disabled: props.locked },
-]);
+const TITLE_KEY: Record<TimeSubmode, string> = {
+  at: 'recurrenceEditor.time.mode.at',
+  every_minutes: 'recurrenceEditor.time.mode.everyMinutes',
+  every_hours: 'recurrenceEditor.time.mode.everyHours',
+};
 
-// The in-card head sentences, split so PL/EN word order lives in the string (§4.5.12).
-const everyMinutesHead = computed(() => splitSentenceTemplate(t('workflows.schedule.time.card.everyMinutes.head')));
-const everyHoursHead = computed(() => splitSentenceTemplate(t('workflows.schedule.time.card.everyHours.head')));
+const modeOptions = computed<OptionCard<TimeSubmode>[]>(() =>
+  props.profile.timeModes.map((value) => ({
+    value,
+    title: t(TITLE_KEY[value]),
+    // `at` is never locked — it is what the lock locks TO.
+    disabled: value === 'at' ? undefined : props.locked,
+  })),
+);
 
-// Remember the last `at` times so switching away and back preserves them (§4.5.1).
+// The in-card head sentences, split so PL/EN word order lives in the string.
+const everyMinutesHead = computed(() => splitSentenceTemplate(t('recurrenceEditor.time.card.everyMinutes.head')));
+const everyHoursHead = computed(() => splitSentenceTemplate(t('recurrenceEditor.time.card.everyHours.head')));
+
+// Remember the last `at` times so switching away and back preserves them.
 const preservedAt = ref<string[]>(['09:00']);
 
 const mode = computed<TimeSubmode>({
@@ -59,8 +77,8 @@ const mode = computed<TimeSubmode>({
 });
 
 // --- `at` — a DRAFT picker + "add" (one fused group) + removable time chips ---
-// REV5.2 (user): the picker no longer IS the list — it is a draft entry field fused
-// with the add button; the times render as compact chips on the SAME wrapping line.
+// The picker is not the list — it is a draft entry field fused with the add button; the times
+// render as compact chips on the SAME wrapping line.
 const atTimes = computed<string[]>(() => (model.value.mode === 'at' ? model.value.at : []));
 const newAtTime = ref<string | null>(null);
 const atFull = computed(() => atTimes.value.length >= L.atTimesMax);
@@ -140,18 +158,18 @@ const hoursWindowTo = computed(() =>
 
 <template>
   <div class="flex flex-col gap-next-3">
-    <WorkflowScheduleOptionCards
+    <RecurrenceOptionCards
       v-model="mode"
       :options="modeOptions"
-      :aria-label="t('workflows.schedule.tab.time')"
+      :aria-label="t('recurrenceEditor.tab.time')"
     >
-      <!-- at — ONE horizontal wrapping flow (REV5.2): lead + a FUSED draft-picker+"Add
-           time" group (a muted well so the pair reads as one control) + the added times
-           as compact removable chips on the SAME line. The last chip hides its ✕ (the
-           axis requires at least one time). The error breaks to its own row. -->
+      <!-- at — ONE horizontal wrapping flow: lead + a FUSED draft-picker+"Add time" group (a
+           muted well so the pair reads as one control) + the added times as compact removable
+           chips on the SAME line. The last chip hides its ✕ (the axis requires at least one
+           time). The error breaks to its own row. -->
       <template #body-at>
         <div class="flex flex-wrap items-center gap-next-2">
-          <p class="text-next-sm text-next-fg">{{ t('workflows.schedule.time.card.at.lead') }}</p>
+          <p class="text-next-sm text-next-fg">{{ t('recurrenceEditor.time.card.at.lead') }}</p>
 
           <!-- The fused entry group: draft picker + add. The picker sits in a FIXED-WIDTH
                wrapper: Popover-based fields drop the class attr (multi-root inheritAttrs:
@@ -165,12 +183,12 @@ const hoursWindowTo = computed(() =>
                 v-model="newAtTime"
                 :clearable="false"
                 :disabled="atFull"
-                :aria-label="t('workflows.schedule.field.times')"
+                :aria-label="t('recurrenceEditor.field.times')"
                 @keydown.enter.prevent="addAt"
               />
             </div>
             <Button variant="ghost" size="sm" leading-icon="plus" :disabled="!canAddAt" @click="addAt">
-              {{ t('workflows.schedule.field.addTime') }}
+              {{ t('recurrenceEditor.field.addTime') }}
             </Button>
           </div>
 
@@ -187,19 +205,19 @@ const hoursWindowTo = computed(() =>
               variant="ghost"
               size="icon-xs"
               leading-icon="x"
-              :aria-label="`${t('workflows.schedule.field.removeTime')} ${time}`"
+              :aria-label="`${t('recurrenceEditor.field.removeTime')} ${time}`"
               @click="removeAt(time)"
             />
           </span>
 
           <span v-if="atFull" class="text-next-xs text-next-muted-foreground">
-            {{ t('workflows.schedule.validation.timesMax', undefined, { max: L.atTimesMax }) }}
+            {{ t('recurrenceEditor.validation.timesMax', undefined, { max: L.atTimesMax }) }}
           </span>
           <p v-if="errors.at" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.at }}</p>
         </div>
       </template>
 
-      <!-- every_minutes — "co {n} minut [☐ od {from} do {to}]" — ONE wrapping flow (REV5). -->
+      <!-- every_minutes — "co {n} minut [☐ od {from} do {to}]" — ONE wrapping flow. -->
       <template #body-every_minutes>
         <div class="flex flex-wrap items-center gap-next-1_5 text-next-sm text-next-fg">
           <template v-for="(seg, i) in everyMinutesHead" :key="'h' + i">
@@ -210,13 +228,13 @@ const hoursWindowTo = computed(() =>
               :min="L.everyMinutesMin"
               :max="L.everyMinutesMax"
               class="w-20 shrink-0 basis-20"
-              :aria-label="t('workflows.schedule.field.minutesEvery')"
+              :aria-label="t('recurrenceEditor.field.minutesEvery')"
             />
           </template>
-          <WorkflowScheduleWindowField
+          <RecurrenceWindowField
             :enabled="minutesWindowOn"
-            :toggle-label="t('workflows.schedule.window.toggle.time')"
-            :window-template="t('workflows.schedule.time.card.everyMinutes.window')"
+            :toggle-label="t('recurrenceEditor.window.toggle.time')"
+            :window-template="t('recurrenceEditor.time.card.everyMinutes.window')"
             :error="errors.window"
             @toggle="toggleMinutesWindow"
           >
@@ -226,7 +244,7 @@ const hoursWindowTo = computed(() =>
                   :model-value="minutesWindowFrom"
                   :clearable="false"
                   :disabled="disabled"
-                  :aria-label="t('workflows.schedule.window.from')"
+                  :aria-label="t('recurrenceEditor.window.from')"
                   @update:model-value="setMinutesWindow('from', $event)"
                 />
               </div>
@@ -237,17 +255,17 @@ const hoursWindowTo = computed(() =>
                   :model-value="minutesWindowTo"
                   :clearable="false"
                   :disabled="disabled"
-                  :aria-label="t('workflows.schedule.window.to')"
+                  :aria-label="t('recurrenceEditor.window.to')"
                   @update:model-value="setMinutesWindow('to', $event)"
                 />
               </div>
             </template>
-          </WorkflowScheduleWindowField>
+          </RecurrenceWindowField>
           <p v-if="errors.n" class="w-full text-next-xs text-next-danger" role="alert">{{ errors.n }}</p>
         </div>
       </template>
 
-      <!-- every_hours — "co {n} godz. o {minute} min … [☐ od {from} do {to}]" — ONE flow (REV5). -->
+      <!-- every_hours — "co {n} godz. o {minute} min … [☐ od {from} do {to}]" — ONE flow. -->
       <template #body-every_hours>
         <div class="flex flex-wrap items-center gap-next-1_5 text-next-sm text-next-fg">
           <template v-for="(seg, i) in everyHoursHead" :key="'h' + i">
@@ -258,7 +276,7 @@ const hoursWindowTo = computed(() =>
               :min="L.everyHoursMin"
               :max="L.everyHoursMax"
               class="w-20 shrink-0 basis-20"
-              :aria-label="t('workflows.schedule.field.hoursEvery')"
+              :aria-label="t('recurrenceEditor.field.hoursEvery')"
             />
             <NumberInput
               v-else-if="seg.name === 'minute'"
@@ -266,13 +284,13 @@ const hoursWindowTo = computed(() =>
               :min="L.minuteMin"
               :max="L.minuteMax"
               class="w-20 shrink-0 basis-20"
-              :aria-label="t('workflows.schedule.field.minute')"
+              :aria-label="t('recurrenceEditor.field.minute')"
             />
           </template>
-          <WorkflowScheduleWindowField
+          <RecurrenceWindowField
             :enabled="hoursWindowOn"
-            :toggle-label="t('workflows.schedule.window.toggle.hours')"
-            :window-template="t('workflows.schedule.time.card.everyHours.window')"
+            :toggle-label="t('recurrenceEditor.window.toggle.hours')"
+            :window-template="t('recurrenceEditor.time.card.everyHours.window')"
             :error="errors.window"
             @toggle="toggleHoursWindow"
           >
@@ -283,7 +301,7 @@ const hoursWindowTo = computed(() =>
                 :max="L.hourMax"
                 :disabled="disabled"
                 class="w-20 shrink-0 basis-20"
-                :aria-label="t('workflows.schedule.window.fromHour')"
+                :aria-label="t('recurrenceEditor.window.fromHour')"
                 @update:model-value="setHoursWindow('from', $event)"
               />
             </template>
@@ -294,22 +312,22 @@ const hoursWindowTo = computed(() =>
                 :max="L.hourMax"
                 :disabled="disabled"
                 class="w-20 shrink-0 basis-20"
-                :aria-label="t('workflows.schedule.window.toHour')"
+                :aria-label="t('recurrenceEditor.window.toHour')"
                 @update:model-value="setHoursWindow('to', $event)"
               />
             </template>
-          </WorkflowScheduleWindowField>
+          </RecurrenceWindowField>
           <p v-if="errors.n || errors.minute" class="w-full text-next-xs text-next-danger" role="alert">
             {{ errors.n || errors.minute }}
           </p>
         </div>
       </template>
-    </WorkflowScheduleOptionCards>
+    </RecurrenceOptionCards>
 
-    <!-- last_working_day restriction: surface, don't hide (§4.5.5a). -->
-    <Alert v-if="locked" variant="info" size="sm">{{ t('workflows.schedule.time.lockedByLastWorkingDay') }}</Alert>
+    <!-- last_working_day restriction: surface, don't hide. -->
+    <Alert v-if="locked" variant="info" size="sm">{{ t('recurrenceEditor.time.lockedByLastWorkingDay') }}</Alert>
     <Alert v-if="switchedToAt && mode === 'at'" variant="info" size="sm">
-      {{ t('workflows.schedule.time.switchedToAt') }}
+      {{ t('recurrenceEditor.time.switchedToAt') }}
     </Alert>
   </div>
 </template>

@@ -22,7 +22,6 @@
 // coupling — `last_working_day` LOCKS the time axis to `at` — and maps a server 422 onto
 // the offending tab / the exceptions disclosure (§4.5.11).
 import { computed, ref, watch } from 'vue';
-import Tabs, { type TabItem } from '../../ui/navigation/Tabs.vue';
 import Accordion from '../../ui/disclosure/Accordion.vue';
 import AccordionItem from '../../ui/disclosure/AccordionItem.vue';
 import FormField from '../../ui/forms/FormField.vue';
@@ -34,9 +33,11 @@ import Surface from '../../ui/layout/Surface.vue';
 import WorkflowScheduleSummary from './WorkflowScheduleSummary.vue';
 import WorkflowSchedulePreviewStrip from './WorkflowSchedulePreviewStrip.vue';
 import WorkflowScheduleAssistModal from './WorkflowScheduleAssistModal.vue';
-import WorkflowScheduleTimePanel from './WorkflowScheduleTimePanel.vue';
-import WorkflowScheduleDayPanel from './WorkflowScheduleDayPanel.vue';
-import WorkflowScheduleMonthPanel from './WorkflowScheduleMonthPanel.vue';
+import RecurrenceAxisEditor from '../../ui/recurrence/RecurrenceAxisEditor.vue';
+import {
+  WORKFLOW_SCHEDULE_PROFILE,
+  type RecurrenceAxisId,
+} from '../../ui/recurrence/recurrenceAxes';
 import { useI18n } from '../../app/i18n';
 import {
   draftToConfig,
@@ -67,8 +68,7 @@ const L = SCHEDULE_LIMITS;
 /** The viewer's active zone — feeds the conditional tz clause in the summary (§4.5.10). */
 const browserTz = resolveBrowserZone();
 
-type TabValue = 'time' | 'day' | 'month';
-const activeTab = ref<TabValue>('time');
+const activeTab = ref<RecurrenceAxisId | null>('time');
 const assistOpen = ref(false);
 const exclusionsOpen = ref<string | null>(null);
 const stripRef = ref<InstanceType<typeof WorkflowSchedulePreviewStrip> | null>(null);
@@ -112,24 +112,25 @@ function errorFor(path: string): string | undefined {
   return props.errors[`trigger_config.schedule.${path}`];
 }
 
-const timeErrors = computed(() => ({
-  at: errorFor('time.at'),
-  n: errorFor('time.n'),
-  minute: errorFor('time.minute'),
-  window: errorFor('time.window'),
-}));
-const dayErrors = computed(() => ({
-  n: errorFor('day.n'),
-  window: errorFor('day.window'),
-  weekdays: errorFor('day.weekdays'),
-  days: errorFor('day.days'),
-  ordinal: errorFor('day.special.ordinal'),
-  weekday: errorFor('day.special.weekday'),
-}));
-const monthErrors = computed(() => ({
-  n: errorFor('month.n'),
-  window: errorFor('month.window'),
-  months: errorFor('month.months'),
+/**
+ * Every axis message the editor can route, keyed by AXIS-RELATIVE path. The editor splits
+ * this per panel; what stays here is the only part that knows the server's own prefix
+ * (`trigger_config.schedule.`) — the Calendar's block is called something else entirely.
+ */
+const axisErrors = computed<Record<string, string | undefined>>(() => ({
+  'time.at': errorFor('time.at'),
+  'time.n': errorFor('time.n'),
+  'time.minute': errorFor('time.minute'),
+  'time.window': errorFor('time.window'),
+  'day.n': errorFor('day.n'),
+  'day.window': errorFor('day.window'),
+  'day.weekdays': errorFor('day.weekdays'),
+  'day.days': errorFor('day.days'),
+  'day.special.ordinal': errorFor('day.special.ordinal'),
+  'day.special.weekday': errorFor('day.special.weekday'),
+  'month.n': errorFor('month.n'),
+  'month.window': errorFor('month.window'),
+  'month.months': errorFor('month.months'),
 }));
 
 // --- last_working_day coupling: LOCK the time axis to `at` (§4.5.5a) ---------
@@ -147,13 +148,6 @@ watch(lockedToAt, (locked) => {
     switchedToAt.value = true;
   }
 });
-
-// --- Tabs --------------------------------------------------------------------
-const tabItems = computed<TabItem<TabValue>[]>(() => [
-  { value: 'time', label: t('workflows.schedule.tab.time'), icon: 'clock' },
-  { value: 'day', label: t('workflows.schedule.tab.day'), icon: 'calendar' },
-  { value: 'month', label: t('workflows.schedule.tab.month'), icon: 'hash' },
-]);
 
 // --- 422 → tab / disclosure mapping (§4.5.11) --------------------------------
 // A `schedule.tz` 422 maps to NO tab (the field is gone, §4.5.8) — it is surfaced by the
@@ -233,23 +227,22 @@ function onApply(draft: ScheduleDraft): void {
       />
     </Surface>
 
-    <!-- 2. The three-tab manual builder. -->
-    <Tabs v-model="activeTab" :items="tabItems" variant="underline" size="md" :aria-label="t('workflows.schedule.tabsAria')">
-      <template #panel-time>
-        <WorkflowScheduleTimePanel
-          v-model="timeAxis"
-          :locked="lockedToAt"
-          :switched-to-at="switchedToAt"
-          :errors="timeErrors"
-        />
-      </template>
-      <template #panel-day>
-        <WorkflowScheduleDayPanel v-model="dayAxis" :errors="dayErrors" />
-      </template>
-      <template #panel-month>
-        <WorkflowScheduleMonthPanel v-model="monthAxis" :errors="monthErrors" />
-      </template>
-    </Tabs>
+    <!-- 2. The three-tab manual builder — the SHARED recurrence editor, on the profile that
+         admits the whole grammar. The Calendar mounts this very component on a narrower
+         profile; the preview rail, the AI modal and the exceptions list below stay here
+         because all three are Workflows' own. The tab is bound so a 422 can steer it (the
+         watch above owns that, being the only side that knows the server's paths). -->
+    <RecurrenceAxisEditor
+      v-model:tab="activeTab"
+      v-model:time="timeAxis"
+      v-model:day="dayAxis"
+      v-model:month="monthAxis"
+      :profile="WORKFLOW_SCHEDULE_PROFILE"
+      :errors="axisErrors"
+      :lock-time-to-at="lockedToAt"
+      :switched-to-at="switchedToAt"
+      :aria-label="t('recurrenceEditor.tabsAria')"
+    />
 
     <!-- 3. Exceptions — collapsed by default; skip-DATES only (§4.5.7). -->
     <Accordion v-model="exclusionsOpen" type="single">
