@@ -31,9 +31,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->append(FlushChangelogMiddleware::class);
         $middleware->appendToGroup('api', ResolveWorkspace::class);
 
-        // Makes the server answer in the LANGUAGE THE USER CHOSE. `users.locale` was persisted and
-        // never read back, so every `__()` rendered in APP_LOCALE — invisible on a Polish install
-        // until somebody switched the interface to English and got Polish sentences from the API.
+        // Makes the server answer in the LANGUAGE THE USER IS ACTUALLY LOOKING AT: the stored choice
+        // first, then the locale the client says it is rendering (X-Client-Locale), then APP_LOCALE.
+        // The column alone was not enough — the frontend resolves its own locale from localStorage or
+        // the browser and only ever POSTs it on a deliberate switch, so a Polish interface got English
+        // server prose from first login with no way to correct it from the UI.
         //
         // It reads $request->user(), so it must run AFTER Authenticate — the same dependency
         // ResolveWorkspace has, and the reason that one needed an explicit slot. This one does NOT:

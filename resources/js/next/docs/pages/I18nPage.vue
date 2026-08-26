@@ -39,7 +39,8 @@ const apiRows: ApiRow[] = [
   { name: 't(key, default, params)', type: '(key, default?, params?) => string', description: 'Interpolate {param} tokens from the params record.' },
   { name: 'locale', type: 'Readonly<Ref<NextLocale>>', description: 'Reactive active locale (read-only).' },
   { name: 'currentLocale', type: 'ComputedRef<NextLocale>', description: 'Alias of locale (legacy-compatible name).' },
-  { name: 'setLocale(l)', type: '(l: NextLocale) => void', description: 'Switch + persist (next-locale) + set <html lang> + best-effort PUT /api/user/locale.' },
+  { name: 'setLocale(l)', type: '(l: NextLocale) => void', description: 'Switch + persist (next-locale) + set <html lang> + best-effort PUT /api/user/locale. Re-runs even when l is already the active locale (a deliberate re-assert, not a no-op) and skips the PUT entirely when nobody is logged in.' },
+  { name: 'activeLocale()', type: '() => NextLocale', description: 'Non-reactive read of the rendered locale, for callers outside the component tree. lib/api.ts calls this per request to set X-Client-Locale.' },
   { name: 'availableLocales', type: 'readonly NextLocale[]', description: 'The locales offered by the switcher (pl, en).' },
 ];
 </script>
@@ -115,7 +116,8 @@ const apiRows: ApiRow[] = [
     <StorySection title="Locale resolution & persistence">
       <ul class="ml-next-4 list-disc space-y-next-1 text-next-sm text-next-fg">
         <li>Initial locale: <code>localStorage('next-locale')</code> → browser language (<code>pl*</code> → pl) → <code>'en'</code>.</li>
-        <li><code>setLocale()</code> persists to <code>next-locale</code>, sets <code>&lt;html lang&gt;</code>, and best-effort PUTs <code>/api/user/locale</code> (failures swallowed — never breaks the switch).</li>
+        <li><code>setLocale()</code> persists to <code>next-locale</code>, sets <code>&lt;html lang&gt;</code>, and — only when someone is logged in — best-effort PUTs <code>/api/user/locale</code> (failures swallowed — never breaks the switch). It deliberately does <strong>not</strong> early-return when the clicked locale is already active: re-asserting the language still writes the choice to the server, which is what fixes an account whose stored locale disagrees with the language on screen.</li>
+        <li>Every request from this client also sends its current locale as the <code>X-Client-Locale</code> header (<code>lib/api.ts</code>, read from <code>activeLocale()</code>). The server (<code>App\Http\Middleware\SetUserLocale</code>) treats it as a fallback fact — "this is what the screen is rendering" — consulted only when the user has no stored locale choice; it is never persisted from the header alone. See ADR-0053.</li>
         <li><code>initI18n()</code> runs in <code>main.ts</code> before first paint to apply <code>&lt;html lang&gt;</code>.</li>
         <li>Date/time pickers default their <code>Intl</code> locale to the active UI language (overridable via the <code>locale</code> prop).</li>
       </ul>

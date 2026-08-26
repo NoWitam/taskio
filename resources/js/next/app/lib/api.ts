@@ -14,25 +14,35 @@ import axios, {
   type AxiosResponse,
   type AxiosError,
 } from 'axios';
+import { activeLocale } from '../i18n';
+import { authToken, TOKEN_KEY } from './token';
 
 /** Path the 401 interceptor redirects to. */
 export const LOGIN_PATH = '/next/login';
 
-/** localStorage keys shared with the verified backend auth contract. */
-export const TOKEN_KEY = 'taskio_token';
+/**
+ * localStorage keys shared with the verified backend auth contract.
+ *
+ * `TOKEN_KEY` is declared in `./token` (so "is anyone logged in?" can be asked without importing this
+ * client) and re-exported here, because that is where every existing caller imports it from.
+ */
+export { TOKEN_KEY };
 export const WORKSPACE_KEY = 'taskio_workspace';
+
+/**
+ * Header stating the language THIS CLIENT IS RENDERING, read by `App\Http\Middleware\SetUserLocale`.
+ *
+ * The frontend resolves its own locale (localStorage → browser → default) and used to tell the server
+ * only on a deliberate switch of the language toggle — so a Polish interface received English
+ * validation messages, labels and badges in the same window, from first login. This states the fact on
+ * every request instead. It is NOT a preference: a stored `users.locale` still outranks it server-side,
+ * and nothing here writes to that column.
+ */
+export const CLIENT_LOCALE_HEADER = 'X-Client-Locale';
 
 function csrfToken(): string | null {
   if (typeof document === 'undefined') return null;
   return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-}
-
-function authToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
 }
 
 function workspaceId(): string | null {
@@ -77,6 +87,10 @@ class NextApiClient {
       if (workspace) {
         config.headers.set('X-Workspace-Id', workspace);
       }
+
+      // State the language this client is rendering, so server prose can match the screen it
+      // lands on. Read at REQUEST time (not at module load) so it follows a live language switch.
+      config.headers.set(CLIENT_LOCALE_HEADER, activeLocale());
 
       // Let the browser set the multipart boundary for FormData payloads.
       if (typeof FormData !== 'undefined' && config.data instanceof FormData) {

@@ -4,10 +4,30 @@
 // + key fallback on a miss), runtime locale switching, and — crucially — 1:1 key
 // parity between the `en` and `pl` catalogs so a missing translation is caught at
 // CI time rather than shipping an untranslated string.
-import { beforeEach, describe, expect, it } from 'vitest';
-import { useI18n, setLocale, translate, AVAILABLE_LOCALES } from '../index';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { useI18n, setLocale, translate, activeLocale, AVAILABLE_LOCALES } from '../index';
+import { api } from '../../lib/api';
+import { hasAuthToken } from '../../lib/token';
 import { en } from '../en';
 import { pl } from '../pl';
+
+// The language switch PUTs the choice to the server; here we only care that it does, not that it
+// arrives. (The header that states the RENDERED language is pinned in `lib/__tests__/apiLocaleHeader`.)
+vi.mock('../../lib/api', () => ({
+  api: { put: vi.fn(() => Promise.resolve({})) },
+  CLIENT_LOCALE_HEADER: 'X-Client-Locale',
+}));
+
+// Logged in by default; one test flips it. Mocked because there is no `localStorage` in this
+// environment, so the real reader would answer "anonymous" and no sync would ever be attempted.
+vi.mock('../../lib/token', () => ({
+  TOKEN_KEY: 'taskio_token',
+  authToken: vi.fn(() => 'test-token'),
+  hasAuthToken: vi.fn(() => true),
+}));
+
+const putToServer = api.put as unknown as Mock;
+const loggedIn = hasAuthToken as unknown as Mock;
 
 /** Recursively collect every dot-path leaf key from a nested catalog object. */
 function leafKeys(obj: Record<string, unknown>, prefix = ''): string[] {
@@ -76,6 +96,73 @@ describe('next i18n', () => {
       expect([...availableLocales]).toEqual([...AVAILABLE_LOCALES]);
       expect(availableLocales).toContain('pl');
       expect(availableLocales).toContain('en');
+    });
+  });
+
+  describe('the locale the client is rendering', () => {
+    it('exposes the rendered locale to callers outside the component tree', () => {
+      // `lib/api.ts` reads this on every request so server prose can match the screen.
+      setLocale('pl');
+      expect(activeLocale()).toBe('pl');
+      setLocale('en');
+      expect(activeLocale()).toBe('en');
+    });
+
+    it('tells the server when the language changes', () => {
+      setLocale('en');
+      putToServer.mockClear();
+
+      setLocale('pl');
+
+      expect(putToServer).toHaveBeenCalledWith('/user/locale', { locale: 'pl' });
+    });
+
+    /**
+     * THE ESCAPE HATCH. Pressing the segment that is already lit used to return early and do nothing
+     * at all — including not telling the server. That was the only lever a user had: someone whose
+     * account stores `pl` (chosen on another device) but whose browser here renders `en` sees two
+     * languages at once, presses "EN", and nothing happens. A stored choice outranks the header
+     * server-side, so re-asserting it is the only way out of that state from the UI.
+     */
+    it('re-asserts the language even when it is already the active one', () => {
+      setLocale('pl');
+      putToServer.mockClear();
+
+      setLocale('pl');
+
+      expect(putToServer).toHaveBeenCalledWith('/user/locale', { locale: 'pl' });
+      expect(activeLocale()).toBe('pl');
+    });
+
+    it('refuses a value outside the locale set outright', () => {
+      setLocale('pl');
+      putToServer.mockClear();
+
+      setLocale('de' as never);
+
+      expect(putToServer).not.toHaveBeenCalled();
+      expect(activeLocale(), 'junk must not move the rendered locale').toBe('pl');
+    });
+
+    /**
+     * An anonymous visitor still switches language — it just is not written anywhere.
+     *
+     * There is no account to store it on, and the api client's 401 interceptor NAVIGATES TO THE LOGIN
+     * PAGE, so a speculative PUT from the invite-accept screen (a public route that carries this very
+     * switcher) would throw the visitor off the page they were invited to. The server is not left
+     * guessing for them: it reads the locale this client declares on every request.
+     */
+    it('does not call the server when nobody is logged in', () => {
+      loggedIn.mockReturnValue(false);
+      setLocale('pl');
+      putToServer.mockClear();
+
+      setLocale('en');
+
+      expect(putToServer).not.toHaveBeenCalled();
+      expect(activeLocale(), 'the interface still switches').toBe('en');
+
+      loggedIn.mockReturnValue(true);
     });
   });
 
