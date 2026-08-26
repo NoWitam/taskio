@@ -9,11 +9,19 @@
 //            → { data: CalendarOccurrence[], meta: { timezone, truncated, truncations[],
 //                                                    sources[], unavailable_sources[] } }
 //            NO pagination, NO `tz` param, NO `total`. Window > 62 days → 422 on `to`.
-//   POST   /calendar/events              → { data: CalendarEvent }
+//   POST   /calendar/events              → { data: CalendarEvent }   (`scope` PROHIBITED here)
 //   GET    /calendar/events/{uuid}       → { data: CalendarEvent }
 //   PUT    /calendar/events/{uuid}       → { data: CalendarEvent }
+//            +`scope`/`occurrence_date` in the BODY. 200 = the row in the URL was rewritten;
+//            201 = a NEW row (a detached occurrence, or the far half of a split) — which the
+//            client reads as "`data.id` is not the id we asked for", not from a status code.
 //   DELETE /calendar/events/{uuid}       → 204, no body
+//            +`scope`/`occurrence_date` in the QUERY. Never creates a row under any scope.
 //   There is deliberately NO `GET /calendar/events` list and NO restore endpoint.
+//
+//   A `PUT` IS A WHOLE-EVENT WRITE, AND `recurrence` IS PART OF THE EVENT: omitting the key
+//   REMOVES the series; sending it without `exclusions.dates` RESURRECTS days somebody
+//   deleted one at a time. Neither reports anything. See `buildEventPayload`.
 //
 // TWO behaviours worth knowing before touching this file:
 //
@@ -38,10 +46,13 @@ import type {
   CalendarEvent,
   CalendarEventPayload,
   CalendarEventResponse,
+  CalendarEventScope,
   CalendarMeta,
   CalendarOccurrence,
   CalendarOccurrencesResponse,
+  CalendarRecurrenceWrite,
   CalendarWindowQuery,
+  IsoDay,
 } from '../../pages/calendar/types';
 
 /**
@@ -83,6 +94,35 @@ export interface CalendarEventDraft {
   starts_time: string | null;
   ends_day: string | null;
   ends_time: string | null;
+  /**
+   * The series' rule, ALREADY IN WIRE SHAPE (`recurrencePresets.recurrenceStateToWire`), or
+   * null for an event that happens once.
+   *
+   * `null` and "absent" are ONE case here and the builder emits no key for either — because
+   * on the server they are not the same as an empty object, which compiles to "every day,
+   * forever". The UI state that produced this (a preset, an end mode, the carried exclusions)
+   * lives in `RecurrenceState`; only its compiled result reaches the payload.
+   */
+  recurrence?: CalendarRecurrenceWrite | null;
+}
+
+/**
+ * How much of a series a write touches, and which occurrence it names.
+ *
+ * A SEPARATE ARGUMENT FROM THE DRAFT, deliberately: these are not fields of the event, they
+ * are parameters of the OPERATION. `scope` is stated explicitly rather than left to default,
+ * because the server reads an absent scope as "the whole series, history included" — the one
+ * outcome that must never be reachable by forgetting something.
+ */
+export interface CalendarWriteScope {
+  scope: CalendarEventScope;
+  /** The day the server itself published on the occurrence. Required iff `scope !== 'series'`. */
+  occurrenceDate: IsoDay | null;
+}
+
+/** The whole-series default, spelled out so nothing has to infer it from `undefined`. */
+export function seriesScope(): CalendarWriteScope {
+  return { scope: 'series', occurrenceDate: null };
 }
 
 /**
@@ -105,11 +145,20 @@ export interface CalendarEventDraft {
  *      "somebody" is whichever layer happens to look at it; the offset makes the value name
  *      one instant and round-trip unchanged, regardless of how any of them would have
  *      resolved it. See `zonedWallClockToInstant`.
+ *
+ *   4. THE RULE TRAVELS WHOLE, OR NOT AT ALL. `recurrence` is a column like any other on a
+ *      whole-event write: omit it and the series STOPS REPEATING; send it without
+ *      `exclusions.dates` and every occurrence somebody deleted one at a time comes BACK.
+ *      So the caller hands in an already-compiled block (carried from the GET when the user
+ *      never touched the control), and this function only decides whether it may go at all —
+ *      it may not under `scope=occurrence`, where one day of a series is not itself a series
+ *      (422 `occurrence_has_no_rule`).
  */
 export function buildEventPayload(
   draft: CalendarEventDraft,
   existing: CalendarEvent | null,
   timeZone: string,
+  write: CalendarWriteScope = seriesScope(),
 ): CalendarEventPayload {
   // No `color` key, ever. It is not omitted here for the form's convenience — the write
   // surface has none: an event's colour is server-assigned and constant (see
@@ -135,6 +184,22 @@ export function buildEventPayload(
   if (carried) {
     payload.subject_type = carried.type;
     payload.subject_id = carried.id;
+  }
+
+  // The rule. Never sent under `occurrence` — the detached day is a plain, one-off event and
+  // a rule alongside that scope is a 422, not a nested series. Never sent as `{}` either:
+  // an empty-ish block is `filled()` server-side and compiles to "every day, forever", so
+  // "does not repeat" is the ABSENCE of the key.
+  if (write.scope !== 'occurrence' && draft.recurrence) {
+    payload.recurrence = draft.recurrence;
+  }
+
+  // `series` is the wire default and stays UNNAMED, so a plain event's payload is byte for
+  // byte what it was before series existed. The other two are named, with the day the server
+  // itself published on the occurrence.
+  if (write.scope !== 'series') {
+    payload.scope = write.scope;
+    if (write.occurrenceDate) payload.occurrence_date = write.occurrenceDate;
   }
 
   return payload;
@@ -328,6 +393,13 @@ export const useCalendarStore = defineStore('next-calendar', () => {
    * caller can route 422 field messages under their controls and anything else into an
    * alert — the two need different treatment and a single stored flag cannot tell them
    * apart.
+   *
+   * THE ANSWER MAY BE A DIFFERENT ROW THAN THE ONE IN THE URL. A `scope=occurrence` write
+   * DETACHES a day and a genuine `scope=following` write SPLITS the series — both create a
+   * new row and answer `201`. The status is not visible here (`api` returns `response.data`
+   * and widening the shared client for one case would be the wrong trade), and it does not
+   * need to be: `201` is exactly "the `id` in the body is not the one we asked for", and the
+   * id IS in the body. Callers compare it and re-point whatever they were holding.
    */
   async function saveEvent(payload: CalendarEventPayload, id: string | null): Promise<CalendarEvent> {
     saving.value = true;
@@ -344,12 +416,29 @@ export const useCalendarStore = defineStore('next-calendar', () => {
     }
   }
 
-  /** Delete (204, no body). Soft-deleted server-side, but there is NO restore endpoint —
-   *  so nothing in the UI may promise that this can be undone. */
-  async function deleteEvent(id: string): Promise<void> {
+  /**
+   * Delete (204, no body). Soft-deleted server-side, but there is NO restore endpoint — so
+   * nothing in the UI may promise that this can be undone.
+   *
+   * SCOPE TRAVELS IN THE QUERY STRING, not a body. The server reads it through `input()`, so
+   * either would work; the query is the one every HTTP client actually sends on a `DELETE`.
+   *
+   * WHAT EACH SCOPE REALLY DOES, because the verb only names one of them: `series` removes
+   * the row; `occurrence` MODIFIES the row (the day joins `exclusions`) and deletes nothing;
+   * `following` truncates the row's end — or removes it whole when nothing would be left
+   * behind. None of the three ever creates a row, which is why there is no status to read
+   * here the way there is on a scoped `PUT`.
+   */
+  async function deleteEvent(id: string, write: CalendarWriteScope = seriesScope()): Promise<void> {
     saving.value = true;
     try {
-      await api.delete(`/calendar/events/${id}`);
+      const params = new URLSearchParams();
+      if (write.scope !== 'series') {
+        params.append('scope', write.scope);
+        if (write.occurrenceDate) params.append('occurrence_date', write.occurrenceDate);
+      }
+      const query = params.toString();
+      await api.delete(`/calendar/events/${id}${query ? `?${query}` : ''}`);
       if (eventDetail.value?.id === id) eventDetail.value = null;
     } catch (err: unknown) {
       throw toWriteError(err);

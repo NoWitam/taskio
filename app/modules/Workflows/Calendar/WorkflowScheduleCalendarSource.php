@@ -256,6 +256,16 @@ class WorkflowScheduleCalendarSource implements CalendarSource
                     // What makes `dense` worth rendering: "showing 64 of a series" says nothing a
                     // reader could not count, "every 5 min" says why the series is longer than the day.
                     cadenceLabel: $cadenceLabel,
+                    // Every square this source draws is computed from a cadence and has no row behind
+                    // it, which is exactly what the flag means. Said outright rather than left to be
+                    // inferred from `cadenceLabel`, which is legitimately NULL for a fixed-times
+                    // schedule ({@see ScheduleCadenceLabel}) — a client reading the prose as the marker
+                    // would call those projections one-offs.
+                    recurring: true,
+                    // NO `occurrenceDate`, deliberately. That field is the name a subject's own write
+                    // surface addresses ONE occurrence by, and a schedule firing has none: nothing here
+                    // is editable, and the day is not a key to anything. Filling it with the day this
+                    // instant happens to fall on would publish an identifier that addresses nothing.
                 );
             }
         }

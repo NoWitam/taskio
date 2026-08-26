@@ -90,4 +90,29 @@ return [
 
     'max_source_items' => (int) env('CALENDAR_MAX_SOURCE_ITEMS', 200),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Recurrence
+    |--------------------------------------------------------------------------
+    |
+    | recurrence_count_max  The largest "repeat N times" a recurring event may ask for. A WORK budget,
+    |                   like max_source_items above, and paid at WRITE time rather than at read: a
+    |                   count is resolved into an end DATE once, at save, by walking the cadence N
+    |                   times — one real projection through the cron engine each (~0.3 ms measured).
+    |                   Storing the count instead would move that cost to every read, and multiply it
+    |                   by every window the user pages through.
+    |
+    |                   366 is one year of a DAILY series, which is the densest thing a person expresses
+    |                   as a count; anything longer is expressed as an end date, which costs nothing to
+    |                   store and nothing to resolve. At the measured rate the worst case is roughly a
+    |                   tenth of a second on one write, which is a save, not a screen.
+    |
+    |                   It is a REFUSAL, not a clamp — the same rule the window follows. Silently
+    |                   shortening "repeat 500 times" would produce a series that ends where nobody
+    |                   said, and the row would carry no trace of the number that was asked for.
+    |
+    */
+
+    'recurrence_count_max' => (int) env('CALENDAR_RECURRENCE_COUNT_MAX', 366),
+
 ];

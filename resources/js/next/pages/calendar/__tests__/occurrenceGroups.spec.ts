@@ -23,6 +23,8 @@ function allDay(id: string, date: string, subjectId = id): CalendarOccurrence {
     badge: null,
     dense: false,
     cadence_label: null,
+    recurring: false,
+    occurrence_date: null,
     subject: { type: 'task', id: subjectId },
   };
 }

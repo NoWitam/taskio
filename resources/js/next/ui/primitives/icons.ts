@@ -113,10 +113,17 @@ export type IconName =
   | 'map-pin'
   | 'package'
   // --- Calendar (R3): a repeating SERIES ---
-  // For the "this repeats more often than the grid can draw" marker. `more-horizontal`
-  // reads as an actions menu and `rotate-ccw` is already spoken for ("restore filter"),
-  // so neither could carry a third meaning without teaching the user to distrust both.
-  | 'repeat';
+  // `repeat` marks a fact about the SUBJECT: this square is one of many. Permanent.
+  // `layers` marks a fact about the ANSWER: you are seeing a SAMPLE of this item, the rest
+  // of it is not in this window. Incidental.
+  //
+  // TWO GLYPHS BECAUSE THEY ARE TWO FACTS. `repeat` used to carry both, which taught a
+  // reader to ignore it — it appeared on things that were fine and on things that were
+  // missing data, identically. `more-horizontal` reads as an actions menu, `alert-triangle`
+  // already means the heavier `items_dropped` loss, and `eye-off` already means "anonymous"
+  // and "hide password", so none of the three could take the sample's meaning on.
+  | 'repeat'
+  | 'layers';
 
 /** name -> array of inner SVG elements (paths/circles) as raw markup. */
 export const ICONS: Record<IconName, string> = {
@@ -380,6 +387,10 @@ export const ICONS: Record<IconName, string> = {
   repeat:
     '<path d="m17 2 4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" />' +
     '<path d="m7 22-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" />',
+  // A stack seen edge-on — "there is more of this underneath than you can see". Deliberately
+  // unlike `repeat`'s loop: one says how MANY, the other says how OFTEN.
+  layers:
+    '<path d="m12 2 9 5-9 5-9-5 9-5Z" /><path d="m3 12 9 5 9-5" /><path d="m3 17 9 5 9-5" />',
 };
 
 /** All available icon names — handy for the gallery icon grid. */

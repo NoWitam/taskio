@@ -1,6 +1,12 @@
 # Kalendarz (R3) — specyfikacja UX/UI
 
-> **Batch B5** rozdziału R3. Dokument jest kontraktem dla `frontend-agent` (batch B6+).
+> **Batch B5** rozdziału R3, **rozszerzony o B6** (wydarzenia cykliczne — §24).
+> Dokument jest kontraktem dla `frontend-agent`.
+>
+> **§24 jest samodzielnym rozdziałem i tam mieszka wszystko, co dotyczy powtarzalności.**
+> Sekcje 1–23 opisują siatkę i wydarzenie jednorazowe; miejsca, w których B6 zmienił
+> kontrakt, są poprawione **w miejscu** i oznaczone odnośnikiem do §24, a nie zostawione
+> jako nieprawda, do której frontend zaraz zajrzy.
 >
 > Powstał **po** ukończonym backendzie i **przeciwko** jego rzeczywistemu kontraktowi —
 > nie obok niego. Każde pole opisane niżej ma pokrycie w kodzie `app/modules/Calendar/`,
@@ -12,6 +18,11 @@
 > w sekcji [23. Luki kontraktu](#23-luki-kontraktu) — i **nie zostały po cichu dopisane
 > do specyfikacji**. Luki L1, L2 i L6 zostały od tego czasu **zamknięte** w kodzie;
 > §23 notuje status przy każdej z nich zamiast cicho je usuwać.
+>
+> **§24 zbudowany i zielony** (frontend 3277 testów / 274 pliki; backend 3273/0/13).
+> Dziewięć miejsc, w których zbudowany kod rozminął się z tym, co ta specyfikacja mówiła
+> — w każdym **wygrał kod**, z uzasadnieniem — są zebrane i skrzyżowane z sekcją, której
+> dotyczą, w [24.17 Rozjazdy specyfikacji z implementacją](#2417-rozjazdy-specyfikacji-z-implementacją).
 >
 > **Nic w tym dokumencie nie jest logiką biznesową ani kontraktem backendu.**
 
@@ -42,6 +53,7 @@
 21. [Handoff do frontend-agent](#21-handoff-do-frontend-agent)
 22. [Czego NIE ma w R3](#22-czego-nie-ma-w-r3)
 23. [Luki kontraktu](#23-luki-kontraktu)
+24. [Wydarzenia cykliczne (B6)](#24-wydarzenia-cykliczne-b6)
 
 ---
 
@@ -221,7 +233,9 @@ Odpowiedź — `data[]` (`CalendarOccurrenceResource`):
 | `color` | `enum` | `neutral \| primary \| success \| warning \| danger \| info`. Mapa tokenów: §16.1. |
 | `badge` | `{ label, color } \| null` | `label` to **gotowa, przetłumaczona proza** — NIE tłumaczyć po stronie klienta. |
 | `dense` | `bool` | „Jest tego więcej, niż widzisz". §7.2. |
-| `cadence_label` | `string\|null` | Gotowa, przetłumaczona proza o okresie powtarzania („Co 5 min") — **zawsze obecne, zwykle `null`**; niepuste tylko dla zagęszczonej kadencji interwałowej. §7.2. |
+| `cadence_label` | `string\|null` | Gotowa, przetłumaczona proza o tym, **jak często powtarza się PODMIOT** — „Co 5 min" (harmonogram), „Co tydzień: wt." (seria wydarzeń). **Zawsze obecne, często `null`.** Niepuste dla: interwałowej kadencji harmonogramu **oraz każdego wystąpienia serii wydarzeń** (§24.7). Klucz **niepusty ⇒ podmiot się powtarza**; odwrotnie **nie** — harmonogram w trybie stałych godzin powtarza się i niesie `null`. §7.2, §24.7. |
+| `recurring` | `bool` | **Zawsze obecne.** `true`, gdy ten kwadrat jest policzony z reguły powtarzania — każde wystąpienie serii wydarzeń **oraz** każda projekcja harmonogramu, `false` dla terminu zadania, przebiegu i jednorazowego wydarzenia. To jest **pozytywne stwierdzenie faktu** — nie wolno go odzyskiwać z `cadence_label !== null` (ta implikacja jest wystarczająca, ale nie konieczna: patrz wiersz wyżej). §24.7 buduje na tym polu, nie na `cadence_label`. Zamknięta luka **L8**. |
+| `occurrence_date` | `string\|null` (`Y-m-d`) | **Zawsze obecne.** Który dzień serii to jest, na zegarze **serii** (`recurrence_timezone`, nie `meta.timezone`) — dokładnie ten string, który wraca jako `occurrence_date` przy zapisie ze `scope`. Niepuste **wyłącznie** dla wystąpienia serii wydarzeń; `null` dla wydarzenia jednorazowego i dla każdej projekcji harmonogramu (nic tam nie adresuje jednego odpalenia). **Niezmiennik, na którym się rozgałęzia:** `editable && recurring` ⇒ `occurrence_date` jest niepuste — to jest jedyny moment, w którym otwiera się dialog zakresu (§24.4), a nie zwykła edycja pojedynczego wydarzenia. Zamknięta luka **L8**. |
 | `subject.type` | `string` | Alias morficzny: `task`, `workflow`, `workflow_run`, `calendar_event`. |
 | `subject.id` | `string` | UUID podmiotu — do deep-linku (§11.2). |
 
@@ -249,7 +263,12 @@ Odpowiedź — `meta`:
 | `task` | `all_day` | z `TaskPriority::tone()` (pilność!) | status zadania | `false` | nigdy | `task` |
 | `workflow_schedule` | z godziną, `ends_at: null` | zawsze `info` | `workflows.calendar.scheduled_badge` | `false` | **możliwe** | `workflow` |
 | `workflow_run` | z godziną, `ends_at` = koniec **lub `null` gdy trwa** | ze stanu przebiegu | stan przebiegu | `false` | nigdy | `workflow_run` |
-| `event` | **oba** kształty | stały `primary` (żadne wydarzenie nie ma własnego koloru — patrz niżej) | **zawsze `null`** | **per wiersz przez policy** | nigdy | `calendar_event` |
+| `event` | **oba** kształty | stały `primary` (żadne wydarzenie nie ma własnego koloru — patrz niżej) | **zawsze `null`** | **per wiersz przez policy** | **możliwe** (tylko sufit odpowiedzi — §24.7) | `calendar_event` |
+
+> **Zmiana B6.** Wiersz `event` opisywał wydarzenie jednorazowe. Od B6 to samo źródło rysuje
+> także **każde wystąpienie serii**: `id` ma wtedy trzeci segment (`event:{uuid}:{Y-m-d}`),
+> `cadence_label` jest **niepuste**, a `subject.id` **nadal** wskazuje wiersz wydarzenia — więc
+> klik otwiera szufladę dokładnie tak samo, bez parsowania czegokolwiek z `id`. Pełny opis: §24.
 
 Trzy fakty z kodu, które **zmieniają projekt ekranu**:
 
@@ -302,6 +321,9 @@ zdarzenia**, z którego kolor się wywodzi — nie ręczny wybór barwy; zapisan
 | `all_day` | `bool` | rozróżnik |
 | `start_date` | `string\|null` | `Y-m-d`, wtw `all_day` |
 | `starts_at` / `ends_at` | `string\|null` | ISO UTC, wtw `!all_day` |
+| `recurrence` | `{ day, month, exclusions, until } \| null` | **B6.** `null` = wydarzenie jednorazowe. Gdy jest — to **dokładnie** blok, który przyjmuje zapis (round-trip), a wszystkie cztery klucze są zawsze obecne (`null`, gdy reguła nic o nich nie mówi). §24.2 |
+| `recurrence_timezone` | `string\|null` | **B6, READ-ONLY.** Strefa, w której regułę **ostemplowano przy zapisie** — nie musi być dzisiejszą strefą workspace'u. **Nie odsyłać** (zapis odrzuca `recurrence.tz` 422-ką). To ona, nie `meta.timezone`, nazywa dzień wystąpienia. Zapis `scope=series` stempluje ją na nowo, bieżącą strefą workspace'u — czytać **z odpowiedzi zapisu**, nigdy z pamięci (§24.6.6, L13). §24.3 |
+| `recurrence_label` | `string\|null` | **B6, READ-ONLY.** To samo przetłumaczone zdanie, które każde wystąpienie tej serii niesie jako `cadence_label` na siatce — opublikowane tu, bo szuflada nie zawsze dostała się do sprawy przez kliknięcie kwadratu (deep-link, seria bez wystąpienia w oknie). **Nie** `cadence_label` — ta nazwa jest zajęta przez pole wystąpienia; zobacz L9 w §24.15 po uzasadnienie. `null` razem z `recurrence`/`recurrence_timezone` dla wydarzenia jednorazowego; populowane razem dla powtarzającego się (lub gdy reguła jest zbyt złożona, żeby ułożyć zdanie — ten sam `null` dla obu przypadków). Zamknięta luka **L9**. |
 | `subject` | `{ type, id } \| null` | **wskaźnik wydarzenia NA coś** — inne znaczenie niż `subject` wystąpienia (tam podmiotem jest samo wydarzenie) |
 | `creator` | `CreatorResource` | gdy załadowany; może być `workflow_run` (krok `create_event`) |
 | `is_owner` | `bool` | **autorstwo ludzkie**; dla wydarzenia z workflow zawsze `false` |
@@ -324,6 +346,14 @@ subject_type  string|null  ) OBA albo ŻADNE
 subject_id    uuid|null    )
 ```
 
+**B6 dołożył do tej powierzchni trzy rzeczy i żadnej z nich nie ma w bloku wyżej:**
+`recurrence` (reguła powtarzania), `scope` (`series` | `occurrence` | `following`) oraz
+`occurrence_date`. Kompletny inwentarz — z każdą ścieżką błędu 422 — jest w **§24.2**;
+nie powielam go tutaj, żeby nie powstały dwa opisy jednego kontraktu.
+Dwie rzeczy warte zapamiętania już tutaj:
+`scope`/`occurrence_date` są na `POST` **zabronione** (422), a `PUT` z zakresem innym niż
+`series` potrafi zwrócić **inny wiersz niż ten z URL-a** (201 zamiast 200 — §24.2).
+
 > ### ⚠️ `color` NIE JEST POLEM ZAPISU — WYSŁANIE GO TO 422
 >
 > `color` jest `['prohibited']` na `StoreCalendarEventRequest`/`UpdateCalendarEventRequest`:
@@ -339,6 +369,10 @@ subject_id    uuid|null    )
 > wyzeruje je w bazie.** Wydarzenie utworzone przez krok workflow ma wskaźnik `subject`
 > — pominięcie go przy edycji po cichu zrywa powiązanie.
 > **Wymóg:** szuflada edycji trzyma pełny obiekt z `GET` i odsyła komplet pól (§12.4).
+>
+> **B6 dokłada do tej listy `recurrence`.** `PUT`, który go pominie, **kasuje regułę
+> powtarzania** — a `PUT`, który odeśle regułę bez `exclusions.dates`, **wskrzesi
+> wystąpienia usuwane pojedynczo**. Blok z `GET`-a wraca na drut dosłownie (§24.2).
 
 Komunikaty 422 przychodzą **już przetłumaczone** (`lang/{pl,en}/calendar.php`) na kluczach
 `title`, `start_date`, `starts_at`, `ends_at`, `subject_type`, `subject_id`, `to` — oraz na
@@ -587,13 +621,19 @@ jeśli którekolwiek w grupie ma dense === true:
 ```
 
 **Kadencja — zamknięta luka L2.** Wystąpienie niesie opcjonalne `cadence_label`
-(gotowa, przetłumaczona proza od źródła: *„Co 5 min"*, *„Co 2 h, 09:00–17:00"*) —
-tylko dla kadencji INTERWAŁOWEJ (`every_minutes`/`every_hours`); tryb `at` (lista
-stałych godzin) niesie `null`, bo uczciwe zdanie musiałoby uwzględnić też oś dnia/
-miesiąca. Chip renderuje `cadence_label`, gdy jest, i **degraduje** do
-*„Seria — pokazano 12"*, gdy go nie ma — copy **nadal nigdy nie zgaduje** okresu
-samodzielnie. Niedopuszczalne: wymyślanie *„co 5 min"* czy *„288 wystąpień"* po
-stronie klienta, gdy `cadence_label` jest `null`.
+(gotowa, przetłumaczona proza od źródła). Chip renderuje `cadence_label`, gdy jest,
+i **degraduje** do *„Seria — pokazano 12"*, gdy go nie ma — copy **nigdy nie zgaduje**
+okresu samodzielnie. Niedopuszczalne: wymyślanie *„co 5 min"* czy *„288 wystąpień"*
+po stronie klienta, gdy `cadence_label` jest `null`.
+
+> **Poprawka B6 — kontrakt tego pola się zmienił i poprzednie zdanie w tym miejscu było
+> już nieprawdą.** `cadence_label` nie jest znacznikiem gęstości i nie ogranicza się do
+> kadencji interwałowej harmonogramu. Dziś niosą je **dwa** źródła i z **dwóch** powodów:
+> `workflow_schedule` — tylko dla trybów interwałowych (`every_minutes`/`every_hours`),
+> `event` — dla **każdego** wystąpienia serii, niezależnie od gęstości („Co tydzień: wt.",
+> „Co miesiąc: 3. wt.", „Co miesiąc, ostatniego dnia").
+> Skutek dla tego paragrafu: **niepuste `cadence_label` ≠ „ta pozycja jest zagęszczona"**.
+> To dwa różne fakty, mają dwa różne znaczniki i nie wolno ich zlać — pełna reguła: §24.7.
 
 **Urwisko.** Zwinięcie sprawia, że siatka wygląda jak „automatyzacja odpaliła rano
 i przestała". To nie jest prawda i sam chip tego nie naprawia — naprawia to komunikat
@@ -1388,7 +1428,7 @@ nie jako blokada.
 | Widoku tygodnia i dnia | Backend zna okno i tryby; dwa widoki wystarczają. Okno 62 dni je uniesie później. |
 | Rysowania rozpiętości przez wiele dni | Model wystąpienia to jedna kratka; `EventCalendarSource` filtruje po `starts_at` (§2.2 pkt 3). |
 | Wielodniowego wydarzenia całodniowego | Kontrakt nie ma `end_date`; jedno wydarzenie = jeden dzień. Luka **L4**. |
-| Cyklicznych wydarzeń | Świadomie poza zakresem modelu (`CalendarEvent`: „RECURRENCE IS OUT OF SCOPE"). |
+| ~~Cyklicznych wydarzeń~~ | **Nieaktualne.** Wydarzenia cykliczne są w kontrakcie od B4/B5 (reguła na wierszu, seria rzutowana na siatkę, trzy zakresy operacji) i mają własny rozdział: **§24**. |
 | Kosza wydarzeń / przywracania | Wiersze są soft-delete, ale endpointu `restore` nie ma. |
 | Wyboru „powiązanego elementu" przy wydarzeniu | Kalendarz nie rozwija aliasu morficznego, więc picker pokazywałby `task: 9f3e…`. Wartości są **przenoszone** przy edycji (§12.4). |
 | Eksportu iCal / subskrypcji | Brak endpointu. |
@@ -1399,6 +1439,10 @@ nie jako blokada.
 ## 23. Luki kontraktu
 
 Zgłoszone, **nie** dopisane po cichu do specyfikacji.
+
+> **Luki batcha B6 (L8–L13) mieszkają w §24.15**, na końcu swojego rozdziału — razem
+> z kontraktem, przeciwko któremu powstały. Tutaj zostają luki B5 (L1–L7), z ich
+> statusami.
 
 ---
 
@@ -1568,3 +1612,1418 @@ kiedyś dostanie prop zewnętrznej kotwicy (`anchorRef`, niezależny od `trigger
 komponenty kalendarza są kandydatami do powrotu na lżejszy, nie-modalny popover — ale to
 zmiana we wspólnym `ui/overlay/Popover.vue`, poza zakresem modułu Kalendarza, i nie ma
 dziś żadnego zgłoszonego powodu, żeby ją robić.
+
+---
+
+## 24. Wydarzenia cykliczne (B6)
+
+> **Batch B6.** Powstał **po** ukończonym i zielonym backendzie (BE 3267/0/13) i
+> **przeciwko** jego rzeczywistemu kontraktowi: `app/modules/Calendar/Http/Requests/*`,
+> `Http/Resources/*`, `Sources/EventCalendarSource.php`, `Services/CalendarRecurrenceService.php`,
+> `DTOs/CalendarRecurrence.php`, `Support/CalendarCadenceLabel.php`, `Enums/CalendarEventScope.php`,
+> `app/Support/Recurrence/*`, `lang/{pl,en}/calendar.php`, `config/calendar.php`,
+> `docs/decisions/ADR-0052-shared-recurrence-layer.md`.
+>
+> Każde pole opisane niżej ma pokrycie w kodzie. **Rzeczy, których kontrakt nie ma,
+> są zgłoszone jako luki w §24.15 i nie zostały po cichu dopisane.**
+
+### 24.0 Stan wyjściowy: cała powierzchnia zapisu jest dziś nieosiągalna z interfejsu
+
+To jest jedyna rzecz, od której wolno zacząć, bo zmienia priorytety całego batcha.
+
+Backend potrafi trzy rzeczy, których UI nie potrafi **wywołać**:
+
+| Backend potrafi | Frontend dziś |
+| --- | --- |
+| edytować / usunąć **jedno wystąpienie** serii (`scope=occurrence`) | brak — nie ma czym nazwać wystąpienia |
+| edytować / usunąć **to i wszystkie następne** (`scope=following`) | brak |
+| edytować / usunąć **całą serię** (`scope=series`) | **jedyna dostępna ścieżka, i jest domyślna** |
+
+Konkretnie, w kodzie: `CalendarView.vue::onSelectOccurrence()` robi
+`setQuery({ event: occurrence.subject.id })` — czyli otwiera **wydarzenie**, a nie
+**wystąpienie**; `EventDrawer.vue` wysyła `PUT` bez `scope`, co serwer czyta jako
+`series`; `app/stores/calendar.ts` nie ma w ogóle pojęcia `scope` ani `occurrence_date`,
+a `OccurrenceChip.vue` rysuje ołówek przy **każdym** wystąpieniu serii.
+
+**Efekt netto: „edytuj ten wtorek" po cichu edytuje wszystkie wtorki.** Nic tego nie
+zgłasza, bo z punktu widzenia kontraktu wszystko jest w porządku — klient poprosił o zapis
+całego wydarzenia i dostał zapis całego wydarzenia.
+
+Dlatego **kolejność prac w B6 jest odwrotna do intuicyjnej**: najpierw dialog zakresu
+(§24.4), potem kontrolka powtarzalności (§24.5). Kontrolka bez dialogu to nowy sposób
+tworzenia serii, których użytkownik nie umie potem punktowo poprawić; dialog bez kontrolki
+naprawia rzecz, która już jest zepsuta dla serii utworzonych przez API i przez krok
+`create_event`.
+
+---
+
+### 24.1 Doktryna B6 — pięć zdań, które muszą być słyszalne w interfejsie
+
+1. **Użytkownik ma wiedzieć, w co klika, ZANIM kliknie.** Ołówek na kafelku serii nie może
+   znaczyć czegoś innego niż ołówek na kafelku wydarzenia jednorazowego, jeżeli wygląda
+   tak samo — więc kafelek serii **nazywa się serią** (§24.7), a wybór zakresu jest
+   osobnym, jawnym krokiem (§24.4).
+2. **Zmiana reguły przepisuje przeszłość.** Seria trzyma **jedną** regułę przez całe życie
+   (`calendar_events.recurrence`), więc przeniesienie cotygodniowego spotkania na środy
+   zamienia w środy także zeszłoroczne poniedziałki — w siatce, w każdym zrzucie ekranu,
+   bez śladu, że kiedykolwiek były poniedziałkami. Podział (`following`) istnieje **właśnie
+   po to**, i użytkownik ma rozumieć różnicę **w momencie wyboru**, a nie z dokumentacji.
+3. **Dzień identyfikuje wystąpienie.** Seria kalendarza ma dokładnie **jedną** godzinę,
+   więc jedno wystąpienie na dzień, więc `Y-m-d` wystarcza za identyfikator — to ta sama
+   reguła, na której stoi `id` wystąpienia i `occurrence_date` w zapisie.
+4. **Dzień wystąpienia liczy się na zegarze SERII, nie workspace'u.** `recurrence_timezone`
+   to strefa **ostemplowana przy zapisie**; `meta.timezone` to strefa, w której rysuje
+   siatka. Zwykle są takie same. Kiedy nie są — obowiązuje pierwsza (§24.3).
+5. **Podzbiór jest wąski celowo.** Kontrolka mówi językiem osoby planującej spotkanie, nie
+   autora automatyzacji. Czego nie oferuje i dlaczego — §24.5.4, wprost, żeby nikt tego nie
+   „uzupełnił" jako przeoczenia.
+
+---
+
+### 24.2 Kontrakt zapisu — pełny inwentarz
+
+Wszystko odczytane z `StoreCalendarEventRequest`, `UpdateCalendarEventRequest`,
+`DestroyCalendarEventRequest`, `CalendarEventController`, `CalendarRecurrence`,
+`ScheduleLimits`, `config/calendar.php`.
+
+#### 24.2.1 Blok `recurrence` (POST i PUT)
+
+Nieobecny albo pusty = **wydarzenie dzieje się raz**. To jest kształt każdego payloadu
+sprzed B4 i on nie zmienił znaczenia.
+
+| Klucz | Typ / zakres | Kiedy |
+| --- | --- | --- |
+| `recurrence.day.mode` | `every_day` \| `weekdays` \| `month_days` \| `special` | oś dnia; brak osi = codziennie |
+| `recurrence.day.weekdays[]` | `int 0..6`, distinct, 1..7 pozycji (**0 = niedziela**) | wtw `mode=weekdays` |
+| `recurrence.day.days[]` | `int 1..31`, distinct, 1..31 pozycji | wtw `mode=month_days` |
+| `recurrence.day.special` | `last_day` \| `nth_weekday` \| `last_weekday` | wtw `mode=special` |
+| `recurrence.day.ordinal` | `int 1..5` | wtw `special=nth_weekday` |
+| `recurrence.day.weekday` | `int 0..6` | wtw `special ∈ {nth_weekday, last_weekday}` |
+| `recurrence.month.mode` | `every_month` \| `months` | oś miesiąca; brak osi = co miesiąc |
+| `recurrence.month.months[]` | `int 1..12`, distinct, 1..12 pozycji | wtw `mode=months` |
+| `recurrence.exclusions.dates[]` | `Y-m-d`, distinct, **maks. 50** (`EXCLUSIONS_DATES_MAX`) | dni pominięte |
+| `recurrence.until` | `Y-m-d`, `>=` dzień kotwicy | koniec serii — **albo to** |
+| `recurrence.count` | `int 1..366` (`calendar.recurrence_count_max`) | **albo to**, nigdy oba |
+
+**Klucze ZABRONIONE (422, nie ciche pominięcie):** `recurrence.time`, `recurrence.tz`,
+`recurrence.exclusions.months`, `recurrence.exclusions.weekdays` — oraz **każdy klucz
+spoza tabeli** wewnątrz `recurrence` / `recurrence.exclusions` (błąd na ścieżce
+`recurrence.<klucz>`, komunikat nazywa pole). Godzina serii **jest** godziną wydarzenia,
+strefa **jest** strefą workspace'u w chwili zapisu; obu serwer nie przyjmuje właśnie
+dlatego, że kto je wysyła, sądzi, że coś ustawia.
+
+**Trzy reguły, których nie widać w tabeli, a których złamanie kończy się 422:**
+
+| Reguła | Ścieżka błędu | Kiedy realnie wystąpi w UI |
+| --- | --- | --- |
+| **Początek wydarzenia musi być pierwszym wystąpieniem reguły** | `start_date` / `starts_at` (`anchor_not_an_occurrence`) | **Nigdy**, jeżeli preset jest wyprowadzany z daty i re-wyprowadzany przy jej zmianie (§24.5.2) |
+| **Seria musi mieć choć jedno wystąpienie** (kadencja MINUS pominięte dni, w granicach `until`) | `recurrence.until` albo `recurrence.exclusions.dates` (`series_has_no_occurrences`) | Skrócenie `until` serii, z której powycinano dni |
+| **Wydarzenie cykliczne z godziną zaczyna się o pełnej minucie** | `starts_at` (`whole_minute`) | `TimePicker` daje `HH:mm`, więc nie |
+
+#### 24.2.2 `scope` i `occurrence_date` (tylko PUT i DELETE)
+
+| Klucz | Wartości | Domyślnie |
+| --- | --- | --- |
+| `scope` | `series` \| `occurrence` \| `following` | **brak = `series`** — bajt w bajt zachowanie sprzed B4 |
+| `occurrence_date` | `Y-m-d` **na zegarze serii** | wymagane wtw `scope ≠ series`; przy `series` **zabronione** |
+
+Na `POST` oba są `prohibited` (422 `scope_on_create`).
+`DELETE` czyta je przez `input()`, więc mogą jechać w **query stringu** albo w ciele —
+zalecamy query (`api.delete(url, { params })`), bo nie każdy klient wysyła ciało w DELETE.
+
+Co robi każdy zakres — **to jest treść dialogu z §24.4, nie ozdoba**:
+
+| `scope` | `PUT` robi | `DELETE` robi | Co z przeszłością |
+| --- | --- | --- | --- |
+| `series` | przepisuje **cały wiersz**, razem z regułą | soft-delete wiersza | **przepisuje ją** — stara reguła znika bez śladu |
+| `occurrence` | dodaje dzień do `exclusions` **i** tworzy **nowe, jednorazowe** wydarzenie z payloadu (**odczepienie**, nie nadpisanie) | dodaje dzień do `exclusions`; wiersz zostaje | nie rusza |
+| `following` | zamyka starą serię **dzień wcześniej** i tworzy **nowe** wydarzenie od tego dnia | zamyka starą serię dzień wcześniej | **zachowuje ją** |
+
+**Gdy podział nie zostawiłby nic za sobą** (typowo: wskazane wystąpienie jest pierwsze),
+`following` **zwija się do `series`**: `PUT` edytuje wiersz w miejscu, `DELETE` kasuje go
+w całości. Serwer sprawdza to **projekcją** (`splitLeavesSomethingBehind`), a nie
+porównaniem dat — patrz §24.4.3, bo z tego wynika, czego frontendowi **nie wolno**
+twierdzić.
+
+#### 24.2.3 Kod odpowiedzi mówi, który wiersz wrócił
+
+| Kod | Znaczy |
+| --- | --- |
+| `200` | wrócił **ten** event, którego id jest w URL-u (każdy `scope=series` i `following` na pierwszym wystąpieniu) |
+| `201` | wrócił **NOWY** wiersz z nowym `id` — odczepione wystąpienie albo druga połowa podziału |
+
+**Klient nie widzi statusu**: `app/lib/api.ts` zwraca `response.data`. **Nie rozszerzać
+wspólnego klienta dla jednego przypadku** — `201` jest równoważne
+„`response.data.id` ≠ id, o które prosiliśmy", a `id` jest w ciele. Store porównuje id i na
+tej podstawie wie, że trzymany identyfikator **przestał być tym, który edytuje się dalej**.
+
+#### 24.2.4 Wszystkie ścieżki 422, jakie może zwrócić powierzchnia reguły
+
+Komunikaty przychodzą **przetłumaczone** (`lang/{pl,en}/calendar.php` →
+`calendar.validation.recurrence.*`). UI renderuje treść z serwera, **nigdy własną**.
+
+| Ścieżka | Wywołuje | Gdzie UI ma to pokazać |
+| --- | --- | --- |
+| `recurrence` | `unsupported`, `occurrence_has_no_rule` | pod kontrolką powtarzania |
+| `recurrence.day.mode` / `.day.special` / `.month.mode` | `*_not_supported` | pod kontrolką powtarzania |
+| `recurrence.day.*` / `recurrence.month.*` | `mode_required`, `list_required`, `field_not_allowed`, `special_*` | pod kontrolką powtarzania |
+| `recurrence.until` | `end_before_start`, `series_has_no_occurrences` | pod kontrolką końca |
+| `recurrence.count` | `end_is_one_thing`, `count_unreachable` | pod kontrolką końca |
+| `recurrence.exclusions.dates` | `series_has_no_occurrences` | pod kontrolką końca (**tam jest lek**) |
+| `recurrence.time` / `.tz` / `.exclusions.months` / `.exclusions.weekdays` / `recurrence.<obcy klucz>` | `prohibited`, `field_not_allowed` | **Alert `danger` na górze szuflady** — to defekt klienta, nie stan użytkownika |
+| `start_date` / `starts_at` | `anchor_not_an_occurrence`, `whole_minute`, `split_starts_before_the_split` | pod polem początku |
+| `scope` | `event_does_not_repeat` | Alert `danger` + akcja „Wybierz zakres ponownie" |
+| `occurrence_date` | `occurrence_date_required`, `occurrence_date_without_scope`, `not_an_occurrence`, `exclusions_full` | w **dialogu zakresu**, przy wybranej opcji (§24.4.5) |
+
+**Wymóg implementacyjny:** `EventDrawer.vue::FORM_FIELDS` (dziś zamknięty zbiór sześciu
+nazw) musi rozpoznawać **prefiks** `recurrence.` jako „mam dla tego kontrolkę". Inaczej
+każdy błąd reguły trafi do gałęzi *homeless* i wyląduje w Alercie na górze — czyli komunikat
+o polu, które jest na ekranie, zostanie pokazany **nie przy nim**.
+
+---
+
+### 24.3 Jak frontend nazywa wystąpienie
+
+**Status: L8 zamknięta (§24.15) — ten paragraf opisuje wyprowadzenie, które przestało być
+obowiązkowe.** `CalendarOccurrenceResource` niesie dziś `occurrence_date` bezpośrednio;
+klik w kafelek daje datę wystąpienia **bez** liczenia czegokolwiek i **bez** czekania na
+`GET` wydarzenia. Formuła niżej zostaje w tej specyfikacji z dwóch powodów: wyjaśnia, **co
+znaczy** `occurrence_date` (przydatne przy czytaniu `id`, przy debugowaniu, i dla
+`recurrence_timezone`, którego rola się nie zmieniła), i pokazuje, że pole na drucie **nie
+jest zgadywane** — jest przepisaniem tego samego wyliczenia, które serwer już wykonał.
+**Frontend nie ma powodu, żeby ją implementować jako osobny moduł** (`occurrenceDate.ts`
+z §24.12.3 jest przez to zbędny — patrz tam) — jedyne miejsce, w którym B6 wymagało czegoś
+policzyć po stronie klienta, przestało istnieć.
+
+```
+// Historyczne / poglądowe — TO SAMO, co serwer już zwraca jako occurrence.occurrence_date:
+occurrence_date =
+  all_day === true    →  occurrence.start_date                          // bez konwersji, nigdy
+  all_day === false   →  instantToZonedParts(occurrence.starts_at,
+                                             event.recurrence_timezone).day
+```
+
+**Dlaczego `recurrence_timezone`, a nie `meta.timezone` — to pytanie zostaje aktualne, choć
+wyprowadzenie już nie jest wymagane.** Serwer bije `id` wystąpienia i przyjmuje
+`occurrence_date` na zegarze, którym **ostemplował regułę przy zapisie**
+(`CalendarRecurrence::timezone()`), a nie na dzisiejszym zegarze workspace'u. Zwykle to ta
+sama strefa. Kiedy workspace zmienił strefę po utworzeniu serii — nie jest, i dzień potrafi
+różnić się o jeden (patrz też **L13**: zapis całej serii sam potrafi przestemplować tę
+strefę). Wtedy `meta.timezone` dałoby datę, której serwer nie uzna: 422
+`not_an_occurrence` („Ta seria nie ma wystąpienia w tym dniu"). To dlatego szuflada wciąż
+czyta `recurrence_timezone` w §24.6.5 — nie po to, żeby coś policzyć, ale żeby pokazać
+użytkownikowi, na jakim zegarze liczy się dzień, gdy różni się od siatki.
+
+**Konsekwencja przepływu — zawężona.** Szuflada **wciąż** musi wykonać `GET` wydarzenia
+przed jakimkolwiek zapisem — ale dziś z dwóch powodów, nie trzech: potrzebuje
+`can_be_edited` i reguły `recurrence` do odesłania (whole-event `PUT`). Trzeci, dawny powód
+— że bez `GET`-a nie da się policzyć `occurrence_date` — **odpadł**: ta wartość jest już na
+kafelku, zanim szuflada w ogóle się otworzy. Kolejność „klik → szuflada → GET → dialog
+zakresu" (§24.4.1) zostaje niezmieniona, bo pozostałe dwa powody wciąż ją wymagają — ale
+dialog zakresu może dziś pokazać `occurrence_date` w nagłówku kontekstu **natychmiast**, bez
+czekania na `GET`, jeśli okaże się to potrzebne dla odczuwalnej responsywności.
+
+#### 24.3.1 Stan w URL
+
+> **AS-BUILT — patrz §24.17 poz. 1.** Ten paragraf opisywał `on`/`at` jako **dwa
+> wykluczające się** klucze-identyfikatory (jeden dla serii całodniowej, drugi dla serii
+> z godziną) z regułą rozstrzygania konfliktu, gdy oba przyjdą naraz. Zbudowany kod robi
+> coś prostszego: **jeden identyfikator, zawsze ten sam klucz**, plus drugi klucz
+> pomocniczy, który **towarzyszy** mu, a nie z nim konkuruje. Tabela i reguły odporności
+> niżej opisują już zbudowany kształt.
+
+Dokładane do konwencji z §3.3, bez zmiany istniejących kluczy:
+
+| Param | Wartość | Znaczenie |
+| --- | --- | --- |
+| `on` | `Y-m-d` | **Identyfikator wystąpienia — zawsze `occurrence.occurrence_date`**, dla serii całodniowej i z godziną jednakowo. Przepisany z kafelka, nigdy nie liczony (L8, §24.15) |
+| `at` | ISO-8601 UTC | **Pomocniczy, tylko dla serii z godziną** — `occurrence.starts_at`, towarzyszy `on`. Zasiewa dokładną chwilę formularza pod zakresem, który zaczyna nową serię (`occurrence`/`following`, §24.6.1); sam niczego nie identyfikuje i nieobecny dla serii całodniowej |
+| `scope` | `occurrence` \| `following` | wybrany zakres edycji (razem z `edit=1`); `series` **nie jest** zapisywany, bo jest domyślny |
+
+**Jeden identyfikator, nie dwa.** Skoro `occurrence_date` przychodzi z serwera gotowe (L8)
+i jest tym samym `Y-m-d` dla obu kształtów wystąpienia, nie ma już dwóch spornych sposobów
+nazwania tego samego dnia — `on` jest identyfikatorem zawsze, niezależnie od `all_day`.
+`at` nie jest **drugim** identyfikatorem w innym kształcie: to dodatkowa chwila, którą
+`onSelectOccurrence()` dokłada **obok** `on` dla wystąpienia z godziną, bo scalony zakres
+(`occurrence`/`following`) potrzebuje czegoś więcej niż dnia, żeby zasiać pole początku
+z godziną kliknięcia, a nie z kotwicy serii (§24.6.1). Oba klucze normalnie **współistnieją**
+na tym samym URL-u wystąpienia z godziną — to nie jest stan błędu.
+
+**Reguły odporności (obowiązkowe):**
+
+- `scope` wymagający wystąpienia bez `on` → szuflada spada do `series`, z widoczną notką
+  (§24.6.4). `at` bez `on` nie powstaje z tego ekranu, więc nie ma osobnej reguły dla tego
+  przypadku;
+- `on`/`at` przy wydarzeniu, które **nie** jest serią → ignorowane bez notki (to nie błąd
+  użytkownika, tylko nieaktualny link — wydarzenie mogło przestać się powtarzać).
+
+Zmiana zakresu → `router.replace` (nie zaśmieca historii). Otwarcie szuflady → `push`, jak
+dziś.
+
+---
+
+### 24.4 Dialog zakresu
+
+Jeden komponent, dwa tryby: **edycja** i **usuwanie**. `Modal` (nie `Popover` — §23,
+uwaga systemowa), `size="sm"`, `RadioGroup` + `Radio` (`description` niesie zdanie
+o skutku), stopka z dwoma `Button`ami.
+
+**Nie pokazuje się w ogóle dla wydarzenia jednorazowego** (`recurrence === null`). Edycja
+i usuwanie takiego wydarzenia zostają **bajt w bajt** takie jak dziś — to samo, co gwarantuje
+backend brakiem `scope` w payloadzie.
+
+#### 24.4.1 Kiedy się otwiera
+
+| Wyzwalacz | Warunek |
+| --- | --- |
+| „Edytuj" w stopce szuflady (tryb podglądu) | `recurrence !== null` |
+| „Usuń" w stopce szuflady | `recurrence !== null` |
+
+**Nigdy z kafelka.** Kliknięcie kafelka otwiera szufladę w trybie podglądu — użytkownik
+najpierw widzi, o czym mowa, potem decyduje o zakresie. Dialog wyskakujący wprost z siatki
+pytałby o zakres zmian, których użytkownik jeszcze nie zna.
+
+#### 24.4.2 Edycja — trzy wyjścia
+
+Tytuł: **„Co chcesz edytować?"**
+Nagłówek kontekstu (nie opcja): *„Wybrane wystąpienie: {fullDateLabel(occurrence_date)}"*.
+
+| Opcja | Etykieta | Zdanie o skutku (`description`) |
+| --- | --- | --- |
+| `occurrence` *(domyślna)* | **Tylko to wystąpienie** | „Ten dzień wyjdzie z serii i stanie się osobnym wydarzeniem. Reszta serii zostaje bez zmian." |
+| `following` | **To i wszystkie następne** | „Wcześniejsze wystąpienia zostaną takie, jakie były. Od tego dnia powstanie nowa seria." |
+| `series` | **Całą serię** | „Wszystkie wystąpienia — także te, które już się odbyły. Zmiana reguły przepisze historię: przeniesienie spotkania na środy zamieni w środy również zeszłoroczne poniedziałki." |
+
+Przycisk potwierdzenia **nazywa wybór**: „Edytuj to wystąpienie" / „Edytuj od {data}" /
+„Edytuj całą serię". Drugi: „Anuluj".
+
+**Domyślnie zaznaczony jest najwęższy zakres** — i to jest decyzja, nie wygoda. Odruchowy
+Enter ma zrobić **najmniejszą** możliwą szkodę, a etykieta przycisku i tak przez cały czas
+mówi, co się stanie; brak wartości domyślnej kosztowałby dodatkowy klik w najczęstszym
+przypadku i nie kupił niczego, czego nie kupuje dynamiczna etykieta.
+
+#### 24.4.3 Wystąpienie pierwsze — notka, nie ukrywanie opcji
+
+Gdy `occurrence_date === dzień kotwicy` (`start_date`, a dla serii z godziną
+`instantToZonedParts(starts_at, recurrence_timezone).day`), opcja `following` dostaje
+**dodatkowe zdanie**: *„To pierwsze wystąpienie serii, więc ta opcja obejmie całą serię."*
+
+**Czego frontendowi nie wolno:** twierdzić rzeczy odwrotnej. `occurrence_date > kotwica`
+**nie dowodzi**, że coś zostanie za podziałem — seria, z której wycięto wszystkie
+wcześniejsze dni, wciąż ma kotwicę przed podziałem, a serwer i tak zwinie operację do całej
+serii. Serwer odpowiada na to **projekcją**, nie porównaniem dat, i frontend tej projekcji
+nie ma. Dlatego zdanie o `following` jest napisane tak, żeby było prawdziwe w **obu**
+przypadkach: „wcześniejsze wystąpienia zostaną takie, jakie były" jest prawdą także wtedy,
+gdy zbiór wcześniejszych wystąpień jest pusty.
+
+#### 24.4.4 Usuwanie — trzy wyjścia, inny ciężar
+
+Tytuł: **„Co usunąć?"**, `variant="danger"`.
+
+| Opcja | Etykieta | Zdanie o skutku |
+| --- | --- | --- |
+| `occurrence` *(domyślna)* | **Tylko to wystąpienie** | „{data} zniknie z serii. Pozostałe wystąpienia zostają." |
+| `following` | **To i wszystkie następne** | „Seria skończy się dzień wcześniej. Wcześniejsze wystąpienia zostają." |
+| `series` | **Całą serię** | „Wydarzenie zniknie z kalendarza razem z całą historią. **W interfejsie nie da się tego cofnąć.**" |
+
+Przycisk: „Usuń to wystąpienie" / „Usuń wystąpienia od {data}" / „Usuń całą serię",
+`variant="danger"`.
+
+**Dwie różnice wobec dialogu edycji, obie wynikają z kontraktu:**
+
+1. **To jest cała operacja**, nie brama do formularza. Po potwierdzeniu leci `DELETE`, więc
+   dialog ma **stan ładowania** (`Button loading`) i **miejsce na błąd serwera** (§24.4.5).
+   Dialog edycji tylko przełącza tryb i nie ma czym się wywrócić.
+2. **Copy nie obiecuje przywracania w żadnej opcji.** Wiersz jest soft-delete, ale endpointu
+   `restore` nie ma, a usunięte pojedyncze wystąpienie to wpis w `exclusions`, którego ten
+   batch nie umie cofnąć (§24.14). Zdanie o nieodwracalności pada **tylko** przy `series`,
+   gdzie strata jest największa — dopisanie go do wszystkich trzech zamieniłoby ostrzeżenie
+   w szum.
+
+#### 24.4.5 Błąd serwera wewnątrz dialogu usuwania
+
+Realny i jedyny częsty: **`occurrence_date` → `exclusions_full`** — „Ta seria ma już
+maksymalną liczbę pominiętych dni (50). Podziel serię zamiast pomijać kolejne wystąpienia."
+
+| Wymóg | Powód |
+| --- | --- |
+| Komunikat renderuje się **w dialogu, pod wybraną opcją**, treścią z serwera | Odsyła do **innej opcji tego samego dialogu**; toast wyrzuciłby lek poza zasięg |
+| Pozostałe dwie opcje **zostają aktywne** | Serwer właśnie powiedział, co zrobić zamiast — droga ma być o jeden klik |
+| Dialog **nie zamyka się** po błędzie | Zamknięcie kazałoby przejść całą ścieżkę od nowa |
+| Wybrana opcja **zostaje zaznaczona** | Zresetowanie wyboru wygląda jak „nic się nie stało" |
+
+#### 24.4.6 Dostępność dialogu
+
+| Element | Wymóg |
+| --- | --- |
+| `Modal` nad `Drawer` | Stos przez `useOverlayStack`; `Esc` zamyka **tylko wierzchni** — to już zachowanie `Modal.vue`, nie wolno go obchodzić |
+| Focus po otwarciu | Pierwszy `Radio` (zaznaczony), nie przycisk potwierdzenia |
+| Powrót fokusu | Na przycisk, który dialog otworzył („Edytuj" / „Usuń" w stopce szuflady) |
+| Grupa opcji | `RadioGroup` daje strzałki + roving tabindex; `description` każdej opcji jest podpięty przez `aria-describedby` (robi to `Radio.vue`) |
+| Nagłówek kontekstu | Prawdziwy tekst nad grupą, **nie** `title=` — data wystąpienia to nie podpowiedź |
+| Etykieta przycisku | Musi zawierać nazwę wybranej opcji; sterowanie głosem musi mieć co powiedzieć |
+
+---
+
+### 24.5 Kontrolka powtarzalności
+
+Jedna kontrolka w formularzu wydarzenia, poniżej pola początku/końca, powyżej opisu.
+`FormField label="Powtarzanie"` + `Select` (statyczne `options`) + warunkowa kontrolka końca.
+
+#### 24.5.1 Słownictwo
+
+**Dla osoby planującej spotkanie, nie dla autora automatyzacji.** Etykiety trzymają
+frazeologię serwerowego zdania o kadencji (`lang/*/calendar.php` → `calendar.cadence.*`),
+żeby to, co użytkownik wybrał, i to, co potem pokazuje kafelek, brzmiało jak jedno zdanie,
+a nie dwa.
+
+| Preset | Deskryptor na drucie | Etykieta (przykład dla **wtorku, 25 sierpnia 2026**) |
+| --- | --- | --- |
+| — | brak klucza `recurrence` | **Nie powtarza się** |
+| codziennie | `day: { mode: 'every_day' }` | **Codziennie** |
+| tygodniowo | `day: { mode: 'weekdays', weekdays: [2] }` | **W każdy wtorek** |
+| miesięcznie, dnia N | `day: { mode: 'month_days', days: [25] }` | **Co miesiąc, dnia 25** |
+| miesięcznie, N-ty dzień tygodnia | `day: { mode: 'special', special: 'nth_weekday', ordinal: 4, weekday: 2 }` | **Co miesiąc: 4. wtorek** |
+| miesięcznie, ostatni dzień | `day: { mode: 'special', special: 'last_day' }` | **Co miesiąc, ostatniego dnia** |
+| rocznie | `day: { mode: 'month_days', days: [25] }` + `month: { mode: 'months', months: [8] }` | **Co roku, 25 sierpnia** |
+
+Trzy zachowania **warunkowe**, obecne tylko wtedy, gdy data je uzasadnia:
+
+| Warunek | Zachowanie | Dlaczego |
+| --- | --- | --- |
+| `ordinal === 5` (data wypada w piątym takim dniu tygodnia w miesiącu) | **Co miesiąc: ostatni wtorek** (`special: 'last_weekday'`) — **zamiast** „5. wtorek", nigdy obok | „Co miesiąc 5. wtorek" to reguła, która nie odpala w większości miesięcy, a wygląda jak miesięczna. Kto wskazał ostatni wtorek, prawie na pewno miał na myśli **ostatni**, a `last_weekday` jest w przyjmowanym podzbiorze |
+| dzień miesiąca ≥ 29 | pod presetem „Co miesiąc, dnia 31" trwała notka: *„Miesiące bez 31. dnia zostaną pominięte."*; preset **ostatniego dnia** stoi obok | Reguła jest prawdziwa i tak działa (silnik po prostu nie odpala), ale bez tego zdania wygląda na zgubione wystąpienia. Lek — „ostatniego dnia" — jest w tej samej liście |
+| kotwica **NIE** jest ostatnim dniem swojego miesiąca | Preset **„Co miesiąc, ostatniego dnia" nie pojawia się w liście wcale** — **AS-BUILT, §24.17 poz. 2** | Tylko dzień, który JEST ostatnim dniem swojego miesiąca, może być pierwszym wystąpieniem reguły `special: 'last_day'` (§24.5.2, fakt 1). Zaproponowanie presetu na dzień, który go nie spełnia, byłoby gwarantowaną odmową serwera (`anchor_not_an_occurrence`) na polu początku, przy pierwszym zapisie — dokładnie tej klasy błąd, który §24.5.2 istnieje, żeby zamknąć. `presetsFor()` dopisuje ten wpis do listy wyłącznie warunkiem `dayOfMonth === lengthOfMonth` |
+
+Preset „ostatni {dzień tygodnia}" **wykracza poza listę z briefu** i jest tu **propozycją do
+akceptacji** — mieści się w podzbiorze przyjmowanym przez `CalendarRecurrence::daySpecials()`
+i zastępuje preset, który w innym wypadku kłamie o częstotliwości. Jeżeli owner go odrzuci,
+alternatywą jest zostawienie „5. wtorek" **z notką**, że nie każdy miesiąc go ma — **nie**
+milczące pominięcie presetu (data z piątego tygodnia straciłaby wtedy regułę „dzień tygodnia
+w miesiącu" w ogóle).
+
+**AS-BUILT — jak etykiety są złożone, patrz §24.17 poz. 3 i 4.** Ten podrozdział pokazuje
+etykiety jako przykłady dla jednej daty; nie mówi, jak są SKŁADANE. Dwa miejsca w tej
+tabeli powielają, na potrzeby przykładu, słownictwo, którego kontrolka **nie** implementuje
+jako pojedynczego klucza z podstawieniem:
+
+- **„W każdy wtorek" / „ostatni wtorek"** — po polsku odmienia się przez rodzaj („W każdy
+  wtorek", ale „W każdą środę"), więc nie ma jednego szablonu `"W każdy {weekday}"`, który
+  dałby poprawną frazę dla wszystkich siedmiu dni. Kontrolka trzyma **osobny wpis
+  katalogowy na dzień tygodnia** — `calendar.recurrence.weeklyDays.0..6` i
+  `calendar.recurrence.monthlyLastWeekdays.0..6` — dokładnie z tego samego powodu, dla
+  którego serwerowy `lang/{pl,en}/calendar.php` robi to samo dla własnej prozy (ADR-0051
+  D12). `calendar.recurrence.monthlyNth` („Co miesiąc: {ordinal} {weekday}") **zostaje**
+  szablonem, bo liczebnik przed nazwą dnia omija odmianę („4. wtorek", „4. środa" — obie
+  formy nominalne poprawne), a nazwa dnia w tej pozycji pochodzi z `Intl.DateTimeFormat`
+  (`weekday: 'long'`), nie z katalogu.
+- **„Co roku, 25 sierpnia"** — nie jest złożone z osobnego dnia i osobnej nazwy miesiąca po
+  stronie klienta (co wymagałoby powielenia serwerowego katalogu miesięcy w dopełniaczu,
+  `cadence.months_in_date`, ADR-0051 D12). Klucz niesie **jeden** token —
+  `calendar.recurrence.yearly = "Co roku, {date}"` — a `{date}` to gotowy napis z
+  `Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long' })`, który po polsku sam
+  stawia miesiąc w dopełniaczu.
+
+Prawdziwe klucze i18n: §24.13.
+
+#### 24.5.2 Preset wyprowadza się z daty — i przy zmianie daty wyprowadza się PONOWNIE
+
+Wyliczane z **daty początku, jaką trzyma formularz** (`draft.start_date` dla całodniowego,
+`draft.starts_day` dla wydarzenia z godziną — czyli dnia w strefie workspace'u, tej samej,
+którą serwer ostempluje przy zapisie):
+
+```
+d          = fromIsoDate(dzieńPoczątku)     // dateCore — Date LOKALNY, bez strefy, bez toISOString
+weekday    = d.getDay()                     // 0..6, konwencja wspólnej warstwy (0 = niedziela)
+dayOfMonth = d.getDate()                    // 1..31
+month      = d.getMonth() + 1               // 1..12
+ordinal    = Math.floor((dayOfMonth - 1) / 7) + 1        // 1..5
+lastOfKind = dayOfMonth + 7 > daysInMonth(rok, d.getMonth())
+```
+
+**Przy każdej zmianie daty preset jest przeliczany, a bieżący wybór MAPOWANY na swój
+odpowiednik** dla nowej daty: tygodniowy zostaje tygodniowym (na nowym dniu tygodnia),
+miesięczny-N-tego zostaje miesięcznym-N-tego (na nowym dniu), N-ty dzień tygodnia zostaje
+N-tym dniem tygodnia (na nowym `ordinal`/`weekday`), roczny zostaje rocznym; „codziennie"
+i „nie powtarza się" nie mają czego przeliczać.
+
+**Jeden wybór NIE mapuje się na swój własny kształt — celowo, AS-BUILT, §24.17 poz. 7.**
+„Co miesiąc, ostatniego dnia" (`monthlyLastDay`) mapuje się na **„Co miesiąc, dnia N"**
+(`monthlyDay`, na nowym dniu miesiąca), gdy nowa data przestaje być ostatnim dniem swojego
+miesiąca — bo `monthlyLastDay` w ogóle nie istnieje jako opcja dla dnia, który nie jest
+ostatni (§24.5.1, trzecie zachowanie warunkowe). Bez tej krawędzi wybór po prostu
+zniknąłby z listy przy przesunięciu daty o jeden dzień, zamiast zamienić się w najbliższy
+uczciwy odpowiednik — to samo traktowanie, które dostają para „N-ty dzień tygodnia" ↔
+„ostatni dzień tygodnia" przy piątym tygodniu (`remapPreset`'s `fallbackId`).
+
+**To jest mechanizm, przez który 422 `anchor_not_an_occurrence` staje się nieosiągalne
+z interfejsu.** Bez niego użytkownik wybiera „w każdy wtorek", potem zmienia datę na środę
+i dostaje odmowę na polu **początku**, którego nie kojarzy z regułą.
+Zmiana etykiety jest **widoczna** (select przerysowuje się na „W każdą środę") — cicha
+podmiana byłaby gorsza niż odmowa.
+
+#### 24.5.3 Koniec serii
+
+Widoczny wtw wybrano jakikolwiek preset. `RadioGroup` (`orientation="horizontal"`):
+
+| Wybór | Kontrolka | Na drut |
+| --- | --- | --- |
+| **Nigdy** *(domyślnie)* | — | brak `until` i brak `count` |
+| **Do dnia** | `DatePicker` z `min` = dzień początku | `recurrence.until` |
+| **Po liczbie powtórzeń** | `NumberInput` 1..366 | `recurrence.count` |
+
+**AS-BUILT — jedno pole, jeden slot błędu, nie trzy. Patrz §24.17 poz. 8 i 9.** `RadioGroup`
++ widżet wartości nie stoją osobno — mieszkają pod **jednym** `FormField label="Koniec
+powtarzania"`, którego `error` to pierwszy niepusty z `recurrence.until` ??
+`recurrence.count` ?? **`recurrence.exclusions.dates`**. Trzeci wpis w tym łańcuchu jest
+powodem scalenia: `series_has_no_occurrences` potrafi wrócić na ścieżce
+`recurrence.exclusions.dates` dla serii, która **nie ma pola końca w ogóle** (§24.5.4 —
+kontrolka nie oferuje edycji wykluczeń), więc gdyby tryb i wartość końca były dwoma
+osobnymi `FormField`ami, ten komunikat nie miałby, pod którym z nich wylądować — a lek,
+który nazywa (skróć `until` albo daj serii koniec), dotyczy właśnie tego pola. Jedno pole,
+obecne przez cały czas, gdy seria się powtarza, jest jedynym miejscem, które istnieje w
+każdym kształcie, jaki ten błąd może opisywać.
+
+Trwała notka pod polem liczby: *„Zapiszemy to jako datę ostatniego wystąpienia — po
+ponownym otwarciu zobaczysz datę, nie liczbę."*
+
+**To nie jest wygoda copywritera, tylko fakt kontraktu.** Serwer rozwiązuje `count` na
+`until` **raz, przy zapisie** (`endDayForCount`), a zasób zwraca **wyłącznie** `until`.
+„N razy" jest więc **sposobem powiedzenia daty**, a nie wartością, która wraca. Interfejs,
+który udawałby, że wraca, musiałby trzymać liczbę u siebie i rozjechać się z bazą przy
+pierwszej edycji z innego miejsca. Zgłoszone jako **L11** — świadoma właściwość, nie do
+„naprawienia" własnym licznikiem.
+
+Drugi realny błąd tej kontrolki: `recurrence.count` → `count_unreachable` („Ta reguła nie ma
+tylu wystąpień w rozsądnym horyzoncie…"). Trafia w rzadkie kadencje — np. „5. poniedziałek
+lutego". Renderować pod polem liczby, dosłownie: serwer nazywa lek (podaj datę).
+
+#### 24.5.4 Czego kontrolka NIE oferuje — i dlaczego
+
+Wypisane wprost, żeby nikt nie uzupełnił tego jako przeoczenia. Podzbiór jest wąski
+**świadomie**; rozszerzenie później jest addytywne i bezpieczne, zwężenie po wydaniu nie.
+
+| Nie ma | Powód |
+| --- | --- |
+| **Trybu „własne" / budowania reguły z osi** | Pierwsze cięcie ma dowieźć zakresy operacji, a nie edytor gramatyki. Presety pokrywają to, co człowiek mówi o spotkaniu |
+| **Kadencji „co N dni" / „co N miesięcy"** (`every_n_days`, `every_n_months`) | Backend ich **nie przyjmuje** i to jest decyzja, nie brak: kompilują się do siatki **resetowanej co miesiąc** (i co rok), więc znaczą co innego, niż użytkownik przeczyta („co 3 dni od dziś"). Tryb, który znaczy co innego, niż brzmi, jest gorszy od trybu, którego nie ma |
+| **Kadencji poddobowych** („co 5 minut", „co 2 godziny") | Backend ich nie przyjmuje: adnotacja co 5 minut to generator obciążenia (>60 000 wystąpień na jednej siatce), a oś czasu serii kalendarza jest **z konstrukcji jedną godziną** |
+| **„Ostatniego dnia roboczego"** (`last_working_day`) | Poza podzbiorem Kalendarza; trywialnie dodawalne później, jeśli ktoś tego zażąda |
+| **Wielu dni tygodnia naraz** („poniedziałki i środy") — mimo że API to przyjmuje | Wymagałoby zablokowania dnia tygodnia kotwicy jako niemożliwego do odznaczenia (inaczej odznaczenie własnego dnia początku daje 422 na polu **początku**, którego użytkownik z tą listą nie skojarzy). Do rozważenia jako osobna, mała iteracja — z zablokowanym chipem i zdaniem, dlaczego jest zablokowany |
+| **Pomijania miesięcy / dni tygodnia** (`exclusions.months`, `exclusions.weekdays`) | Backend **odrzuca oba klucze** — każde takie pominięcie jest wyrażalne jako zbiór dopełniający na osi dnia albo miesiąca, a powiedziane odwrotnie potrafi wykluczyć cały wymiar |
+| **Ręcznej edycji listy pominiętych dni** | Rośnie wyłącznie przez „usuń to wystąpienie"; przywracanie — §24.14 |
+| **Kreatora harmonogramu z edytora workflow** | Technicznie dałoby się, kontrakt jest wspólny. Wystawiłby jednak w oknie „powtórz to spotkanie" tryby „co 5 minut", „ostatni dzień roboczy", okna godzinowe i **asystenta AI** — słownictwo automatyzacji w oknie o spotkaniu. Osobne, wąskie presety to nie duplikat: to **inny profil tej samej gramatyki**, dokładnie tak jak `CalendarRecurrence` jest profilem `App\Support\Recurrence` po stronie serwera |
+
+#### 24.5.5 Godzina i strefa serii
+
+Pod kontrolką, dla wydarzenia z godziną, trwałe zdanie:
+*„Każde wystąpienie zaczyna się o {HH:mm} ({tz})."* — z `draft.starts_time` i
+`meta.timezone`. Powód: godzina serii **jest** godziną wydarzenia, ustawia się ją wyżej,
+w polu początku, i nie ma jej osobno; bez tego zdania użytkownik szuka w kontrolce
+powtarzania pola godziny, którego tam nigdy nie będzie (serwer odrzuca `recurrence.time`).
+
+Dla serii całodniowej — **nic**. Nie ma godziny do pokazania, a dorobienie „00:00" byłoby
+tym samym defektem, którego zakazuje §6.2.
+
+---
+
+### 24.6 Szuflada w trzech zakresach
+
+#### 24.6.1 Zasiew formularza zależy od zakresu — i to jest powód, dla którego dialog jest PRZED formularzem
+
+| Zakres | Pole początku zasiane z | Kontrolka powtarzania |
+| --- | --- | --- |
+| `series` | **kotwicy serii** — `event.start_date` / `event.starts_at` z GET-a | pełna, zasiana **regułą z GET-a** |
+| `occurrence` | **klikniętego wystąpienia** — `occurrence.start_date` / `occurrence.starts_at` | **BRAK** — zastąpiona notką (niżej) |
+| `following` | **klikniętego wystąpienia** (tam zaczyna się nowa seria) | pełna, zasiana **regułą z GET-a** |
+
+**Dlaczego nie odwrotnie (najpierw formularz, zakres przy zapisie — jak robi Google).**
+Zasób `GET` zwraca **kotwicę serii**, a nie kliknięte wystąpienie. Formularz otwarty
+z kotwicy i zapisany jako `scope=occurrence` odczepiłby wydarzenie **na dniu kotwicy**,
+jednocześnie wykluczając **dzień kliknięty**: użytkownik traci wtorek, który edytował,
+i dostaje duplikat na dniu początku serii. Formularz zasiany z wystąpienia i zapisany jako
+`scope=series` **przesuwa kotwicę** i ucina serii przeszłość. Każdy z tych zasiewów jest
+poprawny dla **jednego** zakresu i katastrofalny dla drugiego — a jedyny moment, w którym
+da się wybrać właściwy, jest **przed** wypełnieniem formularza.
+
+To samo rozstrzygnięcie zamyka drugi problem za darmo: pod `scope=occurrence` payload
+z regułą to 422 (`occurrence_has_no_rule`). Skoro kontrolki tam **nie ma**, użytkownik nie
+może nawet spróbować — cała klasa tego błędu staje się nieosiągalna, zamiast być
+przechwytywana po fakcie.
+
+#### 24.6.2 Banner zakresu — stały, przez cały czas edycji
+
+Nad polami, `Alert variant="info" size="sm"`, treść zależna od zakresu:
+
+| Zakres | Treść | Akcja w wierszu |
+| --- | --- | --- |
+| `occurrence` | „Edytujesz **jedno wystąpienie**: {data}. Po zapisie ten dzień przestanie należeć do serii i stanie się osobnym wydarzeniem." | `Button ghost xs` **„Zmień zakres"** |
+| `following` | „Edytujesz **wystąpienia od {data}**. Wcześniejsze zostaną bez zmian — powstanie z nich osobna, zamknięta seria." | jw. |
+| `series` | „Edytujesz **całą serię** — razem z wystąpieniami, które już się odbyły." | jw. |
+
+Banner jest w treści szuflady (nie sticky — szuflada jest krótka). „Zmień zakres" otwiera
+dialog ponownie **bez utraty wpisanych wartości**, jeżeli nowy zakres zachowuje sens pól;
+gdy zmienia zasiew daty (§24.6.1), pyta o potwierdzenie `ConfirmDialog` — porzucenie tego,
+co ktoś wpisał, nie może być cichym efektem ubocznym.
+
+#### 24.6.3 Pola pod `scope=occurrence`
+
+Kontrolka powtarzania zastąpiona **statyczną** notką:
+*„To wystąpienie przestanie należeć do serii. Reszta serii zachowa swoją regułę."*
+
+Pole początku **bez `min`/`max`** — przeniesienie odczepionego wystąpienia na inny dzień
+(„ten jeden wtorek robimy w środę") jest sensem tej operacji: serwer wyklucza pierwotny
+dzień i tworzy jednorazowe wydarzenie tam, gdzie wskazał użytkownik.
+
+#### 24.6.4 Pola pod `scope=following`
+
+Pole początku z `min = occurrence_date` — **z jednym wyjątkiem**: gdy
+`occurrence_date === dzień kotwicy`, `min` **nie jest** ustawiany, bo serwer traktuje wtedy
+operację jak zwykłą edycję całego wydarzenia i przesunięcie serii wstecz jest legalne.
+Poza tym przypadkiem obowiązuje `split_starts_before_the_split` (422 na polu początku),
+a `min` zamienia tę odmowę w kontrolkę, której po prostu nie da się źle ustawić.
+
+Przepływ, który to musi unieść (i unosi): *„od przyszłego tygodnia spotkanie jest w środy"* —
+użytkownik klika wtorkowe wystąpienie, wybiera „to i następne", **zmienia datę na środę**,
+preset sam wyprowadza się na „W każdą środę" (§24.5.2), zapis zamyka starą serię
+w poniedziałek i otwiera nową w środę. Wtorek, którego dotyczył podział, znika — i o to
+w tym zdaniu chodziło.
+
+Gdy zakres wymaga wystąpienia, a URL go nie niesie (§24.3.1), szuflada spada do `series`
+i mówi to wprost, `Alert info`: *„Otwarto bez wskazania wystąpienia — edycja obejmie całą
+serię. Aby zmienić pojedynczy dzień, kliknij go na siatce."*
+
+#### 24.6.5 Tryb podglądu — co widać o serii
+
+Dodatkowe wiersze `DescriptionList`, wszystkie z pól, które istnieją:
+
+| Wiersz | Źródło | Warunek |
+| --- | --- | --- |
+| **Wybrane wystąpienie** | `on`/`at` → `fullDateLabel` | jest wskazane wystąpienie |
+| **Powtarza się** | `cadence_label` **klikniętego wystąpienia**, gdy mamy wystąpienie z siatki — inaczej `event.recurrence_label` z `GET`-a (patrz niżej) | zawsze dla serii, odkąd L9 jest zamknięta |
+| **Początek serii** | `start_date` / `starts_at` w `meta.timezone` | zawsze dla serii |
+| **Koniec** | `recurrence.until` → `fullDateLabel`, albo *„bez końca"* | zawsze dla serii |
+| **Pominięte dni** | `recurrence.exclusions.dates.length` — sama liczba, lista dat w `title` | gdy > 0 |
+| **Strefa reguły** | `recurrence_timezone` | **tylko** gdy `≠ meta.timezone` |
+
+Ostatni wiersz jest warunkowy celowo: w normalnym przypadku obie strefy są tożsame i wiersz
+byłby szumem; gdy się różnią, jest jedynym miejscem, w którym widać, że dzień wystąpienia
+liczy się na innym zegarze niż siatka (§24.3).
+
+**„Powtarza się" ma dziś dwa źródła, w tej kolejności — luka L9 (§24.15) jest zamknięta,
+więc drugie źródło już istnieje.** Gdy mamy kliknięte wystąpienie z siatki, jego własne
+`cadence_label` jest zawsze niepuste dla serii wydarzeń (patrz "A series occurrence" w
+`docs/backend/calendar-api.md`) i wygrywa — jest świeższe, bo pochodzi z tego samego
+odświeżenia okna, które użytkownik właśnie widzi. **Gdy nie mamy klikniętego wystąpienia**
+(deep-link bez `on`/`at`, albo seria bez wystąpienia w bieżącym oknie — §24.8.4), wiersz
+czyta `event.recurrence_label` z `GET`-a zamiast znikać. Wiersz **„Powtarza się" nie
+renderuje się wcale** tylko wtedy, gdy **oba** źródła są `null` — czyli reguła jest jedną
+z tych, dla których `CalendarCadenceLabel` sam nie umie ułożyć zdania; wtedy przy tytule
+staje `Badge neutral subtle icon="repeat"` z treścią „Seria", tak jak dotąd. Frontendowi
+**nie wolno** złożyć zdania o kadencji z `recurrence.day.*` w żadnym przypadku — proza jest
+serwera i wraca przetłumaczona albo nie wraca wcale.
+
+#### 24.6.6 Zapis i jego skutki
+
+```
+PUT /api/calendar/events/{id}
+{
+  title, description, all_day,
+  start_date | starts_at (+ ends_at),
+  subject_type, subject_id,          ← PRZENIESIONE z GET-a (§12.4), nadal obowiązuje
+  recurrence: { day, month, exclusions, until } | (klucz nieobecny),
+  scope: 'occurrence' | 'following',            ← pomijany, gdy 'series'
+  occurrence_date: 'YYYY-MM-DD'                 ← wtw scope ≠ 'series'
+}
+```
+
+| Reguła | Powód |
+| --- | --- |
+| `recurrence` **odsyłany w całości z GET-a**, gdy użytkownik nie ruszył kontrolki — z `exclusions` włącznie | `PUT` jest zapisem całego wydarzenia: brak klucza **kasuje regułę**, brak `exclusions.dates` **wskrzesza** wystąpienia usuwane pojedynczo |
+| `exclusions` **nigdy nie jest budowany ani czyszczony przez formularz** — tylko przenoszony | Jedyne, co go zmienia, to „usuń to wystąpienie" po stronie serwera. Wyczyszczenie przy zmianie kadencji wyglądałoby na porządki, a przywróciłoby dni, które ktoś świadomie usunął |
+| Pod `scope=occurrence` klucz `recurrence` **w ogóle nie jest wysyłany** | Pojedyncze wystąpienie nie ma własnej reguły (422) |
+| Po odpowiedzi: `response.id !== id` ⇒ **powstał nowy wiersz** | Odczepienie i podział zwracają 201; identyfikator w URL-u przestał być tym, który edytuje się dalej (§24.2.3) |
+| Po zapisie `scope=series` **przeczytać `recurrence_timezone` z odpowiedzi** | Zapis całej serii **stempluje regułę bieżącą strefą workspace'u**; jeżeli strefa zmieniła się od utworzenia, `recurrence_timezone` **właśnie się zmienił**, a stary jest nieaktualny do liczenia `occurrence_date` (**L13**) |
+| Po sukcesie: szuflada zamyka się, `?event/edit/scope/on/at` znikają z URL-a, siatka odświeża bieżące okno | Tak jak dziś (`onEventSaved`); nowy identyfikator nie jest wpychany do URL-a, bo użytkownik patrzy z powrotem na siatkę |
+
+Toast sukcesu **nazywa zakres** — inaczej trzy różne operacje meldują się identycznie:
+
+| Operacja | Toast |
+| --- | --- |
+| zapis `occurrence` | „Zapisano to wystąpienie jako osobne wydarzenie" |
+| zapis `following` | „Zapisano wystąpienia od {data}" |
+| zapis `series` | „Zapisano całą serię" |
+| usunięcie `occurrence` | „Usunięto to wystąpienie" |
+| usunięcie `following` | „Usunięto wystąpienia od {data}" |
+| usunięcie `series` | „Usunięto wydarzenie" |
+
+---
+
+### 24.7 Dwa różne fakty, które nie mogą wyglądać tak samo
+
+Na siatce istnieją teraz **dwa** powody, dla których kafelek może być oznaczony. Zlanie ich
+w jeden znacznik nauczyłoby użytkownika ignorować oba.
+
+| Fakt | Skąd | Co znaczy |
+| --- | --- | --- |
+| **„To jest wystąpienie serii"** | `recurring === true` | Fakt o **podmiocie**. Trwały. Mówi: klik tutaj otworzy wydarzenie, które ma więcej niż ten jeden dzień. **Nie** `cadence_label !== null` — ta implikacja jest wystarczająca, ale nie konieczna (zamknięta luka L8, §24.15): harmonogram w trybie stałych godzin **też** się powtarza i `recurring` to teraz poprawnie łapie, mimo że jego `cadence_label` zostaje `null`. |
+| **„Widzisz próbkę"** | `dense === true` | Fakt o **odpowiedzi**. Przygodny. Mówi: reszty tej pozycji w tym oknie **nie ma** |
+
+**Konsekwencja przejścia z `cadence_label !== null` na `recurring`.** Harmonogram w trybie
+stałych godzin (`at`-mode) dostaje dziś glif/plakietkę serii, której wcześniej nie dostawał
+— to jest **poprawka pokrycia**, nie regresja: ten podmiot naprawdę się powtarza, tylko nie
+miał o tym nic do powiedzenia w prozie. Konsekwencja dla treści plakietki w wariancie
+`agenda`/`list`: gdy `recurring === true`, a `cadence_label === null` (dokładnie ten
+przypadek), plakietka renderuje się **bez treści** (sam `icon="repeat"`, jak w wariancie
+`grid`) zamiast składać zdanie po stronie klienta — spójne z regułą „proza jest serwera
+albo jej nie ma" z reszty tego rozdziału.
+
+#### 24.7.1 Znaczniki
+
+| | Wariant `grid` | Wariant `agenda` / `list` |
+| --- | --- | --- |
+| **Seria** | glif `repeat`, xs, `opacity-60`, **przed** glifem kierunku (reguła kolejności afordancji trailing) | `Badge neutral subtle icon="repeat"`, z treścią **`cadence_label`** gdy niepuste, inaczej bez treści (patrz wyżej) — proza serwera, dosłownie, nigdy składana |
+| **Próbka** | `Badge warning subtle icon="layers"`; liczba **tylko** gdy zwinięto > 1 | to samo + `title` z pełnym zdaniem |
+
+**Ton `warning` dla próbki jest powiązaniem, nie ozdobą:** komunikat `item_densified`
+u góry ekranu to `Alert variant="warning"` (§13.3), a chip jest jego odbiciem na siatce.
+Ten sam ton wiąże jedno z drugim bez ani jednego dodatkowego napisu.
+
+**W wariancie `grid` renderuje się co najwyżej JEDEN znacznik, i wygrywa próbka.** Powód:
+komórka ma ~11 rem, a „nie widzisz wszystkiego" jest pilniejsze niż „to się powtarza" —
+tym bardziej że dla źródła `event` próbka **implikuje** serię. Zdanie o serii nie ginie:
+zostaje w `aria-label` i w `title` kafelka.
+
+#### 24.7.2 Zmiana wobec dzisiejszego kodu
+
+`OccurrenceChip.vue` renderuje dziś **jeden** znacznik — `Badge … icon="repeat"` pod
+warunkiem `folded` (czyli gęstości). Po B6:
+
+- `repeat` **przechodzi na fakt serii** (to jest znaczenie tego glifu i tak go czyta również
+  kontrolka powtarzania w szufladzie);
+- próbka dostaje **nowy** glif `layers` — patrz §24.12.2.
+
+**Nie wolno zostawić `repeat` na obu.** To jest dokładnie ta jedna rzecz, którą ten
+podrozdział istnieje, żeby uczynić niemożliwą.
+
+#### 24.7.3 Fakt o gęstości, który zmienia wagę tej sekcji
+
+Seria wydarzeń ma **najwyżej jedno wystąpienie dziennie** (jedna godzina z konstrukcji),
+a budżet pozycji to **64** przy oknie **≤ 62 dni** — więc **seria wydarzeń nigdy nie
+przekroczy budżetu pozycji**. `dense: true` na wystąpieniu wydarzenia może dziś powstać
+**wyłącznie** z sufitu całej odpowiedzi (1000 wystąpień) trafiającego w środek serii.
+Skutki dla UI:
+
+- oba znaczniki naraz są **rzadkie**, ale muszą być rozróżnialne, bo gdy wystąpią, znaczą
+  co innego;
+- `collapseDense` grupuje po `subject.id` w obrębie **jednego dnia**, więc dla serii
+  wydarzeń zwija zawsze **jedną** pozycję → `shown === 1`. Dlatego liczba w chipie próbki
+  pokazuje się **tylko przy `shown > 1`**: „próbka: 1" to zdanie o niczym;
+- komunikat `item_densified` dla źródła `event` opowiada wtedy o **całych brakujących dniach
+  serii**, nie o urwisku w jednym dniu — copy z §13.3 pozostaje prawdziwe („widzisz początek
+  serii, puste dni po niej nie znaczą, że nic się nie dzieje").
+
+---
+
+### 24.8 Stany
+
+#### 24.8.1 Ładowanie
+
+| Powierzchnia | Stan |
+| --- | --- |
+| Siatka / agenda | Bez zmian (§15.1) — projekcja serii nie dokłada żądań, seria to te same wystąpienia |
+| Szuflada (GET wydarzenia) | Bez zmian (§12.1); szkielet imituje układ, **plus** dwa dodatkowe wiersze meta, bo blok serii ma 3–5 wierszy |
+| Dialog usuwania po potwierdzeniu | `Button loading` — spinner **w przycisku**, tekst zostaje, szerokość stała; **opcje zostają aktywne** (ani `readonly`, ani `disabled`) — AS-BUILT, §24.17 poz. 5: jedyny realny błąd tego dialogu wskazuje jako lekarstwo inną opcję tego samego dialogu, więc muszą zostać klikalne przez cały czas |
+
+#### 24.8.2 Pusto
+
+Bez zmian wobec §15.2. Jedyny nowy przypadek pustki to **§24.8.4**.
+
+#### 24.8.3 Odmowa walidacji na polach reguły
+
+| Sytuacja | Zachowanie |
+| --- | --- |
+| 422 ze ścieżką `recurrence.*` | Komunikat **z serwera**, pod kontrolką powtarzania/końca (mapa: §24.2.4). Focus na pierwszą błędną kontrolkę. **Bez toastu** |
+| 422 na `start_date`/`starts_at` z powodu reguły (`anchor_not_an_occurrence`, `split_starts_before_the_split`) | Pod polem **początku** — bo tam jest lek. Banner zakresu zostaje widoczny, żeby zdanie „nie może zaczynać się przed podziałem" miało kontekst |
+| 422 na `scope`/`occurrence_date` | `Alert danger` na górze szuflady + `Button ghost xs` **„Wybierz zakres ponownie"**. Formularz **zostaje wypełniony** |
+| 422 na kluczu, dla którego nie ma kontrolki (`recurrence.time`, `recurrence.tz`, obcy klucz) | `Alert danger` na górze — to defekt klienta (stary bundle, ręcznie zbudowany payload), nie stan użytkownika |
+
+#### 24.8.4 Seria bez ani jednego wystąpienia w oglądanym oknie
+
+Realne i częstsze, niż wygląda: seria zakończona w zeszłym roku, reguła roczna oglądana
+w innym miesiącu, seria zaczynająca się za pół roku.
+
+**Wykrycie** (wyłącznie z danych, które są): szuflada pokazuje serię
+(`event.recurrence !== null`) **i** w `store.occurrences` nie ma ani jednego wystąpienia
+z `subject.id === event.id`.
+
+**Warunek konieczny, bez którego to zdanie byłoby kłamstwem:** źródło `event` musiało być
+**zapytane i odpowiedzieć** — czyli filtr źródeł je obejmuje (albo jest pusty) **i** nie ma
+go w `meta.unavailable_sources`. Inaczej „ta seria nie ma tu wystąpień" znaczy „nie
+pytaliśmy", a to dwa różne zdania (§14).
+
+**Co pokazujemy** — `Alert variant="info" size="sm"` w szufladzie:
+*„Ta seria nie ma wystąpień w oglądanym miesiącu."*
+plus **co najwyżej dwa** przyciski `ghost xs`, każdy z etykietą prawdziwą jako fakt
+o **dacie**, a nie obietnicą o wystąpieniu:
+
+| Przycisk | Cel | Warunek |
+| --- | --- | --- |
+| „Pokaż początek serii ({miesiąc})" | `?month = monthOf(start_date \| starts_at→tz)` | zawsze dla serii |
+| „Pokaż koniec serii ({miesiąc})" | `?month = monthOf(recurrence.until)` | wtw `until !== null` i inny miesiąc niż początek |
+
+**Czego tu nie ma i nie będzie: „pokaż następne wystąpienie".** Policzenie go to projekcja
+kadencji, czyli re-implementacja silnika po stronie klienta — dokładnie to, przed czym
+ADR-0052 broni całą wspólną warstwę. Miesiąc **początku** i miesiąc **końca** to daty
+odczytane z zasobu i nic więcej.
+
+#### 24.8.5 Reguła, której kontrolka nie umie wyrazić
+
+Kontrakt przyjmuje szerszy podzbiór niż presety z §24.5 (wiele dni tygodnia, wiele dni
+miesiąca, lista miesięcy, `last_weekday` poza warunkiem). Taka reguła może powstać z API,
+z kroku `create_event` albo z przyszłej, szerszej kontrolki. **Formularz nie może jej po
+cichu przepisać na najbliższy preset.**
+
+| Wymóg | Zachowanie |
+| --- | --- |
+| Wykrycie | Zapisany deskryptor **nie jest równy** żadnemu, jaki presety potrafią wyprodukować dla dzisiejszej daty początku |
+| Select | Dodatkowa, **zaznaczona i `disabled`** pozycja **„Inna reguła"** — nigdy ciche wskoczenie na „Codziennie" |
+| Zdanie | `cadence_label` klikniętego wystąpienia, jeśli jest; inaczej `event.recurrence_label` z `GET`-a (odkąd L9 jest zamknięta — §24.15); dopiero gdy **oba** są `null` — *„Ta seria ma regułę, której ten formularz nie edytuje."* — sama „Inna reguła" nie gwarantuje pustego zdania: wielodniowa reguła spoza presetów zwykle ma swoje `recurrence_label` (np. „Weekly on Mon, Wed"), tylko kontrolka nie umie jej **wyprodukować** |
+| Zapis | Blok `recurrence` z GET-a jedzie **dosłownie**, razem z `exclusions` i `until` |
+| Reszta formularza | **Działa normalnie** — tytuł, opis, godzinę i koniec serii da się poprawić bez ruszania reguły |
+| Wyjście | Wybranie dowolnego presetu **nadpisuje** regułę; opcja „Inna reguła" znika z listy i **nie da się do niej wrócić** bez anulowania edycji. Zdanie pod kontrolką mówi to wprost: *„Wybranie innego powtarzania zastąpi obecną regułę."* |
+
+---
+
+### 24.9 Responsywność
+
+Bez zmian w podziale z §17. Trzy dopiski, wszystkie wynikające z nowych powierzchni:
+
+| Breakpoint | Zachowanie |
+| --- | --- |
+| `< next-md` (agenda zawsze) | Znacznik serii jest **`Badge` z `cadence_label`**, nie glifem — agenda ma szerokość, a to jedyne miejsce, w którym użytkownik telefonu przeczyta kadencję |
+| `< next-md`, szuflada `size="full"` | Kontrolka powtarzania i kontrolka końca układają się **w kolumnie**; `RadioGroup` końca przechodzi z `horizontal` na `vertical` |
+| Dialog zakresu | `Modal size="sm"`; na wąskim ekranie opcje mają cel dotykowy ≥ 44 px (`Radio` w rozmiarze `md`, nie `sm`), a stopka łamie się na dwa przyciski pełnej szerokości — potwierdzenie **na dole**, żeby nie było pierwszym, w co trafi kciuk |
+
+---
+
+### 24.10 Dostępność
+
+**Reguła nadrzędna: siatka ma działającą obsługę klawiatury i B6 jej nie dotyka.**
+Żadnego nowego punktu tabulacji w `role="grid"`, żadnej zmiany mapy klawiszy (§18.1),
+żadnych nowych `tabindex` w komórce. Znaczniki serii i próbki są `aria-hidden`, a ich treść
+wchodzi do **istniejącego** `aria-label` kafelka.
+
+| Powierzchnia | Wymóg |
+| --- | --- |
+| Kafelek serii | `aria-label` rozszerzony o `cadence_label` (proza serwera) **i** o to, że klik prowadzi do wyboru zakresu — jedno zdanie, ta sama kolejność co dziś: tytuł · czas · źródło · plakietka · seria · kierunek |
+| Kafelek próbki | Zdanie o próbce **przed** zdaniem o kierunku; `calendar.dense.aria` zostaje bez zmian |
+| Dialog zakresu | §24.4.6 |
+| Banner zakresu | `Alert` → `role="status"` (nie `alert`: to stan trwały, nie zdarzenie) |
+| Kontrolka powtarzania | `FormField` daje etykietę i `aria-describedby`; notki warunkowe (pomijane miesiące, godzina serii) są **opisami pola**, nie `title` |
+| Błędy reguły | `aria-invalid` na kontrolce + komunikat podpięty przez `FormField` (mechanizm naprawiony app-wide w `e501cf2` — nie obchodzić go własnym `<p>`) |
+| Znacznik serii nigdy nie jest samym kolorem | Glif + tekst w `aria-label`; ton `warning` próbki jest **wzmocnieniem**, nie nośnikiem |
+| Zmiana presetu przy zmianie daty (§24.5.2) | Select przerysowuje etykietę; **bez** `aria-live` — to bezpośrednia konsekwencja akcji użytkownika w sąsiednim polu, a ogłaszanie jej rozbiłoby wpisywanie daty |
+
+---
+
+### 24.11 Ciemny motyw i tokeny
+
+Wyłącznie tokeny semantyczne `next-*`; dark mode działa przez podmianę tokenów, **bez ani
+jednej odwróconej wartości w komponentach** (§16.2). Nowe punkty do sprawdzenia w obu
+motywach:
+
+| Element | Ryzyko | Wymóg |
+| --- | --- | --- |
+| `Badge warning subtle` (próbka) **na** kafelku `primary-subtle` | Dwa subtelne tła jedno na drugim; w dark `warning-subtle` i `primary-subtle` mają bliską jasność | Sprawdzić kontrast krawędzi; jeśli znika — `tone` zostaje `subtle`, ale dochodzi `ring-1 ring-next-warning/40`. **Nie** zmieniać na `solid`: przekrzyczałoby tytuł |
+| Glif `repeat` przy `opacity-60` | W dark `muted-foreground` na `primary-subtle` bywa za miękki | Minimalnie `opacity-70` w dark; próg sprawdzić na kafelku `neutral` (najtrudniejszy) |
+| Banner zakresu (`Alert info`) w szufladzie | Trzy warstwy: `Drawer` → `Alert` → `FormField` | Sprawdzić, czy `info-subtle` odróżnia się od tła szuflady w dark |
+| Dialog zakresu `variant="danger"` | Stos `Modal` nad `Drawer` — dwa scrimy | Sprawdzić, czy panel dialogu **czyta się jako wierzchni**, a nie jako część szuflady |
+
+---
+
+### 24.12 Inwentarz komponentów
+
+#### 24.12.1 Reuse — bez zmian
+
+`Modal`, `RadioGroup`, `Radio` (ma `description` — nośnik zdania o skutku), `Select`
+(statyczne `options`), `NumberInput`, `DatePicker` (ma `min`/`max`/`disabledDate`),
+`FormField`, `Alert`, `Badge`, `Button`, `Icon`, `DescriptionList`, `ConfirmDialog`
+(dla wydarzenia **nie**-cyklicznego), `useToast`, `useConfirm`, `useOverlayStack`.
+
+Z `dateCore`: `fromIsoDate`, `daysInMonth`, `weekdayNames`, `monthNames`, `fullDateLabel`.
+Z `calendarZone`: `instantToZonedParts`, `instantToWallClock`, `monthOf`.
+
+#### 24.12.2 Extend
+
+| Plik | Zmiana | Uzasadnienie |
+| --- | --- | --- |
+| `ui/primitives/icons.ts` | dodać `'layers'` do `IconName` **i** do `ICONS` | Znacznik **próbki**, po tym jak `repeat` przechodzi na fakt serii (§24.7.2). `more-horizontal` czyta się jako menu akcji, `alert-triangle` jest zajęty przez `items_dropped` (§13.2 — inny, cięższy rodzaj straty), `eye-off` znaczy już „anonimowe" i „ukryj hasło". Rejestr jest z założenia rozszerzalny (tak dodano `map-pin`, `package`, `repeat`) |
+| `pages/calendar/types.ts` | `CalendarEvent` += `recurrence`, `recurrence_timezone`; `CalendarEventPayload` += `recurrence`, `scope`, `occurrence_date`; nowe typy `CalendarRecurrenceRule`, `CalendarEventScope` | 1:1 z kontraktem §24.2. **Bez wymyślonych pól** |
+| `app/stores/calendar.ts` | `saveEvent`/`deleteEvent` przyjmują zakres; `buildEventPayload` przenosi `recurrence` z GET-a i dokłada `scope`/`occurrence_date` | Trzy niewidoczne przy złamaniu inwarianty (całe wydarzenie, jedna grupa czasowa, jawny offset) mają tu **czwarty**: reguła jedzie w całości |
+| `pages/calendar/OccurrenceChip.vue` | rozdzielenie dwóch znaczników (§24.7) | — |
+| `pages/calendar/EventDrawer.vue` | banner zakresu, zasiew per zakres, kontrolka powtarzania, blok serii w podglądzie, `FORM_FIELDS` po prefiksie `recurrence.` | — |
+| `pages/calendar/CalendarView.vue` | `on`/`at`/`scope` w URL-u, przekazanie klikniętego wystąpienia do szuflady | — |
+
+#### 24.12.3 Create
+
+| Plik | Rola |
+| --- | --- |
+| `pages/calendar/SeriesScopeModal.vue` | Dialog zakresu — dwa tryby (edycja / usuwanie), dynamiczna etykieta potwierdzenia, miejsce na błąd serwera |
+| `pages/calendar/RecurrenceField.vue` | Kontrolka powtarzania: presety wyprowadzone z daty + kontrolka końca + notki warunkowe |
+| `pages/calendar/recurrencePresets.ts` | **Czysty, testowalny.** `presetsFor(day)` → lista presetów z etykietami i deskryptorami; `descriptorOf(preset, day)`; `presetOf(descriptor, day)` (rozpoznanie zapisanej reguły, `null` = „Inna reguła"); `remapPreset(preset, newDay)` |
+| `pages/calendar/occurrenceDate.ts` | **Zredukowany od L8 (§24.15): backend zwraca `occurrence_date` bezpośrednio, więc nie ma już czego liczyć.** Jeśli powstaje, to jako jeden trywialny getter (`occurrenceDateOf(occurrence) → occurrence.occurrence_date`) dla jednego miejsca importu — nie jako moduł z logiką derywacji z §24.3. Frontend-agent decyduje, czy taki plik w ogóle jest wart tworzenia, czy odczyt idzie inline |
+
+**Zero nowych zależności npm.**
+
+#### 24.12.4 Testy Vitest — minimum
+
+1. `occurrenceDate` (jeśli plik powstaje) — asercja **przepisania**, nie liczenia:
+   `occurrenceDateOf(occurrence) === occurrence.occurrence_date`, dla obu kształtów
+   (`all_day` i z godziną). Formuła derywacji z §24.3 zostaje jako test **regresyjny wobec
+   backendu** (odtwarza to samo dla pary stref, w której dzień się przesuwa), nie jako
+   ścieżka produkcyjna.
+2. `recurrencePresets` — dla 25.08.2026 (wtorek, 4. wtorek) lista zawiera „W każdy wtorek",
+   „Co miesiąc, dnia 25", „Co miesiąc: 4. wtorek", „Co roku, 25 sierpnia".
+3. `recurrencePresets` — dla 31.03.2026 preset ostatniego dnia jest w liście, a preset
+   „dnia 31" niesie notkę o pomijanych miesiącach.
+4. `remapPreset` — zmiana daty z wtorku na środę zamienia `weekdays:[2]` na `weekdays:[3]`
+   (asercja: kotwica **zawsze** spełnia wyprodukowaną regułę).
+5. `presetOf` — deskryptor `weekdays:[1,3]` (spoza kontrolki) → `null`, a formularz odsyła go
+   **bajt w bajt**.
+6. `buildEventPayload` — edycja tytułu serii odsyła `recurrence` z `exclusions.dates`
+   nietkniętym; pod `scope=occurrence` klucza `recurrence` **nie ma**.
+7. `SeriesScopeModal` — etykieta przycisku zmienia się z wyborem; przy pierwszym wystąpieniu
+   opcja `following` niesie zdanie o całej serii.
+8. Chip — `recurring === true` daje glif serii (**nie** `cadence_label !== null` — §24.7);
+   `dense` daje glif próbki; oba naraz w wariancie `grid` dają **tylko** próbkę. Osobny
+   przypadek: `recurring === true` i `cadence_label === null` (harmonogram w trybie stałych
+   godzin) wciąż daje glif serii w `grid`, a w `agenda`/`list` plakietkę bez treści.
+9. Chip — `dense` przy `shown === 1` renderuje znacznik **bez liczby**.
+10. „Seria bez wystąpień w oknie" — komunikat **nie** pojawia się, gdy źródło `event` jest
+    odfiltrowane albo jest w `unavailable_sources`.
+
+---
+
+### 24.13 Copy i klucze i18n
+
+Namespace `calendar.*` (`resources/js/next/app/i18n/{en,pl}.ts`, `en.ts` źródłem typu,
+`pl.ts` 1:1). **Bez odmiany liczebników** — kształt „Etykieta: {n}".
+
+```
+calendar.series.badge                  "Seria"
+calendar.series.marker                 "Wystąpienie serii"          (aria/title glifu)
+calendar.series.repeats                "Powtarza się"               (etykieta wiersza)
+calendar.series.start                  "Początek serii"
+calendar.series.end                    "Koniec"
+calendar.series.endNever               "bez końca"
+calendar.series.skipped                "Pominięte dni: {n}"
+calendar.series.ruleTimezone           "Strefa reguły"
+calendar.series.selectedOccurrence     "Wybrane wystąpienie"
+calendar.series.unknownRule            "Ta seria ma regułę, której ten formularz nie edytuje."
+calendar.series.noneInWindow           "Ta seria nie ma wystąpień w oglądanym miesiącu."
+calendar.series.goToStart              "Pokaż początek serii ({month})"
+calendar.series.goToEnd                "Pokaż koniec serii ({month})"
+
+calendar.sample.marker                 "Widzisz próbkę tej pozycji"
+
+calendar.scope.edit.title              "Co chcesz edytować?"
+calendar.scope.delete.title            "Co usunąć?"
+calendar.scope.context                 "Wybrane wystąpienie: {date}"
+calendar.scope.occurrence.label        "Tylko to wystąpienie"
+calendar.scope.occurrence.editHint     "Ten dzień wyjdzie z serii i stanie się osobnym wydarzeniem. Reszta serii zostaje bez zmian."
+calendar.scope.occurrence.deleteHint   "{date} zniknie z serii. Pozostałe wystąpienia zostają."
+calendar.scope.following.label         "To i wszystkie następne"
+calendar.scope.following.editHint      "Wcześniejsze wystąpienia zostaną takie, jakie były. Od tego dnia powstanie nowa seria."
+calendar.scope.following.deleteHint    "Seria skończy się dzień wcześniej. Wcześniejsze wystąpienia zostają."
+calendar.scope.following.firstHint     "To pierwsze wystąpienie serii, więc ta opcja obejmie całą serię."
+calendar.scope.series.label            "Całą serię"
+calendar.scope.series.editHint         "Wszystkie wystąpienia — także te, które już się odbyły. Zmiana reguły przepisze historię: przeniesienie spotkania na środy zamieni w środy również zeszłoroczne poniedziałki."
+calendar.scope.series.deleteHint       "Wydarzenie zniknie z kalendarza razem z całą historią. W interfejsie nie da się tego cofnąć."
+calendar.scope.confirm.editOccurrence   | .editFollowing   | .editSeries
+calendar.scope.confirm.deleteOccurrence | .deleteFollowing | .deleteSeries
+calendar.scope.change                  "Zmień zakres"
+calendar.scope.retry                   "Wybierz zakres ponownie"
+calendar.scope.banner.occurrence | .following | .series
+calendar.scope.fallbackNotice          "Otwarto bez wskazania wystąpienia — edycja obejmie całą serię. Aby zmienić pojedynczy dzień, kliknij go na siatce."
+
+calendar.recurrence.label              "Powtarzanie"
+calendar.recurrence.none               "Nie powtarza się"
+calendar.recurrence.daily              "Codziennie"
+calendar.recurrence.weeklyDays.0..6    "W każdą niedzielę" … "W każdą sobotę"   (katalog, NIE szablon — §24.17 poz. 3)
+calendar.recurrence.monthlyDay         "Co miesiąc, dnia {day}"
+calendar.recurrence.monthlyNth         "Co miesiąc: {ordinal} {weekday}"        ({weekday}: nazwa z Intl, nie z katalogu)
+calendar.recurrence.monthlyLastDay     "Co miesiąc, ostatniego dnia"
+calendar.recurrence.monthlyLastWeekdays.0..6  "Co miesiąc: ostatnia niedziela" … "Co miesiąc: ostatnia sobota"  (katalog — §24.17 poz. 3)
+calendar.recurrence.ordinals.1..5      "1." … "5."                          (bez odmiany — liczebnik przed nazwą dnia)
+calendar.recurrence.yearly             "Co roku, {date}"                    ({date}: gotowy z Intl, §24.17 poz. 4 — NIE {day}+{month})
+calendar.recurrence.other              "Inna reguła"
+calendar.recurrence.otherReplaces      "Wybranie innego powtarzania zastąpi obecną regułę."
+calendar.recurrence.shortMonthsNote    "Miesiące bez {day}. dnia zostaną pominięte."
+calendar.recurrence.hourNote           "Każde wystąpienie zaczyna się o {time} ({tz})."
+calendar.recurrence.detachNote         "To wystąpienie przestanie należeć do serii. Reszta serii zachowa swoją regułę."
+
+calendar.recurrence.end.label          "Koniec powtarzania"
+calendar.recurrence.end.never          "Nigdy"
+calendar.recurrence.end.until          "Do dnia"
+calendar.recurrence.end.count          "Po liczbie powtórzeń"
+calendar.recurrence.end.countNote      "Zapiszemy to jako datę ostatniego wystąpienia — po ponownym otwarciu zobaczysz datę, nie liczbę."
+
+calendar.event.savedOccurrence         "Zapisano to wystąpienie jako osobne wydarzenie"
+calendar.event.savedFollowing          "Zapisano wystąpienia od {date}"
+calendar.event.savedSeries             "Zapisano całą serię"
+calendar.event.deletedOccurrence       "Usunięto to wystąpienie"
+calendar.event.deletedFollowing        "Usunięto wystąpienia od {date}"
+```
+
+**Dwa istniejące klucze wymagają przeredagowania, bo po rozdzieleniu faktów (§24.7) mówią
+nie o tym, przy czym stoją:**
+
+| Klucz | Dziś | Po B6 |
+| --- | --- | --- |
+| `calendar.dense.chip` | „Seria — pokazano {shown}" | **„Pokazano {shown} z tej pozycji"** — słowo „Seria" przechodzi na znacznik serii i nie może stać przy znaczniku próbki |
+| `calendar.dense.aria` | „Ta pozycja powtarza się częściej, niż widać na siatce" | **bez zmian** — mówi o tym, czego siatka nie pokazuje, czyli o próbce |
+
+**Nadal nie ma kluczy na:** zdanie o kadencji **zapisanej** reguły (`cadence_label` na
+wystąpieniu, `recurrence_label` na zasobie wydarzenia — oba proza serwera), nazwy źródeł,
+treści plakietek, komunikaty walidacji. Trwałe, nie tymczasowe: żadne z tych pól nigdy nie
+potrzebuje klucza i18n, bo klient go nie tłumaczy — tylko renderuje.
+
+**`calendar.recurrence.*` to etykiety WYBORU, nie opis reguły zapisanej** — i to jest
+jedyne rozróżnienie, które utrzymuje obie zasady naraz: kontrolka opisuje **zamiar** (serwer
+nie ma o nim zdania, bo reguła jeszcze nie istnieje), a kafelek i podgląd opisują **stan**
+(i biorą zdanie z serwera). Etykiety presetów **nie wolno** użyć do opisania reguły, która
+już jest zapisana.
+
+---
+
+### 24.14 Czego NIE ma w B6
+
+| Nie ma | Dlaczego |
+| --- | --- |
+| **Przywracania pominiętego dnia** | Wyrażalne w kontrakcie (`PUT` z `exclusions.dates` bez jednej daty), więc to **świadome odroczenie**, nie luka. Wymaga listy dat z akcją per wiersz i zapisu całej serii — osobna, mała iteracja. Dopóki go nie ma, dialog usuwania nie obiecuje odwracalności |
+| **Podglądu „kiedy wypadną najbliższe wystąpienia"** | Projekcja kadencji po stronie klienta = drugi silnik. Siatka **jest** podglądem: zapisz i zobacz |
+| **Wielu dni tygodnia / wielu miesięcy w kontrolce** | §24.5.4 — API to unosi, kontrolka nie; wymaga zablokowanego chipa kotwicy |
+| **Trybu „własne"** | §24.5.4 |
+| **Przeciągania wystąpienia na inny dzień** | D3 zostaje w mocy: 3 z 4 źródeł są nieprzesuwalne, a mieszana afordancja uczy nieufności do całego ekranu. „Ten wtorek robimy w środę" ma pełną ścieżkę: zakres `occurrence` + zmiana daty |
+| **Serii rysującej rozpiętość przez dni** | Model wystąpienia to jedna kratka (§22), a seria nie zmienia modelu |
+| **Wyjątku „to wystąpienie odbyło się o innej godzinie" bez odczepiania** | Backend nie ma tabeli nadpisań i świadomie jej nie chce: odczepienie daje zwykły wiersz, o którym nic nie musi wiedzieć, że jest wyjątkiem |
+
+---
+
+### 24.15 Luki kontraktu (B6)
+
+Zgłoszone, **nie** dopisane po cichu do specyfikacji.
+
+---
+
+#### L8 — Wystąpienie nie niesie swojej daty ani flagi „to jest seria" — **ZAMKNIĘTA**
+
+**Fakt (stan w chwili zgłoszenia).** `CalendarOccurrenceResource` zwracał `id`, `source`,
+`editable`, `all_day`, `start_date`, `starts_at`, `ends_at`, `title`, `color`, `badge`,
+`dense`, `cadence_label`, `subject`. Dnia wystąpienia (`occurrence_date`), którym nazywa je
+**powierzchnia zapisu**, na drucie nie było — jedynie wewnątrz `id`
+(`event:{uuid}:{Y-m-d}`), a dokumentacja backendu wprost zaleca, żeby klient nie parsował
+`id`.
+
+**Skutek (wtedy).** Frontend musiałby wyprowadzać datę sam (§24.3 — dawna, wymagana ścieżka)
+za cenę dwóch zależności niewidocznych w typie: `recurrence_timezone` (czyli `GET`
+wydarzenia przed policzeniem czegokolwiek) i znajomości reguły „dzień na zegarze serii".
+Kafelek nie miał też jak wiedzieć, że jest wystąpieniem serii, inaczej niż przez
+`cadence_label !== null` — warunek **wystarczający, ale nie konieczny**: wystąpienie
+harmonogramu w trybie stałych godzin powtarza się i niesie `null`.
+
+**Co faktycznie weszło — dokładnie pod rekomendowanymi nazwami.**
+`CalendarOccurrenceResource` niesie dziś **`recurring: bool`** i
+**`occurrence_date: string|null`**, zawsze obecne na każdym wystąpieniu z każdego źródła
+(`recurring: false`/`occurrence_date: null` domyślnie dla źródeł, które nic o tym nie
+wiedzą — żadne inne źródło nie wymagało zmiany). Pełny kontrakt:
+`docs/backend/calendar-api.md` → „Resource shapes" → sekcja o `recurring`/`occurrence_date`.
+
+**Co to zmienia w tej specyfikacji.** §24.3's derywacja **nie jest już wymaganym krokiem** —
+`occurrence_date` przychodzi gotowe na siatce, bez dodatkowego `GET`-a. §24.7's warunek
+„to jest wystąpienie serii" czyta się dziś z `recurring`, nie z obecności `cadence_label`
+(patrz §24.7 poniżej — to jest bezpośrednia konsekwencja zamknięcia tej luki: `recurring`
+łapie też harmonogram w trybie stałych godzin, którego `cadence_label !== null` nigdy nie
+łapał). §24.12.3's planowany plik `occurrenceDate.ts` i test 1/8 z §24.12.4 są zaktualizowane
+w tych sekcjach, żeby nie kazać budować silnika, który backend już policzył.
+
+---
+
+#### L9 — Zasób wydarzenia nie niesie zdania o kadencji
+
+**Status: ZAMKNIĘTA — pod INNĄ nazwą niż rekomendacja niżej, celowo.**
+
+**Fakt (stan w chwili zgłoszenia).** `CalendarEventResource` zwracał `recurrence` (surowy
+deskryptor) i `recurrence_timezone`, ale nie zwracał prozy. Zdanie („Co tydzień: wt.")
+produkuje `CalendarCadenceLabel` i trafiał wyłącznie na wystąpienie, jako `cadence_label`.
+
+**Skutek (wtedy).** Szuflada potrafiła powiedzieć, jak często powtarza się seria, tylko
+wtedy, gdy otwarto ją klikiem w kafelek. Przy deep-linku (`?event=…`), po odświeżeniu
+strony i w każdym przypadku z §24.8.4 (seria bez wystąpienia w oknie) nie było z czego
+tego zdania wziąć.
+
+**Rekomendacja (jak zgłoszona).** `CalendarEventResource` += `cadence_label: string|null`.
+
+**Co faktycznie weszło: `recurrence_label`, nie `cadence_label`.** Ten dokument
+rekomendował `cadence_label` na zasobie wydarzenia; backend wysłał **`recurrence_label`**.
+**To nie jest niedopatrzenie — to jest lepsza nazwa, i trzeba ją tu zapisać, żeby nikt nie
+zaimplementował klucza, którego na drucie nie ma:**
+
+- `cadence_label` już **nazywa pole wystąpienia** (`CalendarOccurrenceResource`). Użycie tej
+  samej nazwy na zasobie wydarzenia (`CalendarEventResource`) — innym kształcie, o innym
+  źródle prawdy (jedno na kafelku z siatki, drugie w szufladzie z `GET`-a) — byłoby kolizją
+  nazw między dwoma zasobami, które klient i tak trzyma w dwóch różnych typach. `recurrence_label`
+  nie koliduje z niczym.
+- `recurrence_label` stoi **przy `recurrence_timezone`**, z tego samego powodu, dla którego
+  `recurrence_timezone` tam jest: oba opisują tę samą, już wczytaną regułę (`recurrence`) —
+  jedno jej strefę, drugie jej zdanie. Sąsiedztwo w kształcie odzwierciedla sąsiedztwo
+  znaczenia.
+
+Pełny kontrakt (oba klucze `null` razem dla wydarzenia jednorazowego, oba populowane razem
+dla powtarzającego się): `docs/backend/calendar-api.md` → „Resource shapes" →
+`CalendarEventResource`.
+
+**Co to zmienia w tej specyfikacji.** Każde miejsce niżej, które mówiło o „zdaniu kadencji
+zapisanej reguły" jako o `cadence_label` na zasobie wydarzenia, czyta dziś
+`event.recurrence_label` — poprawione w §24.6.5, §24.8.5 i §24.13 (dwa miejsca). `cadence_label`
+zostaje wyłącznie polem **wystąpienia**; nigdzie indziej.
+
+---
+
+#### L10 — Reguła roczna renderuje się jako miesięczna — **ZAMKNIĘTA, SZERZEJ NIŻ REKOMENDACJA**
+
+**Fakt (stan w chwili zgłoszenia).** Preset „co roku" to `day.month_days:[25]` +
+`month.months:[8]`. `CalendarCadenceLabel` składał z tego `monthly_days` + `in_months`,
+czyli **„Co miesiąc, dnia 25 (sierpień)"**. Zdanie było prawdziwe (kadencja miesięczna
+zawężona do jednego miesiąca = raz w roku), ale czytało się jak „co miesiąc".
+
+**Skutek (wtedy).** Najbardziej „ludzki" preset — urodziny, rocznice — dostawał na kafelku
+najbardziej mylące zdanie w całym module.
+
+**Rekomendacja (jak zgłoszona).** Jedna gałąź w `CalendarCadenceLabel`: **tylko** gdy oś
+dnia to `month_days` z dokładnie jedną pozycją i oś miesiąca to `months` z dokładnie jedną
+pozycją.
+
+**Co faktycznie weszło — szerzej niż ta rekomendacja.** Kolaps do zdania rocznego obejmuje
+**cztery** kształty osi dnia skrzyżowane z jednomiesięczną osią miesiąca, nie tylko
+`month_days`: `month_days` (rekomendowane), oraz — dodatkowo — wszystkie trzy formy
+`special` zakotwiczone w miesiącu: `last_day` („Every year on the last day of :month"),
+`nth_weekday` („Every year on the :ordinal :weekday of :month") i `last_weekday` („Every
+year on :weekday of :month"). Powód rozszerzenia: preset „co miesiąc: ostatni wtorek" albo
+„co miesiąc: 4. wtorek", zawężony do jednego miesiąca, jest tym samym „znowu za miesiąc"
+błędem co `month_days` — i żaden z dwóch nowych presetów §24.5.1 (ostatni {dzień tygodnia},
+N-ty dzień tygodnia) nie miałby poprawnej rocznej formy, gdyby kolaps został wąski jak
+w rekomendacji. Renderer próbuje tej gałęzi **pierwszy**, przed zwykłym dziennym/miesięcznym
+renderowaniem, i tylko dla kształtów, które inaczej myliłyby — oś „codziennie" i lista dni
+tygodnia nie kolapsują, bo ich słowo kadencji jest prawdziwe nawet zawężone do jednego
+miesiąca („Daily, in August" nie kłamie). Pełny opis:
+`docs/backend/calendar-api.md` → „The cadence sentence's yearly form."
+
+**Konsekwencja dla presetów §24.5.1.** Oba nowe presety zaproponowane w tej specyfikacji
+(„ostatni {dzień tygodnia}", „N-ty dzień tygodnia") mają teraz **też** poprawną roczną formę,
+nie tylko preset „co roku" zbudowany z `month_days` — kontrolka może bezpiecznie oferować
+„co roku" nad każdym z nich, nie tylko nad prostym „dnia N".
+
+**Priorytet: niski dla poprawności, wysoki dla odbioru — i teraz zamknięty.** Wpis w
+`lang/{pl,en}/calendar.php` (`yearly_days`, `yearly_last_day`, `yearly_nth_weekday`,
+`yearly_last_weekday`, plus katalog `months_in_date` w dopełniaczu dla polskiego) już
+istnieje.
+
+---
+
+#### L11 — „N razy" nie wraca jako „N razy"
+
+**Fakt.** Zapis przyjmuje `recurrence.count` (1..366) **albo** `recurrence.until`, nigdy
+oba; serwer rozwiązuje `count` na datę **raz, przy zapisie**, a zasób zwraca wyłącznie
+`until`.
+
+**Ocena.** To jest **poprawne i zamierzone** — trzymanie licznika oznaczałoby liczenie
+kadencji przy każdym odczycie i mnożenie tego przez każde okno, przez które użytkownik
+przewinie. Zgłaszam jako lukę **projektową, nie defekt**: kontrolka końca musi to powiedzieć
+**z góry** (§24.5.3), bo inaczej użytkownik zapisze „10 razy", otworzy ponownie, zobaczy datę
+i uzna, że coś się nie zapisało.
+
+**Nic do zrobienia po stronie backendu.** Zapisane, żeby nikt nie „naprawił" tego lokalnym
+licznikiem w draftcie formularza — rozjechałby się z bazą przy pierwszej edycji z innego
+miejsca.
+
+---
+
+#### L12 — Kontrolka jest węższa niż API i musi to udźwignąć
+
+**Fakt.** `CalendarRecurrence` przyjmuje m.in. wiele dni tygodnia, wiele dni miesiąca, listę
+miesięcy i `last_weekday` bez warunku. Presety z §24.5 produkują **podzbiór** tego zbioru.
+Reguła spoza presetów może powstać z API, z konsoli albo z przyszłej, szerszej kontrolki.
+
+**Ocena.** To nie jest luka backendu — to konsekwencja świadomego zwężenia. Zgłaszam ją, bo
+**wymusza stan interfejsu**, o którym łatwo zapomnieć: „Inna reguła" (§24.8.5), z zapisem
+przenoszącym deskryptor bajt w bajt. Bez tego stanu pierwsza edycja tytułu takiej serii
+**po cichu przepisałaby regułę** na najbliższy preset — czyli dokładnie ten rodzaj milczącej
+straty, przeciw któremu ustawiony jest cały ten moduł.
+
+**Nic do zrobienia po stronie backendu.**
+
+---
+
+#### L13 — Zapis całej serii przestemplowuje strefę reguły
+
+**Fakt.** `CalendarRecurrenceService::descriptor()` stempluje `tz` **bieżącą** strefą
+workspace'u przy **każdym** zapisie. Zapis całego wydarzenia (`scope=series`) buduje
+deskryptor od nowa, więc seria utworzona w `Europe/Warsaw` i zapisana po zmianie strefy
+workspace'u na `America/New_York` **zmienia zegar swojej reguły** — a razem z nim dzień,
+którym nazywa się jej wystąpienia.
+
+**Ocena.** Zachowanie jest **spójne z doktryną modułu** (pojedyncze wydarzenie z godziną też
+przesuwa się na siatce po zmianie strefy, bo trzyma absolutny instant) i nie jest defektem.
+Ale jest **niewidoczne**, a ma skutek po stronie klienta: `recurrence_timezone`, którym
+frontend liczy `occurrence_date`, potrafi zmienić się **w wyniku zapisu, którego użytkownik
+nie łączy ze strefą**.
+
+**Rekomendacja:** żadna zmiana w kodzie — **zrealizowana**. Wymóg dla frontendu jest
+w §24.6.6 (po zapisie `scope=series` czytać `recurrence_timezone` **z odpowiedzi**, nigdy
+z pamięci) i to wystarcza. To zdanie trafiło do `docs/backend/calendar-api.md`, sekcja
+„A whole-series write re-stamps the clock" pod „Concepts" — z rozbiciem na skutek dla
+serii z godziną (przesuwa się) i całodniowej (nie przesuwa się, bo projekcja dnia nigdy nie
+przechodzi przez strefę).
+
+---
+
+#### Uwaga (NIE luka kontraktu): dokumentacja backendu nie opisuje powierzchni zapisu B4 — **NIEAKTUALNA, ZAMKNIĘTA**
+
+Stan w chwili zgłoszenia: `docs/backend/calendar-api.md` sam o tym mówił w nagłówku:
+*„(`recurrence`, `recurrence_until`, `scope`/`occurrence_date` na `PUT`/`DELETE` — not yet
+documented on this page)"*. Sekcje `POST`/`PUT`/`DELETE` nie wymieniały ani `recurrence`,
+ani `scope`, ani `occurrence_date`, a przykład `CalendarEventResource` nie zawierał
+`recurrence` ani `recurrence_timezone`.
+
+**Domknięte.** `docs/backend/calendar-api.md` opisuje dziś pełną powierzchnię zapisu: blok
+`recurrence` (dozwolony podzbiór, każdy odrzucany klucz, reguła kotwicy, reguła
+niepustej serii) w sekcji „Recurrence on write", trzy wartości `scope` z tym, co każda
+zwraca i jakim kodem, w sekcji „Scope", oraz w pełni rozpisane `POST`/`PUT`/`DELETE`
+z przykładem na każdy kształt żądania. Nie zajrzy już tam frontend i nie zobaczy
+kontraktu sprzed serii wyglądającego na kompletny.
+
+---
+
+### 24.16 Handoff do frontend-agent
+
+#### UX Goal
+
+Zamienić serię z rzeczy, którą da się **tylko** zepsuć w całości, w rzecz, którą da się
+edytować **na trzy sposoby, każdy nazwany, zanim się go wybierze**. Użytkownik ma wiedzieć,
+w co klika, przed kliknięciem — a w chwili wyboru rozumieć, **co się stanie z przeszłością**.
+
+#### User Flow
+
+1. Siatka → kafelek z glifem serii → szuflada w trybie podglądu (`?event=` + `on`/`at`).
+2. Podgląd pokazuje: wybrane wystąpienie, kadencję (proza serwera), początek, koniec,
+   pominięte dni, ewentualnie strefę reguły.
+3. **Edytuj** → dialog zakresu (3 opcje, każda ze zdaniem o skutku, przycisk nazywa wybór).
+4. Formularz zasiany **zgodnie z zakresem** + stały banner zakresu z „Zmień zakres".
+5. Zapis → toast nazywający zakres → szuflada zamyka się → siatka odświeża okno.
+6. **Usuń** → ten sam dialog w trybie `danger` → `DELETE` z zakresem → toast → refetch.
+7. Tworzenie: formularz + kontrolka powtarzania z presetami wyprowadzonymi z wybranej daty.
+
+#### Screen Structure
+
+Bez nowych ekranów i bez nowych tras. Trzy nowe powierzchnie: **dialog zakresu** (`Modal`
+nad `Drawer`), **kontrolka powtarzania** (w formularzu), **blok serii** (w podglądzie).
+Siatka zyskuje **jeden glif** na kafelku.
+
+#### Components Needed
+
+Reuse: §24.12.1. Extend: `icons.ts` (+`layers`), `types.ts`, store, chip, szuflada, widok
+(§24.12.2). Create: `SeriesScopeModal.vue`, `RecurrenceField.vue`, `recurrencePresets.ts`,
+opcjonalnie `occurrenceDate.ts` jako trywialny getter (§24.12.3 — L8 zamknięta, backend
+liczy `occurrence_date` sam). **Zero nowych zależności npm.**
+
+#### States
+
+Ładowanie (dialog usuwania: `Button loading`, **opcje pozostają aktywne — NIE `readonly`,
+AS-BUILT §24.17 poz. 5, zgodnie z §24.4.5**: jedyny realny błąd tego dialogu,
+`exclusions_full`, wskazuje jako lekarstwo inną opcję tego samego dialogu, więc blokowanie
+opcji zablokowałoby lekarstwo — podwójne kliknięcie blokuje guard wewnątrz `onConfirm`, nie
+stan `disabled` na `RadioGroup`), odmowa walidacji na polach reguły (§24.8.3, mapa ścieżek
+422 w §24.2.4),
+**seria bez wystąpienia w oknie** (§24.8.4 — z warunkiem „źródło było zapytane"), **reguła
+spoza kontrolki** (§24.8.5), błąd w dialogu usuwania (`exclusions_full` — §24.4.5); pusto
+i błąd całości bez zmian (§15).
+
+#### Responsive Rules
+
+§24.9: poniżej `next-md` znacznik serii jest plakietką z kadencją (agenda ma miejsce),
+kontrolki układają się w kolumnie, dialog ma cele dotykowe ≥ 44 px i potwierdzenie na dole.
+
+#### Accessibility
+
+§24.10. **Nadrzędne: nie dotykać klawiatury siatki** — żadnego nowego punktu tabulacji
+w `role="grid"`, żadnej zmiany mapy klawiszy. Dialog: focus na zaznaczonej opcji, powrót na
+wyzwalacz, `Esc` tylko na wierzchnim (`useOverlayStack`). Etykieta przycisku zawiera nazwę
+wybranej opcji. Błędy reguły przez `FormField`/`aria-invalid`, nie własnym `<p>`.
+
+#### Copy / Microcopy
+
+§24.13. Twarde: **zdanie o kadencji zapisanej reguły pochodzi z serwera** — `cadence_label`
+na wystąpieniu, `recurrence_label` na zasobie wydarzenia (**dwa różne pola, nie jedno** — L9,
+§24.15) — i nie składa się go z części; etykiety presetów opisują **zamiar**, nigdy stan zapisany;
+każda opcja zakresu mówi, **co się stanie z przeszłością**; „N razy" z góry uprzedza, że
+wróci jako data; nic nie obiecuje przywracania.
+
+#### Tailwind / Design Tokens
+
+Wyłącznie `next-*`. Nowe: `Badge warning subtle` dla próbki (ton wiąże ją z `Alert warning`
+komunikatu `item_densified`), glif `repeat` `opacity-60`/`70` dla serii, `Alert info` dla
+bannera zakresu. Zero `bg-[#…]`, zero klas budowanych dynamicznie. Punkty do sprawdzenia
+w dark mode: §24.11.
+
+#### Frontend Handoff
+
+Kolejność: **(1)** `recurrencePresets.ts` (czysty, testowalny, niesie wszystkie pułapki —
+`occurrenceDate.ts` odpadł z tego punktu: L8 zamknięta, backend liczy `occurrence_date` sam)
+→ **(2)** `types.ts` + store (`scope`, `occurrence_date`, przeniesienie `recurrence`) →
+**(3)** `SeriesScopeModal.vue` → **(4)** szuflada: banner + zasiew per zakres + blok serii →
+**(5)** `RecurrenceField.vue` → **(6)** chip: rozdzielenie dwóch znaczników.
+Punkty 3 i 4 **domykają defekt z §24.0**; 5 dokłada tworzenie serii z UI.
+
+#### Consistency Risks
+
+1. **Zapis bez `scope`.** Serwer czyta to jako **całą serię**. Domyślna wartość zakresu
+   w store'ie musi być jawna, nie wywnioskowana z `undefined`.
+2. **`PUT` bez `recurrence`.** Kasuje regułę. Bez `exclusions.dates` — wskrzesza usunięte dni.
+3. **`occurrence_date` liczone w `meta.timezone`.** Ma być w `recurrence_timezone` (§24.3).
+4. **Parsowanie `Y-m-d` z `id` wystąpienia.** Backend wprost odradza; do zamknięcia L8
+   obowiązuje wyprowadzenie z pól.
+5. **Zasiew formularza niezgodny z zakresem.** Kotwica pod `occurrence` = zgubiony dzień
+   i duplikat; wystąpienie pod `series` = ucięta przeszłość (§24.6.1).
+6. **Jeden glif na dwa fakty.** `repeat` = seria, `layers` = próbka. Nigdy odwrotnie, nigdy
+   oba naraz w siatce (§24.7).
+7. **Złożenie zdania o kadencji po stronie klienta.** Zakaz; proza jest serwera (L9).
+8. **Ciche przepisanie reguły spoza kontrolki.** Musi być „Inna reguła" (§24.8.5).
+9. **Trzymanie licznika „N razy" w draftcie.** Wraca data, nie liczba (L11).
+10. **Rozszerzanie `app/lib/api.ts` o dostęp do statusu.** Niepotrzebne: `201` ⇔ inne `id`
+    w ciele (§24.2.3).
+11. **Nowy punkt tabulacji w siatce.** Klawiatura siatki jest sprawna i nie wolno jej
+    zepsuć (§24.10).
+12. **Komunikat „ta seria nie ma tu wystąpień" bez sprawdzenia filtra i `unavailable_sources`.**
+    „Nie pytaliśmy" i „nie ma" to dwa różne zdania (§14, §24.8.4).
+
+---
+
+### 24.17 Rozjazdy specyfikacji z implementacją
+
+> Zgłoszone przez frontend **po** zbudowaniu B6 (frontend zielony: **3277 testów / 274
+> pliki**, zero nowych zależności; backend 3273/0/13) — dziewięć miejsc, w których to, co
+> napisano wyżej, i to, co powstało, się rozminęły. **W każdym wygrał kod**, z uzasadnieniem
+> zapisanym tu i skrzyżowanym z sekcją, którą dotyczy. Odwrotny kierunek niż §24.15: tam
+> kontrakt backendu nie miał czegoś, czego specyfikacja chciała; tu specyfikacja **miała**
+> zdanie, a zbudowany kod — słusznie — powiedział co innego. Poprawki **w miejscu** noszą
+> znacznik „AS-BUILT — patrz §24.17 poz. N"; ten rejestr jest drugą, zebraną kopią tego
+> samego faktu, nie jedynym miejscem, w którym żyje.
+
+**1 — Identyfikator wystąpienia w adresie to data z serwera, nie chwila startu.**
+*Specyfikacja (przed tą poprawką, §24.3.1) mówiła:* dwa wykluczające się klucze URL, `on`
+dla serii całodniowej i `at` dla serii z godziną, z regułą rozstrzygania konfliktu, gdy oba
+przyjdą naraz. *Co faktycznie powstało:* `on` jest **jedynym** identyfikatorem, zawsze
+`occurrence.occurrence_date`, niezależnie od `all_day`; `at` to pole **pomocnicze** —
+`occurrence.starts_at`, obecne DODATKOWO dla wystąpienia z godziną, i nie identyfikuje
+niczego samo. *Dlaczego kod wygrał.* Skoro `occurrence_date` przychodzi z serwera gotowe
+(L8, §24.15 — zamknięta, zanim ta sekcja powstała), nie ma już dwóch sposobów nazwania
+jednego dnia do rozstrzygania — `on` nazywa go zawsze tym samym kluczem. Reguła konfliktu
+„oba klucze naraz → oba ignorowane" opisywała stan, który w zbudowanym kodzie **nie
+istnieje**: `on` i `at` normalnie współistnieją na URL-u wystąpienia z godziną, bo to
+zwykła para identyfikator+chwila, nie dwie konkurujące etykiety tego samego dnia. Planowany
+moduł wyprowadzający datę z instantu i strefy **nie powstał i nie powinien** — L8 już to
+rozstrzygnęła, ta poprawka tylko domyka wniosek w warstwie URL-a, gdzie wcześniej został
+przeoczony. Poprawione w miejscu: §24.3.1.
+
+**2 — Preset ostatniego dnia miesiąca oferowany tylko wtedy, gdy kotwica jest ostatnim
+dniem swojego miesiąca.** *Specyfikacja* wymieniała „Co miesiąc, ostatniego dnia" jako
+zwykły wiersz stałej tabeli presetów, obecny zawsze. *Co faktycznie powstało:*
+`presetsFor()` dopisuje ten preset warunkiem `dayOfMonth === lengthOfMonth` — dla każdej
+innej daty preset **nie pojawia się w liście wcale**. *Dlaczego kod wygrał.* Fakt 1 tego
+modułu (§24.5.2): kotwica musi być pierwszym wystąpieniem reguły, bo inaczej serwer odrzuca
+zapis na polu początku (`anchor_not_an_occurrence`) — polu, którego użytkownik nie kojarzy
+z wyborem w kontrolce powtarzania. Zaoferowanie tego presetu szerzej niż dla dni, które go
+faktycznie spełniają, oznaczałoby **gwarantowaną odmowę serwera przy pierwszym zapisie**
+dla każdej innej daty — dokładnie tej klasy błąd, który cały mechanizm re-derywacji presetu
+(§24.5.2) istnieje, żeby uczynić nieosiągalnym. Poprawione w miejscu: §24.5.1 (trzecie
+zachowanie warunkowe), §24.5.2 (mapowanie na `monthlyDay` przy zmianie daty — patrz poz. 7).
+
+**3 — Osobne katalogi tłumaczeń dla każdego dnia tygodnia, nie szablon z podstawieniem.**
+*Specyfikacja* (katalog i18n, §24.13) proponowała `calendar.recurrence.weekly = "W każdy
+{weekday}"` i `calendar.recurrence.monthlyLastWeekday = "Co miesiąc: ostatni {weekday}"` —
+po jednym kluczu z podstawianą nazwą dnia. *Co faktycznie powstało:* siedem osobnych
+wpisów katalogowych na preset — `calendar.recurrence.weeklyDays.0..6` i
+`calendar.recurrence.monthlyLastWeekdays.0..6` — każdy pełną, odmienioną frazą. *Dlaczego
+kod wygrał.* Polski odmienia przez rodzaj: „W każdy wtorek", ale „W każdą środę" — jeden
+szablon z podstawieniem nazwy dnia nie da poprawnej frazy dla wszystkich siedmiu dni
+naraz, bo przedimek/zaimek przed nazwą zależy od rodzaju TEJ nazwy. To jest **ten sam
+argument**, którym serwerowy `lang/{pl,en}/calendar.php` broni własnego katalogu
+(ADR-0051 D12) — zapisany tu raz, w miejscu, gdzie ktoś przy kolejnej edycji mógłby się
+skusić na „uproszczenie" z powrotem do jednego klucza z placeholderem. Kontrastowo,
+`calendar.recurrence.monthlyNth` ("Co miesiąc: {ordinal} {weekday}") **zostaje**
+szablonem — liczebnik przed nazwą dnia omija problem odmiany („4. wtorek", „4. środa" —
+obie formy nominalne poprawne), więc nazwa dnia w tej jednej pozycji może bezpiecznie
+pochodzić z `Intl.DateTimeFormat(locale, { weekday: 'long' })` zamiast z katalogu.
+Poprawione w miejscu: §24.5.1, §24.13.
+
+**4 — Data roczna formatowana lokalnie przez `Intl`, nie składana z serwerowego katalogu
+miesięcy powielonego u klienta.** *Specyfikacja* niosła
+`calendar.recurrence.yearly = "Co roku, {day} {month}"` — dwa osobne tokeny, co zakłada
+klienta znającego nazwę miesiąca w dopełniaczu („25 **sierpnia**", nie „25 **sierpień**"),
+czyli własny katalog miesięcy odmienionych. *Co faktycznie powstało:* jeden token,
+`calendar.recurrence.yearly = "Co roku, {date}"`, gdzie `{date}` to gotowy napis z
+`dayMonthLabel()` (`Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long' })`).
+*Dlaczego kod wygrał.* Backend już ma dokładnie ten katalog dla WŁASNEJ prozy
+(`cadence.months_in_date`, ADR-0051 D12, w dopełniaczu, bo polska data tego wymaga) —
+powielenie go po stronie klienta, żeby złożyć etykietę PRESETU (nie zdanie zapisanej
+reguły — te dwa nigdy się nie mieszają, §24.13), byłoby drugą definicją tego samego
+faktu językowego, z gwarancją rozjechania się przy dodaniu kolejnego języka. `Intl` już
+zna gramatykę każdego locale, jakie ta aplikacja kiedykolwiek włączy, za darmo. Poprawione
+w miejscu: §24.5.1, §24.13.
+
+**5 — Opcje w dialogu usuwania zostają aktywne, mimo że specyfikacja (w dwóch miejscach)
+kazała je zablokować.** *Specyfikacja* była **wewnętrznie sprzeczna**: §24.4.5 (analiza
+błędu `exclusions_full`, czyli faktyczna decyzja) już mówiła „pozostałe dwie opcje zostają
+aktywne", ale dwa inne miejsca tego samego dokumentu — tabela stanów w §24.8.1 i streszczenie
+w §24.16 Handoff — powtarzały `opcje readonly` podczas ładowania. *Co faktycznie
+powstało:* `SeriesScopeModal.vue` nie wiąże żadnego `disabled`/`readonly` na `RadioGroup`
+— tylko przycisk „Anuluj" i przycisk potwierdzenia reagują na `busy`; podwójne kliknięcie
+jest zablokowane wewnątrz `onConfirm` (`if (props.busy) return`), nie przez usunięcie
+kontrolek z drzewa. *Dlaczego kod wygrał — i dlaczego to nie był przypadek.* Jedyny realny,
+częsty błąd tego dialogu (`exclusions_full` — seria ma już 50 pominiętych dni) **wskazuje
+jako lekarstwo inną opcję tego samego dialogu**: podziel serię (`following`/`series`)
+zamiast pomijać kolejne wystąpienia. Zablokowanie opcji zablokowałoby jedyną drogę do
+lekarstwa, które serwer właśnie nazwał — użytkownik zobaczyłby błąd i kontrolki, które nie
+pozwalają nic z nim zrobić poza zamknięciem dialogu i zaczęciem od nowa. Kod podążył za
+głębszym, poprawnym uzasadnieniem (§24.4.5) i zignorował dwa płytsze, sprzeczne
+streszczenia napisane gdzie indziej w tym samym dokumencie — dowód, że jedna poprawna
+sekcja nie chroni przed dwiema złymi kopiami tego samego faktu w innych rejestrach stanów.
+Poprawione w miejscu: §24.8.1, §24.16 (Handoff → States).
+
+**Pozostałe cztery — mniejsze, ale każdy odtworzyłby się inaczej, gdyby ten dokument o nim
+milczał:**
+
+| # | Rozjazd | Co faktycznie powstało | Gdzie poprawione |
+| --- | --- | --- | --- |
+| 6 | Kształt pola liczby pominiętych dni | **Sama liczba** (`skippedDays.length`), z pełną listą dat w atrybucie `title` (natywny tooltip) — nie lista rozwijana ani chipy do usuwania. Spójne z faktem 4 kontrolki powtarzania („`exclusions` jest NIESIONE, nigdy AUTOROWANE" — rośnie wyłącznie przez „usuń to wystąpienie" po stronie serwera): interaktywna lista sugerowałaby mutację, której ten formularz nie wykonuje | §24.6.5 (już zgodne — `EventDrawer.vue`, wiersz `skipped`/`skippedDays`) |
+| 7 | Mapowanie presetu ostatniego dnia na zwykły dzień | `remapPreset()`'s `fallbackId` mapuje `monthlyLastDay → monthlyDay` (na nowym dniu miesiąca), gdy data przesuwa się poza koniec miesiąca — to samo traktowanie co para `monthlyNth ↔ monthlyLastWeekday` przy piątym tygodniu, dotąd jedyną udokumentowaną krawędzią tej funkcji | §24.5.2 (poz. 7 wyżej) |
+| 8 | Scalenie bloku końca serii w jedno pole z jednym slotem błędu | `RadioGroup` + widżet wartości pod **jednym** `FormField`, `error` = `until ?? count ?? exclusions.dates` (pierwszy niepusty) | §24.5.3 |
+| 9 | Blok wykluczeń nie miał się gdzie renderować przy braku daty końca | Powód poz. 8: `series_has_no_occurrences` na `recurrence.exclusions.dates` potrafi wrócić dla serii BEZ końca, a kontrolka nie ma osobnego pola na wykluczenia — bez scalenia z poz. 8 ten komunikat nie miałby pod czym wylądować | §24.5.3 |
+
+**Odpowiedź na pytanie, które to rundy pilnują: czy zostaje jakakolwiek instrukcja, którą
+agent wykonałby błędnie?** Jedna klasa, i ta runda ją zamyka — w **dwóch** miejscach naraz:
+§24.8.1 (tabela stanów) i §24.16 Handoff → States nadal kazały blokować opcje dialogu
+usuwania (poz. 5), wprost sprzecznie z analizą tego samego błędu w §24.4.5. Agent budujący
+od zera z samej tabeli stanów albo samego Handoffu, bez uważnego czytania §24.4.5, zbudowałby
+kontrolę, która blokuje własne lekarstwo — i zrobiłby to niezależnie od tego, które z dwóch
+złych miejsc przeczytał pierwsze, co samo w sobie było ostrzeżeniem, że to nie literówka w
+jednym zdaniu, tylko powielony błąd. Poza tą jedną klasą żadna z pozostałych ośmiu
+rozbieżności nie była **instrukcją prowadzącą na manowce** — §24.3.1's stara reguła
+konfliktu (poz. 1), brak warunku na presecie ostatniego dnia (poz. 2) i brakujące notatki
+o katalogach/`Intl` (poz. 3, 4) były **niedopowiedzeniami** (kod, który by z nich wprost
+wynikał, byłby gorszy lub niemożliwy do zbudować zgodnie z resztą dokumentu —
+anchor_not_an_occurrence, odmiana przez rodzaj — więc agent uważnie
+czytający CAŁĄ specyfikację, nie tylko jedną tabelę, trafiłby na sprzeczność i zatrzymał się
+pytaniem), nie cichą pułapką jak poz. 5.

@@ -1,17 +1,25 @@
-// calendar store spec — the two pure exports, which is where the write contract lives.
+// calendar store spec — the pure exports (where the write contract lives) plus the one action
+// whose URL is a contract of its own.
 //
 // `buildEventPayload` is the riskiest function in the module: three invariants meet in it
 // and all three fail SILENTLY when broken —
 //   • an omitted key on a whole-event PUT CLEARS a column (there is no patch semantics),
 //   • the unused time group is FORBIDDEN, not ignored (a stray key is a 422),
 //   • a moment without an explicit offset is stored in UTC and drawn in the workspace zone.
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { createPinia, setActivePinia } from 'pinia';
 
 vi.mock('../../lib/api', () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
 }));
 
-import { buildEventPayload, serializeWindowQuery, type CalendarEventDraft } from '../calendar';
+import { api } from '../../lib/api';
+import {
+  buildEventPayload,
+  serializeWindowQuery,
+  useCalendarStore,
+  type CalendarEventDraft,
+} from '../calendar';
 import type { CalendarEvent } from '../../../pages/calendar/types';
 
 function draft(overrides: Partial<CalendarEventDraft> = {}): CalendarEventDraft {
@@ -37,6 +45,9 @@ function existingEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
     start_date: null,
     starts_at: '2026-08-09T12:30:00.000000Z',
     ends_at: null,
+    recurrence: null,
+    recurrence_timezone: null,
+    recurrence_label: null,
     subject: null,
     is_owner: true,
     can_be_edited: true,
@@ -285,5 +296,126 @@ describe('buildEventPayload — an all-day date survives an extreme zone', () =>
 
     expect(payload.start_date).toBe('2026-08-09');
     expect('starts_at' in payload).toBe(false);
+  });
+});
+
+/**
+ * SCOPE ON THE WIRE.
+ *
+ * `series` is the wire DEFAULT, and that is a compatibility guarantee rather than a
+ * convenience: a request naming no scope behaves byte for byte as it did before series
+ * existed. Which is exactly why the client states its scope explicitly and only omits it when
+ * it really is the whole series — "I forgot" and "rewrite the series, history included" must
+ * never be the same request.
+ */
+describe('buildEventPayload — how much of a series a write touches', () => {
+  const rule = {
+    day: { mode: 'weekdays' as const, weekdays: [1] },
+    month: null,
+    exclusions: { dates: ['2026-08-24'] },
+    until: null,
+  };
+
+  it('names NOTHING for a whole-series write — the payload is what it always was', () => {
+    const payload = buildEventPayload({ ...draft(), recurrence: rule }, existingEvent(), 'Europe/Warsaw', {
+      scope: 'series',
+      occurrenceDate: null,
+    });
+
+    expect(payload).not.toHaveProperty('scope');
+    expect(payload).not.toHaveProperty('occurrence_date');
+    // The rule travels whole, `exclusions` included: dropping it resurrects every day
+    // somebody deleted one at a time.
+    expect(payload.recurrence).toEqual(rule);
+  });
+
+  it('defaults to the whole series when no scope is passed at all', () => {
+    const payload = buildEventPayload({ ...draft(), recurrence: rule }, existingEvent(), 'Europe/Warsaw');
+    expect(payload).not.toHaveProperty('scope');
+    expect(payload.recurrence).toEqual(rule);
+  });
+
+  it('sends NO rule under `occurrence` — one day of a series is not itself a series', () => {
+    const payload = buildEventPayload({ ...draft(), recurrence: rule }, existingEvent(), 'Europe/Warsaw', {
+      scope: 'occurrence',
+      occurrenceDate: '2026-09-14',
+    });
+
+    // A `recurrence` block alongside this scope is a 422 (`occurrence_has_no_rule`).
+    expect(payload).not.toHaveProperty('recurrence');
+    expect(payload.scope).toBe('occurrence');
+    expect(payload.occurrence_date).toBe('2026-09-14');
+  });
+
+  it('sends the rule AND the day under `following`', () => {
+    const payload = buildEventPayload({ ...draft(), recurrence: rule }, existingEvent(), 'Europe/Warsaw', {
+      scope: 'following',
+      occurrenceDate: '2026-09-14',
+    });
+
+    expect(payload.scope).toBe('following');
+    expect(payload.occurrence_date).toBe('2026-09-14');
+    expect(payload.recurrence).toEqual(rule);
+  });
+
+  /**
+   * "Does not repeat" is the ABSENCE of the key. An empty-ish block is `filled()` server-side
+   * and compiles to "every day, forever" — a series nobody asked for, reported by nothing.
+   */
+  it('omits the key entirely when the event does not repeat', () => {
+    const withNull = buildEventPayload({ ...draft(), recurrence: null }, existingEvent(), 'UTC');
+    const withAbsent = buildEventPayload(draft(), existingEvent(), 'UTC');
+
+    expect(withNull).not.toHaveProperty('recurrence');
+    expect(withAbsent).not.toHaveProperty('recurrence');
+  });
+
+  it('still carries the `subject` pointer under every scope', () => {
+    const payload = buildEventPayload(
+      { ...draft(), recurrence: rule },
+      existingEvent({ subject: { type: 'task', id: 'task-9' } }),
+      'UTC',
+      { scope: 'occurrence', occurrenceDate: '2026-09-14' },
+    );
+    // A `create_event` step's link to what it produced must survive a scoped write too.
+    expect(payload.subject_type).toBe('task');
+  });
+});
+
+/**
+ * THE DELETE'S OWN WIRE SHAPE. The verb names one of the three operations and the scope names
+ * which: `series` removes the row, `occurrence` MODIFIES it (the day joins `exclusions`) and
+ * `following` truncates it. The scope travels in the QUERY because not every HTTP client sends
+ * a body on a DELETE — and `occurrence_date` alongside `series` is a 422, so the whole-series
+ * call has to be bare.
+ */
+describe('deleteEvent — the scope travels in the query string', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (api.delete as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(undefined);
+  });
+
+  it('sends a BARE url for the whole series — byte for byte the pre-existing request', async () => {
+    await useCalendarStore().deleteEvent('evt-1');
+    expect(api.delete).toHaveBeenCalledWith('/calendar/events/evt-1');
+  });
+
+  it('never leaks an occurrence day onto a whole-series delete', async () => {
+    // `occurrence_date` alongside `scope=series` is a 422 (`occurrence_date_without_scope`).
+    await useCalendarStore().deleteEvent('evt-1', { scope: 'series', occurrenceDate: '2026-09-14' });
+    expect(api.delete).toHaveBeenCalledWith('/calendar/events/evt-1');
+  });
+
+  it('names the scope and the day for the two scoped removals', async () => {
+    const store = useCalendarStore();
+    await store.deleteEvent('evt-1', { scope: 'occurrence', occurrenceDate: '2026-09-14' });
+    expect(api.delete).toHaveBeenCalledWith(
+      '/calendar/events/evt-1?scope=occurrence&occurrence_date=2026-09-14',
+    );
+
+    await store.deleteEvent('evt-1', { scope: 'following', occurrenceDate: '2026-09-21' });
+    expect(api.delete).toHaveBeenCalledWith(
+      '/calendar/events/evt-1?scope=following&occurrence_date=2026-09-21',
+    );
   });
 });

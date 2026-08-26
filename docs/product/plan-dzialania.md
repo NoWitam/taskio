@@ -808,8 +808,10 @@ nie sygnalizuje w UI, że kiedykolwiek była w koszu).
 
 ## R3. Kalendarz (Etap 8)
 
-**Status: backend zbudowany.** Pełny kontrakt: `docs/backend/calendar-api.md`. Zapis decyzji:
-`docs/decisions/ADR-0051-calendar-module-design.md`.
+**Status: backend zbudowany**, łącznie z cyklicznością wydarzeń (patrz niżej). Pełny kontrakt:
+`docs/backend/calendar-api.md`. Zapis decyzji: `docs/decisions/ADR-0051-calendar-module-design.md`
+(moduł, ogrodzenie definicyjne) i `docs/decisions/ADR-0052-shared-recurrence-layer.md` (wspólny
+silnik rekurencji, na którym stanęła cykliczność).
 
 **Cel:** wspólna oś czasu dla całej platformy.
 
@@ -842,10 +844,18 @@ kolejnością refaktoru z CLAUDE.md).
 trigger nie czyta `calendar_events`** — ogrodzenie definicyjne wpisane w model (ADR-0051,
 decyzja D4): wydarzenie to adnotacja na osi czasu, nic nigdy nie wykonuje się dlatego, że
 wydarzenie istnieje.
-**Świadomie POZA zakresem, nie z oszczędności:** cykliczność wydarzeń — wymagałaby drugiego
-silnika rekurencji obok kompilatora harmonogramów, który mieszka w Workflows, a którego
-Kalendarz nie może nazwać (ADR-0051, decyzja D5). Kto potrzebuje cyklicznej adnotacji, ma już
-narzędzie: workflow na harmonogramie z krokiem `create_event`.
+**Cykliczność wydarzeń — było POZA zakresem (ADR-0051, decyzja D5), teraz zbudowane.** Pierwotny
+argument („drugi silnik rekurencji obok kompilatora harmonogramów, którego Kalendarz nie może
+nazwać") przestał obowiązywać, gdy ADR-0052 wydzielił wspólną, niczyją warstwę
+`App\Support\Recurrence` — z niej Kalendarz może korzystać bez łamania zakazu nazywania modułów
+(D1). Na tej warstwie stanął własny rozdział: `recurrence`/`recurrence_until` na wierszu
+wydarzenia + zakresowy `PUT`/`DELETE` (write) i projekcja **każdego** wystąpienia serii na
+siatkę, nie tylko kotwicy jak dawniej (read — `CalendarRecurrenceService`/`EventCalendarSource`;
+kontrakt: `docs/backend/calendar-api.md`). Świadoma różnica względem harmonogramu: seria
+wydarzenia rysuje też **przeszłość** — reguła jest całym zapisem tego, ile razy coś się
+wydarzyło, bo nic nigdy nie wykonuje się z powodu wydarzenia — podczas gdy harmonogram rysuje
+tylko przyszłość, bo obliczone wystąpienie w przeszłości byłoby twierdzeniem o wykonaniu, które
+może być fałszywe (workflow mógł zostać wyłączony/edytowany) — ADR-0051, decyzja D11.
 **Później (backlog):** import świąt/eventów zewnętrznych jako inspiracje dla kampanii; kosz
 wydarzeń ma tylko soft-delete, bez ekranu przywracania (endpoint bez ekranu byłby kontraktem
 trzymanym za darmo — do zrobienia razem z UI).

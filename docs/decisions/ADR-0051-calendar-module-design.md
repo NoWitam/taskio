@@ -4,15 +4,16 @@
 **Status:** Accepted
 **Module:** `App\Modules\Calendar` (`Contracts\CalendarSource`, `Services\CalendarSourceRegistry`,
 `Services\CalendarQueryService`, `Services\CalendarTimezoneResolver`, `Services\CalendarInstantResolver`,
-`Services\CalendarEventService`,
+`Services\CalendarEventService`, `Services\CalendarRecurrenceService`, `Support\CalendarCadenceLabel`,
 `Models\CalendarEvent`, `Sources\EventCalendarSource`, `DTOs\{CalendarWindow,CalendarOccurrence,
-CalendarResult,CalendarSourceResult,CalendarTruncation}`), plus the two source modules that feed it
-(`App\Modules\Tasks\Calendar\TaskDeadlineCalendarSource`,
+CalendarResult,CalendarSourceResult,CalendarTruncation,CalendarRecurrence}`), plus the two source
+modules that feed it (`App\Modules\Tasks\Calendar\TaskDeadlineCalendarSource`,
 `App\Modules\Workflows\Calendar\{WorkflowRunCalendarSource,WorkflowScheduleCalendarSource}`) and the
 one workflow step that writes into it (`App\Modules\Workflows\Steps\CreateEventStep`)
 **Relates to:** ADR-0009/ADR-0012 (the schedule compiler this module projects but never names),
 ADR-0015 (polymorphic creator — how a run-created event is attributed), ADR-0043 (the Knowledge
 module — the sibling "low module with a hard boundary" this one follows the same shape as),
+ADR-0052 (the shared recurrence engine D11 and the resolved D5 note below build on),
 `docs/backend/calendar-api.md` (the API contract this ADR explains the reasoning behind)
 
 ---
@@ -100,14 +101,23 @@ has it too: `workflow_schedule` is a first-class source. What is genuinely missi
 "repeat" on a one-off event in the UI — is deferred, deliberately, rather than solved with a
 second-rate copy of machinery that already exists one module over.
 
-> **Flagged by ADR-0052 (2026-08-25).** The stated workaround above — "a schedule-triggered workflow
-> with a `create_event` step" — **materializes rows**, which is exactly the second-source-of-truth
-> shape D2/D4 above reject for every other calendar source, with the matching failure mode: a disabled
-> or deleted workflow leaves its already-created `calendar_events` rows behind, and nothing sweeps
-> them. ADR-0052 extracted the schedule engine into a shared `App\Support\Recurrence` layer precisely
-> so the Calendar can eventually compute a recurring event's own projection instead of relying on this
-> workaround — recurrence itself is still deferred, but the reason this workaround looked acceptable
-> (no shared engine existed to use instead) no longer holds. See ADR-0052.
+> **Flagged by ADR-0052 (2026-08-25), and resolved the same day.** The stated workaround above —
+> "a schedule-triggered workflow with a `create_event` step" — **materializes rows**, which is
+> exactly the second-source-of-truth shape D2/D4 above reject for every other calendar source, with
+> the matching failure mode: a disabled or deleted workflow leaves its already-created
+> `calendar_events` rows behind, and nothing sweeps them. ADR-0052 extracted the schedule engine
+> into a shared `App\Support\Recurrence` layer precisely so the Calendar could compute a recurring
+> event's own projection instead of relying on this workaround, and a later sub-chapter — its own
+> B4 (the write surface) and B5 (the read-side projection) — did exactly that: `calendar_events` now
+> carries its own `recurrence` rule, projected onto the grid by `CalendarRecurrenceService` through
+> the shared engine (`app/modules/Calendar/Services/CalendarRecurrenceService.php`,
+> `app/modules/Calendar/Sources/EventCalendarSource.php`; read-side contract in
+> `docs/backend/calendar-api.md`). **D5's deferral is therefore lifted for the base case** — a human
+> can put a repeating event directly on the grid without a workflow standing in for one. What D5
+> still defers is anything beyond the shared engine's own vocabulary (a recurring event triggering a
+> workflow, or vice versa) — D4's execution fence still forbids that outright, regardless of which
+> engine computed the dates. See D11 below for the one projection-semantics decision this later
+> sub-chapter added on top of what ADR-0052 extracted.
 
 **D6 — past and future are two separate sources, never one schedule projected in both directions.**
 `WorkflowScheduleCalendarSource` projects only forward from `max(now, window start)`; the past is
@@ -214,6 +224,71 @@ category rather than once per event — not a colour picker back on the event ro
 here so that gap is not read as "missing feature, add a colour field back": that is precisely
 the shape this decision rejects. *Planned, not implemented* — no category concept exists yet.
 
+**D11 — a recurring event's own source projects its PAST as well as its future, in ONE source,
+deliberately unlike the schedule/run split in D6.** The later recurring-event sub-chapter
+(B4 write surface, B5 read-side projection — `EventCalendarSource`, `CalendarRecurrenceService`)
+gives `calendar_events` a `recurrence` rule via the shared engine ADR-0052 extracted. D6 already
+established that a *computed* occurrence in the past is a claim about execution that a schedule
+cannot make honestly — the automation may have been deactivated, edited, or run out of budget with
+its due slot consumed and nothing run — which is why `WorkflowScheduleCalendarSource` projects only
+forward and the past is instead served from real `workflow_runs` rows by a second source,
+`WorkflowRunCalendarSource`. A recurring **event** has no equivalent execution to misstate: D4's
+fence means nothing ever runs because a `calendar_events` row exists, so a series' rule is not a
+forecast of what might happen — it is the entire, unrevisable record of how many times the thing it
+annotates actually recurred. Refusing to draw a past Monday of a weekly standup would not be the
+same caution D6 applies to a schedule; it would delete data the row already, unambiguously,
+contains. This is also why the event source needed no D6-style split into two sources: there is no
+"what really happened" ledger for a past event occurrence to disagree with, so one source answering
+both directions is not the shortcut D6 rejected for a schedule — it is the correct shape for a
+subject that has no execution history to be wrong about. Read-side contract documented in
+`docs/backend/calendar-api.md` → "A series draws its past too."
+
+**D12 — a monthly rule confined to exactly one month renders as a YEARLY sentence, and only
+the monthly family collapses this way.** `CalendarCadenceLabel` renders a day/month cadence
+into one translated sentence per series. For a rule whose month axis names exactly one month,
+the literal monthly rendering is true word for word — "Monthly on day 25, in August" really is
+what a rule confined to August and the 25th does — and also the single most misleading
+sentence this module can produce, because it reads as "again next month" on the one preset
+this whole grammar exists to serve for a human: a birthday, a wedding anniversary. The policy
+is a rewrite, not a correction: the same rule renders as "Every year on August 25" instead,
+tried by `CalendarCadenceLabel` as its **first** branch, before the ordinary day/month
+rendering, and *only* for day-axis shapes the ordinary rendering would otherwise mislead
+about.
+
+**Which shapes collapse, and why the boundary sits where it does.** Four day-axis shapes
+collapse when the month axis names exactly one month: named month-days (`month_days`, one
+value) and the three month-anchored `special` rules (`last_day`, `nth_weekday`,
+`last_weekday`) — "the last day of August," "the fourth Tuesday of August," "the last Tuesday
+of August," each becomes "every year." **Two shapes never collapse, on purpose:** an
+every-day axis and a weekday-list axis. "Daily, in August" and "Weekly on Mon, in August" keep
+their own cadence word even confined to one month, because that word stays literally true
+*inside* the month it names — a rule really does fire daily, or every Monday, throughout
+August. Collapsing either to a yearly sentence would trade a misleading-but-true sentence for
+an outright false one ("every year" is not what "every Monday in August" means), which this
+policy refuses to do even in service of the same instinct that motivates the collapse
+elsewhere. A rule whose month axis names **two or more** months also stays uncollapsed,
+regardless of day axis — the boundary is exactly one month, not "few."
+
+**The four-shape boundary is wider than first proposed, deliberately.** A UX specification
+review (`docs/next/calendar-uxui-spec.md` §24.15, L10) named the problem and recommended the
+collapse for `month_days` alone. The shipped policy also collapses the three month-anchored
+`special` shapes, because the same misleading-sentence problem applies to them identically —
+"Monthly on the last Tuesday, in August" reads as "again next month" exactly as "Monthly on
+day 25, in August" does — and because two presets this chapter's own recurrence control offers
+(§24.5.1's "last {weekday}" and "the Nth weekday of the month") would otherwise have **no
+correct yearly form at all** when confined to one month: narrowing the policy to `month_days`
+only would have shipped a control that lets a user build "every year, the last Tuesday of
+August" and a grid that insists on calling it monthly.
+
+**Where this is implemented and how it is guarded.** `CalendarCadenceLabel` (both
+`lang/en/calendar.php` and `lang/pl/calendar.php`, under `cadence.yearly_*`) — the branch runs
+first and returns `null` for every shape it does not apply to, falling through to the ordinary
+monthly/weekly/daily rendering unchanged. Polish needs its own month catalogue for this
+branch (`cadence.months_in_date`, genitive: "25 **sierpnia**," never "25 sierpień") distinct
+from the standalone month names `in_months` uses — the same reason `last_weekdays` is written
+out per language rather than composed from a name plus an adjective. Read-side contract:
+`docs/backend/calendar-api.md` → "The cadence sentence's yearly form."
+
 ## Alternatives considered
 
 - **The Calendar names its source modules directly** (an `if`/`match` over Task/Workflow/… inside
@@ -247,6 +322,12 @@ the shape this decision rejects. *Planned, not implemented* — no category conc
 - **Memoizing `WorkflowScheduleCompiler::compile()`/`LegacyScheduleUpgrader::toV2()`.** Built,
   measured, removed — see D8. The measured numbers are recorded specifically so this is not
   re-attempted without a fresh profile.
+- **Splitting a recurring event's projection into a past/future pair, mirroring D6's
+  schedule/run split.** Rejected — see D11; D6's split exists because a schedule's past occurrence
+  is a claim about execution the automation may have disproved since. An event's rule has no
+  execution to disagree with it, so there is nothing for a second source to serve that the first
+  does not already answer correctly — a second source here would be complexity with no question
+  left for it to be the honest answer to.
 
 ## Consequences
 
@@ -274,11 +355,13 @@ the shape this decision rejects. *Planned, not implemented* — no category conc
   passes forever and is worse than none), and the byte-scan's allowlist is itself asserted to still
   exist and still contain the needle it was granted, so a deleted carve-out cannot leave an
   invisible hole for whatever file takes its path next.
-- Recurrence (D5) and event restore (soft-deleted but with no restore endpoint — see
-  `docs/backend/calendar-api.md`) are both explicitly **planned, not implemented**. Neither is
-  blocked on anything architectural; both are UI-shaped gaps (a repeat control, a trash screen) that
-  were not designed in this batch. Recurrence is no longer blocked on a shared engine either — ADR-0052
-  extracted one into `App\Support\Recurrence`; see D5's flagged note above.
+- **Recurrence (D5) has since been built** — see D11 and the flagged, resolved note on D5 above.
+  A recurring event's write surface and its read-side projection both ship on the shared
+  `App\Support\Recurrence` engine ADR-0052 extracted, not on the `create_event`-step workaround
+  this ADR originally offered as the interim answer. **Event restore is still explicitly planned,
+  not implemented** (soft-deleted but with no restore endpoint — see
+  `docs/backend/calendar-api.md`); it remains a UI-shaped gap (a trash screen not designed in this
+  batch), not an architectural one.
 - Visual grouping of events by colour (D10) is likewise **planned, not implemented** — no
   CATEGORY concept exists on `calendar_events` or anywhere else in the module today. The gap
   is deliberate, not an oversight: do not close it by adding a `color` column or field back

@@ -57,6 +57,19 @@ class CalendarOccurrenceResource extends JsonResource
             // two different things a client has to handle.
             'cadence_label' => $occurrence->cadenceLabel,
 
+            // WHETHER THIS SQUARE WAS COMPUTED FROM A RULE, stated outright rather than left to be
+            // inferred from `cadence_label` being non-null. That inference is sound today and only
+            // today: a repeating subject is ALLOWED to have no sentence (a cadence nobody can render
+            // leaves the label null), so a client branching on the prose would be right by accident.
+            'recurring' => $occurrence->recurring,
+
+            // WHICH occurrence of its series this is, as the plain 'Y-m-d' its own write surface names
+            // it by — reckoned on the SERIES' clock, not the window's. Null for a square that is not
+            // one of a series. Present so a client can act on a single occurrence the moment it is
+            // clicked, without fetching the subject first and without parsing `id` — which is exactly
+            // what `subject.id` exists to make unnecessary.
+            'occurrence_date' => $occurrence->occurrenceDate,
+
             // Morph ALIAS + id, so a client can deep-link to the underlying thing without the calendar
             // having to know a route for every module.
             'subject' => [

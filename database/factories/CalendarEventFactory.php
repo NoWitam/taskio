@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Modules\Calendar\DTOs\CalendarRecurrence;
 use App\Modules\Calendar\Models\CalendarEvent;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Factories\Factory;
@@ -52,6 +53,25 @@ class CalendarEventFactory extends Factory
             'start_date' => null,
             'starts_at' => CarbonImmutable::parse($startsAt, 'UTC'),
             'ends_at' => $endsAt === null ? null : CarbonImmutable::parse($endsAt, 'UTC'),
+        ]);
+    }
+
+    /**
+     * A REPEATING event, with the rule handed over already stamped — normally by asking
+     * {@see \App\Modules\Calendar\Services\CalendarRecurrenceService} for one, exactly as the write path
+     * does.
+     *
+     * There is deliberately no "give me a weekly series" shortcut that assembles a descriptor from
+     * loose arguments. A hand-built descriptor is one whose ANCHOR nobody checked, and a fixture whose
+     * anchor is not its own first occurrence is a row the production write path cannot create — so a
+     * test written against it would keep passing after the invariant it depends on had broken. Building
+     * the rule through the real service is what keeps the fixture and the product in step.
+     */
+    public function repeating(CalendarRecurrence $recurrence): static
+    {
+        return $this->state(fn (): array => [
+            'recurrence' => $recurrence->descriptor,
+            'recurrence_until' => $recurrence->until,
         ]);
     }
 }

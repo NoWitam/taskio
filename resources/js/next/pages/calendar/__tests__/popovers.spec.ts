@@ -43,6 +43,8 @@ function occurrence(over: Partial<CalendarOccurrence> = {}): CalendarOccurrence 
     badge: { label: 'In progress', color: 'warning' },
     dense: false,
     cadence_label: null,
+    recurring: false,
+    occurrence_date: null,
     subject: { type: 'task', id: 'task-1' },
     ...over,
   } as CalendarOccurrence;

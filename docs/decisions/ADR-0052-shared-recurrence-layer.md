@@ -40,6 +40,16 @@ on the same branch (`module/calendar`), reviewed but **not yet committed** at th
 **No recurring-event feature exists yet.** This ADR is the foundation the next chapter builds on, not
 that chapter itself — see "Consequences" for what is, and is not, unblocked.
 
+> **Update, later the same day.** The recurring-event chapter this paragraph said did not exist yet
+> has since landed on this same branch, as its own B4 (the write surface —
+> `recurrence`/`recurrence_until`, scope-based `PUT`/`DELETE`) and B5 (the read-side projection —
+> every occurrence a series places inside the window, not only its anchor). Both build directly on
+> Decisions 1–3 below: `App\Modules\Calendar\Services\CalendarRecurrenceService` is a thin wrapper
+> over `ScheduleEngine`, and `App\Modules\Calendar\Sources\EventCalendarSource` is what reads it onto
+> the grid. Read-side contract in `docs/backend/calendar-api.md`; see ADR-0051 D11 for the one
+> projection-semantics decision B5 added on top of this layer — an event series projects its own
+> past, unlike the future-only schedule source this ADR's Decision 3 shares a day-anchor with.
+
 ---
 
 ## Decisions
@@ -288,12 +298,16 @@ a substitute for it.
 
 ## Consequences
 
-- **Calendar may now depend on `App\Support\Recurrence`** — `CalendarModuleBoundaryTest`'s allowlist
+- **Calendar now depends on `App\Support\Recurrence`** — `CalendarModuleBoundaryTest`'s allowlist
   already grants the `App\Support\Recurrence\` namespace prefix (pinned by
-  `test_the_allowlist_matcher_does_not_prefix_match_a_class_entry`), but **nothing in the Calendar
-  module calls it yet**. This ADR clears the ground for a recurring-event feature; it does not build
-  one. See the flagged note on ADR-0051 D5 below for why that gap is now explicitly tracked rather than
-  quietly closed by a workflow-based workaround.
+  `test_the_allowlist_matcher_does_not_prefix_match_a_class_entry`), and as of the recurring-event
+  chapter's own B4/B5, something finally calls it:
+  `App\Modules\Calendar\Services\CalendarRecurrenceService` wraps `ScheduleEngine` for a series'
+  day/instant projection, and `EventCalendarSource` is what reads that projection onto the grid.
+  This ADR cleared the ground for a recurring-event feature; the feature itself is now built on top
+  of it. See the (now-resolved) flagged note on ADR-0051 D5, and D11, for what shipped and the one
+  projection-semantics decision — past-drawing — that belongs to the calendar series rather than to
+  this shared layer.
 - `docs/backend/workflows-api.md` and three earlier ADRs (0009, 0010, 0012) named the moved classes
   under their old `App\Modules\Workflows` locations — one of them, `WorkflowScheduleCompiler`, was
   **renamed** to `ScheduleCompiler` during the move, not merely relocated, so the old name no longer
@@ -304,14 +318,16 @@ a substitute for it.
 - The golden matrix (`tests/Support/Schedule/`) is scheduled for deletion now that this review is
   closed. The cross-commit parity proof against `e501cf2` it carried (Decision 1) will not exist
   anywhere else once it is gone — this ADR is where that fact is preserved.
-- **ADR-0051 D5, flagged.** D5 defers recurrence and offers a stated workaround: "a workflow author who
-  wants a recurring annotation already has the tool: a schedule-triggered workflow with a
-  `create_event` step." That workaround **materializes rows** — it is the identical second-source-of-
-  truth shape D2/D4 of the *same* ADR reject for every other calendar source (a task deadline, a
-  workflow run, a workflow schedule), with the same failure mode named there restated in miniature: a
-  disabled or deleted workflow leaves its already-created `calendar_events` rows behind, with nothing
-  that sweeps them. This ADR does not change D5's deferral — recurring calendar events are still not
-  built — but it removes the one reason D5's workaround looked acceptable (there was, until this
-  extraction, no shared engine a real recurring-event feature could have used instead). A future
-  recurring-event chapter should build on `App\Support\Recurrence`, not on the `create_event`
-  workaround; ADR-0051 D5 has been annotated in place to point here.
+- **ADR-0051 D5, flagged, now resolved.** D5 deferred recurrence and offered a stated workaround: "a
+  workflow author who wants a recurring annotation already has the tool: a schedule-triggered
+  workflow with a `create_event` step." That workaround **materialized rows** — it was the identical
+  second-source-of-truth shape D2/D4 of the *same* ADR reject for every other calendar source (a task
+  deadline, a workflow run, a workflow schedule), with the same failure mode named there restated in
+  miniature: a disabled or deleted workflow leaves its already-created `calendar_events` rows behind,
+  with nothing that sweeps them. This ADR removed the one reason D5's workaround looked acceptable
+  (there was, until this extraction, no shared engine a real recurring-event feature could use
+  instead) — and the recurring-event chapter that followed on the same branch used it directly:
+  `calendar_events` now carries its own `recurrence` rule (B4), projected onto the grid by
+  `CalendarRecurrenceService` (B5), in place of the `create_event` workaround. ADR-0051 D5 has been
+  annotated in place to point here, and ADR-0051 D11 records the one projection-semantics decision —
+  past-drawing — this shared layer made possible but did not itself decide.

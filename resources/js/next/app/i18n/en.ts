@@ -1024,15 +1024,181 @@ export const en = {
       external: 'Opens in another module',
     },
 
+    // THE SAMPLE marker — a fact about the ANSWER, not about the subject. It says "the rest
+    // of this item is not in this window". The word "Series" used to lead this line and has
+    // MOVED to the series marker below: two different facts must never wear one wording, or
+    // a reader learns to ignore both.
     dense: {
-      // The FALLBACK wording, used only when the occurrence carries no `cadence_label`.
-      // When it does, the marker renders that server prose instead — untranslated, like
-      // every other sentence a source hands us finished.
-      //
       // What the count means: how many this one chip stands in for. NOT the size of the
       // series, which the contract does not carry — nothing here may guess at one.
-      chip: 'Series — showing {shown}',
+      chip: 'Showing {shown} of this item',
       aria: 'This item repeats more often than the grid can show',
+    },
+
+    sample: {
+      // Used when the chip stands in for exactly one occurrence, where a number would be a
+      // sentence about nothing ("sample: 1").
+      marker: 'You are seeing a sample of this item',
+    },
+
+    // A SERIES — a fact about the subject: this square is one of many. Sourced from
+    // `recurring`, never from the presence of cadence prose.
+    series: {
+      badge: 'Series',
+      // The accessible NAME of the series glyph. Not a sentence about the cadence — the
+      // server owns those, and a repeating subject is allowed to have none. This one only
+      // says the glyph's meaning, which a glyph without a name would not have at all.
+      marker: 'Occurrence of a series',
+      repeats: 'Repeats',
+      start: 'Series starts',
+      end: 'Ends',
+      endNever: 'no end',
+      // A LABEL, with the count as the value beside it (DescriptionList is a label/value
+      // component) and the dates themselves in that value's tooltip — a list of up to fifty
+      // days is not a row.
+      skipped: 'Skipped days',
+      // Shown ONLY when it differs from the grid's zone: normally they are the same and the
+      // row would be noise, but when they differ it is the only place a reader can see that
+      // an occurrence's day is reckoned on a different clock than the one they are looking at.
+      ruleTimezone: 'Rule time zone',
+      selectedOccurrence: 'Selected occurrence',
+      unknownRule: 'This series has a rule this form does not edit.',
+      noneInWindow: 'This series has no occurrences in the month on screen.',
+      // Both labels are true as facts about a DATE, never as promises about an occurrence —
+      // "show the next occurrence" would be a client-side projection of the cadence, i.e. a
+      // second scheduling engine.
+      goToStart: 'Show the start of the series ({month})',
+      goToEnd: 'Show the end of the series ({month})',
+    },
+
+    // THE SCOPE DIALOG. Every option says what happens to the PAST, because that is the one
+    // thing the three choices differ on and the one thing nothing else on screen shows.
+    scope: {
+      edit: { title: 'What do you want to edit?' },
+      delete: { title: 'What should be deleted?' },
+      context: 'Selected occurrence: {date}',
+      // The description BOTH scoped options wear when the event was opened without a day
+      // (a deep link, a search result). They are disabled there — the server names a scoped
+      // write by its day and refuses one without — and their own sentences are built around
+      // `{date}`, so with nothing to interpolate they would open on a space and say nothing.
+      // This one says why the option is off AND where the day comes from, which is the only
+      // useful thing to say in that state.
+      needsOccurrence:
+        'Not available here: this event was opened without naming a day. Click the day on the grid to change just that one.',
+      occurrence: {
+        label: 'Only this occurrence',
+        editHint:
+          'This day will leave the series and become an event of its own. The rest of the series is unchanged.',
+        deleteHint: '{date} will disappear from the series. The other occurrences stay.',
+      },
+      following: {
+        label: 'This and all following',
+        // Worded to be true BOTH ways: the server decides whether anything is left behind by
+        // projecting the series, not by comparing dates, and the client cannot reproduce that
+        // decision. "Earlier occurrences stay as they were" is still true when there are none.
+        editHint:
+          'Earlier occurrences stay as they were. A new series starts from this day on.',
+        deleteHint: 'The series will end the day before. Earlier occurrences stay.',
+        firstHint: 'This is the first occurrence of the series, so this option covers the whole series.',
+      },
+      series: {
+        label: 'The whole series',
+        editHint:
+          'Every occurrence — including the ones that already happened. Changing the rule rewrites history: moving a meeting to Wednesdays turns last year’s Mondays into Wednesdays too.',
+        // The only option that says this, and only because it is where the loss is largest.
+        // On all three it would be noise instead of a warning.
+        deleteHint:
+          'The event disappears from the calendar together with its whole history. This cannot be undone from the interface.',
+      },
+      // The confirm button NAMES the choice — a button reading "Save" for three different
+      // operations tells voice control nothing to say and a reader nothing to check.
+      confirm: {
+        editOccurrence: 'Edit this occurrence',
+        editFollowing: 'Edit from {date}',
+        editSeries: 'Edit the whole series',
+        deleteOccurrence: 'Delete this occurrence',
+        deleteFollowing: 'Delete occurrences from {date}',
+        deleteSeries: 'Delete the whole series',
+      },
+      change: 'Change scope',
+      retry: 'Choose the scope again',
+      // Asked ONLY when the new scope is about a different day than the current one, because
+      // only then does the form's own seeding change (§24.6.1). Discarding what somebody
+      // typed cannot be a silent side effect of changing a scope.
+      reseedConfirm: {
+        title: 'Change the scope?',
+        message:
+          'This scope is about a different day, so the date and time will be filled in again from it. What you typed there will be replaced.',
+      },
+      banner: {
+        occurrence:
+          'You are editing ONE occurrence: {date}. After saving, this day stops belonging to the series and becomes an event of its own.',
+        following:
+          'You are editing occurrences from {date}. Earlier ones stay unchanged — they become a separate, closed series.',
+        series: 'You are editing the WHOLE series — including occurrences that already happened.',
+      },
+      fallbackNotice:
+        'Opened without naming an occurrence — this edit covers the whole series. To change a single day, click it on the grid.',
+    },
+
+    // THE REPEAT CONTROL. These label an INTENT — what the user is choosing — and are never
+    // used to describe a rule that already exists: a stored rule's sentence comes from the
+    // server (`cadence_label` / `recurrence_label`), finished and translated.
+    recurrence: {
+      label: 'Repeats',
+      none: 'Does not repeat',
+      daily: 'Every day',
+      // One entry per weekday rather than "Every {weekday}", for the same reason the server's
+      // own catalogue is written out: Polish inflects ("W każdy wtorek" vs "W każdą środę")
+      // and a language that inflects cannot compose the phrase from a name plus a slot.
+      weeklyDays: {
+        0: 'Every Sunday',
+        1: 'Every Monday',
+        2: 'Every Tuesday',
+        3: 'Every Wednesday',
+        4: 'Every Thursday',
+        5: 'Every Friday',
+        6: 'Every Saturday',
+      },
+      monthlyDay: 'Monthly, on day {day}',
+      monthlyNth: 'Monthly: the {ordinal} {weekday}',
+      monthlyLastDay: 'Monthly, on the last day',
+      monthlyLastWeekdays: {
+        0: 'Monthly: the last Sunday',
+        1: 'Monthly: the last Monday',
+        2: 'Monthly: the last Tuesday',
+        3: 'Monthly: the last Wednesday',
+        4: 'Monthly: the last Thursday',
+        5: 'Monthly: the last Friday',
+        6: 'Monthly: the last Saturday',
+      },
+      ordinals: { 1: 'first', 2: 'second', 3: 'third', 4: 'fourth', 5: 'fifth' },
+      // The date is formatted by `Intl` rather than assembled from a day and a month name:
+      // Polish puts a date's month in the genitive ("25 sierpnia", never "25 sierpień").
+      yearly: 'Every year, on {date}',
+      // The API accepts a wider grammar than this control speaks. A rule from the API, from
+      // the `create_event` step or from a future wider control gets this — SELECTED and
+      // DISABLED — rather than being silently rewritten into the nearest preset.
+      other: 'Another rule',
+      otherReplaces: 'Choosing a different repeat will replace the current rule.',
+      shortMonthsNote: 'Months that have no day {day} will be skipped.',
+      // The hour is set in the START field and there is none here — the server refuses a
+      // `recurrence.time`. Without this sentence a user hunts for an hour that will never be
+      // in this control.
+      hourNote: 'Every occurrence starts at {time} ({tz}).',
+      detachNote:
+        'This occurrence will stop belonging to the series. The rest of the series keeps its rule.',
+      end: {
+        label: 'Repeat ends',
+        never: 'Never',
+        until: 'On a date',
+        count: 'After a number of repeats',
+        // Said UP FRONT, because it is a fact of the contract and not a copywriter's
+        // flourish: the server resolves a count to a day once, at write time, and only the
+        // day ever comes back. A UI pretending otherwise would need a counter of its own,
+        // which drifts from the row on the first edit made anywhere else.
+        countNote: 'We save this as the date of the last occurrence — reopen it and you will see a date, not a number.',
+      },
     },
 
     filters: {
@@ -1120,6 +1286,14 @@ export const en = {
       delete: 'Delete',
       saved: 'Event saved',
       deleted: 'Event deleted',
+      // One toast per SCOPE. Three operations that report identically are three operations a
+      // user cannot tell apart afterwards — and two of them changed something else than the
+      // thing they were looking at.
+      savedOccurrence: 'Saved this occurrence as a separate event',
+      savedFollowing: 'Saved occurrences from {date}',
+      savedSeries: 'Saved the whole series',
+      deletedOccurrence: 'Deleted this occurrence',
+      deletedFollowing: 'Deleted occurrences from {date}',
       saveError: 'Couldn’t save the event',
       deleteError: 'Couldn’t delete the event',
       loadError: 'Couldn’t load the event',

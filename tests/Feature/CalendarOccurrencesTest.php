@@ -256,6 +256,9 @@ class CalendarOccurrencesTest extends TestCase
         $response->assertJsonPath('data.0.subject.id', $task->id);
         $response->assertJsonPath('data.0.editable', false);
         $response->assertJsonPath('data.0.dense', false);
+        // A deadline is a ROW, not a projection: one task, one square, nothing computed from a rule.
+        $response->assertJsonPath('data.0.recurring', false);
+        $response->assertJsonPath('data.0.occurrence_date', null);
         $response->assertJsonPath('data.0.color', 'danger');
         $response->assertJsonPath('data.0.badge.label', __('tasks.status.in_progress'));
 
@@ -431,6 +434,14 @@ class CalendarOccurrencesTest extends TestCase
         $this->assertTrue($data[0]['dense']);
         $this->assertSame(__('workflows.calendar.cadence.every_minutes', ['count' => 5]), $data[0]['cadence_label']);
 
+        // Every square this source draws is computed from a cadence and has no row behind it.
+        $this->assertTrue($data[0]['recurring']);
+
+        // …and it carries NO occurrence date, deliberately: that field is the name a subject's own
+        // write surface addresses ONE occurrence by, and a schedule firing has none. Filling it would
+        // publish an identifier that addresses nothing.
+        $this->assertNull($data[0]['occurrence_date']);
+
         CarbonImmutable::setTestNow();
     }
 
@@ -484,6 +495,11 @@ class CalendarOccurrencesTest extends TestCase
         $this->assertNotEmpty($data);
         $this->assertFalse($data[0]['dense']);
         $this->assertNull($data[0]['cadence_label']);
+
+        // THE CASE `recurring` EXISTS FOR, and the reason it is not "cadence_label is not null": this
+        // schedule REPEATS and has no sentence to say about how often. A client inferring the marker
+        // from the prose would call every fixed-times automation a one-off.
+        $this->assertTrue($data[0]['recurring']);
 
         CarbonImmutable::setTestNow();
     }
@@ -775,6 +791,11 @@ class CalendarOccurrencesTest extends TestCase
         $response->assertJsonPath('data.0.color', 'danger');
         $response->assertJsonPath('data.0.badge.label', __('workflows.run_states.failed'));
         $this->assertNotNull($response->json('data.0.ends_at'));
+
+        // A run HAPPENED — it is a row, read back. The schedule that may have caused it is a different
+        // source, and that one is the projection.
+        $response->assertJsonPath('data.0.recurring', false);
+        $response->assertJsonPath('data.0.occurrence_date', null);
     }
 
     public function test_a_run_that_never_started_is_not_on_the_calendar(): void

@@ -40,6 +40,8 @@ function occurrence(id: string, over: Partial<CalendarOccurrence> = {}): Calenda
     badge: null,
     dense: false,
     cadence_label: null,
+    recurring: false,
+    occurrence_date: null,
     subject: { type: 'calendar_event', id },
     ...over,
   } as CalendarOccurrence;

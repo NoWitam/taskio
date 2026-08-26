@@ -118,7 +118,15 @@ class CalendarTenantDatabaseTest extends TestCase
 
         // The columns the all-day discriminator rests on. A tenant mirror missing one of them would
         // make every event on that workspace unreadable, and only for that workspace.
-        foreach (['all_day', 'start_date', 'starts_at', 'ends_at', 'subject_type', 'subject_id', 'deleted_at'] as $column) {
+        // The all-day discriminator's columns, plus (R3 B4) the two the recurrence rule lives in. There
+        // is nothing workspace-shaped about a cadence, so unlike `workspace_id` both exist on both
+        // sides — a mirror that dropped one would make every series on that workspace a single event,
+        // silently and only there.
+        foreach ([
+            'all_day', 'start_date', 'starts_at', 'ends_at',
+            'recurrence', 'recurrence_until',
+            'subject_type', 'subject_id', 'deleted_at',
+        ] as $column) {
             $this->assertTrue(
                 $schema->hasColumn('calendar_events', $column),
                 "expected the tenant calendar_events.{$column} column to exist",
@@ -196,6 +204,68 @@ class CalendarTenantDatabaseTest extends TestCase
             0,
             (int) $central->table('calendar_events')->where('workspace_id', $this->workspace->id)->count(),
             'nor any event scoped to it — this is the assertion a hardcoded connection would fail',
+        );
+    }
+
+    /**
+     * A SPLIT — the module's one multi-statement write — performed against an own-database workspace.
+     *
+     * The two statements (close the outgoing series, insert the new one) mean one thing, so they are
+     * wrapped in a transaction. `DB::transaction()` would have opened that transaction on the DEFAULT
+     * connection while both writes landed on the TENANT one: atomicity that reads as present in the
+     * source and is not there in production, for exactly the customers nobody tests on. The service
+     * therefore opens it on the ROW'S connection, and this is the only place that distinction can be
+     * observed at all.
+     *
+     * The assertions are about the OUTCOME rather than about the transaction — both halves landed, in
+     * the tenant database, and neither leaked centrally.
+     */
+    public function test_a_series_split_writes_both_halves_to_the_tenant_database(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+
+        // 2026-08-10 is a Monday. Weekly-on-Mondays, anchored on it.
+        $seriesId = $this->asUser()
+            ->postJson('/api/calendar/events', [
+                'title' => 'Cotygodniowa narada',
+                'all_day' => false,
+                'starts_at' => '2026-08-10T09:00:00',
+                'recurrence' => ['day' => ['mode' => 'weekdays', 'weekdays' => [1]]],
+            ])
+            ->assertCreated()
+            ->json('data.id');
+
+        $newId = $this->asUser()
+            ->putJson('/api/calendar/events/' . $seriesId, [
+                'title' => 'Narada, teraz w srody',
+                'all_day' => false,
+                'starts_at' => '2026-08-26T09:00:00',
+                'scope' => 'following',
+                'occurrence_date' => '2026-08-24',
+                'recurrence' => ['day' => ['mode' => 'weekdays', 'weekdays' => [3]]],
+            ])
+            ->assertCreated()
+            ->json('data.id');
+
+        $this->assertNotSame($seriesId, $newId, 'a split produces a NEW row');
+
+        $this->useTenant();
+
+        $this->assertSame(
+            '2026-08-23',
+            CalendarEvent::query()->findOrFail($seriesId)->recurrenceUntilString(),
+            'the outgoing series must have been closed in the TENANT database',
+        );
+        $this->assertSame([3], CalendarEvent::query()->findOrFail($newId)->recurrence['day']['weekdays']);
+
+        // ── THE NEGATIVE ──────────────────────────────────────────────────────────
+        $this->assertSame(
+            0,
+            (int) DB::connection(config('database.default'))
+                ->table('calendar_events')
+                ->whereIn('id', [$seriesId, $newId])
+                ->count(),
+            'neither half of a split may land in the central database',
         );
     }
 

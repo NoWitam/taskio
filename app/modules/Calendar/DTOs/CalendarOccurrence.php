@@ -86,6 +86,40 @@ final readonly class CalendarOccurrence
          * source with no cadence leaves it null, and a client treats absent as absent.
          */
         public ?string $cadenceLabel,
+        /**
+         * Whether this square was COMPUTED FROM A REPEATING RULE rather than read from a row of its
+         * own — "there are more squares like this one, and this one has no record behind it".
+         *
+         * It exists because the only signal a client previously had was a non-null {@see $cadenceLabel},
+         * which is SUFFICIENT but not NECESSARY: a source may repeat and have no sentence to say about
+         * how often (the label is explicitly allowed to be null for a shape nobody can render). A
+         * client branching on the prose would therefore be right by accident, and would silently start
+         * being wrong the day a cadence stopped being expressible.
+         *
+         * NOT a capability and not a permission. It says what the square IS. What may be done to one
+         * occurrence is a question for the module that owns the subject, and the Calendar answers it
+         * through {@see $occurrenceDate} — the name to send — rather than through a flag.
+         */
+        public bool $recurring,
+        /**
+         * WHICH occurrence of its series this is, as the plain 'Y-m-d' the subject's own write surface
+         * addresses it by — or null when the square is not one of a series, or its source has no name
+         * for a single occurrence.
+         *
+         * THE DAY IS RECKONED ON THE SERIES' OWN CLOCK, not on the window's. For a calendar event that
+         * is the timezone stamped into the rule at save time, which is the clock `occurrence_date` is
+         * validated on; handing over the window's reading instead would give one occurrence two names
+         * the moment a workspace changed its timezone, and a scoped write would refuse the very day the
+         * client read off the grid.
+         *
+         * It is stated EXPLICITLY rather than left to be recovered, and that is the whole point. A
+         * client needs this the instant a square is clicked — before it has fetched the event — and the
+         * only other routes to it are parsing the {@see $id} (the exact thing {@see $subjectId} exists
+         * to make unnecessary) or re-deriving the day from an instant in a timezone it would have to
+         * guess. The source already computes this string to build the id; publishing it costs nothing
+         * and closes both holes.
+         */
+        public ?string $occurrenceDate,
     ) {}
 
     /**
@@ -106,6 +140,8 @@ final readonly class CalendarOccurrence
         bool $editable = false,
         bool $dense = false,
         ?string $cadenceLabel = null,
+        bool $recurring = false,
+        ?string $occurrenceDate = null,
     ): self {
         if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) !== 1) {
             throw new InvalidArgumentException(
@@ -129,6 +165,8 @@ final readonly class CalendarOccurrence
             subjectType: $subjectType,
             subjectId: $subjectId,
             cadenceLabel: $cadenceLabel,
+            recurring: $recurring,
+            occurrenceDate: $occurrenceDate,
         );
     }
 
@@ -146,6 +184,8 @@ final readonly class CalendarOccurrence
         bool $editable = false,
         bool $dense = false,
         ?string $cadenceLabel = null,
+        bool $recurring = false,
+        ?string $occurrenceDate = null,
     ): self {
         return new self(
             id: $id,
@@ -162,6 +202,8 @@ final readonly class CalendarOccurrence
             subjectType: $subjectType,
             subjectId: $subjectId,
             cadenceLabel: $cadenceLabel,
+            recurring: $recurring,
+            occurrenceDate: $occurrenceDate,
         );
     }
 

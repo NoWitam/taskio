@@ -22,6 +22,23 @@
 //    the title, and the title is what people scan by. It is one click (the day popover) or
 //    one toggle (the agenda) away — hidden, never lost.
 //
+// 4. TWO MARKERS, TWO FACTS, NEVER ONE GLYPH FOR BOTH.
+//
+//      SERIES (`repeat`)  — a fact about the SUBJECT: this square is one of many. Permanent.
+//                           Read from `recurring`, and NEVER from `cadence_label !== null`:
+//                           the prose is sufficient evidence of a series but not necessary,
+//                           and a schedule in fixed-times mode repeats while carrying `null`.
+//                           Branching on the prose calls every one of those squares a one-off,
+//                           silently.
+//      SAMPLE (`layers`)  — a fact about the ANSWER: the rest of this item is not in this
+//                           window. Incidental. Read from `dense` (folded).
+//
+//    `repeat` used to carry both, which taught a reader to ignore it: it appeared on things
+//    that were fine and on things that were missing data, identically. In the GRID, where an
+//    ~11rem cell has room for one, the SAMPLE wins — "you are not seeing everything" is more
+//    urgent than "this recurs", and for an `event` a sample implies a series anyway. Nothing
+//    is lost: both facts are in the accessible label either way.
+//
 // Editability is signalled BEFORE the click and by DIRECTION, not by presence: a pencil
 // when this opens here, an external-link when it opens somewhere else. Two glyphs, so the
 // user learns both facts. `editable` is only an affordance HINT — the truth about
@@ -105,20 +122,34 @@ const cadenceLabel = computed<string | null>(() => {
 });
 
 /**
- * What the series marker SAYS.
- *
- * The cadence when the server sent one, because "every 5 min" is the fact that makes a
- * folded row worth folding; the count only otherwise. "Showing 64" is a number a reader
- * gains nothing from — it describes this chip, not the thing the chip stands for — so it is
- * the fallback, never the preferred wording.
- *
- * In the GRID the marker stays a bare number regardless: an ~11rem cell has room for the
- * title or for a sentence, not both (the same width argument as rule 3). The cadence still
- * reaches a grid reader — through the accessible label below and the marker's own tooltip —
- * so it is hidden there, never lost.
+ * Whether this square belongs to a SERIES. The contract's own flag, never an inference from
+ * the prose being present (rule 4). Absent on the wire is impossible, but a stale cached
+ * payload is not, so a missing key reads as `false` rather than as a crash.
  */
-const seriesText = computed<string>(() =>
-  cadenceLabel.value ?? t('calendar.dense.chip', '', { shown: props.shown }),
+const isSeries = computed<boolean>(() => props.occurrence.recurring === true);
+
+/**
+ * What the SERIES marker says, in the roomy variants: the server's cadence sentence, or
+ * NOTHING AT ALL.
+ *
+ * There is no third option, and that is rule 2 at its limit. A repeating subject is allowed
+ * to have no sentence (a fixed-times schedule has none), and composing one here from
+ * `recurrence.day.*` would be the client growing a vocabulary per source — which is exactly
+ * what makes "a new source needs no frontend change" stop being true. So the marker renders
+ * as a bare glyph, and what keeps it from being a glyph with no accessible name is the chip's
+ * own label below, which says what the marker MEANS ("occurrence of a series") without saying
+ * anything about how often.
+ */
+const seriesText = computed<string | null>(() => cadenceLabel.value);
+
+/**
+ * What the SAMPLE marker says. The count only when it stands for more than one: "sample: 1"
+ * is a sentence about nothing, and a folded event series is always exactly one row per day
+ * (a calendar series has one hour by construction), so that is the common case rather than
+ * the exception.
+ */
+const sampleText = computed<string>(() =>
+  props.shown > 1 ? t('calendar.dense.chip', '', { shown: props.shown }) : t('calendar.sample.marker'),
 );
 
 /** The trailing direction glyph — the affordance signal (spec D4). */
@@ -138,14 +169,20 @@ const ariaLabel = computed(() => {
   else if (props.occurrence.all_day) parts.push(t('calendar.occurrence.allDay'));
   if (props.sourceLabel) parts.push(props.sourceLabel);
   if (props.occurrence.badge) parts.push(props.occurrence.badge.label);
+  if (isSeries.value) {
+    // THE SERVER'S SENTENCE WHEN THERE IS ONE, otherwise the marker's own meaning. The
+    // fallback is a name for the GLYPH ("occurrence of a series"), not a sentence about a
+    // cadence — a glyph with no accessible name at all would be worse than either, and
+    // composing "repeats weekly" here would be the client inventing prose.
+    parts.push(seriesText.value ?? t('calendar.series.marker'));
+  }
   if (props.folded) {
-    // WHAT THE MARKER SAYS, then WHY IT IS THERE — in that order, and in the grid too,
-    // where the marker itself is only a number. Two reasons it is `seriesText` rather than
-    // the cadence alone: an aria-label REPLACES the button's content, so a folded row would
-    // otherwise lose the marker's words entirely for anyone who cannot see it; and the
-    // accessible name has to contain the visible text, or a voice-control user saying what
-    // they can read finds nothing to activate.
-    parts.push(seriesText.value);
+    // WHAT THE MARKER SAYS, then WHY IT IS THERE — in that order, and in the grid too, where
+    // the marker itself is only a number. An aria-label REPLACES the button's content, so a
+    // folded row would otherwise lose the marker's words entirely for anyone who cannot see
+    // it; and the accessible name has to contain the visible text, or a voice-control user
+    // saying what they can read finds nothing to activate.
+    parts.push(sampleText.value);
     parts.push(t('calendar.dense.aria'));
   }
   parts.push(trailingHint.value);
@@ -178,21 +215,54 @@ const ariaLabel = computed(() => {
 
     <span class="min-w-0 flex-1 truncate font-next-medium">{{ occurrence.title }}</span>
 
-    <!-- The SERIES marker. Text, not colour — density is a fact about quantity, and the
-         chip's colour already means urgency/state. It states the server's CADENCE when
-         there is one ("Every 5 min"), and falls back to how many this row stands in for
-         when there is not. The grid keeps the bare number for width; its `title` carries
-         the sentence the cell has no room for. -->
+    <!-- THE SERIES MARKER — a fact about the subject (rule 4). In the roomy variants it is a
+         badge carrying the SERVER's cadence sentence, or no text at all when the server has
+         none; the client never fills that silence with a sentence of its own. In the grid it
+         is a bare glyph, and only when there is no sample marker competing for the width.
+         Both are aria-hidden: their meaning is already in the chip's own label, and a second
+         reading of it would just make every square longer to hear. -->
     <Badge
-      v-if="folded"
+      v-if="isSeries && !isGrid"
       variant="neutral"
       tone="subtle"
       size="sm"
       icon="repeat"
       class="shrink-0"
-      :title="isGrid ? seriesText : undefined"
+      data-marker="series"
+      aria-hidden="true"
+      :title="seriesText ?? t('calendar.series.marker')"
     >
-      {{ isGrid ? String(shown) : seriesText }}
+      {{ seriesText ?? '' }}
+    </Badge>
+    <!-- `title` sits on a wrapper rather than on the <svg>: a `title` ATTRIBUTE on an SVG
+         element is not a tooltip (SVG wants a `<title>` CHILD), so the span is what actually
+         makes the sentence reachable with a mouse. `opacity` lifts slightly in dark, where
+         a muted glyph on a subtle surface goes too soft to find. -->
+    <span
+      v-else-if="isSeries && isGrid && !folded"
+      class="inline-flex shrink-0 opacity-60 dark:opacity-70"
+      data-marker="series"
+      aria-hidden="true"
+      :title="seriesText ?? t('calendar.series.marker')"
+    >
+      <Icon name="repeat" /></span>
+
+    <!-- THE SAMPLE MARKER — a fact about the answer. `warning` is the tone of the
+         `item_densified` notice at the top of the screen, and the pairing is what ties the
+         two together without one extra word. The count appears only when this row stands in
+         for more than one; "sample: 1" would be a sentence about nothing. -->
+    <Badge
+      v-if="folded"
+      variant="warning"
+      tone="subtle"
+      size="sm"
+      icon="layers"
+      class="shrink-0"
+      data-marker="sample"
+      aria-hidden="true"
+      :title="sampleText"
+    >
+      {{ shown > 1 ? String(shown) : '' }}
     </Badge>
 
     <!-- RULE 3: the badge belongs to the roomy variants only. -->

@@ -27,10 +27,34 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * duplicate it. Without this paragraph "event" becomes a drawer for anything time-shaped within two
  * chapters.
  *
- * The corollary, equally deliberate: RECURRENCE IS OUT OF SCOPE. Not deferred as an economy — a
- * repeating event needs a projection engine, this codebase has exactly one (the workflow schedule
- * compiler), and the Calendar may not name the module it lives in. A `repeat` column would therefore
- * be the start of a second engine, not a field. If you find yourself reaching for one, stop and ask.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * AN EVENT MAY REPEAT — AND REPEATING STILL EXECUTES NOTHING
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * R3 B4 added `recurrence` + `recurrence_until`, and the fence above is UNCHANGED by them. A recurring
+ * event is a repeating ANNOTATION: it draws more squares, it wakes nothing. Nothing sweeps this table
+ * on a cadence, no job is armed from `recurrence_until`, and there is no `next_due_at` here — the
+ * occurrences are COMPUTED when a grid is drawn and stored nowhere.
+ *
+ * This was the one column the earlier chapter refused outright, on the grounds that a repeating event
+ * needs a projection engine and this codebase had exactly one, inside a module the Calendar may not
+ * name. That objection was answered by moving the engine BELOW both modules rather than by copying it:
+ * the cadence arithmetic now lives in the shared recurrence layer (ADR-0052), the Calendar drives it
+ * through {@see \App\Modules\Calendar\Services\CalendarRecurrenceService}, and there is still exactly
+ * one definition of "every other Tuesday" in the product. What the earlier text refused — a SECOND
+ * engine — is still refused.
+ *
+ * The rule sits in COLUMNS on this row rather than in a series table because a series here is one
+ * repeating description of one event. A table earns its keep only when a single occurrence can be
+ * overridden, and it cannot: editing one occurrence DETACHES it into an ordinary non-repeating event,
+ * and deleting one adds a date to the rule's own exclusions. Both are compositions of things that
+ * already existed. See the migration for the full argument, and
+ * {@see \App\Modules\Calendar\DTOs\CalendarRecurrence} for the narrow subset of the grammar this
+ * module accepts and why narrowing later would not be possible.
+ *
+ * THE SERIES IS ANCHORED AT THIS ROW'S OWN START, and the write path refuses a rule the anchor does
+ * not satisfy. So `starts_at`/`start_date` still means FIRST OCCURRENCE, never "the point we begin
+ * counting from", and the series' duration is `ends_at - starts_at` applied to every occurrence — an
+ * hour-long meeting stays an hour long across a daylight-saving transition.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
  * THE ALL-DAY DISCRIMINATOR HOLDS ON THE WRITE SIDE TOO
@@ -94,6 +118,8 @@ class CalendarEvent extends AbstractModel
         'start_date',
         'starts_at',
         'ends_at',
+        'recurrence',
+        'recurrence_until',
         'subject_type',
         'subject_id',
         'creator_id',
@@ -107,6 +133,13 @@ class CalendarEvent extends AbstractModel
         'start_date' => 'date',
         'starts_at' => 'datetime',
         'ends_at' => 'datetime',
+        // The v2 recurrence descriptor, exactly as the shared engine reads it. NULL means the event
+        // happens once — the state every row was in before R3 B4 and the state a write that says
+        // nothing about repeating leaves it in.
+        'recurrence' => 'array',
+        // A DAY, cast like `start_date` and for the identical reason: it has no time and no zone, so
+        // reading it back and format('Y-m-d')ing it re-prints the stored day rather than converting it.
+        'recurrence_until' => 'date',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
@@ -123,6 +156,25 @@ class CalendarEvent extends AbstractModel
     public function startDateString(): ?string
     {
         return $this->all_day ? $this->start_date?->format('Y-m-d') : null;
+    }
+
+    /** Whether this event repeats. The discriminator every scoped operation checks first. */
+    public function repeats(): bool
+    {
+        return $this->recurrence !== null;
+    }
+
+    /**
+     * The last day the series may place an occurrence on, as the plain 'Y-m-d' the recurrence value
+     * object demands — or null for a series with no end, and for an event that does not repeat.
+     *
+     * Exists for the same reason {@see startDateString()} does: the ONE place a stored day is
+     * re-printed is named and shared, so nobody reaches for `->toISOString()` on a value that has no
+     * zone to convert to.
+     */
+    public function recurrenceUntilString(): ?string
+    {
+        return $this->repeats() ? $this->recurrence_until?->format('Y-m-d') : null;
     }
 
     protected static function newFactory()

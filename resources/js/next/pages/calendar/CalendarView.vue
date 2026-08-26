@@ -17,7 +17,8 @@
 // looking at — hence the permanent zone chip, which turns into a warning when the two
 // zones actually differ.
 //
-// URL IS THE STATE (spec §3.3): `?month=&mode=&sources=&q=&event=&edit=&new=&date=`.
+// URL IS THE STATE (spec §3.3):
+// `?month=&mode=&sources=&q=&event=&edit=&new=&date=&on=&at=&scope=`.
 // Filters and navigation `replace` (they must not fill the Back stack); opening an overlay
 // `push`es, so Back closes it. There is no `useRouteQueryHydration` in `next` — that lives
 // on the legacy side of the boundary — so the sync is the manual `computed` + `router`
@@ -53,7 +54,7 @@ import { bucketByDay } from './occurrenceGroups';
 import { isRetryableUnavailability, sourceIcon } from './calendarMeta';
 import { addMonthsToMonth, browserTimeZone, monthOf, monthStartDate, workspaceToday } from './calendarZone';
 import { buildMonthWeeks, monthNames, monthYearLabel } from '../../ui/forms/date/dateCore';
-import type { CalendarMode, CalendarOccurrence, IsoDay } from './types';
+import type { CalendarEventScope, CalendarMode, CalendarOccurrence, IsoDay } from './types';
 
 const route = useRoute();
 const router = useRouter();
@@ -113,6 +114,47 @@ const eventParam = computed<string | null>(() => str(route.query.event) || null)
 const isEditing = computed(() => str(route.query.edit) === '1');
 const isCreating = computed(() => str(route.query.new) === '1');
 const seedDate = computed<IsoDay | null>(() => str(route.query.date) || null);
+
+/**
+ * WHICH occurrence of a series is being pointed at, and HOW MUCH of the series a write will
+ * touch. Two keys for the occurrence, and they are not two spellings of one thing:
+ *
+ *   `on` — the DAY, exactly as the server published it on the square
+ *          (`occurrence.occurrence_date`). This is the IDENTIFIER: it is reckoned on the
+ *          series' own stamped clock and is the string the write surface names an occurrence
+ *          by, so it is carried verbatim and never re-derived from an instant and a zone.
+ *   `at` — the occurrence's own INSTANT (`occurrence.starts_at`), carried only so a scoped
+ *          edit can seed its date + time from the square that was clicked rather than from
+ *          the series' anchor. Absent for an all-day series, which has no instant at all.
+ *
+ * The day/instant split is the same discriminator that runs through the whole module, and
+ * keeping them apart is what stops either from being guessed from the other.
+ */
+const occurrenceParam = computed<IsoDay | null>(() => str(route.query.on) || null);
+const occurrenceAtParam = computed<string | null>(() => str(route.query.at) || null);
+/** `series` is the default and is never written to the URL. */
+const scopeParam = computed<CalendarEventScope>(() => {
+  const raw = str(route.query.scope);
+  return raw === 'occurrence' || raw === 'following' ? raw : 'series';
+});
+
+/**
+ * The square the drawer was opened from, found again in the window currently loaded — so its
+ * own `cadence_label` (server prose, from the same refresh the user is looking at) can reach
+ * the drawer. Null after a reload that landed on a different month, where the drawer falls
+ * back to the event's own `recurrence_label`; the client composes neither.
+ */
+const selectedOccurrence = computed<CalendarOccurrence | null>(() => {
+  const id = eventParam.value;
+  if (!id) return null;
+  return (
+    store.occurrences.find(
+      (occurrence) =>
+        occurrence.subject?.id === id &&
+        (!occurrenceParam.value || occurrence.occurrence_date === occurrenceParam.value),
+    ) ?? null
+  );
+});
 
 /** Write query keys, dropping the ones set to null. `replace` for state, `push` for overlays. */
 function setQuery(patch: Record<string, unknown>, mode: 'replace' | 'push' = 'replace'): void {
@@ -428,7 +470,21 @@ const previewOpen = computed<boolean>({
 function onSelectOccurrence(occurrence: CalendarOccurrence): void {
   dayPopoverIso.value = null;
   if (occurrence.subject?.type === 'calendar_event' && occurrence.subject.id) {
-    setQuery({ event: occurrence.subject.id, edit: null, new: null, date: null }, 'push');
+    // The square's own `occurrence_date` travels with it — null for a one-off event, which
+    // drops the key. NEVER the scope: a click opens the drawer to be READ, and which
+    // occurrences a change would touch is a separate, explicit question asked afterwards.
+    setQuery(
+      {
+        event: occurrence.subject.id,
+        on: occurrence.occurrence_date,
+        at: occurrence.all_day ? null : occurrence.starts_at,
+        edit: null,
+        new: null,
+        date: null,
+        scope: null,
+      },
+      'push',
+    );
     return;
   }
   previewOccurrence.value = occurrence;
@@ -441,13 +497,24 @@ function onOpenSubject(to: { path: string; query?: Record<string, string> }): vo
 
 function openCreate(iso: IsoDay | null): void {
   dayPopoverIso.value = null;
-  setQuery({ new: '1', date: iso, event: null, edit: null }, 'push');
+  setQuery({ new: '1', date: iso, event: null, edit: null, on: null, at: null, scope: null }, 'push');
 }
+
+/** Every key the drawer owns, cleared together — one place, so none is ever left behind. */
+const DRAWER_KEYS_CLEARED = {
+  event: null,
+  edit: null,
+  new: null,
+  date: null,
+  on: null,
+  at: null,
+  scope: null,
+} as const;
 
 const drawerOpen = computed<boolean>({
   get: () => isCreating.value || eventParam.value !== null,
   set: (open) => {
-    if (!open) setQuery({ event: null, edit: null, new: null, date: null });
+    if (!open) setQuery({ ...DRAWER_KEYS_CLEARED });
   },
 });
 const drawerMode = computed<'view' | 'edit' | 'create'>(() => {
@@ -456,12 +523,31 @@ const drawerMode = computed<'view' | 'edit' | 'create'>(() => {
 });
 
 function onEventSaved(): void {
-  setQuery({ event: null, edit: null, new: null, date: null });
+  // The id that came back may be a NEW row (a detached occurrence, the far half of a split).
+  // It is deliberately NOT pushed into the URL: the user is looking back at the grid, and the
+  // window refetch below is what tells them what actually happened.
+  setQuery({ ...DRAWER_KEYS_CLEARED });
   fetchWindow();
 }
 function onEventDeleted(): void {
-  setQuery({ event: null, edit: null, new: null, date: null });
+  setQuery({ ...DRAWER_KEYS_CLEARED });
   fetchWindow();
+}
+
+/**
+ * Switch into edit mode AT A SCOPE the user has just chosen. `replace`, not `push`: choosing
+ * a scope is a state change inside one screen, not a place to come Back to.
+ */
+function onRequestEdit(scope: CalendarEventScope): void {
+  setQuery({ edit: '1', scope: scope === 'series' ? null : scope });
+}
+
+/**
+ * "Show the start / the end of the series." The drawer closes with it — the whole point is to
+ * look at a month that has something in it, and an open drawer would cover the answer.
+ */
+function onGoToMonth(month: string): void {
+  setQuery({ ...DRAWER_KEYS_CLEARED, month });
 }
 
 // ── Loss / failure affordances ──────────────────────────────────────────────
@@ -857,10 +943,15 @@ onBeforeUnmount(() => store.resetAll());
       :browser-zone="browserZone"
       :locale="locale"
       :seed-date="seedDate"
+      :scope="scopeParam"
+      :occurrence-date="occurrenceParam"
+      :occurrence-starts-at="occurrenceAtParam"
+      :occurrence-cadence-label="selectedOccurrence?.cadence_label ?? null"
       @saved="onEventSaved"
       @deleted="onEventDeleted"
-      @request-edit="setQuery({ edit: '1' })"
-      @cancel-edit="setQuery({ edit: null })"
+      @request-edit="onRequestEdit"
+      @cancel-edit="setQuery({ edit: null, scope: null })"
+      @go-to-month="onGoToMonth"
     />
 
     <SaveViewModal

@@ -1017,15 +1017,178 @@ export const pl: MessageSchema = {
       external: 'Otworzy się w innym module',
     },
 
+    // ZNACZNIK PRÓBKI — fakt o ODPOWIEDZI, nie o podmiocie. Mówi: reszty tej pozycji w tym
+    // oknie nie ma. Słowo „Seria" stało tu wcześniej i PRZESZŁO na znacznik serii niżej: dwa
+    // różne fakty pod jednym brzmieniem uczą czytelnika ignorować oba.
     dense: {
-      // Brzmienie ZAPASOWE, używane tylko wtedy, gdy wystąpienie nie niesie
-      // `cadence_label`. Gdy niesie, znacznik renderuje tę serwerową prozę — bez
-      // tłumaczenia, jak każde inne gotowe zdanie od źródła.
-      //
       // Co znaczy liczba: ile wystąpień reprezentuje ten jeden kafelek. NIE rozmiar serii,
       // którego kontrakt nie niesie — nic tutaj nie może go zgadywać.
-      chip: 'Seria — pokazano {shown}',
+      chip: 'Pokazano {shown} z tej pozycji',
       aria: 'Ta pozycja powtarza się częściej, niż widać na siatce',
+    },
+
+    sample: {
+      // Gdy kafelek reprezentuje dokładnie jedno wystąpienie — liczba byłaby wtedy zdaniem
+      // o niczym („próbka: 1").
+      marker: 'Widzisz próbkę tej pozycji',
+    },
+
+    // SERIA — fakt o podmiocie: ten kwadrat jest jednym z wielu. Z pola `recurring`, nigdy
+    // z obecności prozy o kadencji.
+    series: {
+      badge: 'Seria',
+      // Nazwa DOSTĘPNA glifu serii. Nie zdanie o kadencji — te należą do serwera, a podmiot,
+      // który się powtarza, ma prawo nie mieć żadnego. To mówi tylko, co glif znaczy, czego
+      // glif bez nazwy nie mówiłby wcale.
+      marker: 'Wystąpienie serii',
+      repeats: 'Powtarza się',
+      start: 'Początek serii',
+      end: 'Koniec',
+      endNever: 'bez końca',
+      // ETYKIETA, z liczbą jako wartością obok (DescriptionList jest komponentem
+      // etykieta/wartość) i samymi datami w podpowiedzi tej wartości — lista do pięćdziesięciu
+      // dni nie jest wierszem.
+      skipped: 'Pominięte dni',
+      // Pokazywane TYLKO, gdy różni się od strefy siatki: normalnie są tożsame i wiersz byłby
+      // szumem, a gdy się różnią, jest jedynym miejscem, w którym widać, że dzień wystąpienia
+      // liczy się na innym zegarze niż ten, na który użytkownik patrzy.
+      ruleTimezone: 'Strefa reguły',
+      selectedOccurrence: 'Wybrane wystąpienie',
+      unknownRule: 'Ta seria ma regułę, której ten formularz nie edytuje.',
+      noneInWindow: 'Ta seria nie ma wystąpień w oglądanym miesiącu.',
+      // Obie etykiety są prawdziwe jako fakt o DACIE, nigdy jako obietnica o wystąpieniu —
+      // „pokaż następne wystąpienie" byłoby projekcją kadencji po stronie klienta, czyli
+      // drugim silnikiem harmonogramu.
+      goToStart: 'Pokaż początek serii ({month})',
+      goToEnd: 'Pokaż koniec serii ({month})',
+    },
+
+    // DIALOG ZAKRESU. Każda opcja mówi, co stanie się z PRZESZŁOŚCIĄ, bo to jedyna rzecz,
+    // którą te trzy wybory się różnią, i jedyna, której nie widać nigdzie indziej.
+    scope: {
+      edit: { title: 'Co chcesz edytować?' },
+      delete: { title: 'Co usunąć?' },
+      context: 'Wybrane wystąpienie: {date}',
+      // Opis, który noszą OBIE opcje zakresowe, gdy wydarzenie otwarto bez dnia (odnośnik,
+      // wynik wyszukiwania). Są tam wyłączone — serwer nazywa zapis zakresowy jego dniem i
+      // odmawia zapisu bez niego — a ich własne zdania są zbudowane wokół `{date}`, więc bez
+      // czego podstawić zaczynałyby się spacją i nie mówiły nic. To zdanie mówi, dlaczego
+      // opcja jest wyłączona ORAZ skąd bierze się dzień — jedyne, co ma tu sens.
+      needsOccurrence:
+        'Niedostępne tutaj: wydarzenie otwarto bez wskazania dnia. Kliknij dzień na siatce, aby zmienić tylko ten jeden.',
+      occurrence: {
+        label: 'Tylko to wystąpienie',
+        editHint:
+          'Ten dzień wyjdzie z serii i stanie się osobnym wydarzeniem. Reszta serii zostaje bez zmian.',
+        deleteHint: '{date} zniknie z serii. Pozostałe wystąpienia zostają.',
+      },
+      following: {
+        label: 'To i wszystkie następne',
+        // Sformułowane tak, żeby było prawdziwe W OBU przypadkach: serwer rozstrzyga, czy coś
+        // zostanie za podziałem, projekcją serii, a nie porównaniem dat, i klient tej decyzji
+        // nie odtworzy. „Wcześniejsze wystąpienia zostaną takie, jakie były" jest prawdą także
+        // wtedy, gdy wcześniejszych nie ma.
+        editHint: 'Wcześniejsze wystąpienia zostaną takie, jakie były. Od tego dnia powstanie nowa seria.',
+        deleteHint: 'Seria skończy się dzień wcześniej. Wcześniejsze wystąpienia zostają.',
+        firstHint: 'To pierwsze wystąpienie serii, więc ta opcja obejmie całą serię.',
+      },
+      series: {
+        label: 'Całą serię',
+        editHint:
+          'Wszystkie wystąpienia — także te, które już się odbyły. Zmiana reguły przepisze historię: przeniesienie spotkania na środy zamieni w środy również zeszłoroczne poniedziałki.',
+        // Jedyna opcja, która to mówi, i tylko dlatego, że tu strata jest największa. Przy
+        // wszystkich trzech byłoby to szumem zamiast ostrzeżeniem.
+        deleteHint:
+          'Wydarzenie zniknie z kalendarza razem z całą historią. W interfejsie nie da się tego cofnąć.',
+      },
+      // Przycisk potwierdzenia NAZYWA wybór — przycisk „Zapisz" dla trzech różnych operacji
+      // nie daje sterowaniu głosem czego powiedzieć, a czytelnikowi czego sprawdzić.
+      confirm: {
+        editOccurrence: 'Edytuj to wystąpienie',
+        editFollowing: 'Edytuj od {date}',
+        editSeries: 'Edytuj całą serię',
+        deleteOccurrence: 'Usuń to wystąpienie',
+        deleteFollowing: 'Usuń wystąpienia od {date}',
+        deleteSeries: 'Usuń całą serię',
+      },
+      change: 'Zmień zakres',
+      retry: 'Wybierz zakres ponownie',
+      // Pytane TYLKO wtedy, gdy nowy zakres dotyczy innego dnia niż obecny, bo tylko wtedy
+      // zmienia się zasiew formularza (§24.6.1). Porzucenie tego, co ktoś wpisał, nie może
+      // być cichym efektem ubocznym zmiany zakresu.
+      reseedConfirm: {
+        title: 'Zmienić zakres?',
+        message:
+          'Ten zakres dotyczy innego dnia, więc data i godzina zostaną wypełnione od nowa. To, co w nich wpisano, zostanie zastąpione.',
+      },
+      banner: {
+        occurrence:
+          'Edytujesz JEDNO wystąpienie: {date}. Po zapisie ten dzień przestanie należeć do serii i stanie się osobnym wydarzeniem.',
+        following:
+          'Edytujesz wystąpienia od {date}. Wcześniejsze zostaną bez zmian — powstanie z nich osobna, zamknięta seria.',
+        series: 'Edytujesz CAŁĄ serię — razem z wystąpieniami, które już się odbyły.',
+      },
+      fallbackNotice:
+        'Otwarto bez wskazania wystąpienia — edycja obejmie całą serię. Aby zmienić pojedynczy dzień, kliknij go na siatce.',
+    },
+
+    // KONTROLKA POWTARZANIA. Te etykiety opisują ZAMIAR — to, co użytkownik wybiera — i nigdy
+    // nie opisują reguły już zapisanej: zdanie o zapisanej regule pochodzi z serwera
+    // (`cadence_label` / `recurrence_label`), gotowe i przetłumaczone.
+    recurrence: {
+      label: 'Powtarzanie',
+      none: 'Nie powtarza się',
+      daily: 'Codziennie',
+      // Po jednym wpisie na dzień tygodnia zamiast „W każdy {weekday}", z tego samego powodu,
+      // dla którego serwerowy katalog jest rozpisany: polski odmienia („W każdy wtorek", ale
+      // „W każdą środę"), a język, który odmienia, nie złoży frazy z nazwy plus szczeliny.
+      weeklyDays: {
+        0: 'W każdą niedzielę',
+        1: 'W każdy poniedziałek',
+        2: 'W każdy wtorek',
+        3: 'W każdą środę',
+        4: 'W każdy czwartek',
+        5: 'W każdy piątek',
+        6: 'W każdą sobotę',
+      },
+      monthlyDay: 'Co miesiąc, dnia {day}',
+      monthlyNth: 'Co miesiąc: {ordinal} {weekday}',
+      monthlyLastDay: 'Co miesiąc, ostatniego dnia',
+      monthlyLastWeekdays: {
+        0: 'Co miesiąc: ostatnia niedziela',
+        1: 'Co miesiąc: ostatni poniedziałek',
+        2: 'Co miesiąc: ostatni wtorek',
+        3: 'Co miesiąc: ostatnia środa',
+        4: 'Co miesiąc: ostatni czwartek',
+        5: 'Co miesiąc: ostatni piątek',
+        6: 'Co miesiąc: ostatnia sobota',
+      },
+      ordinals: { 1: '1.', 2: '2.', 3: '3.', 4: '4.', 5: '5.' },
+      // Data jest formatowana przez `Intl`, a nie składana z dnia i nazwy miesiąca: polski
+      // stawia miesiąc w dacie w dopełniaczu („25 sierpnia", nigdy „25 sierpień").
+      yearly: 'Co roku, {date}',
+      // API przyjmuje szerszą gramatykę, niż mówi ta kontrolka. Reguła z API, z kroku
+      // `create_event` albo z przyszłej, szerszej kontrolki dostaje TO — zaznaczone
+      // i zablokowane — zamiast być po cichu przepisana na najbliższy preset.
+      other: 'Inna reguła',
+      otherReplaces: 'Wybranie innego powtarzania zastąpi obecną regułę.',
+      shortMonthsNote: 'Miesiące bez {day}. dnia zostaną pominięte.',
+      // Godzinę ustawia się w polu POCZĄTKU i tutaj jej nie ma — serwer odrzuca
+      // `recurrence.time`. Bez tego zdania użytkownik szuka w tej kontrolce godziny, której
+      // nigdy w niej nie będzie.
+      hourNote: 'Każde wystąpienie zaczyna się o {time} ({tz}).',
+      detachNote: 'To wystąpienie przestanie należeć do serii. Reszta serii zachowa swoją regułę.',
+      end: {
+        label: 'Koniec powtarzania',
+        never: 'Nigdy',
+        until: 'Do dnia',
+        count: 'Po liczbie powtórzeń',
+        // Powiedziane Z GÓRY, bo to fakt kontraktu, a nie ozdoba copywritera: serwer
+        // rozwiązuje liczbę na datę raz, przy zapisie, i tylko data kiedykolwiek wraca.
+        // Interfejs udający inaczej musiałby trzymać własny licznik, który rozjeżdża się
+        // z bazą przy pierwszej edycji z innego miejsca.
+        countNote: 'Zapiszemy to jako datę ostatniego wystąpienia — po ponownym otwarciu zobaczysz datę, nie liczbę.',
+      },
     },
 
     filters: {
@@ -1113,6 +1276,14 @@ export const pl: MessageSchema = {
       delete: 'Usuń',
       saved: 'Wydarzenie zapisane',
       deleted: 'Wydarzenie usunięte',
+      // Po jednym toaście na ZAKRES. Trzy operacje meldujące się identycznie to trzy
+      // operacje, których użytkownik potem nie rozróżni — a dwie z nich zmieniły coś innego
+      // niż to, na co patrzył.
+      savedOccurrence: 'Zapisano to wystąpienie jako osobne wydarzenie',
+      savedFollowing: 'Zapisano wystąpienia od {date}',
+      savedSeries: 'Zapisano całą serię',
+      deletedOccurrence: 'Usunięto to wystąpienie',
+      deletedFollowing: 'Usunięto wystąpienia od {date}',
       saveError: 'Nie udało się zapisać wydarzenia',
       deleteError: 'Nie udało się usunąć wydarzenia',
       loadError: 'Nie udało się wczytać wydarzenia',

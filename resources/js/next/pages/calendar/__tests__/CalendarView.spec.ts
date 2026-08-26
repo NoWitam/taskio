@@ -107,6 +107,8 @@ function occurrence(id: string, over: Partial<CalendarOccurrence> = {}): Calenda
     badge: null,
     dense: false,
     cadence_label: null,
+    recurring: false,
+    occurrence_date: null,
     subject: { type: 'task', id },
     ...over,
   };
@@ -387,5 +389,78 @@ describe('CalendarView', () => {
     await flushPromises();
     wrapper.unmount();
     expect(resetAll).toHaveBeenCalled();
+  });
+});
+
+/**
+ * CLICKING A SQUARE OF A SERIES.
+ *
+ * The two occurrence keys are the whole reason the drawer can be right about which day it is
+ * editing, and each of them is carried VERBATIM from the square the server drew:
+ *
+ *   `on` — the server's own `occurrence_date`. The IDENTIFIER, reckoned on the series' stamped
+ *          clock. Re-deriving it from `at` plus a zone is exactly the drift this key exists to
+ *          make impossible.
+ *   `at` — the occurrence's own instant, carried only so a scoped edit can seed its date and
+ *          time from the square that was clicked rather than from the series' anchor.
+ *
+ * And `scope` is deliberately NOT written by a click: opening the drawer is reading, and how
+ * much of the series a change would touch is a separate, explicit question asked afterwards.
+ */
+describe('CalendarView — pointing at one occurrence of a series', () => {
+  const seriesSquare = () =>
+    occurrence('event:evt-1:2026-08-12', {
+      source: 'event',
+      editable: true,
+      all_day: false,
+      start_date: null,
+      starts_at: '2026-08-12T12:30:00.000000Z',
+      ends_at: '2026-08-12T13:30:00.000000Z',
+      title: 'Sprint review',
+      cadence_label: 'Weekly on Wed',
+      recurring: true,
+      occurrence_date: '2026-08-12',
+      subject: { type: 'calendar_event', id: 'evt-1' },
+    });
+
+  it('carries the server’s own occurrence day AND the square’s instant into the URL', async () => {
+    storeMock.occurrences = [seriesSquare()];
+    const wrapper = mountView();
+    await flushPromises();
+
+    const chip = wrapper.find('.next-occurrence-chip');
+    expect(chip.exists()).toBe(true);
+    await chip.trigger('click');
+
+    expect(routeQuery.value).toMatchObject({
+      event: 'evt-1',
+      on: '2026-08-12',
+      at: '2026-08-12T12:30:00.000000Z',
+    });
+    // A click is READING. Which occurrences a change touches is asked separately.
+    expect(routeQuery.value.scope).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('carries NO occurrence day for a one-off event — there is nothing to scope', async () => {
+    storeMock.occurrences = [
+      occurrence('event:evt-2', {
+        source: 'event',
+        editable: true,
+        title: 'Offsite',
+        recurring: false,
+        occurrence_date: null,
+        subject: { type: 'calendar_event', id: 'evt-2' },
+      }),
+    ];
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.find('.next-occurrence-chip').trigger('click');
+
+    expect(routeQuery.value).toMatchObject({ event: 'evt-2' });
+    expect(routeQuery.value.on).toBeUndefined();
+    expect(routeQuery.value.at).toBeUndefined();
+    wrapper.unmount();
   });
 });

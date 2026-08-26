@@ -106,6 +106,34 @@ export interface CalendarOccurrence {
    * wire, but no consumer may branch on which of the two it got.
    */
   cadence_label: string | null;
+  /**
+   * WHETHER THIS SQUARE WAS COMPUTED FROM A REPEATING RULE — a fact about what the square IS,
+   * never a permission. `true` for every event-series occurrence and every schedule
+   * projection, `false` for a task deadline, a workflow run and a one-off event.
+   *
+   * THIS, AND NEVER `cadence_label !== null`, IS THE SERIES TEST. The prose is SUFFICIENT
+   * evidence of a series but not NECESSARY: a schedule in fixed-times mode repeats and has
+   * nothing to say about its cadence, so it carries `null`. A client branching on the prose
+   * would call every one of those squares a one-off — silently, and with no way to notice.
+   *
+   * Always present, from every source; a source with no notion of it leaves it `false`.
+   */
+  recurring: boolean;
+  /**
+   * WHICH occurrence of its series this is — the plain day the write surface addresses it by,
+   * reckoned on the SERIES' own stamped clock (`CalendarEvent.recurrence_timezone`), never
+   * the workspace's current one.
+   *
+   * NEVER DERIVED HERE, AND NEVER PARSED OUT OF `id`. It is computed by the same expression
+   * the occurrence `id` uses, so the name a client sends back as `occurrence_date` cannot
+   * drift from the key the grid renders by.
+   *
+   * `null` for a one-off event AND for every schedule projection — the same null for two
+   * unrelated reasons (nothing addresses one firing of a schedule). The combination that
+   * actually means "open the scope dialog" is `editable && recurring`, and that combination
+   * always carries a non-null value here.
+   */
+  occurrence_date: IsoDay | null;
   subject: CalendarSubject;
 }
 
@@ -212,6 +240,82 @@ export interface CalendarWindowQuery {
 }
 
 /**
+ * HOW MUCH OF A SERIES a `PUT`/`DELETE` touches (`CalendarEventScope`).
+ *
+ * ABSENT ON THE WIRE MEANS `series`, and that default is a COMPATIBILITY GUARANTEE, not a
+ * convenience: a request naming no scope behaves byte for byte as it did before series
+ * existed. Which is exactly why the client must name its scope EXPLICITLY rather than let
+ * `undefined` decide — "I forgot" and "rewrite the whole series, history included" must
+ * never be the same request.
+ *
+ * `occurrence` DETACHES: the day joins `exclusions` and a new, non-repeating event is created
+ * from the payload (201, a different id). `following` SPLITS: the old series closes the day
+ * before, a new one starts there (201) — unless nothing would be left behind, in which case
+ * the server collapses it to `series` (200). Both `prohibited` on `POST`.
+ */
+export type CalendarEventScope = 'series' | 'occurrence' | 'following';
+
+/**
+ * The DAY axis of a recurrence rule. An absent axis means "every day".
+ * `weekdays` is `0..6` with **0 = Sunday** — the shared engine's convention, which is also
+ * Carbon's and cron's, and NOT the ISO one.
+ */
+export interface CalendarRecurrenceDayAxis {
+  mode: 'every_day' | 'weekdays' | 'month_days' | 'special';
+  weekdays?: number[];
+  days?: number[];
+  special?: 'last_day' | 'nth_weekday' | 'last_weekday';
+  ordinal?: number;
+  weekday?: number;
+}
+
+/** The MONTH axis. An absent axis means "every month". */
+export interface CalendarRecurrenceMonthAxis {
+  mode: 'every_month' | 'months';
+  months?: number[];
+}
+
+/**
+ * The days a series skips. `dates` is the ONE exclusion list the Calendar accepts — a month
+ * or weekday exclusion is refused (422) because it is already expressible as the complementary
+ * set on the corresponding axis, and said the other way round it can rule out a whole dimension.
+ */
+export interface CalendarRecurrenceExclusions {
+  dates?: IsoDay[] | null;
+}
+
+/**
+ * A rule AS READ (`CalendarEventResource.recurrence`). Round-trips verbatim to the write
+ * endpoint — which is why `recurrence_label` deliberately sits OUTSIDE it: growing this block
+ * with a key the endpoint does not accept would break every read-edit-write loop.
+ *
+ * THERE IS NO `count` HERE, AND THAT IS THE CONTRACT. A count is walked to a real day once, at
+ * write time; the row has no column for it and this resource never returns one (gap L11).
+ * There is no `time`/`tz` either: the hour is the event's own and the zone is the workspace's,
+ * both server-authored, both `prohibited` on the way in.
+ */
+export interface CalendarRecurrenceRule {
+  day: CalendarRecurrenceDayAxis | null;
+  month: CalendarRecurrenceMonthAxis | null;
+  exclusions: CalendarRecurrenceExclusions | null;
+  until: IsoDay | null;
+}
+
+/**
+ * A rule AS WRITTEN. Same axes, plus the one key that exists only on the way out.
+ *
+ * `until` and `count` are MUTUALLY EXCLUSIVE (422 `end_is_one_thing`) — send one, never both.
+ * `count` is a way of SAYING a date: the server resolves it and only `until` ever comes back.
+ */
+export interface CalendarRecurrenceWrite {
+  day?: CalendarRecurrenceDayAxis | null;
+  month?: CalendarRecurrenceMonthAxis | null;
+  exclusions?: CalendarRecurrenceExclusions | null;
+  until?: IsoDay | null;
+  count?: number | null;
+}
+
+/**
  * ONE calendar event (`CalendarEventResource`) — the shape the drawer reads and writes back.
  *
  * NOTE the asymmetry with an occurrence's `subject`, which is intentional: on the GRID an
@@ -230,6 +334,38 @@ export interface CalendarEvent {
   // NO `color`. The resource does not carry one: an event's colour is not authored, it is
   // the ONE constant the server gives every event occurrence. What the grid draws arrives
   // on `CalendarOccurrence.color`; there is nothing about it to read on the event itself.
+  /**
+   * The series' rule, or `null` for an event that happens once. ROUND-TRIPS: send it back
+   * unchanged on every whole-event write, `exclusions` included.
+   *
+   * OMITTING IT ON A `PUT` REMOVES THE RECURRENCE, exactly as omitting `description` clears
+   * the description — this endpoint is a whole-event write, not a patch. Dropping only
+   * `exclusions.dates` while keeping the rest RESURRECTS every day somebody deleted one at
+   * a time.
+   */
+  recurrence: CalendarRecurrenceRule | null;
+  /**
+   * The zone the rule was STAMPED with — the clock its occurrence DAYS are reckoned on, which
+   * is not necessarily today's workspace zone.
+   *
+   * RE-READ IT FROM THE RESPONSE OF EVERY WHOLE-SERIES WRITE, never hold one across an edit:
+   * a `scope=series` save re-stamps the rule with the workspace's CURRENT zone, so an edit
+   * that only meant to change the title can move it (gap L13). A stale value makes the next
+   * scoped write land on the wrong day — or, more often, be refused (`not_an_occurrence`).
+   */
+  recurrence_timezone: string | null;
+  /**
+   * The series' cadence as finished, SERVER-TRANSLATED prose — the same sentence every square
+   * of this series carries as `cadence_label` on the grid, published here because the grid is
+   * not always there (a deep link, or a series with no occurrence in the window on screen).
+   *
+   * A DIFFERENT KEY FROM THE OCCURRENCE'S `cadence_label`, deliberately: two resources, two
+   * sources of truth, and one name for both would collide (gap L9). Read-only and derived —
+   * never sent back, and never composed here from `recurrence.day.*`. `null` covers two cases
+   * a client treats identically: the event does not repeat, and its rule is one the server
+   * cannot put into a sentence.
+   */
+  recurrence_label: string | null;
   /** The event's optional POINTER at something else. Never dereferenced (gap L5). */
   subject: CalendarSubject | null;
   /** `whenLoaded('creator')` — polymorphic: user | workflow_run | bot. */
@@ -287,6 +423,29 @@ export interface CalendarEventPayload {
   /** BOTH or NEITHER. Carried over from the GET on edit — never authored in the UI (§22). */
   subject_type?: string | null;
   subject_id?: string | null;
+  /**
+   * The series' rule. ABSENT MEANS "HAPPENS ONCE" — and on a `PUT` that is a REMOVAL, not a
+   * no-op, so an edit that means to keep the series has to send the rule back.
+   *
+   * An EMPTY-ISH object is not the same as an absent key: `{day: null, month: null}` is
+   * `filled()` server-side and compiles to "every day, forever". The builder emits the key or
+   * nothing at all — never `{}`.
+   *
+   * Forbidden entirely under `scope: 'occurrence'` (422 `occurrence_has_no_rule`): one
+   * occurrence of a series is not itself a series.
+   */
+  recurrence?: CalendarRecurrenceWrite;
+  /**
+   * How much of the series this write touches. OMITTED means `series` — so it is named
+   * explicitly whenever it is anything else, and the omission is a decision rather than a
+   * default nobody chose. `prohibited` on create (422 `scope_on_create`).
+   */
+  scope?: CalendarEventScope;
+  /**
+   * WHICH occurrence, as the plain day the server publishes on the occurrence itself.
+   * Required exactly when `scope !== 'series'`, forbidden when it is.
+   */
+  occurrence_date?: IsoDay;
 }
 
 /** Which surface the one calendar screen is showing (a presentation choice, not a query). */
