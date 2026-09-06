@@ -139,10 +139,11 @@ class CalendarOccurrencesTest extends TestCase
         $response->assertJsonPath('meta.unavailable_sources', []);
 
         // Every registered source is named and labelled, so the filter chips need no client-side
-        // knowledge of what a source is.
+        // knowledge of what a source is. `publication` joined in R4 B1 from a module that did not exist
+        // when this was written — an INVENTORY line, not a Calendar change.
         $ids = array_column($response->json('meta.sources'), 'id');
         sort($ids);
-        $this->assertSame(['event', 'task', 'workflow_run', 'workflow_schedule'], $ids);
+        $this->assertSame(['event', 'publication', 'task', 'workflow_run', 'workflow_schedule'], $ids);
 
         foreach ($response->json('meta.sources') as $source) {
             $this->assertNotSame('', $source['label']);
@@ -883,11 +884,16 @@ class CalendarOccurrencesTest extends TestCase
         // leave them no way to switch it back on.
         $ids = array_column($response->json('meta.sources'), 'id');
         sort($ids);
-        $this->assertSame(['event', 'task', 'workflow_run', 'workflow_schedule'], $ids);
+        $this->assertSame(['event', 'publication', 'task', 'workflow_run', 'workflow_schedule'], $ids);
 
         // A filter naming something the server does not have is a stale saved view or a typo. Serving a
         // cheerful subset would teach a user to trust a grid that is quietly lying.
-        $this->actingAsMember()->read(['sources' => ['publication']])
+        //
+        // THE PROBE USED TO BE `publication`, chosen when that was a source nobody had built yet — and
+        // R4 B1 built it, which turned this assertion from "an unknown id is refused" into "a real
+        // source is refused" overnight. The replacement is a string that cannot become a source id,
+        // because the thing under test is the REFUSAL, not any particular name.
+        $this->actingAsMember()->read(['sources' => ['not_a_source']])
             ->assertStatus(422)
             ->assertJsonValidationErrors('sources.0');
     }

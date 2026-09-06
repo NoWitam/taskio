@@ -21,6 +21,10 @@ return [
     App\Modules\Knowledge\KnowledgeModuleServiceProvider::class,
     App\Modules\Generator\GeneratorModuleServiceProvider::class,
     App\Modules\Workflows\WorkflowsModuleServiceProvider::class,
+    // R4 — registers the FIFTH calendar source from its own boot(), exactly like Tasks and Workflows
+    // above, and binds its own platform-adapter registry in register(). Listed here for readability
+    // only; see the comment above Calendar for why no order here can break either registration.
+    App\Modules\Publishing\PublishingModuleServiceProvider::class,
     App\Modules\Workspaces\WorkspacesModuleServiceProvider::class,
     App\Modules\Auth\AuthModuleServiceProvider::class,
     App\Modules\Settings\SettingsModuleServiceProvider::class,

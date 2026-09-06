@@ -389,6 +389,12 @@ class CalendarModuleBoundaryTest extends TestCase
      * is the same rule the others follow — the mapping lives with the module that owns the subject —
      * not an exception to it, and it goes through the identical public registry method rather than a
      * privileged local path.
+     *
+     * `publication` (R4 B1) is the headline scenario of this whole file, arrived: a source from a module
+     * that did not exist when the Calendar was written, joining without a line changing under
+     * app/modules/Calendar. THIS ASSERTION IS THE ONLY THING R4 EDITED OUTSIDE ITS OWN MODULE, and it is
+     * an INVENTORY — a list of what ships — rather than Calendar code. Every other test in this file
+     * passed unchanged, including the two scans that read the Calendar's file bytes.
      */
     public function test_every_shipped_source_registered_itself(): void
     {
@@ -396,7 +402,7 @@ class CalendarModuleBoundaryTest extends TestCase
 
         sort($ids);
 
-        $this->assertSame(['event', 'task', 'workflow_run', 'workflow_schedule'], $ids);
+        $this->assertSame(['event', 'publication', 'task', 'workflow_run', 'workflow_schedule'], $ids);
     }
 
     /**
