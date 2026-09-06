@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Middleware\RequireWorkspace;
+use App\Modules\Publishing\Enums\PublishingPlatform;
+use App\Modules\Publishing\Http\Controllers\PlatformConnectionController;
 use App\Modules\Publishing\Http\Controllers\PublicationController;
 use Illuminate\Support\Facades\Route;
 
@@ -42,4 +44,31 @@ Route::middleware(['auth:sanctum', RequireWorkspace::class])
         Route::post('publications/{publication}/schedule', [PublicationController::class, 'schedule'])
             ->whereUuid('publication')
             ->name('publishing.publications.schedule');
+
+        // ── CONNECTIONS (B2) ──────────────────────────────────────────────────────────────────────
+        //
+        // The AUTHENTICATED half of the OAuth surface. Its other half — GET /oauth/{platform}/callback
+        // — is in routes/web.php and is deliberately NOT in this group: a browser redirect from Google
+        // or Meta carries neither a bearer token nor X-Workspace-Id, so `auth:sanctum` would 401 every
+        // legitimate callback and RequireWorkspace would 400 it first. The workspace travels in the
+        // signed `state` instead. See PlatformOAuthCallbackController.
+        //
+        // Nothing here ever answers with a token. `PlatformConnectionResource` lists what it emits and
+        // the model declares both credential columns `$hidden` — two independent guards, so the mistake
+        // has to be made twice.
+        Route::get('connections', [PlatformConnectionController::class, 'index'])
+            ->name('publishing.connections.index');
+
+        // MINTS a single-use nonce, so it is a POST: a GET that spends one is a GET a browser may make
+        // on its own during a prefetch. The destination is constrained to the enum here, so an
+        // unrecognised word is a 404 at routing and never reaches a FormRequest — what the request does
+        // handle is a destination that exists and cannot be connected (`dry_run`), or one this
+        // installation has no credentials for.
+        Route::post('connections/{platform}/authorize', [PlatformConnectionController::class, 'authorizeConnection'])
+            ->whereIn('platform', PublishingPlatform::values())
+            ->name('publishing.connections.authorize');
+
+        Route::delete('connections/{connection}', [PlatformConnectionController::class, 'destroy'])
+            ->whereUuid('connection')
+            ->name('publishing.connections.destroy');
     });

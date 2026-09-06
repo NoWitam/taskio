@@ -4,6 +4,7 @@ namespace App\Modules\Publishing\Http\Requests;
 
 use App\Modules\Calendar\Services\CalendarInstantResolver;
 use App\Modules\Publishing\Enums\PublishingPlatform;
+use App\Modules\Publishing\Models\PlatformConnection;
 use App\Modules\Publishing\Models\Publication;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Validation\Validator;
@@ -82,9 +83,9 @@ class StorePublicationRequest extends FormRequest
 
             'platform' => ['required', Rule::in(PublishingPlatform::values())],
 
-            // The connections table arrives in B2, so there is no `exists` rule to write yet. Stated
-            // rather than left blank: when B2 lands, this is where the rule goes, and it must also
-            // check that the connection serves the platform named above.
+            // B2 filled in what B1 left as a note here. `uuid` only checks a SHAPE; the three real
+            // questions are asked by validateConnectionServesThisPlatform() below, because two of them
+            // cannot be expressed as an `exists` rule at all.
             'platform_connection_id' => ['nullable', 'uuid'],
 
             // An INSTANT. Any parseable form; a zone-less one is read on the workspace's clock. Note
@@ -124,7 +125,53 @@ class StorePublicationRequest extends FormRequest
     {
         $validator->after(function (Validator $validator): void {
             $this->validateScheduledAtIsReadable($validator);
+            $this->validateConnectionServesThisPlatform($validator);
         });
+    }
+
+    /**
+     * THE CONNECTION MUST EXIST, MUST SERVE THIS DESTINATION, AND MUST BE USABLE.
+     *
+     * B1 left a note where this now is. Three checks rather than an `exists` rule, because only the
+     * first of them is expressible as one:
+     *
+     *   IT EXISTS, in THIS WORKSPACE. The lookup goes through the tenant-aware model, so `WorkspaceScope`
+     *     (shared mode) or the tenant connection (own mode) does the scoping. An `exists:platform_connections,id`
+     *     rule would query the table unscoped and confirm a connection belonging to somebody else — which
+     *     would then be a foreign key this workspace could aim a publication at.
+     *
+     *   IT SERVES THE SAME PLATFORM. A YouTube publication pointed at a Facebook connection would pass
+     *     every schema constraint and fail at publish time, on a schedule, having looked correct on
+     *     every screen in between. The pairing is the kind of mistake a picker prevents and an API
+     *     cannot, so the API checks it.
+     *
+     *   IT IS USABLE. A `needs_reauth` connection cannot publish, and arming something onto it would
+     *     produce a publication that is immediately eligible to be held — which is coherent but is not
+     *     what somebody choosing a destination meant. Refusing at the door is the honest answer.
+     *
+     * ONE MESSAGE FOR ALL THREE, on purpose. A client picking from the list this server sent should
+     * never see any of them, and distinguishing "that connection is not yours" from "that connection
+     * does not exist" would answer questions about other workspaces' rows.
+     *
+     * A `dry_run` publication legitimately names no connection, which is why the whole check is skipped
+     * on an absent value rather than made conditional on the platform.
+     */
+    private function validateConnectionServesThisPlatform(Validator $validator): void
+    {
+        if ($validator->errors()->hasAny(['platform', 'platform_connection_id'])
+            || !$this->filled('platform_connection_id')
+        ) {
+            return;
+        }
+
+        $connection = PlatformConnection::query()
+            ->usable()
+            ->where('platform', $this->resolvedPlatform())
+            ->find($this->string('platform_connection_id')->value());
+
+        if ($connection === null) {
+            $validator->errors()->add('platform_connection_id', __('publishing.validation.connection_unusable'));
+        }
     }
 
     /**

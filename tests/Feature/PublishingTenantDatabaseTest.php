@@ -3,10 +3,15 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Modules\Publishing\DTOs\OAuthTokens;
+use App\Modules\Publishing\DTOs\RemoteAccount;
 use App\Modules\Publishing\Enums\PublicationStatus;
+use App\Modules\Publishing\Managers\PlatformConnectionManager;
 use App\Modules\Publishing\Managers\PublicationManager;
+use App\Modules\Publishing\Models\PlatformConnection;
 use App\Modules\Publishing\Models\Publication;
 use App\Modules\Publishing\Models\PublicationAttempt;
+use App\Modules\Publishing\Services\OAuthStateService;
 use App\Modules\Publishing\Services\PublicationPublisher;
 use App\Modules\Workspaces\Enums\WorkspaceStatus;
 use App\Modules\Workspaces\Models\Workspace;
@@ -15,6 +20,7 @@ use App\Modules\Workspaces\Services\WorkspaceProvisioner;
 use App\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -25,7 +31,7 @@ use Tests\TestCase;
  * deliberately does not extend, so each can be run alone.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
- * STATUS AT THE TIME OF WRITING: WRITTEN, NOT YET RUN
+ * STATUS AT THE TIME OF WRITING: WRITTEN, NOT YET RUN — STILL TRUE AFTER B2
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
  * The owner has not yet approved `CREATE DATABASE` / `DROP DATABASE` for this chapter, so this file has
  * never had a green run. It ships anyway, and the reason is the one CLAUDE.md already names: the default
@@ -33,6 +39,14 @@ use Tests\TestCase;
  * scripting a contract that has moved on is NOT. Writing it now means the shared-mode twin and the
  * own-database twin were authored against the same contract on the same day, which is the only moment
  * they are ever guaranteed to agree.
+ *
+ * B2 ADDED THREE MORE OF THEM, and they are the ones this whole arrangement was really for. A workspace
+ * that pays for its own database is buying "our data is in our database"; `platform_connections` holds
+ * ACCESS TOKENS FOR THEIR ACCOUNTS, so it is the single table where that promise matters most and the
+ * one place where a mis-routed write is not a bug report but a broken product claim. The callback makes
+ * that routing decision from a SIGNED STATE with no middleware helping it, which is exactly the kind of
+ * hand-rolled tenancy that fails silently in shared mode because there is only one place for a query to
+ * land.
  *
  * BEFORE COMMITTING ANY CHANGE TO THIS MODULE'S PERSISTENCE, run it by hand:
  *
@@ -110,7 +124,7 @@ class PublishingTenantDatabaseTest extends TestCase
 
         $schema = Schema::connection(TenantManager::CONNECTION);
 
-        foreach (['publications', 'publication_attempts'] as $table) {
+        foreach (['publications', 'publication_attempts', 'platform_connections'] as $table) {
             $this->assertTrue($schema->hasTable($table), "the tenant database must have {$table}");
 
             $this->assertFalse(
@@ -143,6 +157,186 @@ class PublishingTenantDatabaseTest extends TestCase
         $this->assertFalse(
             $schema->hasColumn('publication_attempts', 'updated_at'),
             'the attempt trail is append-only — an updated_at would invite amending evidence',
+        );
+
+        // B2. The two credential columns, named individually. A tenant mirror missing either would make
+        // every connect on that workspace fail at the insert — loudly, at least — but a mirror missing
+        // `refresh_token` specifically would work perfectly for Meta and break only Google, and only an
+        // hour after the first connect.
+        foreach (['access_token', 'refresh_token', 'external_account_id', 'expires_at', 'status'] as $column) {
+            $this->assertTrue(
+                $schema->hasColumn('platform_connections', $column),
+                "expected the tenant platform_connections.{$column} column to exist",
+            );
+        }
+    }
+
+    /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * THE CALLBACK CHOOSES A DATABASE FROM A SIGNED STATE, WITH NO MIDDLEWARE HELPING IT.
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * THE MOST IMPORTANT TEST IN THIS FILE, and the reason B2's tenancy is worth exercising for real.
+     *
+     * Every other write in the application reaches its tenant through `ResolveWorkspace`, which reads a
+     * header. The OAuth callback has no header — it is a browser redirect from Google — so it activates
+     * the tenant BY HAND from the workspace id inside the signed state. Hand-rolled tenancy is precisely
+     * what shared mode cannot test: there, every query lands in the one database there is, so a callback
+     * that never activated anything would look perfect.
+     *
+     * The failure this guards against is not a blank screen. It is a customer's ACCESS TOKENS written
+     * into the shared database while they are paying for their own — which is not a defect report, it is
+     * a false statement about where their data lives.
+     */
+    public function test_a_connection_made_through_the_callback_lands_in_the_tenant_database_only(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+
+        config([
+            'publishing.platforms.youtube.client_id' => 'test-google-client-id',
+            'publishing.platforms.youtube.client_secret' => 'test-google-client-secret',
+        ]);
+
+        Http::preventStrayRequests();
+        Http::fake([
+            'oauth2.googleapis.com/token' => Http::response([
+                'access_token' => 'fake-access-tenant-only',
+                'refresh_token' => 'fake-refresh-tenant-only',
+                'expires_in' => 3600,
+                'scope' => 'https://www.googleapis.com/auth/youtube.upload',
+            ]),
+            'googleapis.com/youtube/v3/*' => Http::response([
+                'items' => [['id' => 'UCtenant_only_channel', 'snippet' => ['title' => 'TENANT channel']]],
+            ]),
+        ]);
+
+        $authorization = $this->asUser()
+            ->postJson('/api/publishing/connections/youtube/authorize')
+            ->assertOk();
+
+        // The BROWSER BINDING the authorize endpoint set. Sent back unencrypted, because the cookie is
+        // exempt from `EncryptCookies` so that it can cross from the `api` group to the `web` one — see
+        // OAuthStateService::HANDSHAKE_COOKIE.
+        $handshake = (string) $authorization->getCookie(OAuthStateService::HANDSHAKE_COOKIE, decrypt: false)?->getValue();
+
+        parse_str((string) parse_url((string) $authorization->json('data.authorize_url'), PHP_URL_QUERY), $query);
+
+        // No headers of ours. The workspace arrives only in `state`.
+        $this->withUnencryptedCookie(OAuthStateService::HANDSHAKE_COOKIE, $handshake)
+            ->get('/oauth/youtube/callback?' . http_build_query([
+                'code' => 'tenant-code',
+                'state' => $query['state'],
+            ]))->assertRedirectContains('connection=connected');
+
+        $this->useTenant();
+
+        $connection = PlatformConnection::query()->sole();
+
+        $this->assertSame('UCtenant_only_channel', $connection->external_account_id);
+        $this->assertSame('fake-access-tenant-only', $connection->credentials()->accessToken);
+
+        // ── THE NEGATIVE ──────────────────────────────────────────────────────────
+        $central = DB::connection(config('database.default'));
+
+        $this->assertSame(
+            0,
+            (int) $central->table('platform_connections')->where('id', $connection->id)->count(),
+            'an own-database workspace\'s ACCESS TOKENS must never be written to the central database',
+        );
+        $this->assertSame(
+            0,
+            (int) $central->table('platform_connections')->where('workspace_id', $this->workspace->id)->count(),
+            'nor any connection scoped to it — this is the assertion a callback that skipped activate() would fail',
+        );
+    }
+
+    /**
+     * THE HOLD AND THE RELEASE HAPPEN INSIDE THE TENANT DATABASE.
+     *
+     * The connection and the publications it holds must be read and written on the same connection. A
+     * split would be quiet and bad in a specific way: the connection would park correctly and the
+     * publications would stay `scheduled`, so the fence would be silently absent for exactly the
+     * customers nobody tests on — and they would get the twelve-failures-at-nine-o'clock morning the
+     * `blocked` state exists to prevent.
+     */
+    public function test_the_hold_and_release_cascade_inside_the_tenant_database(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+        $this->useTenant();
+
+        $connection = PlatformConnection::factory()->create();
+
+        $publication = Publication::factory()->scheduled('2026-09-10 09:00:00')->create([
+            'title' => 'TENANT publication',
+            'creator_id' => $this->user->id,
+            'platform_connection_id' => $connection->id,
+        ]);
+
+        $manager = app(PlatformConnectionManager::class);
+
+        // The COLUMN'S vocabulary, from the Manager that owns it. It was the literal
+        // `token_refresh_failed` here — the token endpoint's code, which no translation could render.
+        $manager->markNeedsReauth($connection, PlatformConnectionManager::FAILURE_REFRESH_FAILED);
+
+        $this->assertSame(PublicationStatus::BLOCKED, $publication->fresh()->status);
+        $this->assertSame(PlatformConnectionManager::HOLD_NEEDS_REAUTH, $publication->fresh()->failure_code);
+
+        $manager->connect(
+            platform: $connection->platform,
+            account: RemoteAccount::make($connection->external_account_id, 'TENANT channel'),
+            tokens: OAuthTokens::make('fake-access-tenant-repaired', 'fake-refresh-tenant-repaired', 3600),
+            creatorId: $this->user->id,
+        );
+
+        $fresh = $publication->fresh();
+
+        $this->assertSame(PublicationStatus::SCHEDULED, $fresh->status);
+        $this->assertSame('2026-09-10T09:00:00+00:00', $fresh->scheduled_at->utc()->toIso8601String());
+
+        // ── THE NEGATIVE ──────────────────────────────────────────────────────────
+        $this->assertSame(
+            0,
+            (int) DB::connection(config('database.default'))
+                ->table('platform_connections')
+                ->where('workspace_id', $this->workspace->id)
+                ->count(),
+        );
+    }
+
+    /**
+     * THE SCHEDULED SWEEP VISITS OWN-DATABASE WORKSPACES ONE AT A TIME.
+     *
+     * The command's shared pass runs unscoped, which covers every shared workspace at once and NOTHING
+     * in a tenant database — those have to be visited individually. A sweep that only did the shared
+     * pass would leave own-database customers' tokens to expire in silence, which for a Meta connection
+     * is unrecoverable: after sixty days there is nothing left to exchange.
+     */
+    public function test_the_refresh_sweep_reaches_an_own_database_workspace(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+        $this->useTenant();
+
+        $connection = PlatformConnection::factory()->expiringIn(2)->create();
+
+        app(TenantContext::class)->clear();
+        app(TenantManager::class)->forget();
+
+        Http::preventStrayRequests();
+        Http::fake([
+            'oauth2.googleapis.com/token' => Http::response([
+                'access_token' => 'fake-access-tenant-renewed',
+                'expires_in' => 3600,
+            ]),
+        ]);
+
+        $this->artisan('publishing:refresh-tokens')->assertSuccessful();
+
+        $this->useTenant();
+
+        $this->assertSame(
+            'fake-access-tenant-renewed',
+            $connection->fresh()->credentials()->accessToken,
+            'the sweep never reached the tenant database',
         );
     }
 
@@ -404,7 +598,12 @@ class PublishingTenantDatabaseTest extends TestCase
 
         if ($this->workspace !== null) {
             $central->table('publication_attempts')->where('workspace_id', $this->workspace->id)->delete();
+            // BEFORE the connections: `publications.platform_connection_id` is a `restrict` foreign key,
+            // so a connection with a central publication behind it cannot be deleted. In a green run
+            // there is nothing central to delete at all — that is what the tests assert — but a FAILING
+            // run leaves exactly the rows this has to be able to clean up.
             $central->table('publications')->where('workspace_id', $this->workspace->id)->delete();
+            $central->table('platform_connections')->where('workspace_id', $this->workspace->id)->delete();
             $central->table('workspace_user')->where('workspace_id', $this->workspace->id)->delete();
         }
 

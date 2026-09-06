@@ -35,6 +35,61 @@ return [
     ],
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // CONNECTED ACCOUNTS (B2)
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    'connection_status' => [
+        'active' => 'Connected',
+        // NOT "expired" and not "error". What the reader has to understand is that only THEY can fix
+        // it, and that it takes going back to the platform — not a retry button here.
+        'needs_reauth' => 'Needs reconnecting',
+        'revoked' => 'Disconnected',
+    ],
+
+    // Why a connection stopped working, as a code the client translates. Nothing branches on these
+    // sentences, and none of them repeats what the platform said — that prose is composed on their
+    // servers in whatever language they choose.
+    //
+    // THE KEYS ARE EXACTLY `PlatformConnectionManager::FAILURE_CODES`, in both languages, and
+    // `PublishingConnectionVocabularyTest` refuses any drift in either direction. It has to: the two
+    // sides drifted apart once already — the refresher wrote `token_refresh_failed` while this file
+    // spelled it `refresh_failed` — and because the factory's default happened to match THIS file,
+    // every test rendered a sentence and no test rendered the one a real failure would have produced.
+    'connection_failures' => [
+        'refresh_failed' => 'The platform would not renew this account\'s access. Connect it again to continue publishing.',
+        'refresh_unsupported' => 'This connection has nothing left to renew with. Connect the account again.',
+        // The APP_KEY case. Deliberately says what to DO rather than what happened, because what
+        // happened is an administrator\'s problem and reconnecting is the user\'s remedy either way.
+        'credentials_unreadable' => 'This account\'s stored access can no longer be read by the application. Connect it again.',
+        // Written by `revoke()`. Until B2's review nothing wrote it, so a disconnected account kept
+        // whatever code had last broken it and explained a renewal failure about an account somebody had
+        // deliberately removed.
+        'disconnected_by_user' => 'This account was disconnected.',
+    ],
+
+    // Why publications went on hold. Each names the CAUSE and the remedy, because the publication
+    // itself is fine — what is broken is somewhere else entirely, and a message about the publication
+    // would send somebody to fix the wrong thing.
+    'holds' => [
+        'connection_needs_reauth' => 'On hold: the account this goes out on needs reconnecting. Fix the connection and it will return to its scheduled time by itself.',
+        'connection_disconnected' => 'On hold: the account this goes out on was disconnected. Connect it again, or choose another destination.',
+    ],
+
+    // What the callback puts in the redirect, as codes. The frontend owns the wording; these are here
+    // so the server has one place naming what it can report.
+    'oauth' => [
+        'connected' => 'Account connected.',
+        'failed' => 'The account could not be connected.',
+        'oauth_state_expired' => 'That link expired. Start connecting the account again.',
+        'oauth_state_already_used' => 'That link has already been used. Start connecting the account again.',
+        // The handshake finished in a different browser from the one that started it. Deliberately does
+        // NOT say "security" or name an attack: by far the commonest way to reach this is copying the
+        // link into another window or having cookies switched off, and the remedy is the same either
+        // way. Starting again in one browser is the whole instruction.
+        'oauth_browser_mismatch' => 'This connection has to be finished in the same browser that started it. Start connecting the account again, and stay in this window.',
+        'access_denied' => 'The permission request was declined, so nothing was connected.',
+    ],
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
     // REFUSED STATE MOVES
     // ─────────────────────────────────────────────────────────────────────────────────────────────
     // Each one has to say what to do next, not merely that something was refused: a person reading
@@ -55,6 +110,16 @@ return [
         'platform_unknown' => 'That is not a destination this application can publish to.',
         'scheduled_at_unreadable' => 'That does not look like a date and time.',
         'scheduled_in_the_past' => 'That moment has already passed. Pick a time in the future, or publish now.',
+
+        // B2. The destination exists but has no account behind it — `dry_run` publishes nothing.
+        'platform_not_connectable' => 'This destination has no account to connect. It is a rehearsal: nothing published to it leaves the application.',
+        // The destination is real and this installation has no credentials for it yet. Says what is
+        // missing rather than "something went wrong", because the remedy is an administrator's.
+        'platform_not_configured' => 'This application is not yet registered with that platform, so an account cannot be connected. An administrator has to set that up first.',
+        // The connection a publication names must exist, must serve the same destination, and must be
+        // usable — three failures with one sentence, because a client that picked from the list this
+        // server sent should never see any of them.
+        'connection_unusable' => 'That account is not available for this destination.',
     ],
 
     // Codes an adapter reports, translated for the reader. The code is the contract; this is only its

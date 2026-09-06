@@ -5,6 +5,7 @@ use App\Http\Middleware\LogMiddleware;
 use App\Http\Middleware\RequireWorkspace;
 use App\Http\Middleware\ResolveWorkspace;
 use App\Http\Middleware\SetUserLocale;
+use App\Modules\Publishing\Services\OAuthStateService;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -59,6 +60,25 @@ return Application::configure(basePath: dirname(__DIR__))
             before: SubstituteBindings::class,
             prepend: ResolveWorkspace::class,
         );
+
+        // The OAuth handshake binding (R4 B2) crosses the two route groups, so it cannot be encrypted.
+        // It is SET on the response of `POST /api/publishing/connections/{platform}/authorize` — the
+        // `api` group, which has no cookie encryption — and READ on `GET /oauth/{platform}/callback`,
+        // which is `web` and does. Without this exemption `EncryptCookies` would find a value it cannot
+        // decrypt on the way in, null it, and every legitimate callback would be refused as
+        // `oauth_browser_mismatch` — a failure whose cause is two route groups away from its symptom.
+        //
+        // THE VALUE IS A SECRET — 32 CSPRNG bytes — and exempting it is still right. This exemption's
+        // first justification was that the value was a public nonce id with nothing to hide, and that
+        // design was broken: a client holding the `state` could read the id out of it and set the cookie
+        // itself. What encryption would buy even now is nothing, because the ciphertext would be exactly
+        // as redeemable as the plaintext to anybody holding it; it defends against a client reading its
+        // OWN cookie, which is not a threat. What protects this one is HttpOnly, SameSite=Lax, Secure
+        // wherever the session is, single use, and a ten-minute life.
+        // See App\Modules\Publishing\Services\OAuthStateService.
+        $middleware->encryptCookies(except: [
+            OAuthStateService::HANDSHAKE_COOKIE,
+        ]);
 
         // Route-scoped fail-closed tenancy gate (attached per route, e.g. the Disk binaries).
         // Slotted between the two above — after ResolveWorkspace has filled the context, still

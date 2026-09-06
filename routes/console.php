@@ -68,3 +68,12 @@ Schedule::command('knowledge:reap-stale-index')->everyFiveMinutes()->withoutOver
 // minutes: the window is fourteen days, so a pass an hour would be fourteen thousand no-ops for every
 // one that does something, and this pass walks every own-database workspace.
 Schedule::command('knowledge:reap-draft-sessions')->daily()->withoutOverlapping();
+
+// Publishing token renewal: refresh platform access tokens BEFORE they expire, and park the ones that
+// cannot be renewed (which holds their scheduled publications instead of letting each fail at its own
+// appointed minute). Hourly, and the frequency is set by the platform that cannot be recovered after the
+// fact: a Meta long-lived token renews by exchanging the CURRENT token, so once its sixty days lapse
+// there is nothing left to exchange and only a person at a consent screen can repair the connection. A
+// day of lead plus twenty-four passes is the margin. Cheap when idle — the selection is indexed and
+// matches nothing until a token is within the lead. Requires `schedule:run` on cron.
+Schedule::command('publishing:refresh-tokens')->hourly()->withoutOverlapping();

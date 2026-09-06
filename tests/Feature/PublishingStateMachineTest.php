@@ -297,16 +297,54 @@ class PublishingStateMachineTest extends TestCase
      * `PublicationManager` that names the transition you want, and call that. If the move you need is
      * not in the table, the question to answer is whether it should be — which is the conversation this
      * test exists to force.
+     *
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * THE SECOND EXEMPTION IS A LINE, NOT A FILE — AND THE DIFFERENCE IS THE WHOLE POINT
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * B2 added `platform_connections`, which has a `status` of its own with its own lifecycle and its
+     * own Manager. The scan is LITERAL over file bytes and cannot tell one `status` column from
+     * another, so it fired on `PlatformConnectionManager` writing ITS OWN model — the false positive
+     * the paragraph above predicted, and the case it did not anticipate.
+     *
+     * B2 answered that by exempting the FILE, and B2's review showed what that bought: three ways to
+     * move a publication that the guard would then have waved through from inside the one file with a
+     * hole in it —
+     *
+     *     foreach ($publications as $row) { $row->status = …; }
+     *     $connection->publications()->update(['status' => …]);
+     *     DB::table('publications')->update(['status' => …]);
+     *
+     * — none of which the narrow counter-assertion below matches either, because it looks for a
+     * variable literally named `$publication`.
+     *
+     * So the exemption is now the SINGLE LINE that trips the scan (`$connection->status = $to;`, the
+     * Manager's one write onto its own model). Everything else in that file is scanned like everything
+     * else in the module, and all three bypasses above fail. The exemption is also checked to still
+     * APPLY: if that line is ever reworded, this test says so rather than silently scanning a file it
+     * believes it has exempted — or silently exempting nothing.
+     *
+     * The rule for a THIRD entry: a new state-bearing MODEL in this module gets its own Manager, and its
+     * Manager's own status write gets a LINE here. Never a file.
      */
     public function test_only_the_manager_writes_a_publication_status(): void
     {
         $root = app_path('modules/Publishing');
         $this->assertDirectoryExists($root);
 
-        // The one file allowed to assign the column. Nothing else, and no test-only carve-outs: the
-        // factory lives under database/ and is outside this scan by construction (with its own docblock
-        // arguing why a fixture may start in a state rather than walk to it).
-        $allowed = ['Managers/PublicationManager.php'];
+        // The one file that owns `publications.status`. No test-only carve-outs: the factories live
+        // under database/ and are outside this scan by construction (each with its own docblock arguing
+        // why a fixture may start in a state rather than walk to it).
+        $allowed = [
+            'Managers/PublicationManager.php',
+        ];
+
+        // Lines cut from a file's source BEFORE it is scanned, because they write a DIFFERENT model's
+        // status column and a literal scan cannot tell the two apart. Spelled exactly, one line each.
+        $exemptLines = [
+            'Managers/PlatformConnectionManager.php' => [
+                '$connection->status = $to;',
+            ],
+        ];
 
         $patterns = [
             // A status-keyed array on its way into a write.
@@ -337,6 +375,19 @@ class PublishingStateMachineTest extends TestCase
             $scanned++;
             $source = (string) file_get_contents($file->getPathname());
 
+            foreach ($exemptLines[$relative] ?? [] as $line) {
+                $this->assertStringContainsString(
+                    $line,
+                    $source,
+                    "The line exemption for [{$relative}] no longer matches anything: [{$line}]. Either "
+                    . 'the write was reworded — in which case update the exemption — or it is gone, in '
+                    . 'which case delete it. An exemption that matches nothing is a file nobody is '
+                    . 'checking as carefully as they think.',
+                );
+
+                $source = str_replace($line, '', $source);
+            }
+
             foreach ($patterns as $pattern) {
                 if (preg_match($pattern, $source) === 1) {
                     $violations[] = $relative;
@@ -355,5 +406,53 @@ class PublishingStateMachineTest extends TestCase
         );
 
         $this->assertGreaterThan(0, $scanned, 'expected to scan the Publishing module source files');
+    }
+
+    /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * THE MECHANISM IS STILL THERE — the half no prohibition can express.
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * Everything above says what `PlatformConnectionManager` may not do, and since B2's review the
+     * module-wide scan says most of it: only the one line writing its own model's status is cut, so the
+     * three mass-write shapes a file-level exemption used to hide are now caught there.
+     *
+     * What a prohibition cannot say is that the thing still HAPPENS. A refactor that quietly stopped
+     * holding publications — deleted the loop, renamed the call, returned early — would leave every
+     * negative assertion in this file passing and the fence gone. So the two named calls that ARE the
+     * mechanism are asserted positively, and the narrow negatives are kept beside them as a second,
+     * differently-shaped net around publications specifically.
+     */
+    public function test_the_connection_manager_moves_publications_only_through_the_publication_manager(): void
+    {
+        $path = app_path('modules/Publishing/Managers/PlatformConnectionManager.php');
+        $this->assertFileExists($path);
+
+        $source = (string) file_get_contents($path);
+
+        $this->assertSame(
+            0,
+            preg_match('/\$publication[a-zA-Z_]*\s*->\s*status\s*=[^=>]/', $source),
+            'PlatformConnectionManager assigned a status onto a publication. It may only ask '
+            . 'PublicationManager to move one — that class owns the transition table.',
+        );
+
+        $this->assertSame(
+            0,
+            preg_match('/Publication::.{0,200}?(?:->update|->create|->forceFill|->fill)\s*\(.{0,300}?[\'"]status[\'"]\s*=>/s', $source),
+            'PlatformConnectionManager mass-wrote a status onto publications.',
+        );
+
+        // THE POSITIVE HALF. The hold and the release exist, and they are the Manager's own edges.
+        $this->assertStringContainsString(
+            '$this->publications->block(',
+            $source,
+            'the hold must go through PublicationManager::block() — the scheduled -> blocked edge',
+        );
+        $this->assertStringContainsString(
+            '$this->publications->arm(',
+            $source,
+            'the release must go through PublicationManager::arm() — the blocked -> scheduled edge',
+        );
     }
 }
