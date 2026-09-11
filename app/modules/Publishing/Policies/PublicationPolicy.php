@@ -92,6 +92,23 @@ class PublicationPolicy
         return $publication->status->isEditable() && $this->ownsOrIsWorkspaceOwner($publication, $user);
     }
 
+    /**
+     * ASK THE PLATFORM WHAT HAPPENED — the one act that gets a publication out of `needs_reconcile`.
+     *
+     * Its own ability, beside `schedule`, and for a sharper version of the same argument. Reconciling
+     * is not editing and not arming: it decides whether the record says a post exists, and from
+     * `failed` it re-opens the ordinary retry. So the person who may press it is the person who may
+     * publish — the creator, or the workspace owner — rather than anybody who can see the queue.
+     *
+     * The state half is {@see PublicationStatus::isReconcilable()}, which is true for exactly one
+     * status. Offering it anywhere else would be offering a button whose only possible outcome is a 422
+     * from the transition table.
+     */
+    public function reconcile(?User $user, Publication $publication): bool
+    {
+        return $publication->status->isReconcilable() && $this->ownsOrIsWorkspaceOwner($publication, $user);
+    }
+
     /** The publication's human creator, or the ACTIVE workspace's owner. */
     private function ownsOrIsWorkspaceOwner(Publication $publication, ?User $user): bool
     {

@@ -10,6 +10,7 @@ use App\Modules\Publishing\Exceptions\OAuthExchangeFailed;
 use App\Modules\Publishing\Exceptions\OAuthStateRejected;
 use App\Modules\Publishing\Services\OAuthStateService;
 use App\Modules\Publishing\Services\PlatformConnectionService;
+use App\Modules\Publishing\Support\OAuthCallbackReason;
 use App\Modules\Workspaces\Enums\WorkspaceStatus;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Modules\Workspaces\Services\TenantManager;
@@ -89,6 +90,12 @@ use Throwable;
  * reads `location.search`, and in a screenshot somebody pastes into a support ticket. So what travels is
  * `connection=connected|failed`, the platform, and — on failure — a STABLE REASON CODE the frontend
  * translates. No token, no account id, no display name, and no prose from a platform.
+ *
+ * THE REASONS ARE NAMED IN ONE PLACE: {@see OAuthCallbackReason}. They used to be fourteen codes split
+ * across two exception classes and five bare literals here, of which the language files knew four — so
+ * ten of them would have rendered as a raw key on the screen a person lands on when connecting an
+ * account has just failed. `PublishingConnectionVocabularyTest` now holds that list and the two
+ * translation catalogs in exact parity.
  */
 class PlatformOAuthCallbackController extends Controller
 {
@@ -114,20 +121,22 @@ class PlatformOAuthCallbackController extends Controller
             // The route constrains the segment, so this is unreachable in practice. Answered as a
             // redirect rather than a 404 anyway: whoever is looking at this is a person in a browser at
             // the end of a consent flow, and a framework error page is not an answer for them.
-            return $this->failure(null, 'unknown_platform');
+            return $this->failure(null, OAuthCallbackReason::UNKNOWN_PLATFORM);
         }
 
         // STEP 1. The user declined, or the platform refused before issuing a code. `error` is a
         // documented enumeration on both platforms (`access_denied` being the one that matters), so it
         // is passed through as a code — bounded in length, because it is going into a URL.
         if ($request->filled('error')) {
-            return $this->failure($destination, substr((string) $request->string('error')->value(), 0, 64));
+            return $this->failure($destination, OAuthCallbackReason::forPlatformError(
+                (string) $request->string('error')->value(),
+            ));
         }
 
         $code = (string) $request->string('code')->value();
 
         if ($code === '') {
-            return $this->failure($destination, 'missing_code');
+            return $this->failure($destination, OAuthCallbackReason::MISSING_CODE);
         }
 
         // STEP 2. Verified and SPENT together — see OAuthStateService::consume() for why those cannot be
@@ -160,7 +169,7 @@ class PlatformOAuthCallbackController extends Controller
         $workspace = $this->resolveWorkspace($state);
 
         if ($workspace === null) {
-            return $this->failure($destination, 'workspace_unavailable');
+            return $this->failure($destination, OAuthCallbackReason::WORKSPACE_UNAVAILABLE);
         }
 
         try {
@@ -177,7 +186,10 @@ class PlatformOAuthCallbackController extends Controller
                 // own boundary, which is the only place that reduction is safe to make.
             ] + $e->context());
 
-            return $this->failure($destination, $e->failureCode);
+            // Mapped rather than passed straight through, so the redirect can only ever carry a code
+            // this application has a sentence for. Byte-identical today — every failure a callback can
+            // reach is already in the catalog — and a guard against the next one that is not.
+            return $this->failure($destination, OAuthCallbackReason::forExchange($e->failureCode));
         } catch (Throwable $e) {
             // CLASS ONLY, never the message. This catch sits directly above a layer that was holding a
             // live credential when it threw, and an exception message is the shortest path from a held
@@ -188,7 +200,7 @@ class PlatformOAuthCallbackController extends Controller
                 'exception' => $e::class,
             ]);
 
-            return $this->failure($destination, 'connection_failed');
+            return $this->failure($destination, OAuthCallbackReason::CONNECTION_FAILED);
         } finally {
             // ALWAYS. A tenant connection left configured on this request would be inherited by whatever
             // the process handles next under a queue worker or an Octane-style long-lived runtime.

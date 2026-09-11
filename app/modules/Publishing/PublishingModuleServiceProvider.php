@@ -5,6 +5,8 @@ namespace App\Modules\Publishing;
 use App\Modules\Calendar\Services\CalendarSourceRegistry;
 use App\Modules\Publishing\Adapters\DryRunPlatformAdapter;
 use App\Modules\Publishing\Calendar\PublicationCalendarSource;
+use App\Modules\Publishing\Console\DispatchDuePublicationsCommand;
+use App\Modules\Publishing\Console\ReconcilePublicationsCommand;
 use App\Modules\Publishing\Console\RefreshPlatformTokensCommand;
 use App\Modules\Publishing\Enums\PublishingPlatform;
 use App\Modules\Publishing\Models\PlatformConnection;
@@ -76,6 +78,11 @@ class PublishingModuleServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 RefreshPlatformTokensCommand::class,
+                // B3. The due sweep is the ONLY path that starts a publish; the reconciliation sweep is
+                // the only thing that recovers one a dead worker left behind. Both are scheduled in
+                // routes/console.php and neither does anything until something is due.
+                DispatchDuePublicationsCommand::class,
+                ReconcilePublicationsCommand::class,
             ]);
         }
     }

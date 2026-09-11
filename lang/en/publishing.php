@@ -74,19 +74,54 @@ return [
         'connection_disconnected' => 'On hold: the account this goes out on was disconnected. Connect it again, or choose another destination.',
     ],
 
-    // What the callback puts in the redirect, as codes. The frontend owns the wording; these are here
-    // so the server has one place naming what it can report.
+    // The TWO OUTCOMES the callback puts in the redirect. The reason codes are below, in their own map,
+    // for the same reason `connection_failures` is its own map: one of these lists is pinned to a
+    // constant and the other is not.
     'oauth' => [
         'connected' => 'Account connected.',
         'failed' => 'The account could not be connected.',
+    ],
+
+    // WHY connecting an account failed, as codes the client translates.
+    //
+    // THE KEYS ARE EXACTLY `OAuthCallbackReason::ALL`, in both languages, and
+    // `PublishingConnectionVocabularyTest` refuses any drift in either direction. Until B3 only four of
+    // these existed here while the callback could report fourteen — so ten of them would have rendered
+    // as their own raw key on the screen a person lands on at the end of a failed consent flow, which
+    // is the worst possible moment to be shown a machine identifier.
+    //
+    // Each sentence says WHAT TO DO. Somebody reading one has just been bounced back from Google or Meta
+    // with nothing connected, and "an error occurred" tells them nothing they had not already worked
+    // out. None of them repeats a platform's own prose — that is composed on their servers in whatever
+    // language they choose — and none names an attack, because the commonest way to reach even the
+    // security refusals is a copied link or a browser with cookies switched off.
+    'oauth_failures' => [
+        'unknown_platform' => 'That is not a service this application can connect an account to.',
+        'missing_code' => 'The platform sent you back without granting access. Start connecting the account again.',
+        // Three refusals share this sentence on purpose — see the controller. Which of them happened is
+        // deliberately not disclosed to whoever is holding the link.
+        'workspace_unavailable' => 'This account cannot be connected to that workspace any more. Check that you still have access to it, then try again.',
+        'connection_failed' => 'Something went wrong while connecting the account and nothing was saved. Try again; if it keeps happening, an administrator will need to look at the logs.',
+        'access_denied' => 'The permission request was declined, so nothing was connected.',
+
+        'oauth_state_malformed' => 'That link is not one we recognise. Start connecting the account again from this application.',
+        // The one that means somebody tried. Says nothing about that: a user who reached it by clicking
+        // a stale link deserves the same instruction, and naming an attack would alarm the wrong person.
+        'oauth_state_bad_signature' => 'That link could not be verified. Start connecting the account again from this application.',
         'oauth_state_expired' => 'That link expired. Start connecting the account again.',
         'oauth_state_already_used' => 'That link has already been used. Start connecting the account again.',
+        'oauth_state_platform_mismatch' => 'That link was for a different service. Start again from the account you meant to connect.',
         // The handshake finished in a different browser from the one that started it. Deliberately does
         // NOT say "security" or name an attack: by far the commonest way to reach this is copying the
         // link into another window or having cookies switched off, and the remedy is the same either
         // way. Starting again in one browser is the whole instruction.
         'oauth_browser_mismatch' => 'This connection has to be finished in the same browser that started it. Start connecting the account again, and stay in this window.',
-        'access_denied' => 'The permission request was declined, so nothing was connected.',
+
+        // The token endpoint refused. The remedy is a person's in the first two cases and an
+        // administrator's in the third, and each says which rather than offering a generic retry.
+        'token_exchange_failed' => 'The platform would not grant access to this account. Try again, and make sure you are signed in to the right account there.',
+        'token_response_unusable' => 'The platform granted access in a form this application cannot store. Start connecting the account again and accept every permission it asks for.',
+        'account_lookup_failed' => 'Access was granted, but the platform would not say which account it was for — so there was nothing to save. Check that the account has a channel or page this application can post to, then try again.',
     ],
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -100,6 +135,9 @@ return [
         'blocked_holds' => 'This publication is on hold because its connection is not working. Reconnect the account, then schedule it again — publishing now would fail for every item waiting on that connection.',
         'terminal' => 'This has already been published. It cannot be changed from here.',
         'not_allowed' => 'A publication cannot go from “:from” to “:to”.',
+        // Nothing is wrong with the move; the screen is simply out of date. Says where the publication
+        // actually is, because that is the only thing the reader needs in order to decide again.
+        'lost_race' => 'Something else has already dealt with this publication — it is now “:from”. Nothing was changed. Refresh to see where it stands.',
     ],
 
     'validation' => [
@@ -128,6 +166,16 @@ return [
         'title_missing' => 'This publication has no title, so there is nothing to send.',
         'publish_outcome_unknown' => 'We lost contact with the platform and could not confirm what happened.',
         'reconciled_absent' => 'We checked the platform: nothing was published, so this can safely be tried again.',
+
+        // ── B3, the queue's own vocabulary ────────────────────────────────────────────────────────
+        // The queue could not be written to, so nothing was ever sent. That is a `failed`, not a
+        // `needs_reconcile`, and the sentence says so plainly: there is nothing to check.
+        'dispatch_failed' => 'This could not be handed to a worker, so nothing was sent anywhere. Schedule it again.',
+        // The worker died holding the claim. Says what to DO, and does not offer a retry — from here
+        // the only honest next step is to look.
+        'publish_worker_failed' => 'The worker handling this publication stopped before it could tell us what happened. Check the platform before scheduling it again.',
+        // Nobody ever came back for it. The same instruction, with the reason a person can act on.
+        'reaper_stale' => 'This was claimed for publishing and nothing came back. Check the platform before scheduling it again — it may already be live.',
     ],
 
 ];

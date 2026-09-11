@@ -117,11 +117,25 @@ use Illuminate\Support\Facades\Schema;
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
  * INDEXES: three reads, and no speculation
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
- *   (workspace_id, status, scheduled_at)  serves BOTH the due-sweep (`status = 'scheduled' AND
- *       scheduled_at <= now()`) and the counts endpoint, which groups by status on its
- *       (workspace_id, status) prefix.
+ *   (workspace_id, status, scheduled_at)  serves BOTH the due-sweep WITHIN ONE WORKSPACE and the counts
+ *       endpoint, which groups by status on its (workspace_id, status) prefix.
  *   (workspace_id, scheduled_at)          the calendar window scan, which ranges over the instant
  *       across several statuses at once and would use the composite above poorly.
+ *   (status, scheduled_at)                THE SHARED SWEEP, which is the read this table is hit hardest
+ *       by and the one the composite above cannot serve.
+ *
+ * THAT THIRD INDEX IS NOT A DUPLICATE OF THE FIRST, AND THE REASON IS THE SHAPE OF THE SWEEP.
+ * `publishing:dispatch-due` runs its shared pass with NO WORKSPACE ACTIVE — deliberately, because that
+ * is what lets one query cover every shared-database workspace at once — so the statement it issues is
+ * `status = 'scheduled' AND scheduled_at <= now()` with no `workspace_id` predicate at all. Postgres 16
+ * has no index skip scan, so a composite whose LEADING column is unconstrained is of no use to it: the
+ * planner falls back to a sequential scan of every publication ever made, once a minute, forever. The
+ * table is small today and the plan would degrade silently as it grows, which is the failure mode worth
+ * paying one index to avoid.
+ *
+ * It is the MIRROR of the index the tenant schema already carries. An own-database workspace's table has
+ * no `workspace_id` column, so `(status, scheduled_at)` is simply what its first index reduces to — and
+ * the shared estate needs the same index for the same query, arrived at from the other direction.
  *
  * There is deliberately NO index on `platform_connection_id`, though B2 will certainly want one for
  * "hold everything on this connection". Nothing in B1 reads that column, and an index added for a query
@@ -187,10 +201,13 @@ return new class extends Migration
             $table->softDeletes();
             $table->timestamps();
 
-            // The due-sweep and the counts endpoint.
+            // The per-workspace due-sweep and the counts endpoint.
             $table->index(['workspace_id', 'status', 'scheduled_at']);
             // The calendar window scan.
             $table->index(['workspace_id', 'scheduled_at']);
+            // THE SHARED SWEEP, which names no workspace at all. Not redundant with the first — see the
+            // docblock: Postgres cannot skip a composite's unconstrained leading column.
+            $table->index(['status', 'scheduled_at']);
         });
     }
 

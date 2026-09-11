@@ -4,10 +4,13 @@ namespace App\Modules\Publishing\Services;
 
 use App\Modules\Publishing\Contracts\PlatformAdapter;
 use App\Modules\Publishing\DTOs\RemoteRef;
+use App\Modules\Publishing\Enums\PublicationStatus;
 use App\Modules\Publishing\Exceptions\PlatformRefused;
+use App\Modules\Publishing\Exceptions\PublicationTransitionRefused;
 use App\Modules\Publishing\Managers\PublicationManager;
 use App\Modules\Publishing\Models\Publication;
 use Illuminate\Support\Facades\Log;
+use LogicException;
 use Throwable;
 
 /**
@@ -56,12 +59,19 @@ use Throwable;
  * that turned out fine. Being wrong the other way costs a second public post.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
- * WHAT B1 DOES NOT DO
+ * WHAT B3 CHANGED HERE, WHICH IS ALMOST NOTHING — AND THAT WAS THE POINT
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
- * This runs SYNCHRONOUSLY. There is no queue, no backoff, no due-sweep and no stale-`publishing`
- * reaper — all B3. The seam is deliberate: B3 wraps this method in a job and adds a sweep that finds
- * rows stuck in `publishing`, and neither of those changes the sequence or the classification, because
- * both already live here.
+ * B1 predicted that B3 would wrap this in a job and add a sweep, and that neither would change the
+ * sequence or the classification because both already live here. That held. The only structural change
+ * is that step 1 was split off into {@see publish()} so {@see publishClaimed()} can be entered by a
+ * worker for a row the SWEEP already claimed — the claim has to happen in the sweep, or two sweeps
+ * dispatch two jobs for one publication.
+ *
+ * There is still NO BACKOFF and there never will be one, which is worth stating because a queue is
+ * exactly where somebody would add it. Every outcome this method produces is already terminal for the
+ * attempt: `failed` is retried by a person, and `needs_reconcile` has no automatic exit at all. A job
+ * that retried on its own would be the coin flip the whole module is built to refuse — which is why
+ * `PublishPublicationJob` carries `tries = 1` and a test reads that property.
  */
 class PublicationPublisher
 {
@@ -78,6 +88,13 @@ class PublicationPublisher
      * state carries it. It DOES let a refused TRANSITION propagate, because that is a caller mistake
      * (asking to publish something that is not claimable) rather than an outcome.
      *
+     * SINCE B3 THIS HAS NO PRODUCTION CALLER — the sweep claims via `claimDue()` and the job enters at
+     * {@see publishClaimed()}, and that pair is the production path. It stays because the claim-then-
+     * publish sequence it states is the contract the queue implements, and the dry-run tests drive it
+     * directly. A future caller (B6's workflow step, say) that reaches for it instead of arming a row
+     * for the sweep would bypass the sweep's batch accounting and the job's overlap lock — decide that
+     * consciously or route through the queue.
+     *
      * @throws \App\Modules\Publishing\Exceptions\PublicationTransitionRefused when the row cannot be claimed
      */
     public function publish(Publication $publication): Publication
@@ -85,6 +102,42 @@ class PublicationPublisher
         // Step 1. Refuses here, before any platform is touched, when the row is in `needs_reconcile`
         // or `blocked` — the two fences.
         $this->manager->claim($publication);
+
+        return $this->publishClaimed($publication);
+    }
+
+    /**
+     * STEPS 2–5, for a row THAT HAS ALREADY BEEN CLAIMED.
+     *
+     * The seam B3 needed, and the reason it is a seam rather than a flag on {@see publish()}: the queue
+     * claims in the SWEEP and publishes in a JOB, minutes and a process apart. The claim has to happen in
+     * the sweep — that atomic `scheduled → publishing` is the only thing that stops two sweeps
+     * dispatching two jobs for one publication — so by the time the worker picks the row up, the edge
+     * this class used to take has already been taken. Calling `claim()` again would be `publishing →
+     * publishing`, which the machine correctly refuses.
+     *
+     * The GUARD below is the other half of that arrangement. This method is entered by a worker holding
+     * only an id, and a row that is no longer `publishing` means something else has already concluded
+     * this attempt — a reaper parked it, a person reconciled it, the previous delivery finished it. It
+     * refuses rather than proceeding, because "publish a row somebody else already resolved" is the one
+     * shape of duplicate this module exists to prevent, and an id is not proof of a claim.
+     *
+     * It is a `LogicException` and NOT a {@see PublicationTransitionRefused}, deliberately. The latter
+     * describes an edge the machine does not contain and renders as a 422 a person can act on; this is a
+     * caller that skipped the claim, which is a programming error with no user-facing reading. The
+     * callers that could hit it both check first — `publish()` has just claimed, and
+     * `PublishPublicationJob` re-reads the status before entering — so reaching this is a statement that
+     * one of those checks has been removed.
+     *
+     * @throws \LogicException when the row was not claimed first
+     */
+    public function publishClaimed(Publication $publication): Publication
+    {
+        if ($publication->status !== PublicationStatus::PUBLISHING) {
+            throw new LogicException(
+                'A publication must be claimed before it is published; this one is ' . $publication->status->value . '.',
+            );
+        }
 
         try {
             $adapter = $this->adapters->resolve($publication->platform);
@@ -102,15 +155,42 @@ class PublicationPublisher
             return $this->manager->markPublished($publication, $ref);
         } catch (PlatformRefused $e) {
             return $this->manager->markFailed($publication, $e->failureCode, $e->context);
+        } catch (PublicationTransitionRefused $e) {
+            // THE ROW MOVED WHILE THIS WORKER HELD IT — a redelivery's park, a reaper — and the CAS
+            // refused this frame's conclusion. That is the machinery WORKING, so it must not fall
+            // into the catch below: the ERROR line there would claim an "unknown state" about a
+            // publish whose outcome this frame knows precisely, and the follow-up park would throw a
+            // second, misleading refusal (from == to). Rethrown instead — the job logs it under its
+            // real reason. The remote id is logged when this frame holds one: it is an identifier,
+            // not a credential, and it is the exact string a later reconciliation will establish.
+            Log::info('A publish conclusion lost the race for its row; the winner\'s status stands.', [
+                'publication' => $publication->id,
+                'platform' => $publication->platform->value,
+                'row_status' => $publication->status->value,
+                'remote_id' => isset($ref) ? $ref->id : null,
+            ]);
+
+            throw $e;
         } catch (Throwable $e) {
-            // The message is logged and NOT stored: a platform's prose is composed on their servers in
-            // whatever language they choose, and a `failure_context` is read by a UI.
+            // CLASS AND LOCATION, NEVER THE MESSAGE — the same rule the job's failure hook and the
+            // tenant sweeps already keep, and this is the line where breaking it would cost the most.
+            //
+            // This catch sits directly above an adapter that is holding a live access token while it
+            // talks to a platform, and it catches EVERYTHING. The exception whose message reaches this
+            // array is composed by code nobody here controls: an HTTP client that puts the failing URL
+            // in it (Meta authenticates by `?access_token=…` in the query string — the token would be
+            // in the log verbatim, on every timeout, forever), a client exception that embeds the first
+            // 120 characters of a response body, a driver quoting its own bindings.
+            //
+            // The class says what went wrong and the file and line say where. That is the diagnosis a
+            // person actually acts on, and it cannot carry a credential no matter who wrote the
+            // exception. `PublishingConnectionSecrecyTest` drives this exact path with a token in the
+            // message and searches the log for it.
             Log::error('Publication ended in an unknown state and needs reconciliation.', [
                 'publication' => $publication->id,
                 'platform' => $publication->platform->value,
                 'had_remote_draft' => $publication->hasRemoteDraft(),
                 'exception' => $e::class,
-                'message' => $e->getMessage(),
                 'at' => $e->getFile() . ':' . $e->getLine(),
             ]);
 
@@ -142,11 +222,15 @@ class PublicationPublisher
         try {
             $existing = $this->findExisting($adapter, $publication);
         } catch (Throwable $e) {
+            // Class and location, never the message. See publishClaimed() — the reasoning is identical
+            // and this path is worse in one respect: a probe runs every hour, unattended, for as long
+            // as a row sits unresolved. A token in this message would not be logged once; it would be
+            // logged on a schedule.
             Log::error('Reconciliation could not establish whether a publication exists.', [
                 'publication' => $publication->id,
                 'platform' => $publication->platform->value,
                 'exception' => $e::class,
-                'message' => $e->getMessage(),
+                'at' => $e->getFile() . ':' . $e->getLine(),
             ]);
 
             // Nothing was learned, so nothing moves. The row stays where a person can see it.

@@ -76,4 +76,28 @@ Schedule::command('knowledge:reap-draft-sessions')->daily()->withoutOverlapping(
 // there is nothing left to exchange and only a person at a consent screen can repair the connection. A
 // day of lead plus twenty-four passes is the margin. Cheap when idle — the selection is indexed and
 // matches nothing until a token is within the lead. Requires `schedule:run` on cron.
-Schedule::command('publishing:refresh-tokens')->hourly()->withoutOverlapping();
+//
+// The publishing entries give withoutOverlapping an EXPIRY, deviating from this file's bare convention
+// on purpose: the default mutex lives 24 hours, and a schedule:run killed mid-command (deploy, OOM)
+// would otherwise silently stop ALL publishing — or eat the token-renewal margin the paragraph above
+// calls load-bearing — for a day. The expiry is sized to each cadence; an overlap this permits is
+// harmless, because every row-level write below is a conditional claim.
+Schedule::command('publishing:refresh-tokens')->hourly()->withoutOverlapping(30);
+
+// Publishing due sweep: the ONLY path that starts a publish. Claims every publication whose armed
+// moment has arrived and hands it to a worker. Every minute, because a minute is the resolution people
+// schedule at and anything slower turns "publish at 09:00" into "some time after 09:00". Cheap when
+// idle — the selection rides the (workspace_id, status, scheduled_at) index and matches nothing until
+// something is due. withoutOverlapping is only the FIRST guard: it bounds this command against itself
+// on one host, while the per-row conditional claim (scheduled -> publishing, affected=0 means somebody
+// else has it) is what holds against a second host or a manual run. Requires `schedule:run` on cron.
+Schedule::command('publishing:dispatch-due')->everyMinute()->withoutOverlapping(5);
+
+// Publishing recovery sweep: park publications stranded in `publishing` by a dead worker (a SIGKILL/OOM
+// bypasses the job's failed() hook, and `publishing` has no automatic exit — the row would be beyond
+// every affordance the product offers), then ASK THE PLATFORM about everything in `needs_reconcile`.
+// The probe is read-only and safe; it is the retry that never happens automatically, because a
+// publication that may already be live must never be published a second time. Five minutes matches the
+// other reapers; the per-publication probe cooldown (publishing.queue.reconcile_cooldown) keeps a row
+// nobody can answer for from becoming 288 API calls a day.
+Schedule::command('publishing:reconcile')->everyFiveMinutes()->withoutOverlapping(10);

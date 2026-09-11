@@ -3,10 +3,15 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Modules\Publishing\Contracts\PlatformAdapter;
+use App\Modules\Publishing\DTOs\RemoteDraft;
+use App\Modules\Publishing\DTOs\RemoteRef;
 use App\Modules\Publishing\Enums\PublishingPlatform;
 use App\Modules\Publishing\Models\PlatformConnection;
 use App\Modules\Publishing\Models\Publication;
 use App\Modules\Publishing\Services\OAuthStateService;
+use App\Modules\Publishing\Services\PlatformAdapterRegistry;
+use App\Modules\Publishing\Services\PublicationPublisher;
 use App\Modules\Workspaces\Models\Workspace;
 use App\Tenancy\TenantContext;
 use FilesystemIterator;
@@ -15,6 +20,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
@@ -363,6 +369,88 @@ class PublishingConnectionSecrecyTest extends TestCase
     }
 
     /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * B3 — A PUBLISH THAT FAILS IN AN UNKNOWN WAY LOGS NOTHING FROM THE EXCEPTION'S MESSAGE.
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * The catch-all in `PublicationPublisher::publishClaimed()` is the single most dangerous log site in
+     * the module, and the reason is WHO WRITES THE STRING IT WAS LOGGING. Every other assertion in this
+     * file is about code in this repository choosing not to put a credential somewhere. This one is
+     * about code that is not in this repository: the adapter beneath it holds a live access token while
+     * it talks to a platform, the catch takes `Throwable`, and the message on whatever arrives is
+     * composed by an HTTP client, a driver, or a platform SDK.
+     *
+     * The two shapes that make it concrete, neither hypothetical:
+     *   - META AUTHENTICATES BY QUERY STRING (`?access_token=…`). Any client that names the failing URL
+     *     in its message — most of them do — puts a working credential in the message on every timeout.
+     *   - `RequestException` embeds the first 120 characters of the response body, which on these
+     *     endpoints is a token.
+     *
+     * So the adapter below throws with a token in the message, which is exactly what those would
+     * produce, and the log is searched for it. The class, the file and the line are asserted PRESENT:
+     * a redaction that left nothing diagnosable would be its own defect, and this test would not notice
+     * the difference otherwise.
+     */
+    public function test_a_publish_that_fails_unknowably_never_logs_the_exception_message(): void
+    {
+        $publication = Publication::factory()->publishing()->create(['creator_id' => $this->owner->id]);
+
+        $this->useAdapter(new class(self::ACCESS_TOKEN) implements PlatformAdapter
+        {
+            public function __construct(private string $token) {}
+
+            public function platform(): PublishingPlatform
+            {
+                return PublishingPlatform::DRY_RUN;
+            }
+
+            public function createDraft(Publication $publication): RemoteDraft
+            {
+                return RemoteDraft::make('dryrun_draft_before_the_leak');
+            }
+
+            /** The shape an HTTP client produces when Meta's query-string auth times out. */
+            public function publishDraft(Publication $publication, string $remoteDraftId): RemoteRef
+            {
+                throw new RuntimeException(
+                    'cURL error 28: Operation timed out for '
+                    . 'https://graph.facebook.com/v21.0/me/feed?access_token=' . $this->token,
+                );
+            }
+
+            public function findExisting(Publication $publication): ?RemoteRef
+            {
+                throw new RuntimeException(
+                    'cURL error 28: Operation timed out for '
+                    . 'https://graph.facebook.com/v21.0/me?access_token=' . $this->token,
+                );
+            }
+        });
+
+        app(PublicationPublisher::class)->publishClaimed($publication);
+
+        // And the probe, which is the worse of the two: it runs unattended, on a schedule, for as long
+        // as the row sits unresolved. A leak here is not logged once — it is logged hourly.
+        app(PublicationPublisher::class)->reconcile($publication->fresh());
+
+        $log = $this->log();
+
+        $this->assertNotSame('', $log, 'the log is empty — this test would pass vacuously');
+        $this->assertNoTokensIn($log, 'the log after an unknowable publish failure');
+        $this->assertStringNotContainsString(
+            'graph.facebook.com',
+            $log,
+            'the failing URL reached the log, and on this platform the URL IS the credential',
+        );
+
+        // NOT VACUOUS: both failures are still diagnosable, from the parts nobody else authors.
+        $this->assertStringContainsString('needs reconciliation', $log);
+        $this->assertStringContainsString('Reconciliation could not establish', $log);
+        $this->assertStringContainsString('RuntimeException', $log);
+        $this->assertStringContainsString('PublishingConnectionSecrecyTest.php:', $log, 'the location must survive');
+    }
+
+    /**
      * THE CIPHERTEXT IN THE COLUMN IS NOT THE TOKEN.
      *
      * The claim every other test in this file rests on, checked directly against the raw column rather
@@ -528,6 +616,15 @@ class PublishingConnectionSecrecyTest extends TestCase
     private function log(): string
     {
         return is_file($this->logFile) ? (string) file_get_contents($this->logFile) : '';
+    }
+
+    /** Swap the dry-run slot for a leaking adapter — the registry refuses a second registration. */
+    private function useAdapter(PlatformAdapter $adapter): void
+    {
+        $registry = new PlatformAdapterRegistry;
+        $registry->register($adapter);
+
+        $this->app->instance(PlatformAdapterRegistry::class, $registry);
     }
 
     private function asOwner(): self

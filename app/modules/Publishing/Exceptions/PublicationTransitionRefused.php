@@ -36,6 +36,17 @@ use Symfony\Component\HttpFoundation\Response;
  *
  *   not_allowed             Everything else the table does not contain.
  *
+ *   lost_race               The edge EXISTS, and the row is not where you last read it. Something else
+ *                           concluded this publication between your read and your write. Nothing was
+ *                           written; `$from` is the status the row is ACTUALLY in, read back after the
+ *                           refusal, so a caller is left holding the truth rather than its own guess.
+ *
+ *                           It is a separate reason rather than `not_allowed` because the two carry
+ *                           opposite advice, and reporting this one as `not_allowed` would print a
+ *                           sentence that is simply FALSE — "a publication cannot go from needs
+ *                           reconciliation to failed" names an edge the table plainly contains. What
+ *                           went wrong is not the edge; it is that somebody else got there first.
+ *
  * 422 with `{code, message, context}` — the module-wide refusal shape, the same one
  * `KnowledgeRelationRefused` uses, so a client points at a state rather than parsing a sentence.
  */
@@ -48,6 +59,9 @@ class PublicationTransitionRefused extends RuntimeException
     public const TERMINAL = 'publication_terminal';
 
     public const NOT_ALLOWED = 'publication_transition_not_allowed';
+
+    /** The row moved under a caller holding an out-of-date copy. See {@see lostRace()}. */
+    public const LOST_RACE = 'publication_transition_lost_race';
 
     /**
      * `$reason`, not `$code` — `Exception::$code` already exists and is an int, so a readonly string of
@@ -84,6 +98,24 @@ class PublicationTransitionRefused extends RuntimeException
         return new self($reason, $from, $to);
     }
 
+    /**
+     * THE CONDITIONAL WRITE MATCHED NOTHING: the row is no longer where the caller read it.
+     *
+     * Raised by {@see \App\Modules\Publishing\Managers\PublicationManager} when its compare-and-swap
+     * affects zero rows. `$actual` is read back from the database AFTER the failure, so the refusal
+     * reports where the publication really is rather than restating the caller's stale belief — which
+     * is the whole point of noticing at all.
+     *
+     * Most callers of this are races that are ORDINARY rather than errors (a worker beat a sweep to the
+     * conclusion) and catch it. It renders as a 422 for the one caller that cannot: a person who pressed
+     * a button on a screen that had gone out of date, who should be told the row moved rather than shown
+     * a success for a write that did not happen.
+     */
+    public static function lostRace(PublicationStatus $actual, PublicationStatus $to): self
+    {
+        return new self(self::LOST_RACE, $actual, $to);
+    }
+
     public function render(): JsonResponse
     {
         return response()->json([
@@ -102,6 +134,7 @@ class PublicationTransitionRefused extends RuntimeException
             self::RECONCILE_BEFORE_RETRY => 'reconcile_before_retry',
             self::BLOCKED_HOLDS => 'blocked_holds',
             self::TERMINAL => 'terminal',
+            self::LOST_RACE => 'lost_race',
             default => 'not_allowed',
         };
     }

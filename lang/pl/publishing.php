@@ -65,16 +65,53 @@ return [
         'connection_disconnected' => 'Wstrzymane: konto, na które to idzie, zostało rozłączone. Połącz je ponownie albo wybierz inne miejsce docelowe.',
     ],
 
+    // DWA WYNIKI, które callback wkłada w przekierowanie. Kody powodów są niżej, we własnej mapie — z
+    // tego samego powodu, dla którego `connection_failures` ma własną: jedna z tych list jest przypięta
+    // do stałej, a druga nie.
     'oauth' => [
         'connected' => 'Konto połączone.',
         'failed' => 'Nie udało się połączyć konta.',
+    ],
+
+    // DLACZEGO nie udało się połączyć konta — kody, które tłumaczy klient.
+    //
+    // KLUCZE TO DOKŁADNIE `OAuthCallbackReason::ALL`, w obu językach; pilnuje tego
+    // `PublishingConnectionVocabularyTest`. Do B3 były tu cztery, a callback potrafił zgłosić
+    // czternaście — więc dziesięć z nich wyświetliłoby się jako własny surowy klucz na ekranie, na
+    // który człowiek trafia po nieudanym połączeniu konta. Gorszego momentu na pokazanie identyfikatora
+    // technicznego nie ma.
+    //
+    // Każde zdanie mówi, CO ZROBIĆ. Czytający właśnie wrócił z Google albo Meta z niczym, a „wystąpił
+    // błąd" nie mówi mu nic, czego by już nie wiedział. Żadne nie powtarza prozy platformy i żadne nie
+    // nazywa ataku — do refusali bezpieczeństwa najczęściej prowadzi skopiowany odnośnik albo wyłączone
+    // ciasteczka.
+    'oauth_failures' => [
+        'unknown_platform' => 'To nie jest serwis, do którego ta aplikacja potrafi podłączyć konto.',
+        'missing_code' => 'Platforma odesłała cię z powrotem bez przyznania dostępu. Zacznij łączenie konta jeszcze raz.',
+        // Trzy różne odmowy dzielą to zdanie celowo — patrz kontroler. Która z nich zaszła, świadomie
+        // nie jest ujawniane temu, kto trzyma ten odnośnik.
+        'workspace_unavailable' => 'Tego konta nie da się już połączyć z tym obszarem roboczym. Sprawdź, czy nadal masz do niego dostęp, i spróbuj ponownie.',
+        'connection_failed' => 'Coś poszło nie tak przy łączeniu konta i nic nie zostało zapisane. Spróbuj ponownie; jeśli powtórzy się to kolejny raz, do logów będzie musiał zajrzeć administrator.',
+        'access_denied' => 'Prośba o uprawnienia została odrzucona, więc nic nie zostało połączone.',
+
+        'oauth_state_malformed' => 'Nie rozpoznajemy tego odnośnika. Zacznij łączenie konta jeszcze raz z poziomu tej aplikacji.',
+        // Ten jeden oznacza, że ktoś próbował. Nie mówi o tym nic: użytkownik, który trafił tu przez
+        // nieaktualny odnośnik, potrzebuje dokładnie tej samej instrukcji, a nazwanie ataku zaniepokoi
+        // niewłaściwą osobę.
+        'oauth_state_bad_signature' => 'Nie udało się zweryfikować tego odnośnika. Zacznij łączenie konta jeszcze raz z poziomu tej aplikacji.',
         'oauth_state_expired' => 'Ten odnośnik wygasł. Zacznij łączenie konta jeszcze raz.',
         'oauth_state_already_used' => 'Ten odnośnik został już użyty. Zacznij łączenie konta jeszcze raz.',
+        'oauth_state_platform_mismatch' => 'Ten odnośnik dotyczył innego serwisu. Zacznij od nowa przy koncie, które chcesz połączyć.',
         // Łączenie dokończono w innej przeglądarce niż ta, w której się zaczęło. Celowo NIE mówi o
         // „bezpieczeństwie" ani nie nazywa ataku: najczęstszy powód to skopiowany odnośnik albo
         // wyłączone ciasteczka, a lekarstwo jest w obu przypadkach to samo.
         'oauth_browser_mismatch' => 'Łączenie trzeba dokończyć w tej samej przeglądarce, w której się zaczęło. Zacznij łączenie konta jeszcze raz i zostań w tym oknie.',
-        'access_denied' => 'Prośba o uprawnienia została odrzucona, więc nic nie zostało połączone.',
+
+        // Odmowa punktu tokenowego. W dwóch pierwszych przypadkach lekarstwo należy do użytkownika, w
+        // trzecim do administratora — i każde zdanie mówi, do kogo, zamiast proponować ogólne „ponów".
+        'token_exchange_failed' => 'Platforma nie przyznała dostępu do tego konta. Spróbuj ponownie i upewnij się, że jesteś tam zalogowany na właściwe konto.',
+        'token_response_unusable' => 'Platforma przyznała dostęp w postaci, której ta aplikacja nie potrafi zapisać. Zacznij łączenie konta jeszcze raz i zaakceptuj wszystkie uprawnienia, o które prosi.',
+        'account_lookup_failed' => 'Dostęp został przyznany, ale platforma nie powiedziała, jakiego konta dotyczy — więc nie było czego zapisać. Sprawdź, czy to konto ma kanał albo stronę, na której ta aplikacja może publikować, i spróbuj ponownie.',
     ],
 
     'transitions' => [
@@ -83,6 +120,9 @@ return [
         'blocked_holds' => 'Ta publikacja jest wstrzymana, bo jej połączenie nie działa. Połącz konto ponownie i zaplanuj ją jeszcze raz — publikowanie teraz zakończy się błędem dla każdej pozycji czekającej na to połączenie.',
         'terminal' => 'To zostało już opublikowane. Nie da się tego stąd zmienić.',
         'not_allowed' => 'Publikacja nie może przejść z „:from" do „:to".',
+        // Z samym przejściem nie ma nic złego — to ekran jest nieaktualny. Zdanie mówi, GDZIE ta
+        // publikacja jest teraz, bo tylko to jest potrzebne, żeby zdecydować jeszcze raz.
+        'lost_race' => 'Coś zajęło się już tą publikacją — jest teraz w stanie „:from". Nic nie zostało zmienione. Odśwież, żeby zobaczyć, na czym stoi.',
     ],
 
     'validation' => [
@@ -104,6 +144,16 @@ return [
         'title_missing' => 'Ta publikacja nie ma tytułu, więc nie ma czego wysłać.',
         'publish_outcome_unknown' => 'Straciliśmy kontakt z platformą i nie udało się potwierdzić, co się stało.',
         'reconciled_absent' => 'Sprawdziliśmy platformę: nic nie zostało opublikowane, więc można bezpiecznie spróbować ponownie.',
+
+        // ── B3, słownik samej kolejki ─────────────────────────────────────────────────────────────
+        // Nie udało się zapisać zadania do kolejki, więc nic nigdzie nie poszło. To jest `failed`, a nie
+        // `needs_reconcile`, i zdanie mówi to wprost: nie ma czego sprawdzać.
+        'dispatch_failed' => 'Nie udało się przekazać tego do wykonania, więc nic nigdzie nie zostało wysłane. Zaplanuj to jeszcze raz.',
+        // Proces obsługujący publikację zginął, trzymając claim. Mówi, CO ZROBIĆ, i nie proponuje
+        // ponowienia — stąd jedynym uczciwym krokiem jest sprawdzić.
+        'publish_worker_failed' => 'Proces obsługujący tę publikację zakończył się, zanim zdążył powiedzieć, co się stało. Sprawdź platformę, zanim zaplanujesz ją ponownie.',
+        // Nikt po nią nie wrócił. Ta sama instrukcja, z powodem, na który da się zareagować.
+        'reaper_stale' => 'Ta publikacja została wzięta do publikacji i nic nie wróciło. Sprawdź platformę, zanim zaplanujesz ją ponownie — może już być opublikowana.',
     ],
 
 ];

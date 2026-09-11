@@ -56,6 +56,11 @@ use Illuminate\Http\Resources\Json\JsonResource;
  * `can_be_scheduled` is separate from `can_be_edited` on purpose, even though they compute the same
  * answer today: arming is the consequential act, and the day a rule says "only a reviewer may arm" this
  * is the flag that changes.
+ *
+ * `can_be_reconciled` (B3) is true for exactly one status and is the flag a screen should hang the
+ * "check the platform" action on. It is deliberately the ONLY affordance offered for a publication in
+ * `needs_reconcile`: `can_be_edited` and `can_be_deleted` are both false there, and there is no retry
+ * flag at all, because from that status the only honest next act is to go and look.
  */
 class PublicationResource extends JsonResource
 {
@@ -102,6 +107,7 @@ class PublicationResource extends JsonResource
             'can_be_edited' => $request->user()?->can('update', $publication) ?? false,
             'can_be_deleted' => $request->user()?->can('delete', $publication) ?? false,
             'can_be_scheduled' => $request->user()?->can('schedule', $publication) ?? false,
+            'can_be_reconciled' => $request->user()?->can('reconcile', $publication) ?? false,
 
             'created_at' => $publication->created_at?->toISOString(),
             'updated_at' => $publication->updated_at?->toISOString(),

@@ -9,10 +9,12 @@ use App\Modules\Publishing\Enums\PublicationStatus;
 use App\Modules\Publishing\Enums\PublishingPlatform;
 use App\Modules\Publishing\Exceptions\CredentialsUnreadable;
 use App\Modules\Publishing\Exceptions\OAuthExchangeFailed;
+use App\Modules\Publishing\Exceptions\PublicationTransitionRefused;
 use App\Modules\Publishing\Models\PlatformConnection;
 use App\Modules\Publishing\Models\Publication;
 use Closure;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * THE ONLY THING THAT CHANGES WHETHER AN ACCOUNT IS USABLE — AND, INSEPARABLY, WHAT THAT DOES TO THE
@@ -410,6 +412,19 @@ class PlatformConnectionManager
      * machine refuses the edge anyway, and `published` is done. Deliberately NOT `failed` — the machine
      * allows `failed → blocked`, but a failed publication is already a row somebody has to look at, and
      * sweeping it into a hold would hide it behind a cause that is not necessarily its own.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * THE ROW THE DUE SWEEP CLAIMS WHILE THIS LOOP IS RUNNING
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * This selects `scheduled` rows and then writes them one at a time, and the due sweep runs every
+     * minute — so a row can be claimed into `publishing` between the two. `publishing → blocked` is not
+     * an edge the machine has, and holding a publication that is mid-call would be wrong even if it
+     * were: it is already talking to a platform, and the hold exists to stop calls that have not started.
+     *
+     * The conditional write in `PublicationManager::transition()` refuses it, and that refusal is caught
+     * PER ROW rather than allowed to escape — this loop runs inside {@see transaction()}, so one raced
+     * publication would otherwise roll back the connection's own status write and leave a revoked token
+     * marked active. One publication racing a sweep must not be able to lose the record of a revocation.
      */
     private function holdQueue(PlatformConnection $connection, string $failureCode): void
     {
@@ -419,11 +434,20 @@ class PlatformConnectionManager
             ->get();
 
         foreach ($publications as $publication) {
-            $this->publications->block($publication, $failureCode, [
-                // The id, and nothing else. A failure context is rendered to a user and this one is
-                // about a row holding live credentials — see the publications migration.
-                'platform_connection_id' => $connection->id,
-            ]);
+            try {
+                $this->publications->block($publication, $failureCode, [
+                    // The id, and nothing else. A failure context is rendered to a user and this one is
+                    // about a row holding live credentials — see the publications migration.
+                    'platform_connection_id' => $connection->id,
+                ]);
+            } catch (PublicationTransitionRefused) {
+                // Claimed by the due sweep since this loop's SELECT. It is in flight; its own outcome
+                // will be recorded by the worker, and the hold covers everything behind it.
+                Log::info('A publication was claimed for publishing before the hold could reach it.', [
+                    'publication' => $publication->id,
+                    'platform_connection_id' => $connection->id,
+                ]);
+            }
         }
     }
 
@@ -444,7 +468,18 @@ class PlatformConnectionManager
             ->get();
 
         foreach ($publications as $publication) {
-            $this->publications->arm($publication, $publication->scheduled_at);
+            try {
+                $this->publications->arm($publication, $publication->scheduled_at);
+            } catch (PublicationTransitionRefused) {
+                // Somebody re-armed or disarmed this one by hand between the SELECT and here. Their
+                // decision is the newer one and it stands; the release covers the rest. Caught for the
+                // same reason as in holdQueue(): this loop is inside a transaction that must not be
+                // rolled back by one racing row.
+                Log::info('A held publication had already been moved before the release could reach it.', [
+                    'publication' => $publication->id,
+                    'platform_connection_id' => $connection->id,
+                ]);
+            }
         }
     }
 }

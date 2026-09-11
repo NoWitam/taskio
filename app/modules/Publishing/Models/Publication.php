@@ -38,13 +38,24 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * recurrence column here.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
- * THE MANAGER OWNS `status`. THIS MODEL DOES NOT.
+ * THE MANAGER OWNS `status`. THIS MODEL DOES NOT — AND IT IS NOT MASS-ASSIGNABLE EITHER.
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
- * `status` is fillable — it has to be, for a default on create and for factories — but nothing in this
- * module writes it except the Manager. That is not a convention hoped for: it is asserted by
- * {@see \Tests\Feature\PublishingStateMachineTest} over the module's own file bytes, because a service
- * that "just flips it to failed here" is exactly how a state machine stops being one, and it is the
- * kind of line that reads as reasonable in every code review.
+ * Nothing in this module writes `status` except {@see \App\Modules\Publishing\Managers\PublicationManager}.
+ * That is not a convention hoped for: it is asserted by {@see \Tests\Feature\PublishingStateMachineTest}
+ * over the module's own file bytes, because a service that "just flips it to failed here" is exactly how
+ * a state machine stops being one, and it is the kind of line that reads as reasonable in every code
+ * review.
+ *
+ * `status` is DELIBERATELY ABSENT FROM `$fillable`, which is B3's correction of a B1 compromise. B1 kept
+ * it fillable "for a default on create and for factories", and neither turned out to need it: the
+ * default comes from `$attributes` below (applied by the constructor, before fillable is consulted at
+ * all) and Eloquent factories write through `Model::unguarded()`. So the reason was not a reason, and
+ * what it left behind was a second door — `fill()`, `create()`, `update()` with a status-shaped key —
+ * that the byte scan cannot see, because the offending line would be in a CALLER outside this module.
+ *
+ * The Manager is unaffected: it writes through `forceFill`, which is mass-assignment-exempt by design
+ * and was already chosen for exactly this reason. `PublishingQueueTest` pins the refusal by attempting
+ * the mass assignment and asserting the row did not move.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
  * `media` — POINTERS INTO THE DISK, NEVER OWNERSHIP, NEVER DEREFERENCED HERE
@@ -84,8 +95,7 @@ class Publication extends AbstractModel
         'body',
         'platform',
         'platform_connection_id',
-        // Written by the Manager. See the class docblock for why it is nonetheless fillable.
-        'status',
+        // NO `status`. The Manager owns it and writes it with forceFill — see the class docblock.
         'scheduled_at',
         'published_at',
         'media',

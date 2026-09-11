@@ -101,6 +101,83 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | The queue (B3)
+    |--------------------------------------------------------------------------
+    |
+    | THE ONE INVARIANT ON THIS PAGE, AND EVERY NUMBER BELOW IS ORDERED BY IT:
+    |
+    |     publish_timeout  <  the queue connection's retry_after  <<  stale_after
+    |
+    | publish_timeout  The SIGALRM on one `PublishPublicationJob`, in seconds. It must stay BELOW the
+    |            queue connection's `retry_after` (90 by default — `config/queue.php`), and that ordering
+    |            is load-bearing rather than tidy. Above it, the SAME payload is redelivered while the
+    |            original is still talking to a platform; the job carries `tries = 1`, so the duplicate is
+    |            failed BEFORE any middleware runs and its `failed()` hook fires against a LIVE publish.
+    |
+    |            Nothing is CORRUPTED by that: every status write is a conditional update carrying the
+    |            status it decided from, so the redelivery's park and the live publish's own conclusion
+    |            cannot both land, and both sides handle losing. What the ordering buys is WHICH of them
+    |            wins — park first, and a publication that went out perfectly well waits in
+    |            `needs_reconcile` for a person who has nothing useful to do. So keep the alarm inside the
+    |            redelivery window. 60 is generous for two HTTP calls to a platform; raise it only
+    |            together with `retry_after`.
+    |
+    | dispatch_batch  Ceiling on how many due publications ONE pass claims, PER DATABASE — which in
+    |            shared mode is every shared workspace at once, exactly as `tokens.refresh_batch` is. A
+    |            bound on WORK, not on correctness: the order is `scheduled_at` ascending, a claimed row
+    |            leaves the selection, and the sweep runs every minute, so an overflow is published a
+    |            minute late rather than not at all. It is deliberately generous — a publication that is
+    |            LATE is a promise broken quietly, which is the failure mode this module can least afford.
+    |
+    | stale_after  How long a row may sit in `publishing` before the reaper concludes that whoever
+    |            claimed it is gone, in seconds. MUCH larger than `publish_timeout` on purpose: the
+    |            reaper's whole subject is the death a timeout could not catch (SIGKILL, OOM, a worker
+    |            restart), and reaping a publish that is merely slow would park a row whose platform call
+    |            is still in flight. 900 is fifteen times the alarm — far past any live call, far short of
+    |            leaving a stranded row invisible for a working day.
+    |
+    | reap_batch  Ceiling on how many stranded rows ONE reaper pass parks, per database — the same bound
+    |            on WORK that `dispatch_batch` is, and it exists for the same reason a bound always does
+    |            here: the pass has no upper limit of its own, and the one event that produces many
+    |            stranded rows at once is a worker host dying with a full queue. The order is
+    |            `last_attempt_at` ascending (nulls first), so an overflowing pass defers the FRESHEST
+    |            strandings — the ones most likely to still be alive — and a parked row leaves the
+    |            selection, so a backlog drains over consecutive five-minute passes.
+    |
+    | reconcile_batch  How many publications one automatic reconciliation pass will PROBE, per database.
+    |            A probe is a read-only question to a platform, and read-only is not free: it is an API
+    |            call against somebody's rate limit, made on behalf of a row that may never resolve.
+    |
+    | reconcile_cooldown  The shortest interval between two AUTOMATIC probes of the same publication, in
+    |            seconds. `needs_reconcile` has no limit on attempts and no escalation — by design, it is
+    |            the state with no automatic exit — so without a cooldown a row nobody ever fixes would be
+    |            asked about every five minutes forever, which is 288 calls a day per stuck row and
+    |            exactly the traffic a platform holds against the whole application. An hour is short
+    |            enough that a crashed worker's publication resolves itself while somebody is still at
+    |            their desk. The cooldown is kept in the CACHE, not on the row: losing it costs one extra
+    |            read-only question, and that is the correct direction for this particular mechanism to be
+    |            wrong in. The manual endpoint ignores it entirely — a person asking is not a sweep.
+    |
+    */
+
+    'queue' => [
+
+        'publish_timeout' => (int) env('PUBLISHING_PUBLISH_TIMEOUT', 60),
+
+        'dispatch_batch' => (int) env('PUBLISHING_DISPATCH_BATCH', 200),
+
+        'stale_after' => (int) env('PUBLISHING_STALE_AFTER', 900),
+
+        'reap_batch' => (int) env('PUBLISHING_REAP_BATCH', 200),
+
+        'reconcile_batch' => (int) env('PUBLISHING_RECONCILE_BATCH', 100),
+
+        'reconcile_cooldown' => (int) env('PUBLISHING_RECONCILE_COOLDOWN', 3600),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Platforms
     |--------------------------------------------------------------------------
     |

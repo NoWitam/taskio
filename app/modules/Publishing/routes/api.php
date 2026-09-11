@@ -45,6 +45,23 @@ Route::middleware(['auth:sanctum', RequireWorkspace::class])
             ->whereUuid('publication')
             ->name('publishing.publications.schedule');
 
+        // THE SECOND ONE, ADDED BY B3. A POST although it sends nothing to a platform and takes no
+        // payload: it writes on OUR side (the row concludes in `published` or `failed`) and it costs an
+        // API call against somebody's rate limit, neither of which belongs behind a verb a browser may
+        // issue on its own during a prefetch. See ReconcilePublicationRequest for why it accepts no
+        // body — in particular, no remote id.
+        //
+        // THROTTLED, because it deliberately skips the sweep's per-row probe cooldown ("a person asking
+        // is not a sweep") and every call spends the PLATFORM's rate limit, which is per-application:
+        // one member holding this button down would degrade publishing for every workspace on the
+        // install. Six a minute is a person re-checking, not a loop. Own bucket with an explicit key
+        // prefix — the third argument is load-bearing (see Disk's routes): without it every throttled
+        // route an authenticated user touches shares one counter.
+        Route::post('publications/{publication}/reconcile', [PublicationController::class, 'reconcile'])
+            ->whereUuid('publication')
+            ->middleware('throttle:6,1,publishing-reconcile')
+            ->name('publishing.publications.reconcile');
+
         // ── CONNECTIONS (B2) ──────────────────────────────────────────────────────────────────────
         //
         // The AUTHENTICATED half of the OAuth surface. Its other half — GET /oauth/{platform}/callback

@@ -9,6 +9,7 @@ use App\Modules\Publishing\Exceptions\PublicationTransitionRefused;
 use App\Modules\Publishing\Models\Publication;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\DB;
 
 /**
  * THE ONLY THING IN THIS PRODUCT THAT MOVES A PUBLICATION FROM ONE STATE TO ANOTHER.
@@ -67,16 +68,23 @@ use Carbon\CarbonInterface;
  *   re-arming or by giving up, both of which are things a person does after fixing the connection.
  *
  * ═════════════════════════════════════════════════════════════════════════════════════════════════
- * WHAT B1 DOES NOT DO YET, AND WHERE IT WILL GO
+ * B3 ADDED A SECOND WAY IN, AND IT IS THE SAME EDGE SAID DIFFERENTLY
  * ═════════════════════════════════════════════════════════════════════════════════════════════════
- * There is no queue, no due-sweep and no claim contention here — those are B3. What B1 fixes is the
- * VOCABULARY those things will be built on, because a state machine retrofitted under a queue that
- * already ships is a state machine that has to accommodate whatever the queue was already doing.
+ * B1 said of {@see claim()} that it was not yet atomic against a second worker and that B3 would make
+ * it a conditional UPDATE. B3 did — as {@see claimDue()}, a SEPARATE method rather than a rewrite of
+ * this one, because the two answer different callers:
  *
- * One consequence to name rather than discover: {@see claim()} is not yet atomic against a second
- * worker. B3 makes it a conditional UPDATE (`where status = 'scheduled'`) and treats a zero row-count
- * as "somebody else has it" — the same shape `WorkflowRunManager` already uses. Until then the only
- * caller is a test and a synchronous path.
+ *   claim()     THROWS when it does not get the row. For a caller that believed it held the row alone —
+ *               the synchronous publish path and the tests that drive it — and being told is what such a
+ *               caller needs, whether the edge was missing or somebody else took it first.
+ *   claimDue()  ANSWERS NULL when it does not get the row. For the sweep, where losing the race is
+ *               ORDINARY and must not be an error.
+ *
+ * Collapsing them would have forced one of those two to lie about the other's situation. What they do
+ * share is this table: neither can select a row in `needs_reconcile` or `blocked`, so both fences hold
+ * on both paths without either method restating them — and, since the fix to {@see transition()}, they
+ * also share their mechanism: BOTH put the current status in a `WHERE` clause and neither can write over
+ * a row that has moved. The difference is only what they say about it.
  *
  * ═════════════════════════════════════════════════════════════════════════════════════════════════
  * NO TRANSACTIONS HERE, AND THAT IS NOT AN OMISSION
@@ -154,7 +162,11 @@ class PublicationManager
      * that dies mid-call has still left a record that an attempt was made. A counter bumped on success
      * would read as zero for exactly the attempts worth counting.
      *
-     * NOT YET ATOMIC against a second worker — see the class docblock for what B3 makes of it.
+     * ATOMIC, like everything else that funnels through {@see transition()}: the write carries
+     * `WHERE status = <the status this call decided from>`, so a second worker cannot claim a row this
+     * one already took. What distinguishes it from {@see claimDue()} is not safety but VOICE — it
+     * THROWS when it loses, because its callers (a synchronous publish, a test) believed they held the
+     * row and a null would be silently discarded. The sweep, for which losing is routine, uses the other.
      */
     public function claim(Publication $publication): Publication
     {
@@ -164,6 +176,65 @@ class PublicationManager
             'failure_code' => null,
             'failure_context' => null,
         ]);
+    }
+
+    /**
+     * THE DUE-SWEEP'S CLAIM. `scheduled → publishing`, atomically, or nothing at all.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * ONE STATEMENT, BECAUSE TWO WOULD BE A RACE AND THE RACE COSTS A SECOND POST
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * {@see claim()} reads the row, decides, and writes — and between the reading and the writing a
+     * second sweep can read the same row and reach the same decision. Both then write `publishing`, both
+     * dispatch a job, and one publication becomes two public artifacts. The scheduler's
+     * `withoutOverlapping` is not a defence: it bounds one command against ITSELF on one host, and says
+     * nothing about a second host, a manual invocation, or a pass that outlived its lock.
+     *
+     * So the guard is the WHERE CLAUSE. Postgres locks the row for the UPDATE, so of two concurrent
+     * callers exactly one sees `status = 'scheduled'` and gets `affected = 1`; the other sees the row
+     * already moved and gets 0. A null return is therefore ORDINARY — "somebody else has it" — and the
+     * caller skips it without an error. The same shape `BotTaskRunManager::claim()` and
+     * `WorkflowScheduleService::claimDue()` already use.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * THE WHERE CLAUSE IS ALSO WHAT KEEPS BOTH FENCES STANDING ON THIS PATH
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * `where status = 'scheduled'` cannot match a row in `needs_reconcile` or in `blocked`, so the sweep
+     * inherits Fence 1 and Fence 2 without having to know they exist — it is not that the sweep declines
+     * to claim those rows, it is that the statement cannot select them. The `allows()` check above the
+     * statement is the second, structural half: if the edge is ever removed from the table this stops
+     * working loudly instead of writing a status the machine no longer contains.
+     *
+     * `attempts` is incremented IN SQL rather than from the in-memory value, for the same reason the
+     * status is guarded in SQL: a counter written as `read + 1` by two workers records one attempt for
+     * two claims, and this counter's whole job is to be honest about how often we have touched a
+     * platform.
+     *
+     * @return Publication|null the claimed row, refreshed — or null when somebody else claimed it first
+     *
+     * @throws PublicationTransitionRefused when the machine no longer contains the edge at all
+     */
+    public function claimDue(Publication $publication): ?Publication
+    {
+        $from = PublicationStatus::SCHEDULED;
+        $to = PublicationStatus::PUBLISHING;
+
+        if (!$this->allows($from, $to)) {
+            throw PublicationTransitionRefused::for($from, $to);
+        }
+
+        $affected = Publication::query()
+            ->whereKey($publication->getKey())
+            ->where('status', $from)
+            ->update([
+                'status' => $to->value,
+                'attempts' => DB::raw('attempts + 1'),
+                'last_attempt_at' => now(),
+                'failure_code' => null,
+                'failure_context' => null,
+            ]);
+
+        return $affected === 1 ? $publication->refresh() : null;
     }
 
     /**
@@ -300,13 +371,76 @@ class PublicationManager
      * The one write. Every method above funnels through it, which is what makes "the Manager owns the
      * status" a structural fact rather than a habit.
      *
-     * `forceFill` rather than `update`: the attribute set here is decided by this class, from a fixed
-     * vocabulary, and going through mass-assignment protection would mean the machine's own writes were
-     * subject to a list maintained for HTTP payloads.
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * IT IS A COMPARE-AND-SWAP, AND THE `WHERE` CLAUSE IS THE ENFORCEMENT
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * This used to read `$publication->status` OUT OF MEMORY, check the edge against it, and then write
+     * UNCONDITIONALLY. Every transition in the module was therefore only as correct as the freshness of
+     * whichever copy of the row its caller happened to be holding — and in this module holding a stale
+     * copy is not an edge case, it is the NORMAL SHAPE OF THE WORK: the sweep keeps the row it claimed
+     * while a worker, in another process, publishes from its own copy minutes later.
+     *
+     * What that cost is worth spelling out, because none of it involves taking an illegal edge:
+     *
+     *   The queue accepts a job, the job publishes, and the dispatch call then throws. The sweep's
+     *   `catch` concludes the row from the copy it claimed — writing `failed`, with the `remote_id` of a
+     *   LIVE POST still on the row, and the product then offers to schedule it again. That is the second
+     *   public artifact, reached from a line that reads as careful error handling.
+     *
+     *   The same interleave against a parked row degrades `needs_reconcile` to `failed` — Fence 1
+     *   breached by a component that never looked at the row. `failed` ASSERTS that nothing was created;
+     *   only a platform can establish that.
+     *
+     *   And in the isolating case, a copy that still remembers `publishing` overwrites a row that is
+     *   already `published` — a state the table calls terminal — with no exception raised anywhere,
+     *   because `publishing → failed` is a perfectly legal edge for the status the caller *thought* it
+     *   had.
+     *
+     * So the check moved into the statement: `WHERE id = ? AND status = <from>`. Postgres locks the row
+     * for the UPDATE, so of two callers exactly one matches and the other affects zero rows. Zero rows
+     * means the row moved between the caller's read and its write, and the caller is TOLD — the
+     * alternative, a silent no-op, leaves a caller believing it concluded something it did not, which in
+     * this module is how a screen offers a retry for a post that is already out.
+     *
+     * The payload is taken from {@see \Illuminate\Database\Eloquent\Model::getDirty()} AFTER the
+     * `forceFill`, so what reaches the statement is post-cast: `failure_context` is the encoded JSON the
+     * `array` cast produces, `status` is the enum's backed value, an instant is a formatted timestamp.
+     * Building the array by hand instead would mean re-implementing every cast on this model, silently
+     * and wrongly, right here.
+     *
+     * `forceFill` rather than `fill`: the attribute set is decided by this class from a fixed vocabulary,
+     * and going through mass-assignment protection would subject the machine's own writes to a list
+     * maintained for HTTP payloads. (`status` is deliberately absent from `$fillable` — that is what
+     * stops everything OUTSIDE this module writing it.)
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * WHAT IT DOES AND DOES NOT PROTECT
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * IT DOES: guarantee that a status write only lands on a row still in the state the caller decided
+     * from. Two processes concluding one publication produce one conclusion and one refusal, whichever
+     * order they arrive in, and the refusal names where the row actually ended up.
+     *
+     * IT DOES NOT: order the work. It cannot make the RIGHT process win — if a reaper and a live worker
+     * both conclude a publication, the CAS guarantees only that one of them does. That ordering is what
+     * `stale_after` (many times the job timeout) and `publish_timeout` (below the queue's `retry_after`)
+     * are for, and they remain load-bearing rather than belt-and-braces.
+     *
+     * IT ALSO DOES NOT make a lost race an error. For most callers here it is ordinary — see the
+     * `catch (PublicationTransitionRefused)` in the sweep, the reaper, the job's failure hook and the
+     * connection manager's hold/release loops, each of which logs it and carries on.
+     *
+     * AND IT DOES NOT FIRE MODEL EVENTS. This is a builder UPDATE, not `save()`, so `saving`/`updating`/
+     * `updated` never dispatch for a status transition. Nothing observes `Publication` today, but an
+     * observer added later will silently miss every transition unless it is wired here instead.
+     *
+     * {@see claimDue()} predates this and stays a separate method: it answers `null` instead of throwing,
+     * because for the due-sweep losing the race is the mechanism working rather than something to report.
+     * The two are deliberately kept in step — both put the status in the WHERE clause, and `attempts` /
+     * `last_attempt_at` are stamped only by a claim, never here.
      *
      * @param  array<string, mixed>  $attributes
      *
-     * @throws PublicationTransitionRefused
+     * @throws PublicationTransitionRefused when the machine lacks the edge, or when the row moved first
      */
     private function transition(Publication $publication, PublicationStatus $to, array $attributes = []): Publication
     {
@@ -316,8 +450,24 @@ class PublicationManager
             throw PublicationTransitionRefused::for($from, $to);
         }
 
-        $publication->forceFill($attributes + ['status' => $to])->save();
+        $publication->forceFill($attributes + ['status' => $to]);
 
-        return $publication;
+        $affected = Publication::query()
+            ->whereKey($publication->getKey())
+            ->where('status', $from)
+            ->update($publication->getDirty());
+
+        if ($affected !== 1) {
+            // Read back before reporting: the caller is handed the row's REAL state, both on the model
+            // it passed in and in the refusal, so whatever it decides next is decided from the truth.
+            $publication->refresh();
+
+            throw PublicationTransitionRefused::lostRace($publication->status, $to);
+        }
+
+        // The statement bumped `updated_at` (and nothing else re-read it), so the in-memory copy would
+        // otherwise disagree with the row about when it last changed — which the reconciliation pass
+        // orders by. `refresh()` rather than `syncOriginal()` for that reason, and to match `claimDue()`.
+        return $publication->refresh();
     }
 }

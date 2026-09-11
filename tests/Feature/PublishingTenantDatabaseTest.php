@@ -40,6 +40,14 @@ use Tests\TestCase;
  * own-database twin were authored against the same contract on the same day, which is the only moment
  * they are ever guaranteed to agree.
  *
+ * B3 ADDED TWO MORE, AND THEY ARE THE FIRST ONES WHERE A MIS-ROUTED QUERY COSTS A PUBLIC ARTIFACT.
+ * Everything before them was about where data is STORED; the queue is about what leaves the building.
+ * The due sweep must reach a tenant database or an own-database customer's publications never go out at
+ * all, and the reconciliation probe must read the TENANT trail — a probe answering from the central one
+ * would report "proven absent" about a post that exists, mark the row `failed`, and thereby authorise a
+ * retry that publishes it twice. Neither failure is visible in shared mode, where there is only one
+ * place for a query to land.
+ *
  * B2 ADDED THREE MORE OF THEM, and they are the ones this whole arrangement was really for. A workspace
  * that pays for its own database is buying "our data is in our database"; `platform_connections` holds
  * ACCESS TOKENS FOR THEIR ACCOUNTS, so it is the single table where that promise matters most and the
@@ -337,6 +345,151 @@ class PublishingTenantDatabaseTest extends TestCase
             'fake-access-tenant-renewed',
             $connection->fresh()->credentials()->accessToken,
             'the sweep never reached the tenant database',
+        );
+    }
+
+    /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * B3 — THE DUE SWEEP CLAIMS, DISPATCHES AND PUBLISHES INSIDE THE TENANT DATABASE.
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * The sweep's SHARED pass runs deliberately unscoped, which covers every shared workspace at once
+     * and NOTHING in a tenant database — those have to be visited one at a time. A sweep that only did
+     * the shared pass would leave own-database customers' publications armed for moments that pass, for
+     * ever, with somebody waiting for a post that no machinery is ever going to send.
+     *
+     * The sharper half is what the JOB has to carry. `QueueTenancy` stamps the DISPATCHING context onto
+     * a job, and in the shared pass that context is empty by design — so `PublishPublicationJob` takes
+     * the workspace as an explicit constructor argument and re-establishes it on the worker. In own-
+     * database mode there is no `workspace_id` column on the row at all, so the id can only have come
+     * from the ACTIVE context at claim time. This test is the one that proves that path: get it wrong
+     * and the worker publishes with no tenant configured, reading and writing the CENTRAL tables.
+     *
+     * The queue connection is `sync` under test, so the job really runs inside the command.
+     */
+    public function test_the_due_sweep_publishes_an_own_database_workspaces_publication(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+
+        // A CENTRAL decoy, due, scoped to this very workspace — the row a mis-routed sweep would claim
+        // and publish instead. Without it a sweep reading the wrong database would still make every
+        // positive assertion below pass.
+        $this->plantCentralPublicationDecoy();
+
+        $this->useTenant();
+
+        $publication = Publication::factory()->scheduled('2026-09-10 09:00:00')->create([
+            'title' => 'TENANT publication',
+            'creator_id' => $this->user->id,
+        ]);
+
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-09-10 09:01:00', 'UTC'));
+
+        // As the scheduler runs it: no tenant configured, nothing but the command.
+        app(TenantContext::class)->clear();
+        app(TenantManager::class)->forget();
+
+        $this->artisan('publishing:dispatch-due')->assertSuccessful();
+
+        $this->useTenant();
+
+        $fresh = $publication->fresh();
+
+        $this->assertSame(PublicationStatus::PUBLISHED, $fresh->status, 'the sweep never reached the tenant database');
+        $this->assertTrue($fresh->isPublicArtifact());
+        $this->assertSame(1, $fresh->attempts, 'the sweep claimed once; the job must not claim again');
+
+        // Both phases are on record BESIDE their subject — reconciliation reads this trail.
+        $this->assertSame(
+            2,
+            PublicationAttempt::query()->where('publication_id', $publication->id)->count(),
+        );
+
+        // ── THE NEGATIVE ──────────────────────────────────────────────────────────
+        $central = DB::connection(config('database.default'));
+
+        $this->assertSame(
+            0,
+            (int) $central->table('publication_attempts')->where('publication_id', $publication->id)->count(),
+            'a tenant publication\'s attempt trail must not be written to the central database',
+        );
+
+        // AND THE DECOY WAS NOT PUBLISHED. A sweep that read central would have claimed it — and for a
+        // real destination that is a post going out on somebody else\'s account.
+        $this->assertSame(
+            'scheduled',
+            (string) $central->table('publications')
+                ->where('workspace_id', $this->workspace->id)
+                ->value('status'),
+            'a CENTRAL publication was claimed while sweeping an own-database workspace',
+        );
+    }
+
+    /**
+     * B3 — THE REAPER AND THE PROBE BOTH WORK INSIDE THE TENANT DATABASE.
+     *
+     * The scenario the whole reconciliation doctrine exists for, in the mode where it is easiest to get
+     * silently wrong: a worker died holding a claim, the platform call had already landed, and the only
+     * evidence is a `publication_attempts` row. `findExisting()` reads that trail — so a reaper that
+     * parked the row centrally, or a probe that read the central trail, would answer "proven absent"
+     * about a post that exists, mark the row `failed`, and thereby AUTHORISE a retry that publishes it
+     * a second time. That is the worst outcome this module can produce, and it is reachable only in
+     * own-database mode.
+     *
+     * A CENTRAL decoy attempt row is planted under the same publication id, so a mis-routed probe would
+     * conclude with the decoy's remote id rather than the tenant's.
+     */
+    public function test_the_reconciliation_sweep_reaps_and_probes_inside_the_tenant_database(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+        $this->useTenant();
+
+        $stranded = Publication::factory()->publishing()->create([
+            'title' => 'TENANT publication',
+            'creator_id' => $this->user->id,
+            'remote_draft_id' => 'dryrun_draft_tenant_container',
+            'last_attempt_at' => now()->subSeconds((int) config('publishing.queue.stale_after') + 60),
+        ]);
+
+        // What a killed worker leaves behind: the platform call landed, the status write did not.
+        PublicationAttempt::create([
+            'publication_id' => $stranded->id,
+            'platform' => 'dry_run',
+            'phase' => 'publish',
+            'succeeded' => true,
+            'attempt' => 1,
+            'remote_draft_id' => 'dryrun_draft_tenant_container',
+            'remote_id' => 'dryrun_tenant_artifact',
+        ]);
+
+        $this->plantCentralAttemptDecoy($stranded->id);
+
+        app(TenantContext::class)->clear();
+        app(TenantManager::class)->forget();
+
+        $this->artisan('publishing:reconcile')->assertSuccessful();
+
+        $this->useTenant();
+
+        $fresh = $stranded->fresh();
+
+        // Reaped out of `publishing`, then resolved by the probe in the same pass — with nobody having
+        // looked at a screen.
+        $this->assertSame(PublicationStatus::PUBLISHED, $fresh->status);
+        $this->assertSame(
+            'dryrun_tenant_artifact',
+            $fresh->remote_id,
+            'a CENTRAL attempt row reached an own-database workspace\'s reconciliation',
+        );
+
+        // ── THE NEGATIVE ──────────────────────────────────────────────────────────
+        $this->assertSame(
+            0,
+            (int) DB::connection(config('database.default'))
+                ->table('publications')
+                ->where('id', $stranded->id)
+                ->count(),
+            'the reaper must not have written the row into the central database',
         );
     }
 

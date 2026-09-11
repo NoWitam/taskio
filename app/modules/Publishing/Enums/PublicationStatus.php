@@ -189,6 +189,23 @@ enum PublicationStatus: string
     }
 
     /**
+     * Whether ASKING THE PLATFORM about this row is a meaningful thing to do.
+     *
+     * Exactly one status, and the narrowness is the point. A reconciliation concludes in `published` or
+     * `failed`, and both of those edges start at `needs_reconcile` — so from anywhere else the probe
+     * would either be answering a question nobody has (a `scheduled` row was never sent) or arriving at
+     * a conclusion the machine refuses to write anyway.
+     *
+     * It lives here rather than in the policy for the same reason {@see isEditable()} does: the write
+     * path and the `can_be_reconciled` flag on the resource have to be the SAME computation, or the UI
+     * offers a button whose request 403s.
+     */
+    public function isReconcilable(): bool
+    {
+        return $this === self::NEEDS_RECONCILE;
+    }
+
+    /**
      * Whether a human has to do something about this row.
      *
      * Computed here rather than by a client listing statuses, for the same reason a calendar badge is
