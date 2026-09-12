@@ -3,6 +3,7 @@
 namespace App\Modules\Publishing\Http\Requests;
 
 use App\Modules\Calendar\Services\CalendarInstantResolver;
+use App\Modules\Publishing\Http\Requests\Concerns\ExplainsAReviewHold;
 use App\Modules\Publishing\Models\Publication;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Validation\Validator;
@@ -23,6 +24,24 @@ use Illuminate\Foundation\Http\FormRequest;
  *   arm, which is where the Approvable work lands — attach without redefining what editing means.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * B6: A LIVE REVIEW REFUSES THIS ENDPOINT, AND SAYS SO
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * The future rule the paragraph above anticipated has arrived and it is the strongest version of it:
+ * while an approval process is pending, arming is refused for everybody. `PublicationPolicy::schedule()`
+ * is where that is decided; {@see ExplainsAReviewHold} is why the answer is a 422 that names the hold
+ * rather than a 403 that implies a missing permission.
+ *
+ * An approved AUTOMATED publication never needs this endpoint at all — the approval arms it. An approved
+ * hand-made one does, and that is deliberate: approval lifts the hold, it does not press the button.
+ *
+ * AND ON A REVIEW-GATED DRAFT, THIS ENDPOINT SUBMITS INSTEAD OF ARMING — the most surprising thing it
+ * does, so it is stated in the door and not only in the service. A draft with a pipeline attached and no
+ * standing approval answers 200 with `status: draft` and `is_in_approval: true`: the chosen moment was
+ * parked as the arming intent and the review is now open; the approval will arm for exactly that moment.
+ * A screen must read `is_in_approval` to tell "armed" from "submitted" — the status alone will not say.
+ * See {@see \App\Modules\Publishing\Services\PublicationService::schedule()} for the full argument.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
  * THIS IS WHERE THE PAST IS REFUSED, AND ONLY HERE
  * ─────────────────────────────────────────────────────────────────────────────────────────────────
  * `StorePublicationRequest` deliberately accepts a `scheduled_at` in the past: a draft may carry any
@@ -38,6 +57,8 @@ use Illuminate\Foundation\Http\FormRequest;
  */
 class SchedulePublicationRequest extends FormRequest
 {
+    use ExplainsAReviewHold;
+
     /**
      * How far into the past an arming may point before it is refused.
      *

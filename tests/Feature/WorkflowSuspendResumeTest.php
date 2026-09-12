@@ -389,12 +389,17 @@ class WorkflowSuspendResumeTest extends TestCase
         $workflow = Workflow::factory()->create(['creator_id' => $owner->id]);
 
         // The run below parks on the factory's default kind, for which NOTHING is registered. (The engine
-        // itself still hard-codes no kind: the only registered one, `generation_session`, is REGISTERED by
-        // the module provider like any other, and this test asserts the engine's behaviour for a kind that
-        // is not.) A missing resolver is a deploy fault, not proof the work vanished, so the run is left
-        // parked (the timeout still bounds it).
+        // itself still hard-codes no kind: every registered one — `generation_session` since R2, and
+        // `publication` since R4 B6 — is REGISTERED by a module provider like any other, and this test
+        // asserts the engine's behaviour for a kind that is not.) A missing resolver is a deploy fault,
+        // not proof the work vanished, so the run is left parked (the timeout still bounds it).
+        //
+        // The registered set is asserted as a CONTENTS check rather than an exact list on purpose: the
+        // fact this test needs is "`test_wait` is not registered", and pinning the exact roster here made
+        // an unrelated batch that adds a wait kind fail a test about unregistered kinds. Each kind's own
+        // registration is pinned by its own module's boundary test, which is where that belongs.
         $kinds = app(WaitResolverRegistry::class)->kinds();
-        $this->assertSame(['generation_session'], $kinds);
+        $this->assertContains('generation_session', $kinds);
         $this->assertNotContains('test_wait', $kinds, 'the factory parks on an UNregistered kind by design');
 
         $run = WorkflowRun::factory()->waiting()->create([

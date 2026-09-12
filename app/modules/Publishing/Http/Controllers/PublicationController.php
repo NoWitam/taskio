@@ -67,14 +67,14 @@ class PublicationController extends Controller
     {
         $this->authorize('view', $publication);
 
-        return PublicationResource::make($publication->loadMissing('creator'));
+        return PublicationResource::make($publication->loadMissing(Publication::readRelations()));
     }
 
     public function store(StorePublicationRequest $request): JsonResponse
     {
         $publication = $this->service->create(PublicationDTO::fromRequest($request));
 
-        return PublicationResource::make($publication->loadMissing('creator'))
+        return PublicationResource::make($publication->loadMissing(Publication::readRelations()))
             ->response()
             ->setStatusCode(Response::HTTP_CREATED);
     }
@@ -83,23 +83,24 @@ class PublicationController extends Controller
     {
         $this->service->update($publication, PublicationDTO::fromRequest($request));
 
-        return PublicationResource::make($publication->loadMissing('creator'));
+        return PublicationResource::make($publication->loadMissing(Publication::readRelations()));
     }
 
     /**
-     * ARM IT.
+     * ARM IT — or, when a review gates this draft, SUBMIT it with the chosen moment (B6).
      *
-     * The controller does not decide whether the move is legal — it hands the row and the instant to
-     * the Manager, which either takes the edge or throws
-     * {@see \App\Modules\Publishing\Exceptions\PublicationTransitionRefused} (a 422 that names the two
-     * states). That is the whole reason there is no `if` in this method: a controller that pre-checked
-     * would be a second reading of the transition table, and the second reading is the one that drifts.
+     * The controller still decides nothing about the STATE MACHINE: the service either hands the row
+     * and the instant to the Manager (which takes the edge or throws
+     * {@see \App\Modules\Publishing\Exceptions\PublicationTransitionRefused}, a 422 that names the two
+     * states) or opens the review and parks the moment — a branch on REVIEW standing, which lives in
+     * exactly one place ({@see PublicationService::schedule()}), never a second reading of the
+     * transition table here.
      */
     public function schedule(SchedulePublicationRequest $request, Publication $publication): PublicationResource
     {
-        $this->manager->arm($publication, $request->resolvedScheduledAt());
+        $this->service->schedule($publication, $request->resolvedScheduledAt(), $request->user());
 
-        return PublicationResource::make($publication->loadMissing('creator'));
+        return PublicationResource::make($publication->loadMissing(Publication::readRelations()));
     }
 
     /**
@@ -118,7 +119,7 @@ class PublicationController extends Controller
     {
         $this->publisher->reconcile($publication);
 
-        return PublicationResource::make($publication->loadMissing('creator'));
+        return PublicationResource::make($publication->loadMissing(Publication::readRelations()));
     }
 
     public function destroy(DestroyPublicationRequest $request, Publication $publication): JsonResponse

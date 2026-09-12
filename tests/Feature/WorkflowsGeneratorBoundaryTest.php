@@ -170,7 +170,10 @@ class WorkflowsGeneratorBoundaryTest extends TestCase
         );
 
         $registry = app(WaitResolverRegistry::class);
-        $this->assertSame([GenerateContentStep::WAIT_KIND], $registry->kinds(), 'the KIND is known without constructing anything');
+        // CONTENTS, not the exact roster: R4 B6 registered a second kind (`publication`) from the same
+        // provider, and this test is about the Generator's registration being lazy — not about how many
+        // other features have since parked on the same registry.
+        $this->assertContains(GenerateContentStep::WAIT_KIND, $registry->kinds(), 'the KIND is known without constructing anything');
 
         $resolver = $registry->for(GenerateContentStep::WAIT_KIND);
 

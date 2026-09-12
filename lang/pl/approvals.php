@@ -5,6 +5,9 @@ return [
 
     'entity_types' => [
         'task' => 'Zadanie',
+        // R4 B6 — druga encja z akceptacją w produkcie. Nazwana tym, o czym się decyduje, a nie modułem,
+        // bo to jest napis, który akceptujący czyta u góry karty.
+        'publication' => 'Publikacja',
     ],
 
     'status' => [
@@ -53,6 +56,12 @@ return [
         'no_pipeline_assigned' => 'Encja nie ma przypisanego lejka zatwierdzania.',
         'pipeline_has_no_stages' => 'Lejek zatwierdzania nie ma zdefiniowanych etapów.',
         'already_decided' => 'Ten etap został już rozstrzygnięty.',
+        // R4 B6 — przedmiot akceptacji został usunięty, gdy był u zatwierdzającego. 422 zamiast
+        // TypeError, którym to było wcześniej; patrz ApprovalService::decide().
+        'approvable_missing' => 'Przedmiot tej akceptacji już nie istnieje.',
+        // R4 B6 — jeden żywy proces na przedmiot; drugi oznaczałby dwóch akceptujących decydujących
+        // o tym samym bez wiedzy o sobie. Patrz ApprovalService::startProcess().
+        'process_already_pending' => 'Ten element jest już w akceptacji.',
         'note_required_on_rejection' => 'Notatka jest wymagana przy odrzuceniu.',
         'invalid_decision' => 'Nieprawidłowa decyzja.',
         'min_one_stage' => 'Lejek musi mieć co najmniej jeden etap.',

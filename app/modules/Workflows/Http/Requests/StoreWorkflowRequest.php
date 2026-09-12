@@ -8,6 +8,8 @@ use App\Modules\Forms\Models\Form;
 use App\Modules\Generator\Contracts\SessionAuthorIdentityResolver;
 use App\Modules\Generator\Models\Template;
 use App\Modules\Labels\Models\Label;
+use App\Modules\Publishing\Enums\PublishingPlatform;
+use App\Modules\Publishing\Services\PublicationAutomationService;
 use App\Modules\Tasks\Enums\TaskPriority;
 use App\Modules\Variables\Enums\VariableType;
 use App\Modules\Variables\Services\PipelineValidator;
@@ -497,6 +499,7 @@ class StoreWorkflowRequest extends FormRequest
                 WorkflowStepType::CREATE_FORM_REPORT => $this->validateCreateFormReportConfig($validator, $prefix, $config, $refCtx),
                 WorkflowStepType::GENERATE_CONTENT => $this->validateGenerateContentConfig($validator, $prefix, $config, $refCtx),
                 WorkflowStepType::CREATE_EVENT => $this->validateCreateEventConfig($validator, $prefix, $config, $refCtx),
+                WorkflowStepType::PUBLISH => $this->validatePublishConfig($validator, $prefix, $config, $refCtx),
             };
 
             $this->rejectForeignStepKeys($validator, $prefix, $config, $this->allowedStepKeys($type));
@@ -582,6 +585,8 @@ class StoreWorkflowRequest extends FormRequest
             foreach ([
                 'priority', 'deadline', 'submissions_from', 'submissions_to',
                 'start_date', 'starts_at', 'ends_at',
+                // publish (B6): its media list and its moment are both unions.
+                'media', 'publish_at',
             ] as $field) {
                 if ($this->isVariablePipeline($config[$field] ?? null)) {
                     return true;
@@ -782,6 +787,92 @@ class StoreWorkflowRequest extends FormRequest
         if ($present('start_date')) {
             $validator->errors()->add($prefix . '.start_date', 'A timed create_event step has no separate start_date; remove it or turn on all_day.');
         }
+    }
+
+    /**
+     * publish config: platform (required LITERAL PublishingPlatform), platform_connection_id (the account
+     * — required for any destination that publishes publicly), title (required string), body (nullable
+     * string), media (a FILE union), publish_at (nullable date union), approval_pipeline_id (nullable
+     * scoped pipeline uuid).
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * THE DESTINATION IS CHECKED THROUGH THE PUBLISHING MODULE'S OWN AUTHORITY, NOT A `ScopedExists`
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * A connection has to exist IN THIS WORKSPACE, serve THIS platform, and be USABLE — and only the
+     * first of those is expressible as an existence rule. `PublicationAutomationService::destinationIsUsable()`
+     * is the same method the STEP calls at run time, which is what makes the two verdicts impossible to
+     * drift apart: a save cannot accept a destination the run would refuse, and cannot reject one the run
+     * would have accepted. (The same argument `validateAuthorId()` makes about an author, for the same
+     * kind of reference.)
+     *
+     * ONE MESSAGE FOR THE WHOLE TRIPLE, mirroring `StorePublicationRequest`: a client picking from the
+     * list this server sent should never see it, and distinguishing "that account is not yours" from
+     * "that account does not exist" would answer questions about other workspaces' rows.
+     *
+     * `platform` IS LITERAL-ONLY, exactly like `create_event.all_day` and for the identical reason: it
+     * decides whether the account field is required, so a run-time value would make this check
+     * unexpressible and let a definition pass validation that reaches a branch with no account in it.
+     *
+     * @param  array<string, mixed>  $config
+     * @param  array{index: array<string, array{type: VariableType, enumOptions: array<int, string>|null}>, fields_available: bool}|null  $refCtx
+     */
+    private function validatePublishConfig(Validator $validator, string $prefix, array $config, ?array $refCtx = null): void
+    {
+        $title = $config['title'] ?? null;
+        if (!is_string($title) || trim($title) === '') {
+            $validator->errors()->add($prefix . '.title', 'The publish step requires a non-empty title.');
+        }
+
+        if (($config['body'] ?? null) !== null && !is_string($config['body'])) {
+            $validator->errors()->add($prefix . '.body', 'The body must be a string.');
+        }
+
+        $platform = PublishingPlatform::tryFrom((string) ($config['platform'] ?? ''));
+
+        if ($platform === null) {
+            $validator->errors()->add(
+                $prefix . '.platform',
+                'The publish step requires a destination (' . implode(', ', PublishingPlatform::values()) . ').',
+            );
+        }
+
+        $connectionId = $config['platform_connection_id'] ?? null;
+
+        if ($connectionId !== null && !is_string($connectionId)) {
+            $validator->errors()->add($prefix . '.platform_connection_id', 'The platform_connection_id must be a uuid.');
+        } elseif ($platform !== null
+            && !app(PublicationAutomationService::class)->destinationIsUsable($platform, $connectionId)
+        ) {
+            $validator->errors()->add($prefix . '.platform_connection_id', __('workflows.steps.publish.connection_invalid'));
+        }
+
+        // The same literal|variable union `create_task.attachments` uses, terminating in FILE — a
+        // generated image list, a submission's attachment, or a literal Disk pick. The concrete files are
+        // re-resolved at run time and are never dereferenced by the publishing module at all, so this
+        // only pins the SHAPE.
+        $this->validateUnionOrLiteral(
+            $validator,
+            $prefix . '.media',
+            $config['media'] ?? null,
+            fn (mixed $value) => $this->isFileUuidLiteral($value),
+            'a file id (or a list of file ids)',
+            $refCtx,
+            [VariableType::FILE],
+        );
+
+        // Absent means "as soon as it may" — see the step. A present value is the same DATE union every
+        // other step's time field is.
+        $this->validateUnionOrLiteral(
+            $validator,
+            $prefix . '.publish_at',
+            $config['publish_at'] ?? null,
+            fn (mixed $value) => $this->isParsableDate($value),
+            'a valid date',
+            $refCtx,
+            [VariableType::DATE],
+        );
+
+        $this->validateScopedUuid($validator, $prefix . '.approval_pipeline_id', $config['approval_pipeline_id'] ?? null, ApprovalPipeline::class);
     }
 
     /**
@@ -1446,6 +1537,18 @@ class StoreWorkflowRequest extends FormRequest
             // to colour by, so the grid colours every event the same. See CreateEventStep.
             WorkflowStepType::CREATE_EVENT => [
                 'title', 'description', 'all_day', 'start_date', 'starts_at', 'ends_at',
+            ],
+            // No `options`: the publications table's per-destination extras are ADAPTER-owned and
+            // schema-less, and no adapter that reads them exists yet. A free-form map in a step config
+            // would be a surface the editor has to render and the validator cannot check, added for a
+            // consumer nobody has written. It can be added later without changing a stored definition.
+            //
+            // No `status`, no `remote_id` either, for the reason `StorePublicationRequest` refuses them:
+            // those are the machine's own columns and a definition that set one would be a second
+            // entrance to the publication state machine.
+            WorkflowStepType::PUBLISH => [
+                'platform', 'platform_connection_id', 'title', 'body', 'media', 'publish_at',
+                'approval_pipeline_id',
             ],
         };
     }

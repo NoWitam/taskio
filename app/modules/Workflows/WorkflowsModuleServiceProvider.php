@@ -4,6 +4,7 @@ namespace App\Modules\Workflows;
 
 use App\Modules\Calendar\Services\CalendarSourceRegistry;
 use App\Modules\Generator\Events\GenerationSessionUpdated;
+use App\Modules\Publishing\Events\PublicationConcluded;
 use App\Modules\Variables\Contracts\AiTextGenerator;
 use App\Modules\Variables\Contracts\ElementScopeResolver;
 use App\Modules\Variables\Contracts\FunctionReferenceLookup;
@@ -11,17 +12,20 @@ use App\Modules\Workflows\Calendar\WorkflowRunCalendarSource;
 use App\Modules\Workflows\Calendar\WorkflowScheduleCalendarSource;
 use App\Modules\Workflows\Console\ReapStaleWorkflowRunsCommand;
 use App\Modules\Workflows\Console\RunScheduledWorkflowsCommand;
+use App\Modules\Workflows\Listeners\ResumeWaitingRunOnPublicationConcluded;
 use App\Modules\Workflows\Listeners\ResumeWaitingRunOnSessionTerminal;
 use App\Modules\Workflows\Models\Workflow;
 use App\Modules\Workflows\Models\WorkflowRun;
 use App\Modules\Workflows\Policies\WorkflowPolicy;
 use App\Modules\Workflows\Services\GenerationSessionWaitResolver;
+use App\Modules\Workflows\Services\PublicationWaitResolver;
 use App\Modules\Workflows\Services\WaitResolverRegistry;
 use App\Modules\Workflows\Services\WorkflowAiTextService;
 use App\Modules\Workflows\Services\WorkflowFunctionReferenceScanner;
 use App\Modules\Workflows\Services\WorkflowRunContext;
 use App\Modules\Workflows\Services\WorkflowVariableCatalogService;
 use App\Modules\Workflows\Steps\GenerateContentStep;
+use App\Modules\Workflows\Steps\PublishStep;
 use App\Modules\Workflows\Support\RealQueueConnection;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\Event;
@@ -104,6 +108,19 @@ class WorkflowsModuleServiceProvider extends ServiceProvider
         // session does not broadcast) — see the listener. There is no app/Listeners discovery in this app,
         // so the binding is explicit.
         Event::listen(GenerationSessionUpdated::class, ResumeWaitingRunOnSessionTerminal::class);
+
+        // The `publication` wait kind (R4 B6), registered for exactly the reasons above and with exactly
+        // the same posture: Publishing may never name Workflows, so the resolver lives here, and it is
+        // LAZY because only the waiting-run sweep ever asks while this boot() runs on every request.
+        $this->app->make(WaitResolverRegistry::class)->registerLazy(
+            PublishStep::WAIT_KIND,
+            fn (): PublicationWaitResolver => $this->app->make(PublicationWaitResolver::class),
+        );
+
+        // And its fast path. The backstop matters more here than for a generation: `needs_reconcile` is
+        // deliberately NOT announced (a publication in it has no answer yet), so a run parked on one is
+        // recovered only by the sweep — see the listener and PublicationConcluded.
+        Event::listen(PublicationConcluded::class, ResumeWaitingRunOnPublicationConcluded::class);
 
         // `workflow_run` MUST be registered: HasCreator now stamps a workflow-run creator
         // polymorphically (creator_type = $run->getMorphClass()), and the repo enforces the

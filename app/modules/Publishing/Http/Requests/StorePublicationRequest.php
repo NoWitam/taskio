@@ -2,10 +2,12 @@
 
 namespace App\Modules\Publishing\Http\Requests;
 
+use App\Modules\Approvals\Models\ApprovalPipeline;
 use App\Modules\Calendar\Services\CalendarInstantResolver;
 use App\Modules\Publishing\Enums\PublishingPlatform;
 use App\Modules\Publishing\Models\PlatformConnection;
 use App\Modules\Publishing\Models\Publication;
+use App\Rules\ScopedExists;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
@@ -98,6 +100,17 @@ class StorePublicationRequest extends FormRequest
             'media.*' => ['uuid', 'distinct'],
 
             'options' => ['nullable', 'array'],
+
+            // THE REVIEW A PERSON ATTACHES TO THEIR OWN DRAFT (B6). The same rule shape
+            // `StoreTasksRequest` uses for the same column, and `ScopedExists` rather than a bare
+            // `exists` for the same reason it does: the stock rule bypasses Eloquent's global scopes, so
+            // a payload could name another workspace's pipeline and this row would then be gated on a
+            // review nobody here can see.
+            //
+            // OMITTING IT DETACHES, on update — this is a whole-row write and the Task contract is
+            // identical. What stops that being a way around a live review is `PublicationPolicy::update()`,
+            // which refuses the whole request while one is pending.
+            'approval_pipeline_id' => ['nullable', 'uuid', new ScopedExists(ApprovalPipeline::class)],
 
             // The machine's, not the caller's. See the class docblock.
             'status' => ['prohibited'],
@@ -227,6 +240,19 @@ class StorePublicationRequest extends FormRequest
             $this->array('media'),
             static fn ($value): bool => is_string($value) && $value !== '',
         ));
+    }
+
+    /**
+     * The review pipeline this publication is gated on, or null for none.
+     *
+     * Null on an UPDATE means DETACH, which is why this is read rather than merged: the DTO is the whole
+     * row, and a field read only `when(filled())` would make "remove the review" unexpressible.
+     */
+    public function resolvedApprovalPipelineId(): ?string
+    {
+        $value = $this->string('approval_pipeline_id')->value();
+
+        return $value !== '' ? $value : null;
     }
 
     /** @return array<string, mixed> */

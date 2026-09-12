@@ -45,6 +45,29 @@ use App\Tenancy\TenantContext;
  * (may this person touch this row at all), and neither duplicates the other: the transition table says
  * nothing about people, and this file contains no edges.
  *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * B6 ADDED A THIRD QUESTION: IS A REVIEW HOLDING IT?
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * `Publication::isInApproval()` — composed into `update` and into `schedule`, and the MECHANISM is
+ * copied from `TaskPolicy::update()` rather than invented: a live approval process refuses the write at
+ * the policy, which is the one place the capability flags also read.
+ *
+ * WHY EDITING IS REFUSED is the reason the whole B6 batch exists. An approver said yes to a specific
+ * caption, a specific video and a specific moment; an edit while that decision is in flight would make
+ * the approval a statement about something nobody approved, and the thing it authorizes cannot be
+ * withdrawn afterwards.
+ *
+ * WHY ARMING IS REFUSED TOO is sharper still: arming is precisely the act the review exists to gate.
+ * Letting somebody arm around a live review would make the review advisory.
+ *
+ * Both refusals are reported as a 422 rather than a bare 403 — see
+ * {@see \App\Modules\Publishing\Exceptions\PublicationUnderReview} for why "forbidden" is the wrong
+ * sentence for a row that is merely busy. That happens in the FormRequests; the decision is here.
+ *
+ * `delete` is deliberately NOT gated on a review, matching `TaskPolicy`. Deleting is how somebody
+ * withdraws a publication they no longer want to go out, and taking that away while an approver is
+ * reading it would leave the only exit through the approval itself.
+ *
  * Fail-closed throughout: a null user, or no active workspace (a queue/console context), yields false.
  */
 class PublicationPolicy
@@ -67,7 +90,9 @@ class PublicationPolicy
 
     public function update(?User $user, Publication $publication): bool
     {
-        return $publication->status->isEditable() && $this->ownsOrIsWorkspaceOwner($publication, $user);
+        return !$publication->isInApproval()
+            && $publication->status->isEditable()
+            && $this->ownsOrIsWorkspaceOwner($publication, $user);
     }
 
     public function delete(?User $user, Publication $publication): bool
@@ -86,10 +111,18 @@ class PublicationPolicy
      * `isEditable()` is the right state test even here: the three statuses it refuses are exactly the
      * three where arming is meaningless or dangerous, and the Manager's table independently refuses the
      * edges anyway. This is the pre-filter that keeps the capability flag honest, not the enforcement.
+     *
+     * B6 FILLED IN THE FUTURE RULE THIS METHOD WAS SPLIT OFF FOR. It said a rule like "only a reviewer may
+     * arm" would have somewhere to attach without redefining what editing means, and this is it: while an
+     * approval process is live, NOBODY arms — not the creator, not the workspace owner — because arming is
+     * the act the review was put there to hold. Approval is what lifts it, and for an automated
+     * publication approval performs the arming itself (see `Publication::onApprovalCompleted()`).
      */
     public function schedule(?User $user, Publication $publication): bool
     {
-        return $publication->status->isEditable() && $this->ownsOrIsWorkspaceOwner($publication, $user);
+        return !$publication->isInApproval()
+            && $publication->status->isEditable()
+            && $this->ownsOrIsWorkspaceOwner($publication, $user);
     }
 
     /**

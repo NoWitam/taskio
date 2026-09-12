@@ -125,6 +125,34 @@ return [
         'lost_race' => 'Coś zajęło się już tą publikacją — jest teraz w stanie „:from". Nic nie zostało zmienione. Odśwież, żeby zobaczyć, na czym stoi.',
     ],
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // KARTA AKCEPTACJI (B6)
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // To, co akceptujący czyta o publikacji, zanim zdecyduje, oraz jedyna odmowa, jaką wystawia trwająca
+    // akceptacja. Każda etykieta nazywa coś, czego zmiana zmieniłaby to, co zobaczy świat — nie ma tu nic
+    // dekoracyjnego.
+    //
+    // `under_review` CELOWO nie leży w `transitions` powyżej. Tamten katalog jest przypięty klucz w klucz
+    // do słownika `PublicationTransitionRefused` (patrz PublishingConnectionVocabularyTest), a wstrzymanie
+    // przez akceptację nie jest przejściem, którego odmówiła maszyna — to wiersz, o którym ktoś decyduje.
+    'approval' => [
+        // NIE „nie masz uprawnień" — tę samą odpowiedź dostaje każdy, łącznie z autorem, i nikt z nich nie
+        // ma problemu z uprawnieniami. Zdanie mówi, u kogo to jest i co kończy czekanie.
+        'under_review' => 'Ta publikacja jest u osoby akceptującej, więc nie można jej teraz zmienić ani zaplanować. Po zakończeniu akceptacji znów będzie edytowalna — a jeśli miała publikować się automatycznie, to właśnie akceptacja ją zaplanuje.',
+        'fields' => [
+            'platform' => 'Miejsce publikacji',
+            'account' => 'Konto',
+            'planned_for' => 'Zaplanowano na',
+            'media' => 'Załączone media',
+        ],
+        // Miejsce próbne nie ma konta — tak samo jak publikacja, której połączenie zostało usunięte na
+        // stałe. Oba czyta się jako wypowiedziany brak, a nie jako pustą komórkę do interpretacji.
+        'no_account' => 'Bez konta (nic nie jest publikowane)',
+        // Zaakceptowanie posta na piątek i zaakceptowanie takiego, który pójdzie „gdy tylko powiesz tak",
+        // to dwie różne decyzje — więc ta druga jest powiedziana wprost, a nie zostawiona jako pustka.
+        'no_moment' => 'Natychmiast po akceptacji',
+    ],
+
     'validation' => [
         'status_not_accepted' => 'Status publikacji wynika z zaplanowania i opublikowania jej, a nie z treści żądania.',
         'remote_not_accepted' => 'To, co odesłała platforma, zapisujemy w chwili, gdy to nastąpi; nie jest to część żądania.',

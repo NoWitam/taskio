@@ -33,6 +33,34 @@ return [
             // zapisana w stanie, w którym każdy przebieg kończyłby się błędem.
             'bot_invalid' => 'Wybrany bot nie jest dostępny w tej przestrzeni.',
         ],
+
+        // R4 B6. Wszystko, czym krok `publish` może odmówić. Każdy z tych tekstów trafia dosłownie do
+        // `workflow_runs.error`, który czyta człowiek — więc mówi, co się stało, i tam, gdzie jest co
+        // zrobić, mówi też to. Żaden nie powtarza prozy platformy ani nie nazywa poświadczenia.
+        'publish' => [
+            // CZAS EDYCJI: pytanie zadane przy zapisie workflowu, przez tę samą instancję, która
+            // odpowiada w czasie przebiegu — dzięki temu definicja nie może zostać zapisana w stanie,
+            // w którym każdy przebieg kończyłby się błędem.
+            'connection_invalid' => 'To konto nie jest dostępne dla tego miejsca publikacji. Wskaż połączone konto, które tam publikuje — bez konta może działać tylko miejsce próbne.',
+
+            // CZAS PRZEBIEGU: to samo pytanie, zadane ponownie, bo token może zostać unieważniony, a
+            // konto odłączone, w czasie gdy workflow czeka. Odmowa następuje PRZED utworzeniem
+            // czegokolwiek, więc nie zostaje po niej żaden szkic.
+            'connection_unavailable' => 'Konto, w imieniu którego ten krok publikuje, nie jest już zdatne do użycia, więc nic nie zostało utworzone. Połącz je ponownie albo wskaż w kroku inne konto.',
+
+            // Publikacja osiągnęła prawdziwy wynik i nie była nim publikacja. Kod to stabilny kod błędu
+            // modułu — ten sam, który tłumaczy ekran publikacji.
+            'failed' => 'Publikacja, na którą czekał ten krok, zakończyła się stanem „:status" (:code), więc nic nie zostało opublikowane.',
+
+            // Akceptujący powiedział nie. Publikacja zostaje szkicem i można ją poprawić oraz wysłać
+            // jeszcze raz — ale ten przebieg się zatrzymuje, bo każdy kolejny krok zakładał, że coś poszło
+            // w świat.
+            'rejected' => 'Publikacja, na którą czekał ten krok, nie została zaakceptowana, więc nic nie zostało opublikowane.',
+
+            // Usunięta albo wyczyszczona w czasie oczekiwania. Nigdy nie osiągnie wyniku, więc dalsze
+            // czekanie zamieniłoby prawdziwą przyczynę w mylący komunikat o przekroczeniu czasu.
+            'gone' => 'Publikacja, na którą czekał ten krok, już nie istnieje, więc nie dało się odczytać jej wyniku.',
+        ],
     ],
 
     // R3 Kalendarz. Nazwy źródeł i plakietki wystąpień są tłumaczone SERWEROWO i przenoszone w
@@ -65,6 +93,9 @@ return [
         'create_form_report' => 'Utwórz raport formularza',
         'generate_content' => 'Wygeneruj treść',
         'create_event' => 'Utwórz wydarzenie w kalendarzu',
+        // R4 B6. Nazwane od tego, co ustawia w kolejce, a nie od tego, co wywołuje: krok uzbraja
+        // publikację, a wysyła ją dopiero przemiatanie modułu Publikacji.
+        'publish' => 'Opublikuj',
     ],
 
     // Stany przebiegu jako TEKST, dla miejsc, w których to serwer musi je nazwać (plakietka kalendarza

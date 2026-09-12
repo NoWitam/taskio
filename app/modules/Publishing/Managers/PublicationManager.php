@@ -5,6 +5,7 @@ namespace App\Modules\Publishing\Managers;
 use App\Modules\Publishing\DTOs\RemoteDraft;
 use App\Modules\Publishing\DTOs\RemoteRef;
 use App\Modules\Publishing\Enums\PublicationStatus;
+use App\Modules\Publishing\Events\PublicationConcluded;
 use App\Modules\Publishing\Exceptions\PublicationTransitionRefused;
 use App\Modules\Publishing\Models\Publication;
 use Carbon\CarbonImmutable;
@@ -468,6 +469,41 @@ class PublicationManager
         // The statement bumped `updated_at` (and nothing else re-read it), so the in-memory copy would
         // otherwise disagree with the row about when it last changed — which the reconciliation pass
         // orders by. `refresh()` rather than `syncOriginal()` for that reason, and to match `claimDue()`.
-        return $publication->refresh();
+        $publication->refresh();
+
+        $this->announce($publication, $to);
+
+        return $publication;
+    }
+
+    /**
+     * Tell anything waiting on this publication that it has an answer — and only when it really does.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * THIS IS THE HOOK ADR-0055 SAID WOULD HAVE TO LIVE HERE
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * Decision 3 named it in advance as a trap for a future change: {@see transition()} is a builder
+     * UPDATE, not `save()`, so `saving`/`updating`/`updated` NEVER fire for a status change. An observer
+     * registered on the model would silently miss every transition in the module — including the ones a
+     * suspended workflow run is parked on, which would then sit until a wait timeout and report the wrong
+     * cause. So the announcement is wired into the one write rather than relied upon by convention, which
+     * is exactly what that decision asked of whoever needed it first.
+     *
+     * IT IS AFTER THE CAS, AND THAT ORDER IS NOT INCIDENTAL. A caller that lost the race throws above and
+     * never reaches this line, so a refused conclusion announces nothing — two processes concluding one
+     * publication produce one conclusion and one announcement, never two.
+     *
+     * WHICH STATUSES COUNT is {@see PublicationConcluded::concludingStatuses()}'s to say, not this
+     * method's. The list deliberately excludes `needs_reconcile` (we do not know, so there is nothing to
+     * announce) and `scheduled`/`publishing` (in flight, not an outcome) — see that class for the full
+     * argument, which is where a reader looking for it will go.
+     */
+    private function announce(Publication $publication, PublicationStatus $to): void
+    {
+        if (!in_array($to, PublicationConcluded::concludingStatuses(), true)) {
+            return;
+        }
+
+        PublicationConcluded::fromTransition($publication, $to);
     }
 }

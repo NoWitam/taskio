@@ -7,6 +7,7 @@ use App\Modules\Workflows\Steps\CreateEventStep;
 use App\Modules\Workflows\Steps\CreateFormReportStep;
 use App\Modules\Workflows\Steps\CreateTaskStep;
 use App\Modules\Workflows\Steps\GenerateContentStep;
+use App\Modules\Workflows\Steps\PublishStep;
 use App\Modules\Workflows\Steps\WorkflowStep;
 use RuntimeException;
 
@@ -36,6 +37,7 @@ class WorkflowStepFactory
             WorkflowStepType::CREATE_FORM_REPORT => CreateFormReportStep::class,
             WorkflowStepType::GENERATE_CONTENT => GenerateContentStep::class,
             WorkflowStepType::CREATE_EVENT => CreateEventStep::class,
+            WorkflowStepType::PUBLISH => PublishStep::class,
         };
     }
 

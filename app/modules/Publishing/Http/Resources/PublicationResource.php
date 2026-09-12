@@ -61,6 +61,23 @@ use Illuminate\Http\Resources\Json\JsonResource;
  * "check the platform" action on. It is deliberately the ONLY affordance offered for a publication in
  * `needs_reconcile`: `can_be_edited` and `can_be_deleted` are both false there, and there is no retry
  * flag at all, because from that status the only honest next act is to go and look.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * THE REVIEW FIELDS (B6), AND WHY `approval_state` IS NOT REDUNDANT WITH `is_in_approval`
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * `is_in_approval` answers "is somebody deciding about this right now", which is what the two capability
+ * flags above turn on — both `can_be_edited` and `can_be_scheduled` route through the policy, which
+ * composes exactly that predicate, so a screen that respects the flags never offers a button whose
+ * request would be refused.
+ *
+ * `approval_state` answers the question a concluded review leaves behind, and without it that answer
+ * would be invisible. A publication a reviewer TURNED DOWN goes back to being a `draft` — the same status
+ * as one nobody has looked at and the same status as one still under review — so `status` alone cannot
+ * distinguish "not sent yet" from "sent and refused". The field is the latest process's own status
+ * (`pending` / `approved` / `rejected`), or null when this publication has never been reviewed.
+ *
+ * Both are answered from EAGER-LOADED relations (`Publication::readRelations()`). They are rendered for
+ * every row of a list, so a lazy read would be two queries per publication.
  */
 class PublicationResource extends JsonResource
 {
@@ -100,6 +117,17 @@ class PublicationResource extends JsonResource
             'last_attempt_at' => $publication->last_attempt_at?->toISOString(),
             'failure_code' => $publication->failure_code,
             'failure_context' => $publication->failure_context,
+
+            // ── REVIEW (B6) ───────────────────────────────────────────────────────────────────────
+            'approval_pipeline_id' => $publication->approval_pipeline_id,
+            'is_in_approval' => $publication->isInApproval(),
+            // The latest decision, which is the only way a REJECTION is visible: a refused publication
+            // is a draft again and says nothing about it on `status`. Null = never reviewed.
+            'approval_state' => $publication->latestApprovalProcess?->status->value,
+            // When this means to go out, whichever half of its life it is in — `scheduled_at` once
+            // armed, the moment a review is holding while it is not. One field, so a screen never has
+            // to know which column the answer came from.
+            'intended_publish_at' => $publication->intendedPublishAt()?->toISOString(),
 
             'creator' => CreatorResource::make($this->whenLoaded('creator')),
 

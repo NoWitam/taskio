@@ -32,6 +32,32 @@ return [
             // stored in a state that would fail every single run.
             'bot_invalid' => 'The selected bot is not available in this workspace.',
         ],
+
+        // R4 B6. Everything a `publish` step can refuse with. All of these land verbatim in
+        // `workflow_runs.error`, which a person reads — so each says what happened and, where there is
+        // one, what to do. None of them repeats a platform's own prose or names a credential.
+        'publish' => [
+            // AUTHOR TIME: asked when the workflow is saved, through the same authority the run uses, so
+            // a definition cannot be stored in a state that would fail every single run.
+            'connection_invalid' => 'That account is not available for this destination. Pick a connected account that publishes there — only a test destination can go without one.',
+
+            // RUN TIME: the same question, asked again, because a token can be revoked or an account
+            // disconnected while a workflow sleeps. Refused BEFORE anything is created, so no draft is
+            // left behind.
+            'connection_unavailable' => 'The account this step publishes as is no longer usable, so nothing was created. Reconnect it, or point the step at another account.',
+
+            // The publication reached a real outcome and it was not publication. The code is the module's
+            // stable failure code, which is also what the publishing screen translates.
+            'failed' => 'The publication this step was waiting for ended as “:status” (:code), so nothing was published.',
+
+            // A reviewer said no. The publication stays a draft and can be fixed and sent again — but
+            // this run stops, because every step after it assumed something had gone out.
+            'rejected' => 'The publication this step was waiting for was not approved, so nothing was published.',
+
+            // Deleted or purged while the run waited. It can never reach an outcome, so waiting on would
+            // only turn the real cause into a misleading timeout.
+            'gone' => 'The publication this step was waiting for no longer exists, so its outcome could not be collected.',
+        ],
     ],
 
     // R3 Calendar. Source names and occurrence badges are translated SERVER-side and carried in the
@@ -64,6 +90,9 @@ return [
         'create_form_report' => 'Create form report',
         'generate_content' => 'Generate content',
         'create_event' => 'Create calendar event',
+        // R4 B6. Named for what it queues, not for what it calls: the step arms a publication and the
+        // publishing sweep is what actually posts it.
+        'publish' => 'Publish',
     ],
 
     // Run states as PROSE, for the places the server has to word them itself (the calendar badge, and

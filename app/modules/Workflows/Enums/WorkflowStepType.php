@@ -24,6 +24,13 @@ enum WorkflowStepType: string
      * a workflow-created event is the same kind of row as a hand-made one.
      */
     case CREATE_EVENT = 'create_event';
+    /**
+     * Puts a PUBLICATION in the Publishing module's queue and waits for it to reach an outcome (R4 B6).
+     * The SECOND suspending step type, and the only one whose settled work is visible to the public: it
+     * arms a row and lets the due-sweep publish it — it never calls a platform itself. See
+     * {@see \App\Modules\Workflows\Steps\PublishStep}.
+     */
+    case PUBLISH = 'publish';
 
     /** @return array<int, string> */
     public static function ids(): array

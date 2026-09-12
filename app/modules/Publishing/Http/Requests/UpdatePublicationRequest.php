@@ -2,6 +2,7 @@
 
 namespace App\Modules\Publishing\Http\Requests;
 
+use App\Modules\Publishing\Http\Requests\Concerns\ExplainsAReviewHold;
 use App\Modules\Publishing\Models\Publication;
 
 /**
@@ -14,12 +15,19 @@ use App\Modules\Publishing\Models\Publication;
  * it.
  *
  * WHAT CHANGES IS THE AUTHORIZATION, and it now has a row to ask about. `PublicationPolicy::update()`
- * composes two independent answers — who is asking, and whether the row is still editable at all
- * (`PublicationStatus::isEditable()`, which refuses `publishing`, `published` and `needs_reconcile`).
- * A 403 rather than a 422 is the right shape for both halves: neither is about the payload.
+ * composes three independent answers — who is asking, whether the row is still editable at all
+ * (`PublicationStatus::isEditable()`, which refuses `publishing`, `published` and `needs_reconcile`),
+ * and, since B6, whether a REVIEW is holding it.
+ *
+ * A 403 is the right shape for the first two: neither is about the payload. The third is answered as a
+ * 422 that names the hold — see {@see ExplainsAReviewHold}. Editing a publication somebody is currently
+ * deciding about would make their decision a statement about content that no longer exists, which is
+ * why it is refused; but the person is not forbidden anything, they are early.
  */
 class UpdatePublicationRequest extends StorePublicationRequest
 {
+    use ExplainsAReviewHold;
+
     public function authorize(): bool
     {
         $publication = $this->route('publication');

@@ -26,6 +26,12 @@ use Carbon\CarbonImmutable;
  *
  * `media` is an ORDERED list of Disk file ids and is stored verbatim. It is not dereferenced here, or
  * anywhere else in this module: the bytes matter exactly once, inside the adapter at publish time.
+ *
+ * `approvalPipelineId` IS here (B6), and it is content in the same sense the rest is: attaching a review
+ * says what this publication IS, not where it is in its life. Nothing about it starts a review —
+ * `ApprovalService::startProcess()` does that, from a door of its own — and nothing about it is a
+ * transition. NULL MEANS DETACHED, because this DTO describes the whole row; a field that could only ever
+ * be set would make "take the review off this draft" unexpressible.
  */
 final readonly class PublicationDTO
 {
@@ -42,6 +48,8 @@ final readonly class PublicationDTO
         public ?CarbonImmutable $scheduledAt,
         public array $media = [],
         public array $options = [],
+        /** The review that gates arming, or null for none. Null on an update DETACHES. */
+        public ?string $approvalPipelineId = null,
     ) {}
 
     /**
@@ -64,6 +72,7 @@ final readonly class PublicationDTO
             scheduledAt: $request->resolvedScheduledAt(),
             media: $request->resolvedMedia(),
             options: $request->resolvedOptions(),
+            approvalPipelineId: $request->resolvedApprovalPipelineId(),
         );
     }
 }

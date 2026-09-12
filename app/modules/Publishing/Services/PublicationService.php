@@ -2,12 +2,18 @@
 
 namespace App\Modules\Publishing\Services;
 
+use App\Models\User;
+use App\Modules\Approvals\Enums\ApprovalProcessStatus;
+use App\Modules\Approvals\Services\ApprovalService;
 use App\Modules\Publishing\DTOs\PublicationDTO;
 use App\Modules\Publishing\Enums\PublicationStatus;
+use App\Modules\Publishing\Managers\PublicationManager;
 use App\Modules\Publishing\Models\Publication;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Pagination\CursorPaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Throwable;
 
 /**
  * The CONTENT half of a publication: writing it, listing it, counting it.
@@ -50,6 +56,63 @@ class PublicationService
     public function update(Publication $publication, PublicationDTO $dto): Publication
     {
         $publication->update($this->attributesFrom($dto));
+
+        return $publication;
+    }
+
+    /**
+     * A PERSON PRESSED SCHEDULE — which of two things that means depends on whether a review gates it.
+     *
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * WITH A PIPELINE ATTACHED AND NO STANDING APPROVAL, SCHEDULING IS THE SUBMISSION (B6, deputy
+     * decision — reversible)
+     * ─────────────────────────────────────────────────────────────────────────────────────────────
+     * The Task precedent is that a review starts at a LIFECYCLE MOMENT (a task entering IN_TEST), not
+     * when a pipeline is attached — attachment says "this kind of thing gets reviewed", not "judge this
+     * half-typed draft now". For a publication the lifecycle moment is unmistakably the attempt to arm:
+     * that is the act the review exists to gate. So on a draft whose pipeline has no standing approval,
+     * Schedule parks the CHOSEN moment on `arm_on_approval_at` and starts the process; the last
+     * approver's yes moves it onto `scheduled_at` through the exact mechanism the workflow path already
+     * uses. The person decided the moment — approval executes it, it decides nothing on their behalf.
+     *
+     * Without this branch an attached pipeline was DECORATIVE on the manual path: Schedule armed the
+     * row without any review ever starting, which is the quietest possible way around D2's sentence
+     * ("you approve exactly what goes out"). A standing approval (latest process approved) falls
+     * through to an ordinary arming — approval lifts the hold, and the button then does what it says.
+     * A rejected latest process lands in the submit branch again: re-scheduling IS the resubmission.
+     * A PENDING process never reaches here — `PublicationPolicy::schedule()` refuses it with a 422.
+     *
+     * The submit branch touches no status (the row stays a draft; that split belongs to the Manager);
+     * it writes one column and opens a review, both of which are content-side acts.
+     */
+    public function schedule(Publication $publication, CarbonImmutable $at, ?User $actor): Publication
+    {
+        $latest = $publication->latestApprovalProcess;
+
+        if ($publication->approval_pipeline_id !== null && $latest?->status !== ApprovalProcessStatus::Approved) {
+            // The intent is parked BEFORE the process opens, because the snapshot the approver reads
+            // must carry the moment — approving exactly what goes out includes when. Which makes the
+            // failure path load-bearing: `startProcess()` refuses a pipeline that vanished, one with
+            // no stages, and (since the one-live-process guard) a review that is already open — and a
+            // parked moment that outlives a refused submission is a live grenade, armed later by
+            // whatever approval eventually succeeds, for an instant nobody chose that day. So the
+            // previous value comes back, and the refusal propagates as the 422 it is.
+            $previousIntent = $publication->arm_on_approval_at;
+
+            $publication->update(['arm_on_approval_at' => $at]);
+
+            try {
+                app(ApprovalService::class)->startProcess($publication, $actor);
+            } catch (Throwable $e) {
+                $publication->update(['arm_on_approval_at' => $previousIntent]);
+
+                throw $e;
+            }
+
+            return $publication->refresh();
+        }
+
+        app(PublicationManager::class)->arm($publication, $at);
 
         return $publication;
     }
@@ -131,7 +194,9 @@ class PublicationService
     private function listQuery(Request $request): Builder
     {
         $query = Publication::query()
-            ->with('creator')
+            // Creator plus the two review relations the resource renders for every row — a lazy read
+            // would be two extra queries per publication on a 25-row page. See Publication::readRelations().
+            ->with(Publication::readRelations())
             ->when(
                 $status = $request->enum('status', PublicationStatus::class),
                 fn (Builder $query) => $query->where('status', $status),
@@ -178,14 +243,34 @@ class PublicationService
      */
     private function attributesFrom(PublicationDTO $dto): array
     {
-        return [
+        $attributes = [
             'title' => $dto->title,
             'body' => $dto->body,
             'platform' => $dto->platform,
             'platform_connection_id' => $dto->platformConnectionId,
-            'scheduled_at' => $dto->scheduledAt,
             'media' => $dto->media,
             'options' => $dto->options,
+            // B6. WRITTEN ON EVERY UPDATE, including as null — an update is a whole-row write, so an
+            // absent field detaches the review, exactly as it does on a task. That is only safe because
+            // `PublicationPolicy::update()` refuses the request outright while a review is LIVE; without
+            // that, an omitted field would be the quietest possible way around one.
+            'approval_pipeline_id' => $dto->approvalPipelineId,
         ];
+
+        // `scheduled_at` IS THE EXCEPTION to the whole-row rule, and the asymmetry with the pipeline
+        // field above is deliberate. `SCHEDULED` is editable (fixing a typo must not force a disarm),
+        // so a whole-row null here would let an ordinary PUT with the field omitted produce a
+        // `scheduled` row with no moment — a publication the due-sweep can never select and the
+        // calendar never shows, which neither goes out nor fails, ever. It would also break the
+        // invariant `index()` documents ("within `scheduled` the column is non-null by construction"),
+        // which the queue's cursor pagination stands on. Clearing the moment is the Manager's disarm —
+        // a state act, not a content edit — so "no value" here means "leave it alone", and there is
+        // nothing an update cannot express that way. Measured in the B6 re-review before this guard
+        // existed: PUT without the field on an armed row → 200, status `scheduled`, moment NULL.
+        if ($dto->scheduledAt !== null) {
+            $attributes['scheduled_at'] = $dto->scheduledAt;
+        }
+
+        return $attributes;
     }
 }

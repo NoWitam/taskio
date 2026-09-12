@@ -140,6 +140,34 @@ return [
         'lost_race' => 'Something else has already dealt with this publication — it is now “:from”. Nothing was changed. Refresh to see where it stands.',
     ],
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // THE REVIEW CARD (B6)
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // What an approver reads about a publication before deciding, plus the one refusal a live review
+    // produces. Every label here names something whose value would change what the world sees — there is
+    // nothing decorative in this list.
+    //
+    // `under_review` is DELIBERATELY NOT in `transitions` above. That catalog is pinned key-for-key to
+    // `PublicationTransitionRefused`'s own vocabulary (see PublishingConnectionVocabularyTest), and a
+    // review hold is not a transition the machine refused — it is a row somebody is deciding about.
+    'approval' => [
+        // NOT "you may not" — everybody gets this answer, including whoever created it, and none of them
+        // has a permission problem. Says who has it and what ends the wait.
+        'under_review' => 'This publication is with an approver, so it cannot be changed or scheduled right now. Once the review is finished it goes back to being editable — and if it was set up to publish automatically, approving it is what schedules it.',
+        'fields' => [
+            'platform' => 'Destination',
+            'account' => 'Account',
+            'planned_for' => 'Planned for',
+            'media' => 'Attached media',
+        ],
+        // A rehearsal destination has no account, and so does a publication whose connection was deleted
+        // outright. Both read as a stated absence rather than as a blank an approver has to interpret.
+        'no_account' => 'No account (nothing is published)',
+        // Approving a post for Friday and approving one for "as soon as you say yes" are different acts,
+        // so the second one is said out loud rather than left as an empty cell.
+        'no_moment' => 'As soon as it is approved',
+    ],
+
     'validation' => [
         // The machine's own columns, refused rather than dropped: a client sending one believes it is
         // setting something, and being quietly ignored leaves it correct-looking and wrong.

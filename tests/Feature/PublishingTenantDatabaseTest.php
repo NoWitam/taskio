@@ -3,6 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use App\Modules\Approvals\Enums\ApprovalProcessStatus;
+use App\Modules\Approvals\Models\ApprovalPipeline;
+use App\Modules\Approvals\Models\ApprovalProcess;
+use App\Modules\Approvals\Services\ApprovalService;
 use App\Modules\Publishing\DTOs\OAuthTokens;
 use App\Modules\Publishing\DTOs\RemoteAccount;
 use App\Modules\Publishing\Enums\PublicationStatus;
@@ -422,6 +426,80 @@ class PublishingTenantDatabaseTest extends TestCase
                 ->where('workspace_id', $this->workspace->id)
                 ->value('status'),
             'a CENTRAL publication was claimed while sweeping an own-database workspace',
+        );
+    }
+
+    /**
+     * B6 — AN APPROVAL ARMS THE PUBLICATION INSIDE THE TENANT DATABASE.
+     *
+     * The new seam of the B6 fix round, in the mode that made it a finding: `ApprovalService::decide()`
+     * opens its transaction on the DEFAULT connection, while for an own-database workspace both the
+     * process and the publication live on the TENANT connection. The arming is deferred with
+     * `DB::afterCommit()` so a rolled-back decision can never leave an armed row behind — and this
+     * scenario pins the half that only exists in own-database mode: the deferred effect must land in
+     * the TENANT database, with nothing written centrally by any part of the decide→arm chain.
+     */
+    public function test_an_approval_arms_the_publication_inside_the_tenant_database(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+
+        $this->useTenant();
+
+        $pipeline = ApprovalPipeline::factory()->create(['creator_id' => $this->user->id]);
+
+        $pipeline->stages()->create([
+            'name' => 'Review',
+            'icon' => 'check-circle',
+            'description' => null,
+            'approver_type' => 'user',
+            'approver_id' => $this->user->id,
+            'order' => 1,
+        ]);
+
+        $armAt = CarbonImmutable::parse('2099-04-01 07:00:00', 'UTC');
+
+        $publication = Publication::factory()->create([
+            'title' => 'TENANT reviewed publication',
+            'creator_id' => $this->user->id,
+            'approval_pipeline_id' => $pipeline->id,
+            'arm_on_approval_at' => $armAt,
+        ]);
+
+        app(ApprovalService::class)->startProcess($publication, $this->user);
+
+        app(ApprovalService::class)->decide(
+            $publication->fresh()->pendingApprovalProcess,
+            ApprovalProcessStatus::Approved,
+        );
+
+        $fresh = $publication->fresh();
+
+        $this->assertSame(PublicationStatus::SCHEDULED, $fresh->status, 'the approval must arm the TENANT row');
+        $this->assertSame($armAt->toIso8601String(), $fresh->scheduled_at->utc()->toIso8601String());
+        $this->assertNull($fresh->arm_on_approval_at, 'the intent is consumed in the tenant database too');
+
+        // ONE row: `decide()` updates the pending process in place, and `advance()` inserts a second
+        // one only when the pipeline has a next stage — this one does not. (The first draft of this
+        // scenario asserted 2 and would have failed its very first gated run; measured in shared mode
+        // during the B6 re-review.)
+        $decided = ApprovalProcess::query()->where('approvable_id', $publication->id)->get();
+
+        $this->assertCount(1, $decided, 'a one-stage review is one process row, decided in place');
+        $this->assertSame(ApprovalProcessStatus::Approved, $decided->sole()->status);
+
+        // ── THE NEGATIVE ──────────────────────────────────────────────────────────
+        $central = DB::connection(config('database.default'));
+
+        $this->assertSame(
+            0,
+            (int) $central->table('publications')->where('workspace_id', $this->workspace->id)->count(),
+            'no part of the decide→arm chain may write a publication centrally',
+        );
+
+        $this->assertSame(
+            0,
+            (int) $central->table('approval_processes')->where('approvable_id', $publication->id)->count(),
+            'the approval trail of a tenant publication must not leak to the central database',
         );
     }
 

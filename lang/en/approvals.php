@@ -5,6 +5,9 @@ return [
 
     'entity_types' => [
         'task' => 'Task',
+        // R4 B6 — the second Approvable in the product. Worded as the thing being decided about, not as
+        // the module, because it is what an approver reads at the top of a card.
+        'publication' => 'Publication',
     ],
 
     'status' => [
@@ -53,6 +56,12 @@ return [
         'no_pipeline_assigned' => 'Entity has no approval pipeline assigned.',
         'pipeline_has_no_stages' => 'Approval pipeline has no stages defined.',
         'already_decided' => 'This stage has already been decided.',
+        // R4 B6 — the subject was deleted while it was with an approver. A 422 rather than the TypeError
+        // this used to be; see ApprovalService::decide().
+        'approvable_missing' => 'The item this approval is about no longer exists.',
+        // R4 B6 — one live review per subject; a second one would mean two approvers deciding about
+        // the same thing without knowing of each other. See ApprovalService::startProcess().
+        'process_already_pending' => 'This item is already under review.',
         'note_required_on_rejection' => 'A note is required when rejecting.',
         'invalid_decision' => 'Invalid decision.',
         'min_one_stage' => 'Pipeline must have at least one stage.',
