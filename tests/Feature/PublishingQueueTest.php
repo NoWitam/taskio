@@ -786,7 +786,15 @@ class PublishingQueueTest extends TestCase
      * Every other stale-claim reaper in this product RELEASES the claim so the work can run again, and
      * that is right for a bot run or an index. Here the same helpful instinct republishes a post that
      * may already exist. So the reaped row is left where no sweep can select it, and this test asserts
-     * the absence: a pass immediately afterwards dispatches nothing.
+     * the absence: a pass immediately afterwards dispatches no publish.
+     *
+     * IT NAMES THE JOB RATHER THAN ASSERTING AN EMPTY QUEUE, and the distinction earned itself. The first
+     * version asserted `assertNothingPushed()`, which was true only while this module's single queue user
+     * was the publish job — so D4's failure letter (this very row concludes `failed`, which is the
+     * conclusion a letter is written for) turned it red without anything about the reaper having changed.
+     * "The reaper does not republish" is the property; "nothing whatsoever reaches the queue" was a
+     * coincidence standing in for it, and a coincidence that would also have hidden the next legitimate
+     * side effect behind a failure in this file.
      */
     public function test_a_reaped_publication_is_never_handed_back_to_the_queue(): void
     {
@@ -799,11 +807,11 @@ class PublishingQueueTest extends TestCase
 
         $this->runCommand('publishing:reconcile');
 
-        Queue::assertNothingPushed();
+        Queue::assertNotPushed(PublishPublicationJob::class);
 
         $this->runCommand('publishing:dispatch-due');
 
-        Queue::assertNothingPushed();
+        Queue::assertNotPushed(PublishPublicationJob::class);
 
         // NAMED, AND NAMED WITH ITS REASON — `assertNotSame(PUBLISHING, …)` passed for every other
         // status in the enum, including the one that would be a defect.

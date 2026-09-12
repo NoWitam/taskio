@@ -314,18 +314,27 @@ public static function installationDefault(): string
 }
 ```
 
-`PasswordResetService::mailLocale()` now reads it instead:
+The account-level half of the rule ("which language does THIS account read letters in") started life as
+a private `PasswordResetService::mailLocale()`; when the THIRD letter arrived (D4, the failed-publication
+mail) the rule was **extracted** to live beside its sibling rather than copied — so the entry point for
+any code addressing a mail to an account is now:
 
 ```php
-private function mailLocale(User $user): string
+// App\Http\Middleware\SetUserLocale
+public static function accountLocale(User $user): string
 {
     $chosen = $user->locale;
 
-    return is_string($chosen) && in_array($chosen, SetUserLocale::supported(), true)
+    return is_string($chosen) && in_array($chosen, self::supported(), true)
         ? $chosen
-        : SetUserLocale::installationDefault();
+        : self::installationDefault();
 }
 ```
+
+`installationDefault()` remains the inner half (and the direct call for code with no account in hand —
+a console command, a third-party notice). `PasswordResetService` and the publication-failure listener
+both delegate to `accountLocale()`; a second copy of this ternary anywhere is the drift this addendum
+exists to forbid.
 
 Pinned by `PasswordResetTest::test_reset_mail_is_written_in_the_language_the_account_chose`,
 `::test_reset_mail_falls_back_to_the_app_locale_when_none_was_chosen` and
@@ -343,10 +352,11 @@ fell into). Decision 6's Invariant B premise — "nothing today reads `app.local
 default" — held everywhere except the one caller this very batch introduced, and that caller has since
 been corrected.
 
-**The rule this addendum adds, stated plainly for the next mailable or scheduled command:** code that
-wants "what does this installation speak when nobody involved has an opinion" — a mail to a third party,
-a queued job with no request context, a console command — must call
-`SetUserLocale::installationDefault()`. It must **never** read `config('app.locale')` for that purpose:
+**The rule this addendum adds, stated plainly for the next mailable or scheduled command:** code
+addressing a mail to an ACCOUNT calls `SetUserLocale::accountLocale($user)`; code that wants "what does
+this installation speak when nobody involved has an opinion" — a mail to a third party, a queued job
+with no request context, a console command — calls `SetUserLocale::installationDefault()`. Neither may
+**ever** read `config('app.locale')` for that purpose:
 inside a request that key has already been overwritten by whichever locale `SetUserLocale` resolved for
 *that* caller, and outside a request it is simply the boot-time value with no guarantee about who last
 mutated it in-process. This sharpens Decision 6's Invariant B from "true by absence of a translated mail"

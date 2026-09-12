@@ -259,39 +259,19 @@ class PasswordResetService
         $this->cache->forget($user->id);
     }
 
+    /**
+     * SYNCHRONOUS, and the language follows the ACCOUNT rather than the request.
+     *
+     * The locale rule this method used to spell out in full now lives on
+     * {@see SetUserLocale::accountLocale()} — extracted, unchanged, when R4's failed-publication mail
+     * became the third caller that needs it. Its docblock keeps the whole argument, including why the
+     * request's own `X-Client-Locale` may never decide the language of a letter delivered to somebody
+     * else's inbox.
+     */
     private function sendMail(User $user, #[\SensitiveParameter] string $plainToken): void
     {
         Mail::to($user->email)
-            ->locale($this->mailLocale($user))
+            ->locale(SetUserLocale::accountLocale($user))
             ->send(new PasswordResetMail($user, $plainToken));
-    }
-
-    /**
-     * The language the LETTER is written in: the account's stored choice, else `APP_LOCALE`.
-     *
-     * Not the request's language. {@see SetUserLocale} answers the HTTP response in whatever
-     * the calling screen is rendering (`X-Client-Locale`) when no choice is stored — right for
-     * a reply that lands on that screen, wrong for a letter that lands in somebody else's
-     * inbox. Anybody may POST any address here, so honouring the request would let a stranger
-     * choose the language of a mail delivered to the account holder. The reply follows the
-     * screen; the mail follows the account.
-     *
-     * `users.locale` is nullable and unvalidated at rest, so it is matched against the list
-     * this installation can actually speak — the same list the middleware reads, not a second
-     * copy — and an unusable value falls through to `APP_LOCALE` exactly as it does there.
-     *
-     * THE FALLBACK DOES NOT READ `config('app.locale')`, and the first draft of this method did,
-     * which is a trap worth naming: `App::setLocale()` WRITES that key, and `SetUserLocale` has
-     * already run by the time we get here — so `config('app.locale')` holds whatever the CALLER'S
-     * `X-Client-Locale` asked for. The "fallback to APP_LOCALE" would have been a fallback to the
-     * attacker's header. {@see SetUserLocale::installationDefault()} is the value nothing rewrites.
-     */
-    private function mailLocale(User $user): string
-    {
-        $chosen = $user->locale;
-
-        return is_string($chosen) && in_array($chosen, SetUserLocale::supported(), true)
-            ? $chosen
-            : SetUserLocale::installationDefault();
     }
 }

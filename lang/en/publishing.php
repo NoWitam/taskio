@@ -204,6 +204,39 @@ return [
         'publish_worker_failed' => 'The worker handling this publication stopped before it could tell us what happened. Check the platform before scheduling it again.',
         // Nobody ever came back for it. The same instruction, with the reason a person can act on.
         'reaper_stale' => 'This was claimed for publishing and nothing came back. Check the platform before scheduling it again — it may already be live.',
+
+        // ── THE FLOOR (D4) ────────────────────────────────────────────────────────────────────────
+        // A FAITHFUL COPY of the sentence the client has carried since B3 (`failures.unknown` in en.ts),
+        // not a new sentence about failure: the server only needed one now, because the failed-publication
+        // mail is the first server-side prose that renders a failure code. B4 will add adapter codes this
+        // build has never heard of, and an inbox is the worst possible place to show a raw key. The code
+        // is NAMED so a support conversation has something to start from.
+        'unknown' => 'The publication stopped for a reason this version of the application does not describe yet (:code).',
+    ],
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // THE FAILED-PUBLICATION MAIL (D4)
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // The third operational mail of this product, after the invitation and the password reset. It lives
+    // here, beside the `failures` catalog, because the letter is ASSEMBLED from those sentences — it
+    // describes no failure of its own.
+    //
+    // "Nothing was sent" may only be said because this letter goes out for `failed` alone, whose contract
+    // is "the platform was asked and PROVED nothing was created". For `needs_reconcile` the sentence
+    // would be false — which is exactly why that status is not a conclusion and sends no letter.
+    'mail' => [
+        'failed' => [
+            'subject' => 'A publication did not go out: :title',
+            'greeting' => 'Hi :name,',
+            'intro' => 'The publication “:title” was meant to go out on :platform and did not. Nothing was sent.',
+            'planned' => 'Planned for :moment (:timezone).',
+            'action' => 'Open the publication',
+            'fallback' => 'Or paste this link into your browser:',
+            'footer' => 'Taskio sends this letter whenever a publication fails.',
+            // The subject/body stand-in for a BLANK title (the workflow path lets one through to
+            // `title_missing` on purpose) — without it the subject ends in ": " and the intro quotes "".
+            'untitled' => 'Untitled publication',
+        ],
     ],
 
 ];

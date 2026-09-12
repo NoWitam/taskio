@@ -9,6 +9,8 @@ use App\Modules\Publishing\Console\DispatchDuePublicationsCommand;
 use App\Modules\Publishing\Console\ReconcilePublicationsCommand;
 use App\Modules\Publishing\Console\RefreshPlatformTokensCommand;
 use App\Modules\Publishing\Enums\PublishingPlatform;
+use App\Modules\Publishing\Events\PublicationConcluded;
+use App\Modules\Publishing\Listeners\MailFailureOnPublicationConcluded;
 use App\Modules\Publishing\Models\PlatformConnection;
 use App\Modules\Publishing\Models\Publication;
 use App\Modules\Publishing\Models\PublicationAttempt;
@@ -19,6 +21,7 @@ use App\Modules\Publishing\Policies\PublicationPolicy;
 use App\Modules\Publishing\Services\OAuthProviderRegistry;
 use App\Modules\Publishing\Services\PlatformAdapterRegistry;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
@@ -55,6 +58,18 @@ class PublishingModuleServiceProvider extends ServiceProvider
 
         Gate::policy(Publication::class, PublicationPolicy::class);
         Gate::policy(PlatformConnection::class, PlatformConnectionPolicy::class);
+
+        // D4 — SOMEBODY IS TOLD WHEN A PUBLICATION DID NOT GO OUT.
+        //
+        // The event and the listener are BOTH THIS MODULE'S, so this registration adds no module edge:
+        // unlike the Workflows listener on the same signal (which exists because Publishing may never
+        // name Workflows), telling an author that their own publication failed is Publishing's own
+        // business. There is no app/Listeners discovery in this application, so the binding is explicit —
+        // and it is a CLASS rather than a closure so the listener stays unit-addressable.
+        //
+        // It listens to every conclusion and answers only `failed`; see the listener for why `blocked`
+        // and a rejected review are deliberately silent.
+        Event::listen(PublicationConcluded::class, MailFailureOnPublicationConcluded::class);
 
         // The morph map is enforced app-wide, so a class used as ANY morph value must be in it. A
         // publication's calendar occurrences carry `publication` as their subject alias, and the alias

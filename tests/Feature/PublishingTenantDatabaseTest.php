@@ -10,6 +10,7 @@ use App\Modules\Approvals\Services\ApprovalService;
 use App\Modules\Publishing\DTOs\OAuthTokens;
 use App\Modules\Publishing\DTOs\RemoteAccount;
 use App\Modules\Publishing\Enums\PublicationStatus;
+use App\Modules\Publishing\Mail\PublicationFailedMail;
 use App\Modules\Publishing\Managers\PlatformConnectionManager;
 use App\Modules\Publishing\Managers\PublicationManager;
 use App\Modules\Publishing\Models\PlatformConnection;
@@ -25,6 +26,7 @@ use App\Tenancy\TenantContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -51,6 +53,12 @@ use Tests\TestCase;
  * would report "proven absent" about a post that exists, mark the row `failed`, and thereby authorise a
  * retry that publishes it twice. Neither failure is visible in shared mode, where there is only one
  * place for a query to land.
+ *
+ * D4 ADDED THE FIRST ONE THAT READS BOTH DATABASES AT ONCE. The failed-publication letter takes its
+ * CONTENT from the tenant row and its ADDRESS from the central `users`/`workspaces` pair — tenancy is
+ * central in both db_modes — so it is the one place in this module where getting the connection wrong
+ * does not mean "no data" but "the wrong half". See
+ * {@see test_the_failure_letter_is_written_from_the_tenant_row}.
  *
  * B2 ADDED THREE MORE OF THEM, and they are the ones this whole arrangement was really for. A workspace
  * that pays for its own database is buying "our data is in our database"; `platform_connections` holds
@@ -686,6 +694,72 @@ class PublishingTenantDatabaseTest extends TestCase
             'dryrun_tenant_artifact',
             $fresh->remote_id,
             'a CENTRAL attempt row reached an own-database workspace\'s reconciliation',
+        );
+    }
+
+    /**
+     * D4 — THE FAILURE LETTER IS WRITTEN FROM THE TENANT ROW, AND ADDRESSED FROM THE CENTRAL ONE.
+     *
+     * The first thing in this module that reads BOTH databases in one breath, which is why it gets a
+     * twin. The publication lives in the tenant database; the recipient does not, and cannot: `users`,
+     * `workspaces` and `workspace_user` are central in both db_modes, so establishing "who is answerable
+     * for this" is a central query made while a tenant connection is configured.
+     *
+     * Two failures are invisible in shared mode and both are pinned here:
+     *
+     *   A LISTENER THAT READ CENTRAL for the publication would find nothing at all for a tenant id — and
+     *   a failure nobody is told about is the exact defect D4 exists to remove. That the letter EXISTS is
+     *   the assertion; the central decoy (this workspace's id, a different row) is what stops a
+     *   mis-routed read from quietly succeeding with the wrong content.
+     *
+     *   A RECIPIENT LOOKUP ROUTED TO THE TENANT would find no `users` table there at all. The creator is
+     *   deliberately a system record (`workflow_run`), so the address can only come from the workspace
+     *   owner — i.e. from central — while everything about the content comes from the tenant row.
+     *
+     * The run row itself is NOT created: the morph resolves to null either way, and inventing a
+     * `workflow_runs` fixture here would couple this test to the tenant schema of another module for no
+     * gain. What matters is `creator_type`, which is what makes `creatorUser()` answer null.
+     */
+    public function test_the_failure_letter_is_written_from_the_tenant_row(): void
+    {
+        $this->provisionOwnDatabaseWorkspace();
+
+        $this->plantCentralPublicationDecoy();
+
+        $this->useTenant();
+
+        $publication = Publication::factory()->publishing()->create([
+            'title' => 'TENANT publication',
+            'creator_id' => $this->user->id,
+        ]);
+
+        $publication->forceFill([
+            'creator_id' => (string) Str::uuid7(),
+            'creator_type' => 'workflow_run',
+        ])->save();
+
+        Mail::fake();
+
+        app(PublicationManager::class)->markFailed($publication->fresh(), 'title_missing');
+
+        Mail::assertQueued(PublicationFailedMail::class, 1);
+
+        /** @var PublicationFailedMail $letter */
+        $letter = Mail::queued(PublicationFailedMail::class)->first();
+
+        $this->assertTrue(
+            $letter->hasTo($this->user->email),
+            'the recipient lookup must reach the CENTRAL owner while a tenant connection is configured',
+        );
+
+        $this->assertSame($publication->id, $letter->publicationId);
+        $this->assertSame('TENANT publication', $letter->title);
+        $this->assertSame(self::WORKSPACE_TIMEZONE, $letter->timezone);
+
+        $this->assertStringNotContainsString(
+            'CENTRAL decoy',
+            $letter->render(),
+            'a CENTRAL publication\'s title reached an own-database workspace\'s letter',
         );
     }
 

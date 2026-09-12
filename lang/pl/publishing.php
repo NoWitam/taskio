@@ -182,6 +182,39 @@ return [
         'publish_worker_failed' => 'Proces obsługujący tę publikację zakończył się, zanim zdążył powiedzieć, co się stało. Sprawdź platformę, zanim zaplanujesz ją ponownie.',
         // Nikt po nią nie wrócił. Ta sama instrukcja, z powodem, na który da się zareagować.
         'reaper_stale' => 'Ta publikacja została wzięta do publikacji i nic nie wróciło. Sprawdź platformę, zanim zaplanujesz ją ponownie — może już być opublikowana.',
+
+        // ── PODŁOGA (D4) ──────────────────────────────────────────────────────────────────────────
+        // WIERNA KOPIA zdania, które klient ma u siebie od B3 (`failures.unknown` w pl.ts), a nie nowe
+        // zdanie o porażce: serwer potrzebował go dopiero teraz, bo e-mail o nieudanej publikacji jest
+        // pierwszą serwerową prozą renderującą kod awarii. B4 dołoży kody adapterów, których ta wersja
+        // nie zna, a surowy klucz w skrzynce pocztowej to najgorszy możliwy moment na identyfikator
+        // techniczny. Kod jest NAZWANY, żeby rozmowa ze wsparciem miała się o co zaczepić.
+        'unknown' => 'Publikacja zatrzymała się z powodem, którego ta wersja aplikacji jeszcze nie opisuje (:code).',
+    ],
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // WIADOMOŚĆ E-MAIL O NIEUDANEJ PUBLIKACJI (D4)
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // Trzeci operacyjny e-mail produktu, po zaproszeniu i resecie hasła. Leży tutaj, obok katalogu
+    // `failures`, bo treść listu SKŁADA SIĘ z tamtych zdań — sam nie opisuje żadnej porażki.
+    //
+    // „Nic nie zostało wysłane" wolno powiedzieć TYLKO dlatego, że ten list wychodzi wyłącznie dla
+    // statusu `failed`, którego kontrakt to „platformę zapytano i dowiedliśmy, że nic nie powstało".
+    // Dla `needs_reconcile` to zdanie byłoby nieprawdą — i właśnie dlatego tamten status nie jest
+    // konkluzją i nie wysyła listu.
+    'mail' => [
+        'failed' => [
+            'subject' => 'Publikacja nie została opublikowana: :title',
+            'greeting' => 'Cześć :name,',
+            'intro' => 'Publikacja „:title" miała trafić na :platform i nie została opublikowana. Nic nie zostało wysłane.',
+            'planned' => 'Planowany termin: :moment (:timezone).',
+            'action' => 'Otwórz publikację',
+            'fallback' => 'Albo wklej ten link do przeglądarki:',
+            'footer' => 'Ten list wysyła Taskio za każdym razem, gdy publikacja zakończy się niepowodzeniem.',
+            // Zastępnik PUSTEGO tytułu w temacie i treści (ścieżka workflow celowo przepuszcza taki do
+            // `title_missing`) — bez niego temat kończy się „: ", a intro cytuje pusty string.
+            'untitled' => 'Publikacja bez tytułu',
+        ],
     ],
 
 ];

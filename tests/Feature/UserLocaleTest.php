@@ -530,4 +530,25 @@ class UserLocaleTest extends TestCase
 
         return null;
     }
+
+    /**
+     * `accountLocale()` — the one rule for "which language does this ACCOUNT read letters in", pinned
+     * where the rule lives rather than only in its consumers' suites. The two configs are DIVERGENT in
+     * every case below, because `App::setLocale()` writes `config('app.locale')` (ADR-0053 addendum):
+     * on a machine where both configs agree, a fallback read from the wrong one is invisible — which is
+     * exactly how the D4 review's locale mutation stayed green against an entire consumer suite.
+     */
+    public function test_account_locale_prefers_the_choice_and_falls_back_to_the_installation(): void
+    {
+        config(['app.locale' => 'en', 'app.default_locale' => 'pl']);
+
+        $user = User::factory()->make(['locale' => null]);
+        $this->assertSame('pl', SetUserLocale::accountLocale($user), 'no choice → the INSTALLATION default, never app.locale');
+
+        $user->locale = 'zz';
+        $this->assertSame('pl', SetUserLocale::accountLocale($user), 'an unsupported choice falls back the same way');
+
+        $user->locale = 'en';
+        $this->assertSame('en', SetUserLocale::accountLocale($user), 'a supported choice wins over both configs');
+    }
 }

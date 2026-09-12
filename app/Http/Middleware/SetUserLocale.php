@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\App;
@@ -151,5 +152,37 @@ class SetUserLocale
         return is_string($default) && in_array($default, $supported, true)
             ? $default
             : $supported[0];
+    }
+
+    /**
+     * THE LANGUAGE A LETTER TO THIS ACCOUNT IS WRITTEN IN: the account's stored choice, else `APP_LOCALE`.
+     *
+     * The rule {@see installationDefault()} was added for, extracted now that a THIRD mail needs it (the
+     * workspace invitation, the password reset, and R4's failed-publication notice). It lives here rather
+     * than in either module because it is ONE policy, and because the alternative was the Publishing
+     * module calling into the Auth module for a decision about locales — a cross-module edge for a rule
+     * that belongs to neither of them.
+     *
+     * IT IS NOT THE REQUEST'S LANGUAGE, AND THAT IS A SECURITY PROPERTY RATHER THAN A STYLE ONE.
+     * `handle()` above answers the HTTP RESPONSE in whatever the calling screen is rendering
+     * ({@see CLIENT_HEADER}) when no choice is stored — right for a reply that lands on that screen,
+     * wrong for a letter that lands in somebody's inbox. On the password-reset flow anybody may POST any
+     * address, so honouring the request would let a stranger choose the language of a mail delivered to
+     * the account holder. The reply follows the screen; the letter follows the account.
+     *
+     * THE FALLBACK MUST NOT READ `config('app.locale')` — `App::setLocale()` WRITES that key, so by the
+     * time a mail is composed it holds THIS REQUEST'S language. {@see installationDefault()} is the twin
+     * nothing rewrites, and this method exists so that no caller has to remember the difference.
+     *
+     * `users.locale` is nullable and unvalidated at rest, so it goes through the same {@see supported()}
+     * guard as everything else here: an unusable stored value is not a preference to respect.
+     */
+    public static function accountLocale(User $user): string
+    {
+        $chosen = $user->locale;
+
+        return is_string($chosen) && in_array($chosen, self::supported(), true)
+            ? $chosen
+            : self::installationDefault();
     }
 }
