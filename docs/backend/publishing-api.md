@@ -12,12 +12,15 @@ Tenant scope: `Publication`, `PlatformConnection` and `PublicationAttempt` all u
 workspace's own database, never the shared one.
 
 Covers R4 **B1** (the publication state machine, the `dry_run` adapter, the fifth Calendar
-source), **B2** (platform connections and the OAuth handshake) and **B3** (the queue: a
+source), **B2** (platform connections and the OAuth handshake), **B3** (the queue: a
 due-sweep, the atomic claim, a stale-`publishing` reaper, and reconciliation — both automatic
-and manual), as committed on `module/publishing`. This page documents **only what is
-implemented and committed**. The real Facebook/Instagram/YouTube publish adapters (today only
-`dry_run` publishes anything, end to end), media attachment (B5) and publishing metrics (B9)
-are **not yet built**; see "Planned (B4+)" at the end.
+and manual) and **B6** (a publication as `Approvable`, gating **arming** through the same review
+pipelines `Task` uses — see "Approvals & review (B6)" below and
+`docs/decisions/ADR-0056-publication-approval.md` for the design record), as committed on
+`module/publishing`. This page documents **only what is implemented and committed**. The real
+Facebook/Instagram/YouTube publish adapters (today only `dry_run` publishes anything, end to
+end), media attachment (B5) and publishing metrics (B9) are **not yet built**; see "Planned
+(B4+)" at the end.
 
 ---
 
@@ -117,6 +120,8 @@ endpoint they already have.
 | `attempts`, `last_attempt_at` | bumped by `PublicationManager::claim()` |
 | `failure_code`, `failure_context` | a stable machine code plus a small structured aside — **never** platform prose, **never** anything derived from a credential |
 | `creator_id`/`creator_type` | polymorphic creator (ADR-0015) |
+| `approval_pipeline_id` (B6) | nullable FK to `approval_pipelines`, `nullOnDelete` — a byte-for-byte copy of the column `tasks` already carries. Content, not state: attached on create, travels through update, `null` **detaches** the review (see "Approvals & review (B6)" below) |
+| `arm_on_approval_at` (B6) | nullable instant, **not indexed** (nothing selects on it — the arm-on-approval hook always reads it off a row it already holds). The arming intent a live review is holding; `NULL` means nothing self-arms. See "Approvals & review (B6)" for who writes and clears it |
 
 **Uniqueness added once `platform_connections` existed**
 (`2026_09_06_000003_add_platform_connection_constraints_to_publications_table.php`):
@@ -237,6 +242,141 @@ manual side of reconciliation.
 
 ---
 
+## Approvals & review (B6)
+
+A publication may be gated on a review, through the same `App\Modules\Approvals` pipelines
+`Task` uses — `Publication` is the second implementation of
+`App\Modules\Approvals\Interfaces\Approvable` in the product. The review gates **arming**, never
+a trigger: approving a publication does not start anything, workflow or otherwise — it is the
+mechanism that lets `POST …/schedule` take effect, or (for a `publish` workflow step, see
+`docs/backend/workflows-api.md`) the mechanism that lets an already-parked intent become a real
+`scheduled_at`. The design reasoning — why an `Approvable` rather than a trigger, the
+parked-intent column, the deferred `afterCommit` effects, the module boundaries — is recorded in
+full in `docs/decisions/ADR-0056-publication-approval.md`; this section is the implemented wire
+shape.
+
+### Resource fields (`PublicationResource`)
+
+| Field | Notes |
+|---|---|
+| `approval_pipeline_id` | the pipeline gating this publication's arming, or `null` for none. Content, like `title`/`body` — attached on `POST`, changed on `PUT` (see "Attach/detach" below) |
+| `is_in_approval` | `true` while an `ApprovalProcess` for this row is `pending` — the same predicate `can_be_edited`/`can_be_scheduled` are computed from, so a screen that respects the capability flags never offers a button whose request would 422 |
+| `approval_state` | the **latest** process's own status (`pending`/`approved`/`rejected`), or `null` when this publication has never been reviewed. This is what makes a **rejection** visible: a turned-down publication goes back to `status: draft` — the identical status a draft nobody has looked at carries — so `status` alone cannot tell "not sent yet" from "sent and refused" |
+| `intended_publish_at` | when this means to go out, whichever half of its life it is in — `scheduled_at` once armed, the parked `arm_on_approval_at` while a review holds it. One field, so a screen never has to know which column answered |
+
+Both `is_in_approval` and `approval_state` are answered from eager-loaded relations
+(`Publication::readRelations()` adds `pendingApprovalProcess` and `latestApprovalProcess`), so the
+list endpoint renders them for every row without a query per publication.
+
+### `POST /publishing/publications/{publication}/schedule` on a review-gated draft **submits**, it does not arm
+
+The transitions table in "Concepts" above is unchanged — `draft|failed|blocked → scheduled` is
+still the only edge this endpoint takes. What changed is what the **request** does before it gets
+there, on a draft whose `approval_pipeline_id` is set and whose latest approval process (if any)
+is not `approved`: instead of arming, it **parks** the submitted `scheduled_at` on
+`arm_on_approval_at` and opens a review. The row does not move — `status` stays `draft` — so a
+screen must read `is_in_approval`, not `status`, to tell "armed" from "submitted":
+
+```http
+POST /api/publishing/publications/e7a1.../schedule
+X-Workspace-Id: 3f8e...
+
+{ "scheduled_at": "2026-09-20 09:00" }
+```
+
+```json
+{
+  "data": {
+    "id": "e7a1...",
+    "status": "draft",
+    "status_label": "Draft",
+    "approval_pipeline_id": "c4a0...",
+    "is_in_approval": true,
+    "approval_state": "pending",
+    "intended_publish_at": "2026-09-20T07:00:00.000000Z",
+    "scheduled_at": null,
+    "can_be_edited": false,
+    "can_be_scheduled": false
+  }
+}
+```
+
+`intended_publish_at` already answers `2026-09-20T07:00:00.000000Z` — read off
+`arm_on_approval_at`, not off `scheduled_at` (still `null`) — so a screen can render "planned for"
+without knowing which column the moment currently lives in. The last approver's `approve` is what
+moves that same instant onto `scheduled_at` (`Publication::onApprovalCompleted()`); nothing else
+about this endpoint changes.
+
+Three standing conditions fall through to the endpoint's **ordinary** behaviour instead:
+
+- **No pipeline attached** — arms immediately, exactly as before B6.
+- **A standing approval** (latest process `approved`, nothing currently pending) — arms
+  immediately. Approval already lifted the hold; the button does what it says.
+- **A rejected latest process** — falls into the **submit** branch again: pressing Schedule after
+  a rejection *is* the resubmission, carrying whatever was fixed in a fresh snapshot.
+
+**A `pending` process refuses the endpoint outright** — see `publication_under_review` below;
+there is no submitting while a submission is already open.
+
+### `422 publication_under_review` — a new entry in the refusal catalog
+
+Added to the `code` values `PUT`/`POST …/schedule` can answer, alongside the transition-table
+codes in "Concepts" above (it comes from a different exception, `PublicationUnderReview`, not
+`PublicationTransitionRefused` — the two share the module's one `{code, message, context}` shape
+so a client branches on `code` without needing to know which class raised it):
+
+| `code` | When | What it tells the caller |
+|---|---|---|
+| `publication_under_review` | A live (`pending`) approval process is holding this row — on `PUT` (an edit) or on `POST …/schedule` (an arm **or** a submit while one is already open). | The row is busy, not forbidden — the creator, the workspace owner and the approver all get the identical answer. `context.status` carries the publication's current status (a draft, in practice, for as long as a review is live) so a client can re-render without a second request. Wait for the decision, or go and approve/reject it. |
+
+```json
+{
+  "code": "publication_under_review",
+  "message": "This publication is with an approver, so it cannot be changed or scheduled right now. Once the review is finished it goes back to being editable — and if it was set up to publish automatically, approving it is what schedules it.",
+  "context": { "status": "draft" }
+}
+```
+
+### Attach/detach — `approval_pipeline_id` is content, not a transition
+
+`approval_pipeline_id` is validated and written exactly like every other field on `POST`/`PUT`
+(`ScopedExists` against the workspace's own pipelines, the same shape `StoreTasksRequest` uses for
+the identical column on `Task`). `PUT` is a **whole-row** write, so an update that omits the field
+**detaches** the review — this is deliberate and matches `Task`'s contract byte for byte:
+
+```http
+PUT /api/publishing/publications/e7a1...
+X-Workspace-Id: 3f8e...
+
+{ "title": "...", "platform": "youtube", "approval_pipeline_id": null }
+```
+
+What stops "omit the field" from being the quiet way around a **live** review is that
+`PublicationPolicy::update()` already refuses the whole request with `publication_under_review`
+while one is pending — there is no window in which a client can both keep editing and shed the
+pipeline that is watching it.
+
+### `scheduled_at` is the one exception to the whole-row-write rule
+
+Every other field on `PUT` follows the ordinary whole-row rule: omit it, and it is cleared
+(`null`) or reset to its default — exactly what makes `approval_pipeline_id: null` a detach above.
+`scheduled_at` does **not** follow that rule, and the asymmetry is deliberate: `SCHEDULED` is an
+editable status (fixing a typo on an armed publication must not force a disarm), so a whole-row
+`null` here would let an ordinary `PUT` with the field simply omitted turn an armed publication
+into `status: scheduled` with **no moment at all** — a row the due-sweep can never select and the
+calendar can never show, which neither goes out nor ever fails. It would also break the invariant
+the list endpoint's cursor pagination stands on ("within `scheduled` the column is non-null by
+construction" — see "Concepts" above). So an **absent** `scheduled_at` on `PUT` means "leave it
+alone"; clearing the moment is the Manager's `disarm()`, a state act, not a content edit.
+
+This was a real, measured defect before the fix (re-review finding **K2**): `PUT` without the
+field on an armed row answered `200`, `status: scheduled`, moment `NULL` — invisible to the sweep
+and to the calendar alike, and silent.
+`PublishingApprovalTest::test_an_update_without_a_moment_never_unschedules_an_armed_publication`
+pins the fix.
+
+---
+
 ## Endpoints
 
 All under `/api/publishing`, behind `auth:sanctum` + `RequireWorkspace` (`app/modules/Publishing/routes/api.php`).
@@ -311,7 +451,9 @@ one message (`connection_unusable`) so a client never learns whether a rejected 
 somebody else's workspace. `media` is an ordered list of Disk file uuids (max 10, distinct),
 stored verbatim and **never checked for existence** — a file present at draft time can be
 trashed before the scheduled minute regardless, so the only check that means anything happens
-at publish time, in the adapter.
+at publish time, in the adapter. `approval_pipeline_id` (B6), when present, gates this
+publication's **arming** — attaching it here starts nothing by itself; see "Approvals & review
+(B6)" above.
 
 Response `201`:
 
@@ -339,6 +481,10 @@ Response `201`:
     "last_attempt_at": null,
     "failure_code": null,
     "failure_context": null,
+    "approval_pipeline_id": null,
+    "is_in_approval": false,
+    "approval_state": null,
+    "intended_publish_at": "2026-09-10T07:00:00.000000Z",
     "creator": { "type": "user", "id": "...", "name": "..." },
     "is_owner": true,
     "can_be_edited": true,
@@ -350,6 +496,11 @@ Response `201`:
   }
 }
 ```
+
+The four B6 fields (`approval_pipeline_id` through `intended_publish_at`) are covered in full
+under "Approvals & review (B6)" above; this response shows their shape for a publication with
+**no** review attached (`approval_pipeline_id: null`, so `intended_publish_at` falls back to
+`scheduled_at`).
 
 `remote_draft_id` is deliberately **absent** from every publication response — it is internal
 resume state, and publishing it would invite a client to send it back, which is the one value
@@ -389,15 +540,24 @@ membership is proven upstream by `ResolveWorkspace`.
 ### `PUT /publishing/publications/{publication}`
 
 Same payload and rules as `POST` (inherited, not restated — an update is a whole-row write, so
-a rule missing here would let a second call store what the first refused). Refused with `403`
-when `PublicationPolicy::update()` says no — composing **who** is asking (the creator, or the
-active workspace's owner) with **where** the row is in its life
-(`PublicationStatus::isEditable()`, which refuses `publishing`, `published` and
-`needs_reconcile`).
+a rule missing here would let a second call store what the first refused, with one deliberate
+exception — see "`scheduled_at` is the one exception to the whole-row-write rule" under
+"Approvals & review (B6)" above). Refused with `403` when `PublicationPolicy::update()` says no
+for an ordinary reason — composing **who** is asking (the creator, or the active workspace's
+owner) with **where** the row is in its life (`PublicationStatus::isEditable()`, which refuses
+`publishing`, `published` and `needs_reconcile`) — or, since B6, with `422
+publication_under_review` when a live approval process is holding the row instead (see
+"Approvals & review (B6)" above). `approval_pipeline_id` is an ordinary content field on this
+payload; omitting it on a `PUT` **detaches** the review, refused while one is live for the same
+reason.
 
 ### `POST /publishing/publications/{publication}/schedule`
 
-The **one** transition exposed over HTTP: `draft|failed|blocked → scheduled`.
+The **one** transition exposed over HTTP: `draft|failed|blocked → scheduled` — **unless** the
+row has a review pipeline attached with no standing approval, in which case this same endpoint
+**submits** the chosen moment for review instead of arming (B6; `status` stays `draft`,
+`is_in_approval` becomes `true`). See "Approvals & review (B6)" above for the full contract and
+a worked submission example; what follows here is the ordinary arming shape.
 
 ```http
 POST /api/publishing/publications/e7a1.../schedule
@@ -412,6 +572,10 @@ more than 60 seconds in the past is refused (`scheduled_in_the_past`) rather tha
 published immediately; a few seconds of tolerance covers ordinary client/server clock skew for
 a genuine "publish now."
 
+While a review is **already** live (a `pending` process), this endpoint refuses outright with
+`422 publication_under_review` — B6 added arming to the set of things a live review holds,
+alongside editing (see "Approvals & review (B6)" above).
+
 Illegal transitions answer `422`, in the module-wide refusal shape:
 
 ```json
@@ -423,9 +587,10 @@ Illegal transitions answer `422`, in the module-wide refusal shape:
 ```
 
 `code` is one of `publication_reconcile_before_retry`, `publication_blocked_holds`,
-`publication_terminal`, `publication_transition_not_allowed` or, since B3,
-`publication_transition_lost_race` (`PublicationTransitionRefused`) — a client branches on
-`code`, never on `message`.
+`publication_terminal`, `publication_transition_not_allowed`, since B3
+`publication_transition_lost_race` (`PublicationTransitionRefused`), or, since B6,
+`publication_under_review` (`PublicationUnderReview` — a different exception, sharing the same
+wire shape) — a client branches on `code`, never on `message`.
 
 | `code` | When | What it tells the caller |
 |---|---|---|
@@ -434,6 +599,7 @@ Illegal transitions answer `422`, in the module-wide refusal shape:
 | `publication_terminal` | The row is `published`. | Nothing this application writes can recall it — the record does not get rewritten. |
 | `publication_transition_not_allowed` | Any other edge the table does not contain. | — |
 | `publication_transition_lost_race` (B3) | The edge **exists**, but the row moved between the caller's read and its write — the CAS in `PublicationManager::transition()`/`claimDue()` matched zero rows. | Nothing was written. `context.from` is the row's **real, current** status (read back from the database after the refusal), so the caller can decide again from the truth rather than from what it last read. Not a defect — see `docs/decisions/ADR-0055-publishing-queue-doctrine.md` Decision 3. |
+| `publication_under_review` (B6) | A live (`pending`) approval process is holding the row — this endpoint tried to arm (or submit again) while one is already open. | Not a transition refusal at all — the row is busy being decided about, not stuck against an illegal edge. See "Approvals & review (B6)" above. |
 
 ### `POST /publishing/publications/{publication}/reconcile` (B3)
 
@@ -640,7 +806,9 @@ own sentences under `publishing.connection_failures` — see the data model sect
 Not implemented as of this commit; mentioned only so this page is not mistaken for the whole
 roadmap. B1–B3 shipped the full lifecycle — state machine, connections/OAuth, and the queue
 (due-sweep, worker, reaper, reconciliation, both automatic and manual) — all driving the
-`dry_run` adapter end to end against its own attempt log. Still ahead:
+`dry_run` adapter end to end against its own attempt log. B6 shipped review-gated arming (a
+publication as `Approvable`) on top of that lifecycle — see "Approvals & review (B6)" above.
+Still ahead:
 
 - **Real `PlatformAdapter` implementations** for YouTube, Instagram and Facebook (B4). Every
   adapter inherits the two-phase contract (`createDraft()`/`publishDraft()`/`findExisting()`)

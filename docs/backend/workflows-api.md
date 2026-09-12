@@ -253,14 +253,23 @@ Tenant scope: `TenantAware` trait — all queries are automatically scoped to th
 > **R2 sub-stage 5 — `generate_content` SHIPPED, along with a generic suspend/resume engine for the
 > whole run loop.** The `Workflows → Generator` edge anticipated above is now real: a third step type,
 > `generate_content` (`App\Modules\Workflows\Steps\GenerateContentStep`), runs a Generator Template and
-> publishes its output. It is the run loop's FIRST — and, per the current design, only —
-> **suspending** step: it starts the generation, throws `StepSuspended`, and the run parks in a new
-> `WorkflowRunState::WAITING` state until a fresh job resumes it once the generation settles. This
-> also means the state-machine table and the "Reserved, not produced" language further down this
-> document, and the Ops-notes claim that `create_form_report` is the module's only genuinely-async
-> step, are now HISTORICAL and corrected in place — see "Steps: `generate_content`" and "Suspend/
-> resume engine" below, and **ADR-0039-workflow-suspend-resume-and-generate-content.md** for the full
-> design record.
+> publishes its output. It is the run loop's FIRST **suspending** step: it starts the generation,
+> throws `StepSuspended`, and the run parks in a new `WorkflowRunState::WAITING` state until a fresh
+> job resumes it once the generation settles. This also means the state-machine table and the
+> "Reserved, not produced" language further down this document, and the Ops-notes claim that
+> `create_form_report` is the module's only genuinely-async step, are now HISTORICAL and corrected in
+> place — see "Steps: `generate_content`" and "Suspend/resume engine" below, and
+> **ADR-0039-workflow-suspend-resume-and-generate-content.md** for the full design record.
+>
+> **R4 B6 — `publish` SHIPPED as a SECOND suspending step, reusing the same engine unchanged.** A
+> fifth step type, `publish` (`App\Modules\Workflows\Steps\PublishStep`), arms a Publishing-module
+> publication and parks the run until it reaches an outcome (published, failed, blocked, rejected, or
+> — deliberately never a conclusion — `needs_reconcile`, which keeps the run waiting rather than
+> answering from a non-answer). `generate_content` is therefore no longer the *only* consumer of
+> `WorkflowRunState::WAITING` — every sentence below that said so is corrected in place. Nothing about
+> the engine itself changed to accommodate it (Decision-for-decision, `publish` is built on exactly
+> the mechanism ADR-0039 shipped) — see "Steps: `publish`" and "Suspend/resume engine" below, and
+> **ADR-0056-publication-approval.md** for the full design record.
 
 ---
 
@@ -275,12 +284,13 @@ queued job. Each step's outcome is recorded as a **WorkflowRunStep** audit row.
 Workflow (definition)
   └─ trigger_type + trigger_config   (what starts it: form_submitted | schedule)
   └─ conditions[]                    (form_submitted only: typed {field,field_type,operator,value}, AND-combined)
-  └─ steps[]                         (ordered actions: create_task, create_form_report, generate_content)
+  └─ steps[]                         (ordered actions: create_task, create_form_report, generate_content,
+                                      create_event, publish)
 
 WorkflowRun (one execution)
   └─ state machine: pending → running → completed | failed
                                  │  ▲
-                       suspend() │  │ claimResume()      (generate_content only — R2 sub-stage 5)
+                       suspend() │  │ claimResume()      (generate_content, publish — R2 sub-stage 5 / R4 B6)
                                  ▼  │
                                 waiting                   (cancelled still reserved, unused)
   └─ origin: event | schedule | manual
@@ -326,7 +336,7 @@ pending ──claim──▶ running ──release(completed|failed)──▶ te
 |-------------|--------------------------------------------------------------------------|
 | `pending`   | Run row created; job not yet claimed it.                                |
 | `running`   | Claimed; steps executing.                                                |
-| `waiting`   | **Produced by the engine (R2 sub-stage 5).** A step ({@see `generate_content`, currently the only one) threw `StepSuspended` — it handed work to something outside this process (a real generation running on the queue) and cannot publish its output yet. NOT terminal; bounded by `workflows.wait_timeout`, not `run_timeout`. See "Suspend/resume engine" below and ADR-0039. (Superseded: this row previously read "Reserved, not produced by the MVP engine" per ADR-0008 #11 — that is no longer accurate.) |
+| `waiting`   | **Produced by the engine (R2 sub-stage 5; R4 B6 added the second producer).** A step ({@see `generate_content`, {@see `publish`) threw `StepSuspended` — it handed work to something outside this process (a real generation running on the queue; a publication armed and waiting on the Publishing module's due-sweep) and cannot publish its output yet. NOT terminal; bounded by `workflows.wait_timeout`, not `run_timeout`. See "Suspend/resume engine" below, ADR-0039 and ADR-0056. (Superseded: this row previously read "Reserved, not produced by the MVP engine" per ADR-0008 #11 — that is no longer accurate.) |
 | `completed` | Every step succeeded.                                                    |
 | `failed`    | A step failed (or the job/worker failed) — the run stopped at that step. |
 | `cancelled` | **Still reserved, not produced.** Anticipates a future manual-cancel action — unaffected by the suspend/resume engine; a `waiting` run cannot be cancelled today either (see "Planned / deferred"). |
@@ -384,7 +394,7 @@ carry `status` at all, and `WorkflowService::create()` hardcodes `WorkflowStatus
 | `conditions.*.operator`       | required-if-present      | one of `WorkflowConditionOperator`, MUST belong to `field_type`'s allow-list |
 | `conditions.*.value`          | required-if-present (unless value-less) | shape depends on the operator — see the Conditions section |
 | `steps`                        | yes                      | array, min 1, max 50                                               |
-| `steps.*.type`                  | yes                      | `create_task` \| `create_form_report` \| `generate_content` \| `create_event` (at most 2 `generate_content` steps per workflow — see the Steps section) |
+| `steps.*.type`                  | yes                      | `create_task` \| `create_form_report` \| `generate_content` \| `create_event` \| `publish` (at most 2 `generate_content` steps per workflow — see the Steps section) |
 | `steps.*.key`                    | yes                      | string, max 100, **distinct across the whole array**, `[A-Za-z0-9_]+` only (letters/digits/underscore — see below) — used for `{{steps.<key>.*}}` |
 | `steps.*.config`                 | no                       | object; shape depends on `steps.*.type` (see the Steps section)   |
 
@@ -3354,12 +3364,106 @@ UTC even on a non-UTC workspace, while the identical text typed as a literal lan
 
 ---
 
+### `publish` (R4 B6)
+
+Creates a **publication** in the Publishing module's queue and **suspends** the run until it
+reaches an outcome — the second suspending step (`generate_content` above was the first, R2
+sub-stage 5), and, as of this revision, the only other one. It never calls a platform itself: it
+**arms** a row through `App\Modules\Publishing\Services\PublicationAutomationService`, and the
+Publishing module's own due-sweep publishes it later, through the one path allowed to (the atomic
+claim — `docs/decisions/ADR-0055-publishing-queue-doctrine.md`). Full read/write contract for
+publications themselves (the state machine, the queue, connections/OAuth, and — since B6 —
+review gating) lives in [`docs/backend/publishing-api.md`](publishing-api.md); this section
+covers only the step's own config/output/error/suspend contract. Design record: **ADR-0056**.
+
+`App\Modules\Workflows\Steps\PublishStep`. The `Workflows → Publishing` edge is crossed in
+exactly three classes — this step, `PublicationWaitResolver` and
+`ResumeWaitingRunOnPublicationConcluded` — and is one-way: Publishing never names Workflows
+(`WorkflowsPublishingBoundaryTest`); it fires a plain event
+(`App\Modules\Publishing\Events\PublicationConcluded`) and Workflows is what reacts, mirroring
+the Generator edge's own inversion. A publication created this way is attributed to the
+**executing run**, never to whoever triggered it — the same `HasCreator`/`WorkflowRunContext`
+mechanism `create_task`/`create_event` rely on (ADR-0015).
+
+**The step NEVER publishes, and this is pinned structurally, not just by convention.**
+`WorkflowsPublishingBoundaryTest` byte-scans this step (and the Publishing seam it calls) for the
+publisher's identifiers (`PublicationPublisher`, `PublishPublicationJob`, `publishClaimed`) and
+for any `->publish(` call — arming is as far as this step goes.
+
+| Config field | Required | Type | Failure mode |
+|---|---|---|---|
+| `platform` | **yes**, and **LITERAL ONLY** — never a variable | one of `PublishingPlatform` | Missing/unknown → **422 at authoring time** (`steps.<i>.config.platform`). Literal for the same reason `create_event.all_day` is: it decides whether `platform_connection_id` is required, so a run-time value would make that check unexpressible. |
+| `platform_connection_id` | required for any destination that `publishesPublicly()` | literal string (uuid) | Effectively impossible to supply for `dry_run` — no `PlatformConnection` row can ever name that platform (see `publishing-api.md`'s data model), so one supplied anyway fails the usability check below. Checked at **both** write time and run time through the same authority (`PublicationAutomationService::destinationIsUsable()`), so a save can never accept a destination the run would refuse. **HARD** at run time (`workflows.steps.publish.connection_unavailable`) — refused *before* a publication is created, so a revoked/disconnected account never leaves an orphan draft behind on every single run. |
+| `title` | **yes** | resolved string | **HARD** — blank after resolution fails the step (the adapters refuse a titleless publication anyway). Clamped to 255 chars (`publications.title`'s column width) after resolution. |
+| `body` | no | resolved string | absent/blank → `null`. Clamped to 5000 chars (the module's own `body` ceiling). |
+| `media` | no | literal \| variable union, **FILE** (one id or a list) | A bare list is wrapped into the union's literal shape before resolution (the write validator accepts a plain array; the shared resolver does not, without this wrapping). Ids are stored **verbatim, deduplicated, order-preserved, capped at `Publication::MEDIA_MAX` (10)** — never copied, unlike `create_task.attachments`: a publication points at Disk files and never owns them, so the same generated video published to two destinations is one file and two publications. Never checked for existence — the only check that means anything happens at publish time, in the adapter. |
+| `publish_at` | no | literal \| variable union, DATE | Absent means **"as soon as it may"** — a moment already past, taken by the next due-sweep pass. A zone-less **literal** is the **workspace's** clock (the same `CalendarInstantResolver` `create_event` and the publishing HTTP door use); a value that resolves to nothing usable degrades to `null` (SOFT) rather than failing the step — the caller asked for this to be published, and the only thing lost is a preferred minute. |
+| `approval_pipeline_id` | no | literal string (uuid), scoped to the workspace | With one attached, **nothing is armed** until the last approver says yes — see "With a review pipeline" below. |
+
+**Output** (`{ publication_id, status, remote_id, url, published_at }`) — five fields, only ever
+published on the success path (every other outcome fails the step):
+
+| Name | Type | Notes |
+|---|---|---|
+| `publication_id` | TEXT | The publication's uuid — provenance, and a deep link into the Publishing module. |
+| `status` | TEXT | The settled status — `published` in practice, emitted verbatim rather than hard-coded so the descriptor stays honest if a softer settlement is ever introduced. |
+| `remote_id` | TEXT | The artifact's identifier **on the platform** — the proof it exists. |
+| `url` | TEXT | The permalink, when the platform hands one back; `''` when it does not — the identity is `remote_id`, and a url format is the platform's to change. |
+| `published_at` | DATE | When it **actually** went out — not the moment it was scheduled for; can differ by the queue's latency, and after a reconciliation by hours. |
+
+**Author-time `422`s** (`StoreWorkflowRequest::validatePublishConfig()`):
+
+| Code | Field | Meaning |
+|---|---|---|
+| 422 | `steps.<i>.config.title` | Missing or blank. |
+| 422 | `steps.<i>.config.platform` | Missing, not a literal, or not a known `PublishingPlatform`. |
+| 422 | `steps.<i>.config.platform_connection_id` | Not a uuid, or `destinationIsUsable()` refuses it (does not exist in this workspace / does not serve the chosen `platform` / is not currently usable) — one message (`workflows.steps.publish.connection_invalid`) for all three, mirroring the one-message-for-the-triple pattern `StorePublicationRequest` uses for its own identical check. |
+| 422 | `steps.<i>.config.<foreign key>` | Anything outside `{platform, platform_connection_id, title, body, media, publish_at, approval_pipeline_id}`. |
+
+**Run-time flow.** `title`/`body` resolve through the same directive/pipeline resolver
+`create_task`/`create_event` use. `media` resolves at type `FILE`, through the same
+value-or-variable union `create_task.attachments` uses. `publish_at` resolves at type `DATE`,
+reading the **author's own literal text** (not what the resolver's own `DATE` coercion hands
+back) for the same reason `create_event.starts_at` does — the resolver's coercion stamps a
+zone-less value `+00:00` on the way past, after which "did the author name a zone?" can only ever
+be answered "yes".
+
+**With a review pipeline — and why this is not a trigger.** The publication is created as a
+`draft` carrying its intended moment on `arm_on_approval_at` (never on `scheduled_at` — see
+`docs/backend/publishing-api.md` and ADR-0056), a review starts, and the run **parks exactly as
+it would have anyway**. Approval does not start a new run — nothing here is a trigger (ADR-0009
+is untouched: the `approval_finished` trigger this could resemble was removed in the 5.1 re-scope
+and does not come back) — it arms the row the already-parked run is waiting on, through
+`Publication::onApprovalCompleted()`. A **rejection fails the step**: the publication stays a
+`draft`, fixable and resubmittable, but this run stops rather than letting every later step act
+as though something had gone out.
+
+**What ends the wait, and the one thing that does not:**
+
+| Publication reaches… | Step behaviour |
+|---|---|
+| `published` | Outputs the five fields above; the run carries on. |
+| `failed` or `blocked` | **FAILS** the step — `workflows.steps.publish.failed`, interpolated with the publication's own status (`:status`) and its stable `failure_code` (`:code`, never the platform's own prose). `blocked` fails for the same reason `failed` does: a run cannot wait on a human repair, and `wait_timeout` would eventually kill it anyway while reporting a timeout instead of the real cause. |
+| review rejected | **FAILS** (`workflows.steps.publish.rejected`). |
+| `needs_reconcile` | **KEEPS WAITING**, always. It means the module does not know whether a post exists — concluding `failed` would be wrong about an artifact that may be live; concluding `published` would hand later steps a `remote_id` nobody established. A reconciliation probe or a person resolves it; if nobody ever does, `workflows.wait_timeout` ends the run — late and honest rather than early and wrong. |
+| publication deleted/purged | **FAILS** (`workflows.steps.publish.gone`) rather than waiting out a timeout for an outcome that can never arrive. |
+| unusable connection, discovered at run time | **FAILS before creating anything** (`workflows.steps.publish.connection_unavailable`) — re-asked although the save already asked, because a token can be revoked or an account disconnected while a definition sleeps. |
+
+This is the same mapping `PublicationWaitResolver` implements from the Publishing side —
+`needs_reconcile` is reported `PENDING`, never `SETTLED` or `GONE`, to the waiting-run sweep. See
+"Suspend/resume engine" below for the shared suspend/resume machinery, and "The `publish` step's
+own fast path" within it for this step's listener/sweep pair.
+
+---
+
 ## Suspend/resume engine (R2 sub-stage 5)
 
-The generic mechanism `generate_content` (above) is the first — and, today, only — consumer of. A step
-that has handed work to something outside this process parks its run in `waiting` instead of publishing
-an output; a later, FRESH job resumes the run from exactly where it left off. Full design record:
-**ADR-0039-workflow-suspend-resume-and-generate-content.md**.
+The generic mechanism `generate_content` (above) is the first consumer of, and — since R4 B6 — `publish`
+(also above) is the second. A step that has handed work to something outside this process parks its run
+in `waiting` instead of publishing an output; a later, FRESH job resumes the run from exactly where it
+left off. Full design record: **ADR-0039-workflow-suspend-resume-and-generate-content.md** (the engine
+itself) and **ADR-0056-publication-approval.md** (`publish`'s own use of it — the engine required no
+changes to accommodate a second suspending step).
 
 ### The signal — `StepSuspended`, a throw, not a sentinel return
 
@@ -3386,7 +3490,7 @@ byte-identical-behavior guarantee.
 | Column | Type | Meaning |
 |---|---|---|
 | `waiting_on` | json | `{kind, step_key, step_type, position, payload, config, definition_hash, ai_text_calls}` — see below. |
-| `waiting_key` | string, INDEXED | An opaque correlation key (`<kind>:<uuid>` — for `generate_content`, `generation_session:<session uuid>`). What a settle listener/the sweep/a resume job's atomic claim look a run up by. |
+| `waiting_key` | string, INDEXED | An opaque correlation key (`<kind>:<uuid>` — for `generate_content`, `generation_session:<session uuid>`; for `publish`, `publication:<publication uuid>` — built once, by `PublishStep::correlationKey()`, and read back by the resolver and the listener from that one method so the three can never disagree on the key a run is parked under). What a settle listener/the sweep/a resume job's atomic claim look a run up by. |
 | `waiting_since` | timestamp | When the wait started — RE-STAMPED on every park, including a re-park of the SAME step onto the SAME leg. `workflows.wait_timeout` therefore bounds time since the LAST park, not the run's total wait time (see "Timeout ordering" below for why this cannot loop). |
 
 `waiting_on.config` is the step's config **as already resolved at the moment it suspended** — replayed
@@ -3467,6 +3571,30 @@ Per parked run, in order: SETTLED → dispatch the correlated resume job (even a
 RESUMED, never failed, once it settled); GONE → fail the run now; past `workflows.wait_timeout` → fail
 as timed out; otherwise leave it waiting. An unregistered kind or a throwing resolver downgrades to
 PENDING, never GONE — a transient/deploy fault can never wrongly time out a healthy wait.
+
+### The `publish` step's own fast path (R4 B6)
+
+`publish` (above) reuses this whole section's machinery unchanged, with the same fast-path/backstop
+pair the Generator edge uses — and one sharper edge, because of a decision made on the Publishing side
+rather than here. `ResumeWaitingRunOnPublicationConcluded` listens to
+`App\Modules\Publishing\Events\PublicationConcluded` (raised from inside
+`PublicationManager::transition()`, after — never before — the compare-and-swap that moved the row
+wins; see `docs/decisions/ADR-0055-publishing-queue-doctrine.md` Decision 3 and
+`docs/decisions/ADR-0056-publication-approval.md`) and dispatches a correlated `WorkflowRunResumeJob`
+the moment a publication it might be parked on reaches `published`, `failed`, `blocked`, or a review
+rejection. Like its Generator sibling it never throws (wrapped + reported — this runs inside whatever
+just concluded the publication: a queued publish worker, a sweep pass, or an HTTP approval decision).
+
+The waiting-run sweep is the correctness backstop here too, through `PublicationWaitResolver`
+(registered the same way, `WorkflowsModuleServiceProvider::boot()`, LAZILY — only the sweep ever asks),
+which asks `App\Modules\Publishing\Services\PublicationAutomationService::outcomeFor()` — a status plus
+one boolean, no Publishing model reached. **The sharper edge**: `needs_reconcile` is *never* announced
+by `PublicationConcluded` at all (it is the absence of an answer, not one — see `docs/backend/publishing-api.md`),
+so a run parked on a publication sitting in that status has **no fast path whatsoever** and is recovered
+**only** by this sweep, for as long as it takes a reconciliation probe or a person to resolve it —
+bounded solely by `workflows.wait_timeout` below. This is a real, accepted difference from
+`generate_content`, whose own reaper-settled sessions are the *only* case its fast path misses; for
+`publish`, an entire ordinary status is fast-path-blind by design.
 
 ### `wait_timeout` and the timeout ordering invariant
 
@@ -4043,7 +4171,12 @@ never the name — see "Custom functions" under "The typed variable system" abov
   dispatches without reading `RealQueueConnection` gets the forced `sync` value like everything
   else — this is deliberate: only a step that actually SUSPENDS the run (implements
   `SuspendableWorkflowStep`) has a reason to escape. See "Suspend/resume engine" above and
-  ADR-0039 D1/D8.
+  ADR-0039 D1/D8. **`publish` (R4 B6) is a SECOND suspending step but does NOT read
+  `RealQueueConnection` and dispatches nothing during `run()`** — it only writes a row
+  (`PublicationAutomationService::create()`, an ordinary in-process write) and throws
+  `StepSuspended`. Its asynchrony lives entirely OUTSIDE the run loop, in the Publishing module's own
+  scheduled due-sweep (`publishing:dispatch-due`, a separate cron entry — see
+  `docs/backend/publishing-api.md`), so the escape hatch above still has exactly one caller.
 - **The schedule-assist throttle (`assist_rate_per_minute`) needs a PERSISTENT cache store.**
   `RateLimiter` reads/writes the DEFAULT cache store. The production default (`database`) is
   fine; the `array` driver resets every process — correct for tests exercising the throttle
@@ -4229,7 +4362,10 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Workflows/Http/Requests/SchedulePreviewRequest.php`, `Http/Controllers/WorkflowSchedulePreviewController.php` — the live schedule-preview endpoint (incl. the `anchor` param)
 - `app/modules/Workflows/Steps/` — the step implementations (`CreateTaskStep`, `CreateFormReportStep`,
   `GenerateContentStep`, `CreateEventStep` — R3 B4, see the `create_event` section above and
-  `docs/backend/calendar-api.md`)
+  `docs/backend/calendar-api.md`; `PublishStep` — R4 B6, see the `publish` section above and
+  `docs/backend/publishing-api.md`)
+- `app/modules/Workflows/Services/PublicationWaitResolver.php` — the `publication` wait kind's resolver (R4 B6), asking only `PublicationAutomationService::outcomeFor()`
+- `app/modules/Workflows/Listeners/ResumeWaitingRunOnPublicationConcluded.php` — the `publish` step's fast path (R4 B6), reacting to Publishing's own `PublicationConcluded` event
 - `app/modules/Workflows/Jobs/WorkflowRunJob.php`
 - `app/modules/Workflows/Console/RunScheduledWorkflowsCommand.php`
 - `app/modules/Workflows/Console/ReapStaleWorkflowRunsCommand.php`
@@ -4238,6 +4374,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `app/modules/Forms/Observers/FormSubmissionObserver.php` — form_submitted hook
 - `app/modules/Forms/Services/FormReportService.php`, `Jobs/CreateFormReport.php` — the `create_form_report` step's sink
 - `app/modules/Calendar/Services/CalendarEventService.php`, `DTOs/CalendarEventDTO.php` — the `create_event` step's sink (R3 B4; full contract in `docs/backend/calendar-api.md`)
+- `app/modules/Publishing/Services/PublicationAutomationService.php` — the `publish` step's sink (R4 B6): arms a publication or, with a pipeline attached, hands it to a review — never publishes; full contract in `docs/backend/publishing-api.md`
 - `config/workflows.php` — caps, run timeout, max depth, assist throttle
 - `routes/console.php` — schedule registration for both console commands
 - `tests/Feature/WorkflowCrudTest.php`
@@ -4251,6 +4388,8 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `tests/Feature/WorkflowSchedulePreviewTest.php` — the preview endpoint (empty/`anchor`/prev-or-at semantics, `approximate` always false, checkEmpty-off behavior)
 - `tests/Feature/WorkflowStepsTest.php`
 - `tests/Feature/CalendarEventWorkflowStepTest.php` — the `create_event` step (R3 B4): creator attribution, the all-day discriminator surviving the resolver, both authoring-time and run-time failure modes
+- `tests/Feature/WorkflowPublishStepTest.php` — the `publish` step (R4 B6): arming + parking, all five settlement outcomes (published/failed/blocked/rejected/`needs_reconcile` never waking the run), the review-gated path, the fast-path/backstop pair, the lost-race-announces-nothing CAS pin, output-descriptor parity
+- `tests/Feature/WorkflowsPublishingBoundaryTest.php` — the `Workflows ↔ Publishing ↔ Approvals` edges (R4 B6): the one-way `Workflows → Publishing` dependency, `Publishing`/`Approvals` never naming their callers (namespace **and** semantic literal scans), the step's structural inability to reach the publisher, lazy resolver registration
 - `tests/Feature/WorkflowVariableCatalogTest.php`
 - `tests/Unit/Workflows/WorkflowConditionEvaluatorTest.php`
 - `tests/Unit/Workflows/WorkflowScheduleServiceTest.php` — includes the DST spring-forward AND fall-back pins, the `exclusions` post-filter loop, `last_working_day`
@@ -4266,6 +4405,7 @@ These are documented, reviewed trade-offs — not a TODO list.
 - `docs/decisions/ADR-0009-workflows-rescope-typed-variables.md` — the 5.1 re-scope decisions
 - `docs/decisions/ADR-0008-workflows-module-design.md` — run-engine decisions that still hold (superseded sections marked)
 - `docs/decisions/ADR-0051-calendar-module-design.md` — the Calendar module's own design record (the `create_event` step crosses into it one-way); full API contract in `docs/backend/calendar-api.md`
+- `docs/decisions/ADR-0056-publication-approval.md` — why a publication is an `Approvable` and not a trigger, the parked `arm_on_approval_at` intent, the deferred-effects/CAS reasoning behind `PublicationConcluded`, and the `Workflows ↔ Publishing ↔ Approvals` boundary the `publish` step crosses one-way; full API contract in `docs/backend/publishing-api.md`
 - `docs/decisions/ADR-0052-shared-recurrence-layer.md` — the schedule engine's extraction to `App\Support\Recurrence`, the shape-vs-prose validation split, and the day-projection anchor decision; zero wire-contract change
 - `docs/next/workflows-uxui-spec.md` — the frontend UX/UI specification (REVISION 4 — the v2 compositional builder)
 - `app/modules/Variables/Services/OperationExecutor.php` — the shared pipeline engine (72→77 ops; phase-1b's presence family + `date_format`)
@@ -4381,10 +4521,13 @@ These are documented, reviewed trade-offs — not a TODO list.
 
 - ~~**Wait-for-approval resume**: `WorkflowRunState::WAITING` is declared but never produced.~~ —
   **DONE (R2 sub-stage 5, ADR-0039), no longer deferred.** The engine that produces `WAITING` is
-  generic (not approval-specific) — see "Suspend/resume engine" above. Its first and only consumer
-  today is `generate_content`, not an approval step; a future `start_approval`-style suspending step
-  would reuse the same mechanism (register one `WaitResolver`, implement `resume()`) rather than need
-  new engine work. Kept struck through so a reader of an older snapshot understands the change.
+  generic (not approval-specific) — see "Suspend/resume engine" above. Its first consumer was
+  `generate_content`, not an approval step; R4 B6's `publish` is the second, and it is not an
+  approval step either — a `publish` step waits on a *publication's* outcome, and approving one only
+  arms it (see `docs/decisions/ADR-0056-publication-approval.md`; ADR-0009's removal of the
+  `approval_finished` **trigger** still stands, untouched). Both consumers confirm the original
+  prediction: register one `WaitResolver`, implement `resume()`, no engine work. Kept struck through
+  so a reader of an older snapshot understands the change.
 - **Manual cancellation of a `waiting` run**: `WorkflowRunState::CANCELLED` is declared but no cancel
   action exists yet — a `generate_content` step that has parked a run cannot be cancelled from the UI
   (the run detail's waiting panel says so explicitly). Unaffected by R2 sub-stage 5.

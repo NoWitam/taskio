@@ -146,9 +146,11 @@ class Publication extends AbstractModel implements Approvable
         // live review.
         'approval_pipeline_id',
         // The moment a passed review arms this publication for. NEVER reachable from an HTTP payload:
-        // `PublicationDTO` does not carry it and `PublicationService` does not write it. Exactly two
-        // things write it — the module's own automation seam sets it, and `onApprovalCompleted()`
-        // CLEARS it once it has armed something. See the B6 migration for why it is not `scheduled_at`.
+        // `PublicationDTO` does not carry it, so no create/update body can smuggle it in. Exactly three
+        // things write it — the module's automation seam sets it, `PublicationService::schedule()`'s
+        // submit branch parks the person's own chosen moment (behind the `can('schedule')` policy, so
+        // this is not a payload door either), and `onApprovalCompleted()` CLEARS it once it has armed
+        // something. See the B6 migration for why it is not `scheduled_at`.
         'arm_on_approval_at',
         'scheduled_at',
         'published_at',
