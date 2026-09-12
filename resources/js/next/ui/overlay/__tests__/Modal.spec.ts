@@ -147,4 +147,47 @@ describe('Modal', () => {
     expect(wrapper.props('open')).toBe(false);
     wrapper.unmount();
   });
+
+  // ── mounted-already-open (the deep-link shape) ───────────────────────────────
+  //
+  // A watcher does not fire for the initial value, so an overlay whose `open` is TRUE at mount
+  // used to skip registration entirely: Escape dead, page behind scrolling, no `open` event. That
+  // is exactly how a deep-linked composer or a route-driven preview arrives. Measured by the B8
+  // DOM-test batch before the fix; `immediate: true` (with a guarded teardown branch) is the fix.
+
+  it('registers when mounted already open: Escape closes it and the body is locked', async () => {
+    const wrapper = mount(Modal, {
+      props: { open: true, ariaLabel: 'Deep link' },
+      slots: { default: 'Body' },
+    });
+    await nextTick();
+
+    expect(document.body.style.overflow).toBe('hidden');
+    expect(wrapper.emitted('open')).toBeTruthy();
+
+    pressEscape();
+    await nextTick();
+
+    expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false]);
+    wrapper.unmount();
+  });
+
+  it('mounting a CLOSED modal neither emits close nor touches somebody else\'s body lock', async () => {
+    // Another overlay's lock is live.
+    document.body.dataset.nextModalLocks = '1';
+    document.body.style.overflow = 'hidden';
+
+    const wrapper = mount(Modal, {
+      props: { open: false },
+      slots: { default: 'Body' },
+    });
+    await nextTick();
+
+    // The guarded teardown branch must be a no-op: without the guard, `immediate` would decrement
+    // the SHARED counter this instance never incremented, unfreezing the page behind an open modal.
+    expect(document.body.dataset.nextModalLocks).toBe('1');
+    expect(document.body.style.overflow).toBe('hidden');
+    expect(wrapper.emitted('close')).toBeFalsy();
+    wrapper.unmount();
+  });
 });

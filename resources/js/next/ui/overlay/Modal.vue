@@ -113,6 +113,13 @@ function unlockBody(): void {
   }
 }
 
+// `immediate: true`, because a watcher does not fire for the initial value — and an overlay whose
+// `open` is ALREADY true at mount (a deep link opening a composer, a route-driven preview) would
+// otherwise never register at all: no Escape, no body lock, no aria wiring, no `open` event. Found
+// by the B8 DOM-test batch, measured, not inferred. The teardown branch is guarded on
+// `overlay.value` so that a CLOSED overlay mounting is a no-op — without the guard, `immediate`
+// would make it decrement the SHARED body-lock counter it never incremented (unfreezing the page
+// behind somebody else's open modal) and announce a `close` that never followed an open.
 watch(open, (isOpen) => {
   if (isOpen) {
     overlay.value = useOverlayStack({
@@ -128,13 +135,13 @@ watch(open, (isOpen) => {
       hasDesc.value = !!panelRef.value?.querySelector('[data-modal-desc]');
     });
     emit('open');
-  } else {
-    overlay.value?.release();
+  } else if (overlay.value) {
+    overlay.value.release();
     overlay.value = null;
     unlockBody();
     emit('close');
   }
-});
+}, { immediate: true });
 
 function requestClose(): void {
   open.value = false;

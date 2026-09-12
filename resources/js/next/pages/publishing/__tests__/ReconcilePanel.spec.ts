@@ -263,6 +263,55 @@ describe('429 — too many checks', () => {
     expect(wrapper.findAll('button').some((b) => b.text().includes('60'))).toBe(true);
     vi.useRealTimers();
   });
+
+  it('REFUSES the activation, not just the paint — neither click nor Enter asks again', async () => {
+    // `aria-disabled` is an announcement; the button is deliberately still hit-testable and
+    // focusable (the countdown IS the reason, and a control the pointer cannot reach is a
+    // reason nobody reads). So the refusal has to be enforced in `check()` as well — and it
+    // matters here more than anywhere: every question spends a platform limit shared by the
+    // whole installation, which is the reason the throttle exists at all.
+    vi.useFakeTimers();
+    reconcileMock.mockRejectedValueOnce({
+      response: { status: 429, data: {}, headers: { 'retry-after': '30' } },
+    });
+
+    const wrapper = mountPanel();
+    await checkButton(wrapper)!.trigger('click');
+    await flushPromises();
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+
+    const throttled = wrapper.findAll('button').find((b) => /Check in/i.test(b.text()))!;
+    // A native <button> turns Enter into a click, so one guard covers both roads; the keydown
+    // is fired too, to pin that nothing else listens for it.
+    await throttled.trigger('keydown', { key: 'Enter' });
+    await throttled.trigger('click');
+    await flushPromises();
+
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('asks again once the countdown has run out', async () => {
+    // The other half: the guard is a delay, not a dead button.
+    vi.useFakeTimers();
+    reconcileMock.mockRejectedValueOnce({
+      response: { status: 429, data: {}, headers: { 'retry-after': '5' } },
+    });
+
+    const wrapper = mountPanel();
+    await checkButton(wrapper)!.trigger('click');
+    await flushPromises();
+
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+
+    reconcileMock.mockResolvedValueOnce(publication());
+    await checkButton(wrapper)!.trigger('click');
+    await flushPromises();
+
+    expect(reconcileMock).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
 });
 
 describe('422 lost race — the screen is out of date, not broken', () => {
@@ -291,5 +340,61 @@ describe('422 lost race — the screen is out of date, not broken', () => {
     // changed nothing.
     expect(toastCalls).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /** Drive the panel into the lost-race state and hand back its Refresh control. */
+  async function intoLostRace(wrapper: ReturnType<typeof mountPanel>) {
+    reconcileMock.mockRejectedValueOnce({
+      response: {
+        status: 422,
+        data: { code: 'publication_transition_lost_race', message: 'Something else dealt with this.', context: {} },
+        headers: {},
+      },
+    });
+    await checkButton(wrapper)!.trigger('click');
+    await flushPromises();
+    return wrapper.findAll('button').find((b) => /refresh/i.test(b.text()))!;
+  }
+
+  it('Refresh re-reads the row and hands the fresh one up', async () => {
+    const wrapper = mountPanel();
+    const refresh = await intoLostRace(wrapper);
+
+    fetchMock.mockResolvedValueOnce(publication({ status: 'published', failure_code: null }));
+    await refresh.trigger('click');
+    await flushPromises();
+
+    expect(fetchMock).toHaveBeenCalledWith('p1');
+    expect(wrapper.emitted('updated')?.[0]?.[0]).toMatchObject({ status: 'published' });
+  });
+
+  it('SAYS SO when the Refresh itself fails — silence here reads as "nothing changed"', async () => {
+    // This is the state where somebody is deciding whether a post exists in the world. A
+    // Refresh that quietly does nothing gives them the one answer this panel must never give
+    // by accident.
+    const wrapper = mountPanel();
+    const refresh = await intoLostRace(wrapper);
+
+    fetchMock.mockRejectedValueOnce({ response: { status: 500, data: {}, headers: {} } });
+    await refresh.trigger('click');
+    await flushPromises();
+
+    expect(toastCalls).toEqual([{ variant: 'danger', text: 'That did not work. Try again.' }]);
+    expect(wrapper.emitted('updated')).toBeUndefined();
+  });
+
+  it('prefers the SERVER’s sentence for that failure when it sent one', async () => {
+    const wrapper = mountPanel();
+    const refresh = await intoLostRace(wrapper);
+
+    fetchMock.mockRejectedValueOnce({
+      response: { status: 403, data: { message: 'You do not have access to this workspace.' }, headers: {} },
+    });
+    await refresh.trigger('click');
+    await flushPromises();
+
+    expect(toastCalls).toEqual([
+      { variant: 'danger', text: 'You do not have access to this workspace.' },
+    ]);
   });
 });

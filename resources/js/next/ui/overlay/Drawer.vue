@@ -218,6 +218,10 @@ function unlockBody(): void {
   }
 }
 
+// `immediate: true` + the `overlay.value` teardown guard — same repair as Modal.vue, same reason:
+// a drawer already open at mount (the composer reached by deep link) never registered, so Escape
+// was dead and the page behind kept scrolling. The guard keeps a closed-at-mount drawer from
+// decrementing a shared body-lock it never took, and from emitting `close` before any open.
 watch(open, (isOpen) => {
   if (isOpen) {
     overlay.value = useOverlayStack({
@@ -233,13 +237,13 @@ watch(open, (isOpen) => {
       hasDesc.value = !!panelRef.value?.querySelector('[data-drawer-desc]');
     });
     emit('open');
-  } else {
-    overlay.value?.release();
+  } else if (overlay.value) {
+    overlay.value.release();
     overlay.value = null;
     unlockBody();
     emit('close');
   }
-});
+}, { immediate: true });
 
 function requestClose(): void {
   open.value = false;
