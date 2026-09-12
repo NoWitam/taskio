@@ -240,3 +240,116 @@ that is a write of `null` or a fourth resolution source — is not decided here.
 - The **Open question** (no un-choose path) is left open rather than answered by this ADR; a future
   change to `PUT /api/user/locale` accepting `null`, or a switcher affordance for it, should record its
   own reasoning rather than being folded into this one silently.
+
+---
+
+## Addendum (R4, password reset)
+
+**Date:** 2026-09-12
+**Found while building:** `App\Modules\Auth\Services\PasswordResetService` (commit `4a82d2e`)
+
+Decision 6's **Invariant B** above named the risk in the abstract — "before any mail in this codebase
+is translated, resolve its locale from the recipient, not the request" — and judged it *true by absence*
+because the one existing mail, `WorkspaceInvitationMail`, calls no `__()` at all. Building the first
+translated mail, the password-reset link, turned that absence into a concrete defect, caught by a test
+before it shipped rather than after.
+
+**The framework fact that makes this load-bearing, not stylistic.** `Illuminate\Foundation\Application::
+setLocale()` does not only hand the locale to the translator — it **writes** `config('app.locale')`
+first:
+
+```php
+// vendor/laravel/framework/src/Illuminate/Foundation/Application.php:1596-1603
+public function setLocale($locale)
+{
+    $this['config']->set('app.locale', $locale);
+    $this['translator']->setLocale($locale);
+    $this['events']->dispatch(new LocaleUpdated($locale));
+}
+```
+
+`SetUserLocale::handle()` calls `App::setLocale()` on very nearly every `api`-group request (Decision 1's
+three-step order — stored choice, else `X-Client-Locale`, else nothing). By the time **any** later code
+in that request reads `config('app.locale')`, it is not reading "the installation's language when nobody
+has an opinion" — it is reading **whichever locale won the middleware's resolution for this one caller**,
+which for an unauthenticated request with no stored column is the `X-Client-Locale` header that same
+caller sent. A "fallback to `config('app.locale')`" written anywhere downstream of the middleware was
+therefore never a fallback to the installation default; it was a fallback to **the last caller's own
+header**.
+
+**Why this was an oracle for the reset mail specifically.** `POST /auth/forgot-password` is
+unauthenticated and open to any address (`ForgotPasswordRequest::authorize()` returns `true` by design —
+see the class docblock). The first draft of `PasswordResetService::mailLocale()` read `users.locale` and
+fell back to `config('app.locale')` for an account that had never chosen. Because `SetUserLocale` had
+already run against *that same request* before the service executed, the fallback resolved to whatever
+`X-Client-Locale` the POSTer's own browser sent — letting a stranger who does not own the address choose
+the language of a letter delivered to somebody else's inbox. This is exactly the leak Invariant B
+predicted in the abstract, materializing on first contact with a real translated mailable, and it was
+caught by `PasswordResetTest::test_reset_mail_language_ignores_the_requesting_clients_locale` (a request
+carrying `X-Header: X-Client-Locale: pl` against a `null`-locale account, asserting the mail still renders
+in `en`) before any mutation testing round began.
+
+**The fix: a twin config key nothing mid-request rewrites.** `config/app.php` gained `default_locale`,
+deliberately **not** `locale`:
+
+```php
+// config/app.php
+'default_locale' => env('APP_LOCALE', 'en'),
+```
+
+Same env var as `app.locale`, read once at boot, and — unlike `app.locale` — never touched again by
+`App::setLocale()`. The only sanctioned reader is a new static method, guarded through the same
+`supported()` allow-list the column and the header already pass through:
+
+```php
+// App\Http\Middleware\SetUserLocale
+public static function installationDefault(): string
+{
+    $default = config('app.default_locale');
+    $supported = self::supported();
+
+    return is_string($default) && in_array($default, $supported, true)
+        ? $default
+        : $supported[0];
+}
+```
+
+`PasswordResetService::mailLocale()` now reads it instead:
+
+```php
+private function mailLocale(User $user): string
+{
+    $chosen = $user->locale;
+
+    return is_string($chosen) && in_array($chosen, SetUserLocale::supported(), true)
+        ? $chosen
+        : SetUserLocale::installationDefault();
+}
+```
+
+Pinned by `PasswordResetTest::test_reset_mail_is_written_in_the_language_the_account_chose`,
+`::test_reset_mail_falls_back_to_the_app_locale_when_none_was_chosen` and
+`::test_reset_mail_language_ignores_the_requesting_clients_locale` — all three set
+`config(['app.default_locale' => 'en'])` **explicitly** rather than inheriting it, named for the same
+reason the rest of this codebase's `.env`-sensitive tests are: `APP_LOCALE` is whatever the developer's
+own `.env` says (`pl` on this installation), so a test that assumed a default would pass or fail
+according to what somebody last switched on by hand.
+
+**Verified for this addendum: no other reader exists yet.** A search of `app/` for
+`config('app.locale')` / `config("app.locale")` turns up exactly two hits, and both are docblock
+*warnings* against doing it, not reads — `SetUserLocale.php` itself (documenting why
+`installationDefault()` exists) and `PasswordResetService.php` (documenting the trap its own first draft
+fell into). Decision 6's Invariant B premise — "nothing today reads `app.locale` as an installation
+default" — held everywhere except the one caller this very batch introduced, and that caller has since
+been corrected.
+
+**The rule this addendum adds, stated plainly for the next mailable or scheduled command:** code that
+wants "what does this installation speak when nobody involved has an opinion" — a mail to a third party,
+a queued job with no request context, a console command — must call
+`SetUserLocale::installationDefault()`. It must **never** read `config('app.locale')` for that purpose:
+inside a request that key has already been overwritten by whichever locale `SetUserLocale` resolved for
+*that* caller, and outside a request it is simply the boot-time value with no guarantee about who last
+mutated it in-process. This sharpens Decision 6's Invariant B from "true by absence of a translated mail"
+into an enforced rule with a named, tested escape hatch — the obligation Decision 6 said the next
+translated mailable would have to account for has now been accounted for once, and this addendum is
+where the next one should look first.

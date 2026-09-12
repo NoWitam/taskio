@@ -801,6 +801,47 @@ own sentences under `publishing.connection_failures` — see the data model sect
 
 ---
 
+## Recommendations from the B8 frontend review (not implemented)
+
+B8 (the module's frontend, `35bc93e`) built strictly against what the Resources above actually carry
+— "the contract is read from Resources, not from assumptions." Building against that real contract
+surfaced three gaps between what a screen needs and what this API currently answers. None of the
+three is implemented; each is named here, and in full in
+[`docs/next/publishing-uxui-spec.md`](../next/publishing-uxui-spec.md) Appendix A.3, so the next
+batch that touches this module's wire shape does not have to rediscover them from the frontend side
+again.
+
+- **L2 — there is no way to disarm a `scheduled` publication over HTTP.** The transition table (see
+  "Concepts" above) has the edges `scheduled → draft`, `failed → draft` and `blocked → draft`, but no
+  endpoint exposes any of them — a person can only **arm** (`POST …/schedule`) or **check**
+  (`POST …/reconcile`). The only way to stop something already scheduled is `DELETE`, which discards
+  the row into the trash rather than returning it to a draft. B8 does not invent a "back to draft"
+  button to paper over this; the `scheduled` status band instead says plainly that stopping it means
+  deleting it. **Recommended addition:** `DELETE /publishing/publications/{id}/schedule` — disarm to
+  `draft`, keeping `scheduled_at` as a proposed moment rather than clearing it — so "I scheduled this
+  a day too early" costs an edit, not a delete-and-recreate. This is an owner decision, not a given:
+  it adds a transition this module's own doctrine (never treat a scheduled/live artifact casually)
+  has to bless explicitly.
+- **L12 — `GET /publishing/connections` cannot show a disconnected account.**
+  `PlatformConnectionService::index()` queries without `withTrashed()`, and a disconnect
+  (`PlatformConnectionManager::revoke()`) is a **soft** delete — so a revoked connection never comes
+  back from this endpoint again, ever. A screen diagnosing *why* a publication is `blocked` on
+  `connection_disconnected` therefore cannot render a "disconnected accounts" section explaining what
+  happened; B8 removed a section that claimed to do this but was always empty, rather than ship a
+  section that always renders nothing. **Recommended addition:** an opt-in
+  `?include=disconnected` on `GET /publishing/connections` (`withTrashed()`, additive — the default
+  response is unchanged).
+- **L13 — `PublicationResource` does not carry enough for the Approvals tab to match `TaskResource`'s
+  contract.** It carries three scalars — `approval_pipeline_id`, `is_in_approval`, `approval_state`
+  (see "Approvals & review (B6)" above) — where `TaskResource` carries `approval_pipeline` (with its
+  stages), `pending_approval_process` **and** `approval_run_id`. Without a run id to hang decisions
+  off, B8's Approvals tab can render the pipeline shape and the current state, but not the individual
+  decisions, their authors or their timestamps — the panel says as much and links out to the
+  Approvals module instead of inventing data it does not have. **Recommended addition:**
+  `approval_run_id` (plus the pipeline's own name) on `PublicationResource`, following
+  `TaskResource`'s existing shape — closing this would let the tab match spec §11 without any
+  frontend change beyond wiring the new field.
+
 ## Planned (B4+)
 
 Not implemented as of this commit; mentioned only so this page is not mistaken for the whole

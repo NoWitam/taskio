@@ -707,6 +707,13 @@ an icon (or a dot) **plus** a text label.
   is a tab stop); `←`/`→` (and `↑`/`↓`) move, `Home`/`End` jump, skipping disabled;
   `aria-selected`, `aria-controls`/`aria-labelledby`; panel is focusable. Lazy
   panels mount on first activation and stay mounted.
+- **No per-item `aria-label` prop.** `Tabs` only accepts one `ariaLabel`, for the `tablist` as a
+  whole (`ariaLabel?: string` on the component, rendered as the list's own `aria-label`) — there is
+  no equivalent prop on an individual item. A `badge` renders **inside** the `<button role="tab">`,
+  so it is already part of that tab's accessible name for free (e.g. a Publishing status tab reads
+  "Failed, 3", not "Failed") — do not reach for a per-item label prop that does not exist; if a tab
+  ever needs an accessible name that differs from its visible label, that is a primitive change, not
+  a page-level workaround (named while building Publishing's tab bar, `35bc93e`).
 
 ### Breadcrumbs
 
@@ -1261,6 +1268,31 @@ profile — the full grammar; that doc's REV5 component names/files are now stal
 superseded by this move — not yet corrected in that file, see the recurrence
 refactor's documentation-agent report for what's still open).
 
+**`ModuleAside` / `ModuleTabs` (`ui/layout/`) — the module-shell navigation pair.** Not given its
+own Tier here for the same reason as `ui/recurrence/` above: a small, pure cluster consumed by every
+top-level module shell (Publishing, Knowledge, Bots, Generator, Workflows, Variables, Forms,
+Approvals), fully specced where each module's own UX-UI spec lists its nav entries rather than
+duplicated in this matrix. `ModuleAside` renders `≥ next-lg`; `ModuleTabs` is its horizontal-scroll
+fallback below that breakpoint (same edge-fade rule as `Tabs`) — Calendar is the one module that
+deliberately opts **out** of both (see `docs/next/calendar-uxui-spec.md` D10). Both consume the same
+item shape, `ModuleNavItem` (`ui/layout/ModuleAside.vue`):
+
+| Prop | Notes |
+| --- | --- |
+| `badge?: number \| string` | Renders as a small `Badge` inside the nav item, `variant` from `badgeVariant` (default `danger`) — added building Publishing's B8 nav (`35bc93e`) for its "something may have gone out and nobody knows" count, distinct from the primary-colored Approvals badge (two colors, two meanings: pending work vs. a state that may need a decision). |
+| `badgeVariant?: 'primary' \| 'danger' \| 'warning' \| 'info' \| 'success' \| 'neutral'` | See above. |
+| `badgeLabel?: string` | Screen-reader text for the badge (`sr-only`) — the visible badge itself is `aria-hidden`, so a nav item with a bare number badge and no `badgeLabel` announces nothing about what the number means. |
+
+**`pages/disk/DiskFilePickerModal.vue` — the shared Disk media picker.** A page-level component (not
+`ui/**`), reused by every module that lets a person attach an existing Disk file rather than
+re-uploading one — Publishing's composer is one caller. Two props worth documenting here because
+nothing else does:
+
+| Prop | Notes |
+| --- | --- |
+| `disabledIds?: string[]` | File ids to render selectable-but-refused — greyed, with the reason from `disabledHint` instead of a normal click action. Used for "already attached to the thing I'm editing" (Publishing's media field is the first caller), not for permission gating (that is a normal absence from the list, not a disabled row). |
+| `disabledHint?: string` | The reason shown on a `disabledIds` row (e.g. "already added"). Empty string by default — an empty hint on a disabled row is a silent dead end, so a caller passing `disabledIds` should always pass this too. |
+
 **Implemented overlay behavior (locked in):**
 
 - **Modal / ConfirmDialog:** the scrim is **translucent** (`--color-next-overlay`,
@@ -1274,6 +1306,21 @@ refactor's documentation-agent report for what's still open).
   rectangle and never blocks the page when empty. It teleports to `<body>` at
   `--z-next-toast` (1050) so toasts ride **above** modals and are **not** dimmed by the
   modal scrim.
+- **Modal / Drawer register with `useOverlayStack` on `watch(open, ..., { immediate: true })`,
+  not a bare `watch()`** (fixed `ec6642d`, 2026-09-12, found by a DOM-test batch on Publishing
+  that measured the defect rather than inferring it). A plain `watch(open, ...)` never fires for
+  the prop's *initial* value, so an overlay that is already `open` at the moment it **mounts** —
+  a deep link straight to a composer (`?new=1`, `?edit=<id>`), a Disk preview driven by the
+  route — never registered with the stack at all: Escape did nothing, the page underneath stayed
+  scrollable, `aria-labelledby` was never set, and no `open` event fired. It worked every time
+  someone opened it *from inside* the running app (the ordinary case, and the reason nobody had
+  seen it), because only a mount-time-open overlay hits the unfired-initial-value gap. The fix
+  pairs `immediate: true` with an explicit `else if (overlay.value)` teardown branch — without the
+  guard, a *closed* overlay mounting immediately after another instance had just registered would
+  decrement the shared scroll-lock counter it never incremented, unlocking the page under
+  whichever overlay is genuinely still open. Both primitives now carry two pinned scenarios:
+  mounted-already-open (Escape closes it, body stays locked) and mounted-already-closed (nothing
+  emits, the other instance's lock is untouched).
 
 ---
 
