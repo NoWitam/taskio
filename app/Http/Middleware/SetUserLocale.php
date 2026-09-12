@@ -124,4 +124,32 @@ class SetUserLocale
 
         return is_array($supported) && $supported !== [] ? array_values($supported) : ['en'];
     }
+
+    /**
+     * The language this INSTALLATION speaks when nobody has said otherwise — `APP_LOCALE`.
+     *
+     * This middleware never needs it (it simply declines to call `setLocale`, leaving the boot
+     * value in place), but anything producing output that OUTLIVES the request does: a mail is
+     * read in an inbox, not on the screen that asked for it, so it cannot follow `X-Client-Locale`
+     * — on the password-reset flow anybody may name any address, and letting the request choose
+     * would let a stranger pick the language of a letter delivered to the account holder.
+     *
+     * IT DOES NOT READ `config('app.locale')`, AND THAT IS THE WHOLE REASON IT EXISTS. `handle()`
+     * above calls `App::setLocale()`, which WRITES that key (Foundation\Application::setLocale), so
+     * after this middleware has run `config('app.locale')` holds THIS REQUEST'S language. Code
+     * reaching for it as a default silently gets a caller-steerable value. `app.default_locale` is
+     * the twin nothing rewrites; see the comment beside it in `config/app.php`.
+     *
+     * Guarded through {@see supported()} for the same reason the stored column is: a locale this
+     * installation cannot speak renders every key as its own name.
+     */
+    public static function installationDefault(): string
+    {
+        $default = config('app.default_locale');
+        $supported = self::supported();
+
+        return is_string($default) && in_array($default, $supported, true)
+            ? $default
+            : $supported[0];
+    }
 }

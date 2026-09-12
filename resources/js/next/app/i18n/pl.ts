@@ -101,6 +101,58 @@ export const pl: MessageSchema = {
     validationFailed: 'Sprawdź formularz i spróbuj ponownie.',
     genericError: 'Coś poszło nie tak. Spróbuj ponownie.',
     tooManyAttempts: 'Zbyt wiele prób. Poczekaj i spróbuj ponownie.',
+    forgotLink: 'Nie pamiętasz hasła?',
+
+    // „Wyślij mi link". Potwierdzenie jest sformułowane WARUNKOWO i pokazuje się dla każdego
+    // adresu: serwer odpowiada identycznie niezależnie od tego, czy konto istnieje, a treść
+    // ujawniająca różnicę zniosłaby to na ekranie.
+    forgot: {
+      title: 'Zmiana hasła',
+      subtitle: 'Podaj swój adres e-mail, a wyślemy link do ustawienia nowego hasła.',
+      submit: 'Wyślij link',
+      submitting: 'Wysyłanie…',
+      backToLogin: 'Powrót do logowania',
+      errorTitle: 'Nie udało się wysłać linku',
+      sent: {
+        title: 'Sprawdź skrzynkę',
+        body: 'Jeśli konto o tym adresie istnieje, wysłaliśmy na nie link do ustawienia nowego hasła.',
+        hint: 'Link jest ważny 60 minut i można go użyć raz.',
+      },
+      errors: {
+        invalidEmail: 'Podaj poprawny adres e-mail.',
+      },
+    },
+
+    // „Ustaw nowe hasło" — ekran, do którego prowadzi link z maila.
+    reset: {
+      title: 'Ustaw nowe hasło',
+      subtitle: 'Wybierz nowe hasło do swojego konta.',
+      newPassword: 'Nowe hasło',
+      newPasswordPlaceholder: 'Co najmniej 8 znaków',
+      confirmPassword: 'Powtórz nowe hasło',
+      confirmPasswordPlaceholder: 'To samo hasło jeszcze raz',
+      rule: 'Co najmniej 8 znaków.',
+      revokesSessions: 'Ustawienie nowego hasła wyloguje Cię na wszystkich pozostałych urządzeniach.',
+      submit: 'Ustaw hasło',
+      submitting: 'Zapisywanie…',
+      errorTitle: 'Nie udało się ustawić hasła',
+      requestNewLink: 'Poproś o nowy link',
+      missingLink: {
+        title: 'Ten link jest niekompletny',
+        body: 'W adresie brakuje części identyfikującej Twoje zgłoszenie — mógł zostać ucięty przez program pocztowy. Poproś o nowy link i otwórz go bezpośrednio.',
+      },
+      deadLink: {
+        title: 'Ten link już nie działa',
+      },
+      errors: {
+        // JEDNO zdanie na nieprawidłowy / wygasły / już użyty link, bo serwer odpowiada na
+        // wszystkie trzy identycznie — rozróżnienie ujawniłoby, czy adres ma konto.
+        invalidLink: 'Ten link jest nieprawidłowy, wygasł albo został już użyty. Poproś o nowy.',
+        tooShort: 'Hasło musi mieć co najmniej 8 znaków.',
+        mismatch: 'Podane hasła nie są identyczne.',
+        rejected: 'To hasło zostało odrzucone. Wybierz inne.',
+      },
+    },
   },
 
   nav: {

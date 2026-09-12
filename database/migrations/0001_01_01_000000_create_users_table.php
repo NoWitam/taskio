@@ -21,11 +21,10 @@ return new class extends Migration
             $table->timestamps();
         });
 
-        // Schema::create('password_reset_tokens', function (Blueprint $table) {
-        //     $table->string('email')->primary();
-        //     $table->string('token');
-        //     $table->timestamp('created_at')->nullable();
-        // });
+        // `password_reset_tokens` was deferred with the feature and now EXISTS — it is
+        // created by 2026_09_12_000000_create_password_reset_tokens_table. Do not revive
+        // the block here: this migration has already run everywhere, so uncommenting it
+        // would only collide with that one on a fresh database.
 
         // Schema::create('sessions', function (Blueprint $table) {
         //     $table->string('id')->primary();
@@ -43,7 +42,6 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('users');
-        // Schema::dropIfExists('password_reset_tokens');
         // Schema::dropIfExists('sessions');
     }
 };

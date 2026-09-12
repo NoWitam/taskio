@@ -135,7 +135,15 @@ async function submit(): Promise<void> {
             />
           </FormField>
 
-          <Checkbox v-model="remember" :label="t('auth.remember', 'Remember me')" />
+          <div class="flex items-center justify-between gap-next-2">
+            <Checkbox v-model="remember" :label="t('auth.remember', 'Remember me')" />
+
+            <!-- The only route to the reset flow. A `link` Button (a real <a href>) rather
+                 than router navigation, matching how the sibling public pages cross-link. -->
+            <Button variant="link" size="sm" href="/next/forgot-password">
+              {{ t('auth.forgotLink', 'Forgot your password?') }}
+            </Button>
+          </div>
 
           <Button
             type="submit"

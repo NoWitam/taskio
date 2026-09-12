@@ -90,6 +90,24 @@ return [
     */
     'supported_locales' => ['en', 'pl'],
 
+    /*
+    | THE SAME VALUE AS `locale` ABOVE, AND THAT IS THE ENTIRE POINT: this one is never
+    | rewritten mid-request.
+    |
+    | `App::setLocale()` does not only tell the translator — it WRITES `config('app.locale')`
+    | (Foundation\Application::setLocale). Since `SetUserLocale` calls it on almost every
+    | request, by the time any application code reads `config('app.locale')` it is reading
+    | THIS REQUEST'S language, not the installation's. Code that wants "what this install
+    | speaks when nobody has said otherwise" and reaches for `app.locale` gets a value the
+    | caller can steer with a header — which for anything leaving the request (a mail to
+    | somebody else's inbox) is a real hole, not a cosmetic one.
+    |
+    | Read it through `SetUserLocale::installationDefault()` rather than directly, so the
+    | supported-locale guard applies here too. Both keys read the same env var literally, so
+    | they cannot drift without somebody editing one of these two lines.
+    */
+    'default_locale' => env('APP_LOCALE', 'en'),
+
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
 
     'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),

@@ -96,6 +96,32 @@ return [
     */
 
     'passwords' => [
+        /*
+        | THE FLOOR, IN MILLISECONDS, THAT `PasswordResetService` PADS BOTH OF ITS ENTRY
+        | POINTS UP TO. Not a broker option — the key sits here because this is where
+        | everything about password resets is configured, and `Password::broker()` only ever
+        | reads the named sub-arrays beside it.
+        |
+        | WHY IT IS NOT THE FRAMEWORK'S 200 ms. The broker wraps its own work in a `Timebox`,
+        | but a timebox is a FLOOR, not an equaliser: it pads a fast branch up to the
+        | duration and lets a slow one run long. The branch that FINDS an account does work
+        | the branch that finds nothing does not — bcrypt-hashing the new token (measured at
+        | 213-230 ms on this codebase with BCRYPT_ROUNDS=12), rendering the Blade mail, and
+        | on production handing it to SMTP. All of that is already over 200 ms, so the stock
+        | floor equalised nothing and the response time itself answered the question the
+        | endpoint refuses to answer in words: does this address have an account?
+        |
+        | THE FLOOR MUST EXCEED THE COST OF THE BRANCH THAT HITS. 1000 ms buys room for
+        | bcrypt + render + a local relay. IF YOU CHANGE `BCRYPT_ROUNDS`, OR POINT MAIL AT A
+        | REMOTE SMTP SERVER, MEASURE AGAIN: a hit that outruns the floor puts the oracle
+        | straight back. A slow-but-honest alternative for a remote relay is to queue the
+        | mail, which takes the transport out of the measured branch entirely.
+        |
+        | Zero disables the padding (and with it the defence). Tests set it explicitly rather
+        | than inheriting it, and fake the clock — see PasswordResetTest.
+        */
+        'timebox_ms' => (int) env('AUTH_PASSWORD_TIMEBOX_MS', 1000),
+
         'users' => [
             'provider' => 'users',
             'table' => env('AUTH_PASSWORD_RESET_TOKEN_TABLE', 'password_reset_tokens'),

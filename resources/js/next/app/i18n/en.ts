@@ -106,6 +106,59 @@ export const en = {
     validationFailed: 'Please check the form and try again.',
     genericError: 'Something went wrong. Please try again.',
     tooManyAttempts: 'Too many attempts. Please wait and try again.',
+    forgotLink: 'Forgot your password?',
+
+    // "Email me a reset link". The confirmation is phrased CONDITIONALLY and is shown for
+    // every address: the backend answers identically whether or not an account exists, and
+    // wording that revealed the difference would undo that on the screen.
+    forgot: {
+      title: 'Reset your password',
+      subtitle: 'Enter your email address and we will send you a link to set a new password.',
+      submit: 'Send the link',
+      submitting: 'Sending…',
+      backToLogin: 'Back to sign in',
+      errorTitle: 'We could not send the link',
+      sent: {
+        title: 'Check your inbox',
+        body: 'If an account exists for that address, we have sent it a link to set a new password.',
+        hint: 'The link is valid for 60 minutes and can be used once.',
+      },
+      errors: {
+        invalidEmail: 'Please enter a valid email address.',
+      },
+    },
+
+    // "Set a new password" — the destination of the mailed link.
+    reset: {
+      title: 'Set a new password',
+      subtitle: 'Choose a new password for your account.',
+      newPassword: 'New password',
+      newPasswordPlaceholder: 'At least 8 characters',
+      confirmPassword: 'Repeat the new password',
+      confirmPasswordPlaceholder: 'The same password again',
+      rule: 'At least 8 characters.',
+      revokesSessions: 'Setting a new password signs you out everywhere else.',
+      submit: 'Set the password',
+      submitting: 'Saving…',
+      errorTitle: 'We could not set the password',
+      requestNewLink: 'Request a new link',
+      missingLink: {
+        title: 'This link is incomplete',
+        body: 'The address is missing the part that identifies your request — it may have been cut off by your email program. Request a new link and open it directly.',
+      },
+      deadLink: {
+        title: 'This link no longer works',
+      },
+      errors: {
+        // ONE sentence for invalid / expired / already-used, because the server answers
+        // identically for all three — distinguishing them would reveal whether the address
+        // has an account.
+        invalidLink: 'This link is invalid, has expired, or has already been used. Request a new one.',
+        tooShort: 'The password must be at least 8 characters long.',
+        mismatch: 'The two passwords do not match.',
+        rejected: 'This password was rejected. Please choose another one.',
+      },
+    },
   },
 
   // Primary navigation (sidebar).

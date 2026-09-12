@@ -18,6 +18,27 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, titleKey: 'auth.title' },
   },
   {
+    // PUBLIC "email me a reset link" page. `public` like login: somebody who cannot log in is
+    // the only person who needs it, so the guard must render it pre-auth.
+    path: '/forgot-password',
+    name: 'next.password.forgot',
+    component: () => import('../../pages/auth/ForgotPasswordPage.vue'),
+    meta: { public: true, titleKey: 'auth.forgot.title' },
+  },
+  {
+    // PUBLIC "set a new password" page — the destination of the mailed link, which carries
+    // `?token=&email=` in the QUERY (so the path stays a plain route and the token never
+    // becomes a path segment that a server access log would record as a URL).
+    //
+    // Deliberately NOT bounced for an authenticated viewer the way /login is: somebody whose
+    // account was taken over may well be signed in on this device and still need to reset —
+    // and the reset revokes every session including the one they are holding.
+    path: '/reset-password',
+    name: 'next.password.reset',
+    component: () => import('../../pages/auth/ResetPasswordPage.vue'),
+    meta: { public: true, titleKey: 'auth.reset.title' },
+  },
+  {
     // PUBLIC invite-accept page (no app shell, no auth). Mirrors the login route's
     // `public` meta so the guard renders it pre-auth. The accept endpoints never
     // 401 (a 404 = unknown token, handled inline), so the api interceptor's
