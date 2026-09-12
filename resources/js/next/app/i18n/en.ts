@@ -115,6 +115,13 @@ export const en = {
     dashboard: 'Dashboard',
     tasks: 'Tasks',
     calendar: 'Calendar',
+    publishing: 'Publishing',
+    /**
+     * The publishing badge is DANGER where the approvals one is primary, and the difference
+     * is the message: Approvals says "there is work waiting for you", Publishing says
+     * "something may have gone out into the world and nobody knows".
+     */
+    publishingBadge: 'Publications needing a decision: {count}',
     disk: 'Disk',
     forms: 'Forms',
     approvals: 'Approvals',
@@ -5846,6 +5853,504 @@ export const en = {
         capReached: 'This workflow has reached its run limit. Try again later.',
         generic: 'Couldn’t start the run. Please try again.',
       },
+    },
+  },
+
+  // ── Publishing (R4) ──────────────────────────────────────────────────────
+  // WHAT IS *NOT* IN THIS NAMESPACE, ON PURPOSE: status names, destination names as the
+  // server renders them, transition refusals and validation messages. Those arrive
+  // translated in the payload (`status_label`, `platform_label`, a 422's `message`) and are
+  // rendered verbatim — a second vocabulary for the same seven statuses is the one that
+  // silently omits the eighth.
+  //
+  // What IS here and looks like a duplicate: `failures.*`, `connectionFailures.*` and
+  // `oauth.failures.*`. Those travel as STABLE CODES with no accompanying prose, and their
+  // sentences live in the server catalog this frontend never reads — so these are faithful
+  // copies of `lang/en/publishing.php`, and each has a fallback for a code this build has
+  // never heard of. None of them repeats a platform's own wording and none names an attack;
+  // those are properties of the sentences, not accidents, and must survive any rewrite.
+  publishing: {
+    title: 'Publishing',
+    subtitle: 'What goes out, where, and when.',
+
+    nav: {
+      publications: 'Publications',
+      connections: 'Connections',
+    },
+    module: {
+      selectHint: 'Open a publication to see where it stands.',
+      resourceNav: 'Publication sections',
+      connectionsBadge: 'Accounts needing attention: {count}',
+    },
+
+    newPublication: 'New publication',
+
+    // Fallback destination names, used ONLY where no loaded row carries `platform_label`
+    // (an empty list's filter menu). Whenever a row is present its label wins.
+    platforms: {
+      youtube: 'YouTube',
+      instagram: 'Instagram',
+      facebook: 'Facebook',
+      dry_run: 'Test run (nothing is published)',
+    },
+    rehearsal: 'Test run',
+
+    tabs: {
+      label: 'Publication status',
+      all: 'All',
+      draft: 'Drafts',
+      scheduled: 'Scheduled',
+      publishing: 'Publishing',
+      published: 'Published',
+      failed: 'Failed',
+      needs_reconcile: 'Needs checking',
+      blocked: 'On hold',
+    },
+
+    filters: {
+      search: 'Search publications',
+      platformLabel: 'Destination',
+      platformPlaceholder: 'Any destination',
+      momentLabel: 'Scheduled time',
+      momentPlaceholder: 'Any time',
+      clearAll: 'Clear filters',
+      chip: {
+        search: 'Search: {value}',
+        platform: 'Destination',
+        from: 'From: {value}',
+        to: 'Until: {value}',
+      },
+    },
+    results: {
+      count: 'Publications: {count}',
+      zero: '0 publications',
+    },
+
+    counts: {
+      error: 'The tab counts could not be loaded.',
+      retry: 'Try again',
+    },
+
+    attention: {
+      sentence: '{count} publications need a decision.',
+      goTo: '{label} ({count})',
+    },
+
+    card: {
+      actionsLabel: 'Publication actions: {title}',
+      moment: {
+        published: 'Published {value}',
+        scheduled: 'Goes out {value}',
+        since: 'Since {value}',
+        unarmed: 'Time set (not armed) {value}',
+        none: 'No time set',
+      },
+      media: 'Media: {count}',
+    },
+
+    actions: {
+      open: 'Open',
+      openOnPlatform: 'Open on the platform',
+      openOnPlatformHint: 'opens on the platform',
+      edit: 'Edit',
+      schedule: 'Schedule',
+      reschedule: 'Schedule again',
+      submitForReview: 'Send for approval',
+      changeTime: 'Change the time',
+      reconcile: 'Check the platform',
+      delete: 'Delete',
+      deleteRecord: 'Delete our record',
+      fixConnection: 'Fix the connection',
+      openConnections: 'Open Connections',
+      refresh: 'Refresh',
+      retry: 'Try again',
+      backToList: 'Back to publications',
+      copy: 'Copy',
+      copied: 'Copied',
+    },
+
+    blocked: {
+      noAccount: 'Choose the account this goes out on first.',
+      connectionBroken: 'Fix the connection first.',
+      underReview: 'This is with an approver right now.',
+    },
+
+    empty: {
+      firstRun: {
+        title: 'Nothing here yet',
+        description:
+          'A publication is a statement of what goes out and when. Start with a draft — nothing is sent anywhere until you schedule it.',
+        secondary: 'Connect an account first',
+      },
+      search: {
+        title: 'No publications match these filters',
+        description: 'Try a wider range, or clear the filters.',
+        action: 'Clear filters',
+      },
+      draft: {
+        title: 'No drafts',
+        description: 'A draft is a publication that is not going anywhere yet.',
+      },
+      scheduled: {
+        title: 'Nothing is waiting for its time',
+        description: 'Scheduled publications appear here and on the Calendar.',
+        secondary: 'Open the Calendar',
+      },
+      publishing: {
+        title: 'Nothing is going out right now',
+        description: 'That is normal — a publication spends seconds here.',
+      },
+      published: {
+        title: 'Nothing has gone out yet',
+        description: 'Everything published lands here, with a link to the post.',
+      },
+      failed: {
+        title: 'Nothing failed',
+        description:
+          'Publications we KNOW produced nothing land here — and those can safely be scheduled again.',
+      },
+      needs_reconcile: {
+        title: 'Nothing is waiting to be checked',
+        description:
+          'Publications we do NOT know about land here. Empty is good news.',
+      },
+      blocked: {
+        title: 'Nothing is on hold',
+        description:
+          'A publication lands here when its account stops working — so one broken account does not become twelve errors with one cause.',
+      },
+    },
+
+    errors: {
+      loadTitle: 'The publications could not be loaded',
+      loadDescription: 'Something went wrong on the way. Try again.',
+      forbidden: 'You do not have access to this workspace.',
+      notFoundTitle: 'No such publication',
+      notFoundDescription: 'It may have been deleted.',
+      connectionsTitle: 'The accounts could not be loaded',
+      connectionUnknown: 'the account could not be loaded',
+      clientFieldRefused:
+        'This screen sent a field the server does not accept. Please report this.',
+    },
+
+    // --- The composer (drawer) ---------------------------------------------
+    editor: {
+      createTitle: 'New publication',
+      editTitle: 'Edit publication',
+      description: 'Saving publishes nothing. A publication only moves once it is scheduled.',
+
+      destinationSection: 'Where this goes',
+      destination: 'Destination',
+      account: 'Account',
+      accountPlaceholder: 'Choose an account',
+      accountCleared: 'The account was cleared — a different destination means different accounts.',
+      accountRefresh: 'Reload the accounts',
+      noAccounts: {
+        title: 'There is no account for this to go out on yet.',
+        body: 'You can save the draft without one; it cannot be scheduled until an account is connected.',
+        actionSaved: 'Save the draft and connect an account',
+        actionNewTab: 'Connect an account (opens in a new tab)',
+      },
+
+      contentSection: 'Content',
+      titleField: 'Title',
+      titlePlaceholder: 'What is this post?',
+      bodyField: 'Body',
+      bodyPlaceholder: 'The text that goes out with it.',
+      bodyHint: 'Plain text. These platforms do not render formatting.',
+
+      mediaSection: 'Media ({count}/{max})',
+      addMedia: 'Add from the Disk',
+      mediaAlreadyAdded: 'already added',
+      mediaMissing: 'This file is no longer on the Disk',
+      mediaMissingWarning:
+        'One of these files is no longer on the Disk. A publication with a missing file WILL NOT be published — remove it or pick another.',
+      mediaPreviewsFailed: 'The media previews could not be loaded. The files themselves are untouched.',
+      mediaMoveUp: 'Move up: {name}',
+      mediaMoveDown: 'Move down: {name}',
+      mediaRemove: 'Remove: {name}',
+      mediaPosition: '{name}: position {index} of {total}',
+      mediaListLabel: 'Media, in the order the platform receives them',
+
+      momentSection: 'Time',
+      moment: 'Time',
+      momentZone: 'Time on the team clock: {tz}',
+      momentZoneUnknown: 'Time is read on the team clock — the same one the Calendar uses.',
+      momentZoneMismatch: 'Your browser is in {localTz}. This time will be read as {tz}.',
+      momentNotArming: 'Setting a time does not arm the publication.',
+
+      saveDraft: 'Save draft',
+      saveAndSchedule: 'Save and schedule',
+      saveAndSubmit: 'Save and send for approval',
+      staleTitle: 'This publication changed while you were editing it',
+      staleBody: 'Somebody armed or reviewed it. Refresh to see where it stands.',
+    },
+
+    // --- The detail screen --------------------------------------------------
+    detail: {
+      tabOverview: 'Overview',
+      tabApproval: 'Approval',
+      contentCard: 'Content',
+      noBody: 'No body text.',
+      shippingCard: 'Delivery',
+
+      fields: {
+        platform: 'Destination',
+        connection: 'Account',
+        /** Nobody has chosen an account: `platform_connection_id` is null. */
+        noConnection: 'Not chosen',
+        /**
+         * The account IS named on the row and is not in the list — `GET /connections` never
+         * returns soft-deleted rows, so it was disconnected. A different fact from the one
+         * above, and the one that explains why the publication is on hold.
+         */
+        connectionDisconnected: 'The account was disconnected',
+        scheduled_at: 'Time',
+        unarmed: '(not armed)',
+        published_at: 'Published',
+        attempts: 'Attempts',
+        last_attempt_at: 'Last attempt',
+        remote_id: 'Id on the platform',
+        creator: 'Created by',
+        created_at: 'Created',
+        updated_at: 'Changed',
+      },
+      copyRemoteId: 'Copy the id on the platform',
+
+      polling: 'We refresh this screen every few seconds.',
+      pollingStopped: 'We stopped refreshing. Reload the page to check.',
+
+      band: {
+        draft: {
+          title: 'Draft',
+          body: 'Nothing is scheduled. This goes nowhere until you schedule it.',
+        },
+        scheduled: {
+          title: 'Scheduled for {moment}',
+          body: 'It goes out by itself. The time is on the team clock.',
+          bodyZone: 'It goes out by itself. The time is on the team clock, {tz}.',
+          stopHint: 'To stop this, the publication has to be deleted — it goes to the trash, not back to drafts.',
+        },
+        publishing: {
+          title: 'Going out now',
+          body: 'This started {moment}. It belongs to the process sending it — it cannot be changed or deleted from here.',
+          bodyNoMoment:
+            'This belongs to the process sending it — it cannot be changed or deleted from here.',
+        },
+        published: {
+          title: 'Published {moment}',
+          body: 'This is in the world. Nothing you do here will undo that.',
+          noEdit: 'The record is not rewritten — it would otherwise say things about the post that the post does not say.',
+          reconciledTime: 'The publication time was established while checking, and may differ from the scheduled one.',
+        },
+        failed: {
+          title: 'Failed',
+        },
+        blocked: {
+          title: 'On hold',
+        },
+        review: 'Held for approval: {pipeline}.',
+        reviewGeneric: 'Held for approval.',
+        reviewLink: 'See the approval',
+        rejected: 'An approver turned this down. Edit it and send it again.',
+      },
+    },
+
+    // --- needs_reconcile ----------------------------------------------------
+    reconcile: {
+      title: 'We do not know whether this went out',
+      facts: {
+        claimed: 'Taken for publishing: {moment}',
+        stale: 'waited over {minutes} min',
+        attempts: 'attempts: {count}',
+      },
+      action: 'Check the platform',
+      actionExplains:
+        'We will ask the platform whether this post exists. Nothing will be published or changed on the platform.',
+      automatic: 'We also check this automatically, roughly once an hour.',
+      notAllowed: 'The author of this publication, or the workspace owner, can check it.',
+      unresolved: {
+        title: 'We still could not establish this',
+        body: 'The platform did not answer the question. Nothing changed and nothing was published. Try again shortly, or wait for the automatic check.',
+      },
+      throttled: {
+        countdown: 'Check in {seconds} s',
+        body: 'Too many checks in a row. Every question spends a platform limit shared by the whole application, so we count down a moment.',
+      },
+      whyNoRetry: {
+        question: 'Why can I not simply try again?',
+        body: 'This publication may already have been published — we lost contact before it could be confirmed. Publishing again could post it a SECOND time, and a published post cannot be withdrawn from here. So there is one road out of this state: ask the platform. If it turns out nothing was created, scheduling becomes possible again.\n\nFor the same reason this publication cannot be edited now (the record would stop matching a post that may exist) and cannot be deleted (deleting would leave a post nobody could attribute).',
+      },
+    },
+
+    // --- Scheduling modal ---------------------------------------------------
+    schedule: {
+      title: 'Schedule the publication',
+      titleAgain: 'Schedule it again',
+      titleChange: 'Change the time',
+      titleSubmit: 'Send for approval',
+      consequencePublic:
+        'Once scheduled, this goes out into the world by itself. A published post cannot be withdrawn from here.',
+      consequenceRehearsal: 'This is a test run — nothing leaves the application.',
+      consequenceReview:
+        'This goes to an approver. Approving it is what schedules it for the time you choose here.',
+      confirm: 'Schedule',
+      confirmChange: 'Change the time',
+      confirmSubmit: 'Send for approval',
+      publishNow: 'Publish now',
+      publishNowConfirmTitle: 'Publish now?',
+      publishNowConfirmBody:
+        'The publication starts at the next pass, within a minute. A published post cannot be withdrawn from here.',
+    },
+
+    // --- Connections --------------------------------------------------------
+    connections: {
+      title: 'Connections',
+      subtitle: 'The accounts this workspace can publish to.',
+      refresh: 'Refresh',
+      empty: 'No account',
+      emptyHint: 'Nothing goes here yet.',
+      connect: 'Connect an account',
+      connectAnother: 'Connect another account',
+      reconnect: 'Connect again',
+      disconnect: 'Disconnect',
+      accountActions: 'Account actions: {name}',
+      expiresAt: 'Expires {value}',
+      expiresUnknown: 'The platform did not state an expiry.',
+      refreshedAt: 'Renewed {value}',
+      scopes: 'Permissions ({count})',
+      // NO `revokedSection`: `GET /publishing/connections` never returns disconnected
+      // accounts (the query has no `withTrashed()`), so the §9.3 section cannot be built at
+      // all — see the docblock in `PlatformConnectionCard.vue`.
+      unreadable: {
+        title: 'The stored access to some accounts can no longer be read.',
+        body: 'Nothing was lost on the platforms — the application stopped being able to open its own record. Connect these accounts again; publications waiting on them are on hold until then.',
+      },
+      notConfigured: 'This application is not registered with that platform yet.',
+      disconnectConfirm: {
+        title: 'Disconnect {name}?',
+        body: 'Scheduled publications on this account will be PUT ON HOLD and will not go out. Published posts stay — both on the platform and here.\n\nIf you connect the same account again, the held publications return to their times automatically. Those whose time passed in the meantime go out IMMEDIATELY after reconnecting.',
+      },
+    },
+
+    // --- The OAuth return ---------------------------------------------------
+    // Faithful copies of `lang/en/publishing.php` → `oauth` / `oauth_failures`.
+    oauth: {
+      connected: 'Account connected.',
+      failed: 'The account could not be connected.',
+      failures: {
+        unknown_platform: 'That is not a service this application can connect an account to.',
+        missing_code:
+          'The platform sent you back without granting access. Start connecting the account again.',
+        workspace_unavailable:
+          'This account cannot be connected to that workspace any more. Check that you still have access to it, then try again.',
+        connection_failed:
+          'Something went wrong while connecting the account and nothing was saved. Try again; if it keeps happening, an administrator will need to look at the logs.',
+        access_denied: 'The permission request was declined, so nothing was connected.',
+        oauth_state_malformed:
+          'That link is not one we recognise. Start connecting the account again from this application.',
+        oauth_state_bad_signature:
+          'That link could not be verified. Start connecting the account again from this application.',
+        oauth_state_expired: 'That link expired. Start connecting the account again.',
+        oauth_state_already_used:
+          'That link has already been used. Start connecting the account again.',
+        oauth_state_platform_mismatch:
+          'That link was for a different service. Start again from the account you meant to connect.',
+        oauth_browser_mismatch:
+          'This connection has to be finished in the same browser that started it. Start connecting the account again, and stay in this window.',
+        token_exchange_failed:
+          'The platform would not grant access to this account. Try again, and make sure you are signed in to the right account there.',
+        token_response_unusable:
+          'The platform granted access in a form this application cannot store. Start connecting the account again and accept every permission it asks for.',
+        account_lookup_failed:
+          'Access was granted, but the platform would not say which account it was for — so there was nothing to save. Check that the account has a channel or page this application can post to, then try again.',
+        /** The callback passes ANY platform error through verbatim. This is the floor. */
+        unknown:
+          'The platform refused the connection and did not explain it in a way this application recognises. Try again.',
+      },
+    },
+
+    // Faithful copies of `lang/en/publishing.php` → `failures` / `holds`.
+    failures: {
+      title_missing: 'This publication has no title, so there is nothing to send.',
+      publish_outcome_unknown:
+        'We lost contact with the platform and could not confirm what happened.',
+      reconciled_absent:
+        'We checked the platform: nothing was published, so this can safely be tried again.',
+      dispatch_failed:
+        'This could not be handed to a worker, so nothing was sent anywhere. Schedule it again.',
+      publish_worker_failed:
+        'The worker handling this publication stopped before it could tell us what happened. Check the platform before scheduling it again.',
+      reaper_stale:
+        'This was claimed for publishing and nothing came back. Check the platform before scheduling it again — it may already be live.',
+      connection_needs_reauth:
+        'On hold: the account this goes out on needs reconnecting. Fix the connection and it will return to its scheduled time by itself.',
+      connection_disconnected:
+        'On hold: the account this goes out on was disconnected. Connect it again, or choose another destination.',
+      /** B4 will add adapter codes this build has never seen. Never a raw key on screen. */
+      unknown: 'The publication stopped for a reason this version of the application does not describe yet ({code}).',
+    },
+
+    // Faithful copies of `lang/en/publishing.php` → `connection_failures`.
+    connectionFailures: {
+      refresh_failed:
+        "The platform would not renew this account's access. Connect it again to continue publishing.",
+      refresh_unsupported:
+        'This connection has nothing left to renew with. Connect the account again.',
+      credentials_unreadable:
+        "This account's stored access can no longer be read by the application. Connect it again.",
+      disconnected_by_user: 'This account was disconnected.',
+    },
+
+    confirm: {
+      deleteTitle: 'Delete the publication?',
+      deleteBody: 'It goes to the trash. Nothing was sent anywhere.',
+      deleteScheduledTitle: 'Delete the scheduled publication?',
+      deleteScheduledBody:
+        'This is the ONLY way to stop it. It goes to the trash and will not go out. It comes back as a trash item, not as a draft.',
+      deleteBlockedTitle: 'Delete the publication on hold?',
+      deleteBlockedBody:
+        'It goes to the trash. If you fix the connection AFTER deleting it, this publication will not come back.',
+      deletePublishedTitle: 'Delete our record of this publication?',
+      deletePublishedBody:
+        'THE POST STAYS ON THE PLATFORM. You are deleting only our record of it — after this nobody here can answer where that post came from or who asked for it.',
+      discardTitle: 'Discard the changes?',
+      discardBody: 'What you have written here will not be saved.',
+      /** NOT "Delete": nothing is deleted here — only the unsaved edits are dropped. */
+      discardConfirm: 'Discard',
+    },
+
+    toasts: {
+      draftSaved: 'Draft saved',
+      scheduled: 'Scheduled for {moment}',
+      submitted: 'Sent for approval for {moment}',
+      submittedNoMoment: 'Sent for approval',
+      timeChanged: 'Time changed',
+      deleted: 'Publication moved to the trash',
+      deletedPublished: 'Record deleted. The post stayed on the platform.',
+      reconciledFound: 'The post exists on the platform. The publication is marked as published.',
+      reconciledAbsent: 'Nothing was published. This can safely be scheduled again.',
+      connected: 'Account connected.',
+      disconnected: 'Account disconnected.',
+      actionError: 'That did not work. Try again.',
+    },
+
+    // --- The approval tab (B6) ---------------------------------------------
+    approval: {
+      noPipeline: 'No approval pipeline',
+      noPipelineHint: 'This publication goes out without anybody approving it.',
+      pipelineTitle: 'Approval path',
+      notInApproval:
+        'A pipeline is attached, but this publication is not currently being reviewed. It will go to an approver when it is sent for approval.',
+      inApproval: 'This publication is with an approver.',
+      approved: 'Approved.',
+      rejected: 'An approver turned this down.',
+      decisionsElsewhere:
+        'Decisions are made in Approvals — including the notes and the times of each one. This screen shows the path, read-only.',
+      goToApprovals: 'See it in Approvals',
+      stage: 'Stage {order}',
+      approver: 'Approver',
+      loadError: 'The approval path could not be loaded.',
     },
   },
 

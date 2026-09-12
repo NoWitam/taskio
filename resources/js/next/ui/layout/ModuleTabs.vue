@@ -27,7 +27,16 @@ const router = useRouter();
 const { t } = useI18n();
 
 const tabItems = computed<TabItem[]>(() =>
-  props.items.map((i) => ({ value: i.key, label: i.label, icon: i.icon, disabled: i.soon })),
+  props.items.map((i) => ({
+    value: i.key,
+    label: i.label,
+    icon: i.icon,
+    // The aside's count has to survive the small-screen fallback: below `next-lg` this row
+    // IS the module nav, and a badge that only exists on wide screens hides the problem
+    // from exactly the people most likely to be away from their desk.
+    badge: i.badge,
+    disabled: i.soon,
+  })),
 );
 
 // Route → active tab via activeMatch; tab click → route push.

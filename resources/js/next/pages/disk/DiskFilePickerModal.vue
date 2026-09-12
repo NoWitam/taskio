@@ -26,8 +26,19 @@ const props = withDefaults(
     acceptedTypes?: string[];
     /** Max size in MEGABYTES (the field stores MB); null = no cap. */
     maxSize?: number | null;
+    /**
+     * File ids the HOST already holds, shown but not selectable (additive, R4).
+     *
+     * A picker that lets somebody choose a file the host will then refuse — because its list
+     * is `distinct` — teaches that the picker's answer is provisional. Showing the file
+     * greyed with a reason is the same courtesy `isEligible` already extends to a file of
+     * the wrong type. Defaults to none, so every existing caller is unchanged.
+     */
+    disabledIds?: string[];
+    /** The reason shown on a `disabledIds` row (e.g. "already added"). */
+    disabledHint?: string;
   }>(),
-  { acceptedTypes: () => [], maxSize: null },
+  { acceptedTypes: () => [], maxSize: null, disabledIds: () => [], disabledHint: '' },
 );
 
 const open = defineModel<boolean>('open', { default: false });
@@ -61,8 +72,14 @@ function filesUrl(folderId: string | null, cursor?: string | null): string {
 
 /** Whether a file may be picked: within the size cap AND matching the accepted types. */
 function isEligible(file: DiskFile): boolean {
+  if (isAlreadyHeld(file)) return false;
   if (props.maxSize != null && file.size > props.maxSize * 1024 * 1024) return false;
   return matchesAccept(file.name, file.mime_type, props.acceptedTypes);
+}
+
+/** Already on the host's own list — see `disabledIds`. */
+function isAlreadyHeld(file: DiskFile): boolean {
+  return props.disabledIds.includes(file.id);
 }
 
 async function openLevel(folderId: string | null): Promise<void> {
@@ -216,7 +233,13 @@ watch(
                 type="button"
                 :disabled="!isEligible(file)"
                 :aria-pressed="selected?.id === file.id"
-                :title="!isEligible(file) ? t('disk.picker.fileNotAllowed', 'This file doesn’t match what this field accepts.') : undefined"
+                :title="
+                  isAlreadyHeld(file) && disabledHint
+                    ? disabledHint
+                    : !isEligible(file)
+                      ? t('disk.picker.fileNotAllowed', 'This file doesn’t match what this field accepts.')
+                      : undefined
+                "
                 class="flex w-full items-center gap-next-2 rounded-next-sm px-next-2 py-next-2 text-left text-next-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-next-ring"
                 :class="[
                   selected?.id === file.id ? 'bg-next-primary/10 ring-1 ring-next-primary' : 'hover:bg-next-accent',
@@ -226,6 +249,12 @@ watch(
               >
                 <Icon :name="fileTypeIcon(file.type)" class="shrink-0 text-next-muted-foreground" aria-hidden="true" />
                 <span class="min-w-0 flex-1 truncate">{{ file.name }}</span>
+                <span
+                  v-if="isAlreadyHeld(file) && disabledHint"
+                  class="shrink-0 text-next-xs text-next-muted-foreground"
+                >
+                  {{ disabledHint }}
+                </span>
                 <span class="shrink-0 text-next-xs text-next-muted-foreground">{{ file.size_human }}</span>
                 <Icon
                   v-if="selected?.id === file.id"

@@ -123,7 +123,11 @@ export type IconName =
   // already means the heavier `items_dropped` loss, and `eye-off` already means "anonymous"
   // and "hide password", so none of the three could take the sample's meaning on.
   | 'repeat'
-  | 'layers';
+  | 'layers'
+  // --- Publishing (R4): the module, and "this goes out into the world" ---
+  // The registry had no "publish / send" glyph at all: `upload` reads as putting a file
+  // somewhere, `external-link` as "opens elsewhere", and `share` does not exist here.
+  | 'send';
 
 /** name -> array of inner SVG elements (paths/circles) as raw markup. */
 export const ICONS: Record<IconName, string> = {
@@ -391,6 +395,9 @@ export const ICONS: Record<IconName, string> = {
   // unlike `repeat`'s loop: one says how MANY, the other says how OFTEN.
   layers:
     '<path d="m12 2 9 5-9 5-9-5 9-5Z" /><path d="m3 12 9 5 9-5" /><path d="m3 17 9 5 9-5" />',
+  // A paper plane — the one glyph a reader already reads as "this leaves here". The fold
+  // line is drawn separately so the shape survives at 1em on a tinted module bubble.
+  send: '<path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" />',
 };
 
 /** All available icon names — handy for the gallery icon grid. */

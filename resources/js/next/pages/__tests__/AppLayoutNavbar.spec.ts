@@ -32,6 +32,13 @@ vi.mock('../../app/stores/approvalQueue', () => ({
     fetchCount: vi.fn().mockResolvedValue(undefined),
   }),
 }));
+// R4: the shell also warms the publishing "needs a decision" count for its nav badge.
+vi.mock('../../app/stores/publishing', () => ({
+  usePublishingStore: () => ({
+    needsAttention: null,
+    fetchCounts: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
 vi.mock('../../app/lib/theme', () => ({
   useTheme: () => ({ isDark: ref(false), toggle: vi.fn() }),
 }));

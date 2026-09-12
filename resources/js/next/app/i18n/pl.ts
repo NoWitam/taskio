@@ -109,6 +109,13 @@ export const pl: MessageSchema = {
     dashboard: 'Pulpit',
     tasks: 'Zadania',
     calendar: 'Kalendarz',
+    publishing: 'Publikacje',
+    /**
+     * Plakietka Publikacji jest `danger` tam, gdzie Akceptacje mają `primary`, i różnica jest
+     * w komunikacie: Akceptacje mówią „czeka na ciebie praca", Publikacje — „coś mogło pójść
+     * w świat i nikt nie wie".
+     */
+    publishingBadge: 'Publikacje wymagające decyzji: {count}',
     disk: 'Dysk',
     forms: 'Formularze',
     approvals: 'Akceptacje',
@@ -5817,6 +5824,505 @@ export const pl: MessageSchema = {
         capReached: 'Ten przepływ osiągnął limit uruchomień. Spróbuj później.',
         generic: 'Nie udało się rozpocząć uruchomienia. Spróbuj ponownie.',
       },
+    },
+  },
+
+  // ── Publikacje (R4) ──────────────────────────────────────────────────────
+  // CZEGO TU CELOWO NIE MA: nazw statusów, nazw miejsc docelowych w postaci, w jakiej
+  // renderuje je serwer, odmów przejść i komunikatów walidacji. Te przychodzą już
+  // przetłumaczone w odpowiedzi (`status_label`, `platform_label`, `message` z 422) i są
+  // renderowane dosłownie — drugi słownik tych samych siedmiu statusów jest tym, który
+  // po cichu pominie ósmy.
+  //
+  // Co TU jest, choć wygląda na duplikat: `failures.*`, `connectionFailures.*` i
+  // `oauth.failures.*`. Tamte jadą jako STABILNE KODY bez towarzyszącej prozy, a ich
+  // zdania żyją w katalogu serwera, którego ten frontend nie czyta — więc to są wierne
+  // kopie `lang/pl/publishing.php`, każda z zapasem dla kodu, którego ta wersja nie zna.
+  // Żadne z nich nie powtarza prozy platformy i żadne nie nazywa ataku; to są właściwości
+  // tych zdań, nie przypadek, i muszą przetrwać każde przepisanie.
+  publishing: {
+    title: 'Publikacje',
+    subtitle: 'Co, gdzie i kiedy idzie w świat.',
+
+    nav: {
+      publications: 'Publikacje',
+      connections: 'Połączenia',
+    },
+    module: {
+      selectHint: 'Otwórz publikację, żeby zobaczyć, na czym stoi.',
+      resourceNav: 'Sekcje publikacji',
+      connectionsBadge: 'Konta wymagające uwagi: {count}',
+    },
+
+    newPublication: 'Nowa publikacja',
+
+    // Zapasowe nazwy miejsc docelowych — używane TYLKO tam, gdzie żaden wczytany wiersz nie
+    // niesie `platform_label` (menu filtra nad pustą listą). Gdy wiersz jest, wygrywa jego
+    // etykieta z serwera.
+    platforms: {
+      youtube: 'YouTube',
+      instagram: 'Instagram',
+      facebook: 'Facebook',
+      dry_run: 'Próba (nic nie zostanie opublikowane)',
+    },
+    rehearsal: 'Próba',
+
+    tabs: {
+      label: 'Status publikacji',
+      all: 'Wszystkie',
+      draft: 'Szkice',
+      scheduled: 'Zaplanowane',
+      publishing: 'Publikowanie',
+      published: 'Opublikowane',
+      failed: 'Nieudane',
+      needs_reconcile: 'Do sprawdzenia',
+      blocked: 'Wstrzymane',
+    },
+
+    filters: {
+      search: 'Szukaj publikacji',
+      platformLabel: 'Miejsce docelowe',
+      platformPlaceholder: 'Dowolne miejsce',
+      momentLabel: 'Termin',
+      momentPlaceholder: 'Dowolny termin',
+      clearAll: 'Wyczyść filtry',
+      chip: {
+        search: 'Szukanie: {value}',
+        platform: 'Miejsce docelowe',
+        from: 'Od: {value}',
+        to: 'Do: {value}',
+      },
+    },
+    results: {
+      count: 'Publikacje: {count}',
+      zero: '0 publikacji',
+    },
+
+    counts: {
+      error: 'Nie udało się policzyć publikacji w tabach.',
+      retry: 'Spróbuj ponownie',
+    },
+
+    attention: {
+      sentence: 'Publikacje wymagające decyzji: {count}.',
+      goTo: '{label} ({count})',
+    },
+
+    card: {
+      actionsLabel: 'Akcje publikacji: {title}',
+      moment: {
+        published: 'Opublikowano {value}',
+        scheduled: 'Termin {value}',
+        since: 'Od {value}',
+        unarmed: 'Termin (nieuzbrojony) {value}',
+        none: 'Bez terminu',
+      },
+      media: 'Media: {count}',
+    },
+
+    actions: {
+      open: 'Otwórz',
+      openOnPlatform: 'Otwórz na platformie',
+      openOnPlatformHint: 'otwiera się na platformie',
+      edit: 'Edytuj',
+      schedule: 'Zaplanuj',
+      reschedule: 'Zaplanuj ponownie',
+      submitForReview: 'Wyślij do akceptacji',
+      changeTime: 'Zmień termin',
+      reconcile: 'Sprawdź na platformie',
+      delete: 'Usuń',
+      deleteRecord: 'Usuń nasz zapis',
+      fixConnection: 'Napraw połączenie',
+      openConnections: 'Otwórz połączenia',
+      refresh: 'Odśwież',
+      retry: 'Spróbuj ponownie',
+      backToList: 'Wróć do publikacji',
+      copy: 'Kopiuj',
+      copied: 'Skopiowano',
+    },
+
+    blocked: {
+      noAccount: 'Najpierw wybierz konto, na które to ma pójść.',
+      connectionBroken: 'Najpierw napraw połączenie.',
+      underReview: 'Ta publikacja jest teraz u osoby akceptującej.',
+    },
+
+    empty: {
+      firstRun: {
+        title: 'Nic tu jeszcze nie ma',
+        description:
+          'Publikacja to zapowiedź tego, co i kiedy pójdzie w świat. Zacznij od szkicu — nic nie zostanie wysłane, dopóki tego nie zaplanujesz.',
+        secondary: 'Najpierw połącz konto',
+      },
+      search: {
+        title: 'Brak wyników dla tych filtrów',
+        description: 'Spróbuj szerszego zakresu albo wyczyść filtry.',
+        action: 'Wyczyść filtry',
+      },
+      draft: {
+        title: 'Brak szkiców',
+        description: 'Szkic to publikacja, która jeszcze nigdzie nie idzie.',
+      },
+      scheduled: {
+        title: 'Nic nie czeka na swój termin',
+        description: 'Zaplanowane publikacje pokażą się tutaj i na Kalendarzu.',
+        secondary: 'Otwórz Kalendarz',
+      },
+      publishing: {
+        title: 'Nic nie jest teraz wysyłane',
+        description: 'To normalne — publikacja spędza tu sekundy.',
+      },
+      published: {
+        title: 'Nic jeszcze nie poszło w świat',
+        description: 'Tu wyląduje wszystko, co zostało opublikowane — razem z odnośnikiem do posta.',
+      },
+      failed: {
+        title: 'Nic nie zawiodło',
+        description:
+          'Tu trafiają publikacje, o których WIEMY, że nic nie powstało — i które można bezpiecznie zaplanować ponownie.',
+      },
+      needs_reconcile: {
+        title: 'Nic nie czeka na sprawdzenie',
+        description:
+          'Tu trafiają publikacje, o których NIE WIEMY, czy poszły w świat. Pusto to dobra wiadomość.',
+      },
+      blocked: {
+        title: 'Nic nie jest wstrzymane',
+        description:
+          'Publikacja trafia tutaj, gdy jej konto przestaje działać — żeby nie zamieniła się w dwanaście błędów o jednej przyczynie.',
+      },
+    },
+
+    errors: {
+      loadTitle: 'Nie udało się wczytać publikacji',
+      loadDescription: 'Coś poszło nie tak po drodze. Spróbuj ponownie.',
+      forbidden: 'Nie masz dostępu do tej przestrzeni.',
+      notFoundTitle: 'Nie ma takiej publikacji',
+      notFoundDescription: 'Mogła zostać usunięta.',
+      connectionsTitle: 'Nie udało się wczytać kont',
+      connectionUnknown: 'nie udało się wczytać konta',
+      clientFieldRefused:
+        'Ten ekran wysłał pole, którego serwer nie przyjmuje. Zgłoś to, proszę.',
+    },
+
+    // --- Kompozytor (szuflada) ---------------------------------------------
+    editor: {
+      createTitle: 'Nowa publikacja',
+      editTitle: 'Edycja publikacji',
+      description: 'Zapisanie nie publikuje niczego. Publikacja rusza dopiero po zaplanowaniu.',
+
+      destinationSection: 'Gdzie to idzie',
+      destination: 'Miejsce docelowe',
+      account: 'Konto',
+      accountPlaceholder: 'Wybierz konto',
+      accountCleared: 'Konto zostało wyczyszczone — inne miejsce docelowe, inne konta.',
+      accountRefresh: 'Odśwież listę kont',
+      noAccounts: {
+        title: 'Nie ma jeszcze konta, na które to mogłoby pójść.',
+        body: 'Szkic zapiszesz bez konta; zaplanować go nie będzie można, dopóki konto nie zostanie połączone.',
+        actionSaved: 'Zapisz szkic i połącz konto',
+        actionNewTab: 'Połącz konto (otworzy się w nowej karcie)',
+      },
+
+      contentSection: 'Treść',
+      titleField: 'Tytuł',
+      titlePlaceholder: 'Czym jest ten post?',
+      bodyField: 'Treść',
+      bodyPlaceholder: 'Tekst, który pójdzie razem z nim.',
+      bodyHint: 'Zwykły tekst. Te platformy nie renderują formatowania.',
+
+      mediaSection: 'Media ({count}/{max})',
+      addMedia: 'Dodaj z Dysku',
+      mediaAlreadyAdded: 'już dodany',
+      mediaMissing: 'Pliku już nie ma na Dysku',
+      mediaMissingWarning:
+        'Jednego z plików już nie ma na Dysku. Publikacja z takim plikiem NIE ZOSTANIE opublikowana — usuń go albo wskaż inny.',
+      mediaPreviewsFailed: 'Nie udało się wczytać podglądów mediów. Same pliki są nietknięte.',
+      mediaMoveUp: 'Przesuń w górę: {name}',
+      mediaMoveDown: 'Przesuń w dół: {name}',
+      mediaRemove: 'Usuń: {name}',
+      mediaPosition: '{name}: pozycja {index} z {total}',
+      mediaListLabel: 'Media w kolejności, w jakiej dostaje je platforma',
+
+      momentSection: 'Termin',
+      moment: 'Termin',
+      momentZone: 'Godzina w strefie zespołu: {tz}',
+      momentZoneUnknown: 'Godzina liczona na zegarze zespołu, tym samym co w Kalendarzu.',
+      momentZoneMismatch: 'Twoja przeglądarka jest w {localTz}. Ta godzina zostanie odczytana jako {tz}.',
+      momentNotArming: 'Ustawienie terminu nie uzbraja publikacji.',
+
+      saveDraft: 'Zapisz szkic',
+      saveAndSchedule: 'Zapisz i zaplanuj',
+      saveAndSubmit: 'Zapisz i wyślij do akceptacji',
+      staleTitle: 'Ta publikacja zmieniła się w trakcie edycji',
+      staleBody: 'Ktoś ją uzbroił albo wysłał do akceptacji. Odśwież, żeby zobaczyć, na czym stoi.',
+    },
+
+    // --- Ekran szczegółu ----------------------------------------------------
+    detail: {
+      tabOverview: 'Przegląd',
+      tabApproval: 'Akceptacje',
+      contentCard: 'Treść',
+      noBody: 'Bez treści.',
+      shippingCard: 'Wysyłka',
+
+      fields: {
+        platform: 'Miejsce docelowe',
+        connection: 'Konto',
+        /** Nikt nie wybrał konta: `platform_connection_id` jest null. */
+        noConnection: 'Nie wybrano',
+        /**
+         * Konto JEST wskazane w wierszu i nie ma go na liście — `GET /connections` nigdy nie
+         * zwraca miękko usuniętych wierszy, więc zostało rozłączone. To inny fakt niż
+         * powyższy i to on tłumaczy, dlaczego publikacja jest wstrzymana.
+         */
+        connectionDisconnected: 'Konto zostało rozłączone',
+        scheduled_at: 'Termin',
+        unarmed: '(nieuzbrojony)',
+        published_at: 'Opublikowano',
+        attempts: 'Prób',
+        last_attempt_at: 'Ostatnia próba',
+        remote_id: 'Identyfikator na platformie',
+        creator: 'Utworzył',
+        created_at: 'Utworzono',
+        updated_at: 'Zmieniono',
+      },
+      copyRemoteId: 'Kopiuj identyfikator na platformie',
+
+      polling: 'Odświeżamy ten ekran co kilkanaście sekund.',
+      pollingStopped: 'Przestaliśmy odświeżać. Odśwież stronę, żeby sprawdzić.',
+
+      band: {
+        draft: {
+          title: 'Szkic',
+          body: 'Nic nie jest zaplanowane. Ta publikacja nigdzie nie pójdzie, dopóki jej nie zaplanujesz.',
+        },
+        scheduled: {
+          title: 'Zaplanowana na {moment}',
+          body: 'Pójdzie w świat automatycznie. Godzina jest na zegarze zespołu.',
+          bodyZone: 'Pójdzie w świat automatycznie. Godzina jest na zegarze zespołu, {tz}.',
+          stopHint: 'Żeby to zatrzymać, trzeba tę publikację usunąć — wróci do kosza, nie do szkiców.',
+        },
+        publishing: {
+          title: 'Wysyłanie w toku',
+          body: 'Zaczęło się {moment}. Ta publikacja należy teraz do procesu, który ją wysyła — nie da się jej stąd zmienić ani usunąć.',
+          bodyNoMoment:
+            'Ta publikacja należy teraz do procesu, który ją wysyła — nie da się jej stąd zmienić ani usunąć.',
+        },
+        published: {
+          title: 'Opublikowana {moment}',
+          body: 'To jest w świecie. Nic, co zrobisz tutaj, tego nie cofnie.',
+          noEdit: 'Zapis nie jest przepisywany — inaczej mówiłby o poście coś, czego post nie mówi.',
+          reconciledTime: 'Czas publikacji ustalono przy sprawdzaniu — może różnić się od zaplanowanego.',
+        },
+        failed: {
+          title: 'Nieudana',
+        },
+        blocked: {
+          title: 'Wstrzymana',
+        },
+        review: 'Wstrzymane na czas akceptacji: {pipeline}.',
+        reviewGeneric: 'Wstrzymane na czas akceptacji.',
+        reviewLink: 'Zobacz akceptację',
+        rejected: 'Osoba akceptująca odrzuciła tę publikację. Popraw ją i wyślij ponownie.',
+      },
+    },
+
+    // --- needs_reconcile ----------------------------------------------------
+    reconcile: {
+      title: 'Nie wiemy, czy ta publikacja poszła w świat',
+      facts: {
+        claimed: 'Wzięta do publikacji: {moment}',
+        stale: 'czekała ponad {minutes} min',
+        attempts: 'prób: {count}',
+      },
+      action: 'Sprawdź na platformie',
+      actionExplains:
+        'Zapytamy platformę, czy ten post istnieje. Nic nie zostanie opublikowane ani zmienione na platformie.',
+      automatic: 'Sprawdzamy to też automatycznie, mniej więcej raz na godzinę.',
+      notAllowed: 'Sprawdzić może autor tej publikacji albo właściciel przestrzeni.',
+      unresolved: {
+        title: 'Tym razem nie udało się tego ustalić',
+        body: 'Platforma nie odpowiedziała na pytanie. Nic się nie zmieniło i nic nie zostało opublikowane. Spróbuj za chwilę albo poczekaj na automatyczne sprawdzenie.',
+      },
+      throttled: {
+        countdown: 'Sprawdź za {seconds} s',
+        body: 'Za dużo sprawdzeń pod rząd. Każde pytanie zużywa limit platformy wspólny dla całej aplikacji, więc odliczamy chwilę.',
+      },
+      whyNoRetry: {
+        question: 'Dlaczego nie mogę tego po prostu ponowić?',
+        body: 'Ta publikacja mogła już zostać opublikowana — straciliśmy kontakt, zanim udało się to potwierdzić. Ponowna publikacja mogłaby wystawić ją DRUGI RAZ, a opublikowanego posta nie da się stąd wycofać. Dlatego z tego stanu prowadzi tylko jedna droga: zapytać platformę. Jeśli okaże się, że nic nie powstało, planowanie znów będzie możliwe.\n\nZ tego samego powodu tej publikacji nie da się teraz edytować (zapis przestałby odpowiadać postowi, który być może istnieje) ani usunąć (usunięcie zostawiłoby post, którego nikt nie umiałby przypisać).',
+      },
+    },
+
+    // --- Modal planowania ---------------------------------------------------
+    schedule: {
+      title: 'Zaplanuj publikację',
+      titleAgain: 'Zaplanuj ponownie',
+      titleChange: 'Zmień termin',
+      titleSubmit: 'Wyślij do akceptacji',
+      consequencePublic:
+        'Po zaplanowaniu ta publikacja pójdzie w świat automatycznie. Opublikowanego posta nie da się stąd wycofać.',
+      consequenceRehearsal: 'To próba — nic nie opuści aplikacji.',
+      consequenceReview:
+        'To trafi do osoby akceptującej. Dopiero akceptacja zaplanuje publikację na wybraną tu chwilę.',
+      confirm: 'Zaplanuj',
+      confirmChange: 'Zmień termin',
+      confirmSubmit: 'Wyślij do akceptacji',
+      publishNow: 'Opublikuj teraz',
+      publishNowConfirmTitle: 'Opublikować teraz?',
+      publishNowConfirmBody:
+        'Publikacja ruszy przy najbliższym przebiegu, w ciągu minuty. Opublikowanego posta nie da się stąd wycofać.',
+    },
+
+    // --- Połączenia ---------------------------------------------------------
+    connections: {
+      title: 'Połączenia',
+      subtitle: 'Konta, na które ta przestrzeń może publikować.',
+      refresh: 'Odśwież',
+      empty: 'Brak konta',
+      emptyHint: 'Nic tu jeszcze nie trafia.',
+      connect: 'Połącz konto',
+      connectAnother: 'Połącz kolejne konto',
+      reconnect: 'Połącz ponownie',
+      disconnect: 'Rozłącz',
+      accountActions: 'Akcje konta: {name}',
+      expiresAt: 'Wygasa {value}',
+      expiresUnknown: 'Platforma nie podała terminu ważności.',
+      refreshedAt: 'Odnowiono {value}',
+      scopes: 'Uprawnienia ({count})',
+      // BEZ `revokedSection`: `GET /publishing/connections` nigdy nie zwraca rozłączonych kont
+      // (zapytanie nie ma `withTrashed()`), więc sekcji z §9.3 nie da się w ogóle zbudować —
+      // patrz docblok w `PlatformConnectionCard.vue`.
+      unreadable: {
+        title: 'Zapisanego dostępu do części kont nie da się już odczytać.',
+        body: 'Nic nie zostało utracone na platformach — to aplikacja przestała umieć otworzyć własny zapis. Połącz te konta ponownie; publikacje czekające na nie są wstrzymane do tego czasu.',
+      },
+      notConfigured: 'Ta aplikacja nie jest jeszcze zarejestrowana na tej platformie.',
+      disconnectConfirm: {
+        title: 'Rozłączyć konto {name}?',
+        body: 'Zaplanowane publikacje na to konto ZOSTANĄ WSTRZYMANE i nie pójdą w świat. Opublikowane wpisy zostają — i na platformie, i u nas.\n\nJeśli połączysz to samo konto ponownie, wstrzymane publikacje wrócą na swoje terminy automatycznie. Te, których termin minął w międzyczasie, pójdą w świat OD RAZU po ponownym połączeniu.',
+      },
+    },
+
+    // --- Powrót z OAuth -----------------------------------------------------
+    // Wierne kopie `lang/pl/publishing.php` → `oauth` / `oauth_failures`.
+    oauth: {
+      connected: 'Konto połączone.',
+      failed: 'Nie udało się połączyć konta.',
+      failures: {
+        unknown_platform: 'To nie jest serwis, do którego ta aplikacja potrafi podłączyć konto.',
+        missing_code:
+          'Platforma odesłała cię z powrotem bez przyznania dostępu. Zacznij łączenie konta jeszcze raz.',
+        workspace_unavailable:
+          'Tego konta nie da się już połączyć z tym obszarem roboczym. Sprawdź, czy nadal masz do niego dostęp, i spróbuj ponownie.',
+        connection_failed:
+          'Coś poszło nie tak przy łączeniu konta i nic nie zostało zapisane. Spróbuj ponownie; jeśli powtórzy się to kolejny raz, do logów będzie musiał zajrzeć administrator.',
+        access_denied: 'Prośba o uprawnienia została odrzucona, więc nic nie zostało połączone.',
+        oauth_state_malformed:
+          'Nie rozpoznajemy tego odnośnika. Zacznij łączenie konta jeszcze raz z poziomu tej aplikacji.',
+        oauth_state_bad_signature:
+          'Nie udało się zweryfikować tego odnośnika. Zacznij łączenie konta jeszcze raz z poziomu tej aplikacji.',
+        oauth_state_expired: 'Ten odnośnik wygasł. Zacznij łączenie konta jeszcze raz.',
+        oauth_state_already_used:
+          'Ten odnośnik został już użyty. Zacznij łączenie konta jeszcze raz.',
+        oauth_state_platform_mismatch:
+          'Ten odnośnik dotyczył innego serwisu. Zacznij od nowa przy koncie, które chcesz połączyć.',
+        oauth_browser_mismatch:
+          'Łączenie trzeba dokończyć w tej samej przeglądarce, w której się zaczęło. Zacznij łączenie konta jeszcze raz i zostań w tym oknie.',
+        token_exchange_failed:
+          'Platforma nie przyznała dostępu do tego konta. Spróbuj ponownie i upewnij się, że jesteś tam zalogowany na właściwe konto.',
+        token_response_unusable:
+          'Platforma przyznała dostęp w postaci, której ta aplikacja nie potrafi zapisać. Zacznij łączenie konta jeszcze raz i zaakceptuj wszystkie uprawnienia, o które prosi.',
+        account_lookup_failed:
+          'Dostęp został przyznany, ale platforma nie powiedziała, jakiego konta dotyczy — więc nie było czego zapisać. Sprawdź, czy to konto ma kanał albo stronę, na której ta aplikacja może publikować, i spróbuj ponownie.',
+        /** Callback przepuszcza DOWOLNY kod błędu platformy. To jest podłoga. */
+        unknown:
+          'Platforma odmówiła połączenia i nie wyjaśniła tego w sposób, który ta aplikacja rozpoznaje. Spróbuj ponownie.',
+      },
+    },
+
+    // Wierne kopie `lang/pl/publishing.php` → `failures` / `holds`.
+    failures: {
+      title_missing: 'Ta publikacja nie ma tytułu, więc nie ma czego wysłać.',
+      publish_outcome_unknown:
+        'Straciliśmy kontakt z platformą i nie udało się potwierdzić, co się stało.',
+      reconciled_absent:
+        'Sprawdziliśmy platformę: nic nie zostało opublikowane, więc można bezpiecznie spróbować ponownie.',
+      dispatch_failed:
+        'Nie udało się przekazać tego do wykonania, więc nic nigdzie nie zostało wysłane. Zaplanuj to jeszcze raz.',
+      publish_worker_failed:
+        'Proces obsługujący tę publikację zakończył się, zanim zdążył powiedzieć, co się stało. Sprawdź platformę, zanim zaplanujesz ją ponownie.',
+      reaper_stale:
+        'Ta publikacja została wzięta do publikacji i nic nie wróciło. Sprawdź platformę, zanim zaplanujesz ją ponownie — może już być opublikowana.',
+      connection_needs_reauth:
+        'Wstrzymane: konto, na które to idzie, wymaga ponownego połączenia. Napraw połączenie, a publikacja sama wróci na swój termin.',
+      connection_disconnected:
+        'Wstrzymane: konto, na które to idzie, zostało rozłączone. Połącz je ponownie albo wybierz inne miejsce docelowe.',
+      /** B4 dołoży kody adapterów, których ta wersja nie zna. Nigdy surowy klucz na ekranie. */
+      unknown: 'Publikacja zatrzymała się z powodem, którego ta wersja aplikacji jeszcze nie opisuje ({code}).',
+    },
+
+    // Wierne kopie `lang/pl/publishing.php` → `connection_failures`.
+    connectionFailures: {
+      refresh_failed:
+        'Platforma odmówiła odnowienia dostępu do tego konta. Połącz je ponownie, żeby dalej publikować.',
+      refresh_unsupported:
+        'To połączenie nie ma już czym odnowić dostępu. Połącz konto ponownie.',
+      credentials_unreadable:
+        'Zapisany dostęp do tego konta nie może już zostać odczytany przez aplikację. Połącz je ponownie.',
+      disconnected_by_user: 'To konto zostało rozłączone.',
+    },
+
+    confirm: {
+      deleteTitle: 'Usunąć publikację?',
+      deleteBody: 'Trafi do kosza. Nic nie zostało nigdzie wysłane.',
+      deleteScheduledTitle: 'Usunąć zaplanowaną publikację?',
+      deleteScheduledBody:
+        'TO JEDYNY SPOSÓB, żeby ją zatrzymać. Trafi do kosza i nie pójdzie w świat. Wróci jako element kosza, nie jako szkic.',
+      deleteBlockedTitle: 'Usunąć wstrzymaną publikację?',
+      deleteBlockedBody:
+        'Trafi do kosza. Jeśli naprawisz połączenie PO usunięciu, ta publikacja już nie wróci.',
+      deletePublishedTitle: 'Usunąć nasz zapis o tej publikacji?',
+      deletePublishedBody:
+        'POST ZOSTAJE NA PLATFORMIE. Usuwasz tylko nasz zapis o nim — po tym nikt tutaj nie odpowie, skąd ten post się wziął ani kto go zlecił.',
+      discardTitle: 'Porzucić zmiany?',
+      discardBody: 'To, co tu napisano, nie zostanie zapisane.',
+      /** NIE „Usuń": nic tu nie znika — przepadają tylko niezapisane zmiany. */
+      discardConfirm: 'Porzuć',
+    },
+
+    toasts: {
+      draftSaved: 'Szkic zapisany',
+      scheduled: 'Zaplanowano na {moment}',
+      submitted: 'Wysłano do akceptacji na {moment}',
+      submittedNoMoment: 'Wysłano do akceptacji',
+      timeChanged: 'Termin zmieniony',
+      deleted: 'Publikacja przeniesiona do kosza',
+      deletedPublished: 'Zapis usunięty. Post został na platformie.',
+      reconciledFound: 'Post istnieje na platformie. Publikacja oznaczona jako opublikowana.',
+      reconciledAbsent: 'Nic nie zostało opublikowane. Można bezpiecznie zaplanować to ponownie.',
+      connected: 'Konto połączone.',
+      disconnected: 'Konto rozłączone.',
+      actionError: 'Nie udało się. Spróbuj ponownie.',
+    },
+
+    // --- Zakładka akceptacji (B6) ------------------------------------------
+    approval: {
+      noPipeline: 'Brak ścieżki akceptacji',
+      noPipelineHint: 'Ta publikacja idzie w świat bez niczyjej akceptacji.',
+      pipelineTitle: 'Ścieżka akceptacji',
+      notInApproval:
+        'Ścieżka jest podpięta, ale ta publikacja nie jest obecnie w akceptacji. Trafi do osoby akceptującej, gdy zostanie wysłana do akceptacji.',
+      inApproval: 'Ta publikacja jest u osoby akceptującej.',
+      approved: 'Zaakceptowana.',
+      rejected: 'Osoba akceptująca odrzuciła tę publikację.',
+      decisionsElsewhere:
+        'Decyzje zapadają w module Akceptacji — razem z notatkami i czasem każdej z nich. Ten ekran pokazuje samą ścieżkę, tylko do odczytu.',
+      goToApprovals: 'Zobacz w Akceptacjach',
+      stage: 'Stopień {order}',
+      approver: 'Zatwierdza',
+      loadError: 'Nie udało się wczytać ścieżki akceptacji.',
     },
   },
 

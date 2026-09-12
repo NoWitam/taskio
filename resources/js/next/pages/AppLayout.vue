@@ -21,6 +21,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore, type Workspace } from '../app/stores/auth';
 import { useApprovalQueueStore } from '../app/stores/approvalQueue';
+import { usePublishingStore } from '../app/stores/publishing';
 import CreateWorkspaceModal from './workspaces/CreateWorkspaceModal.vue';
 import { useI18n } from '../app/i18n';
 import { useTheme } from '../app/lib/theme';
@@ -47,6 +48,7 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const approvalQueue = useApprovalQueueStore();
+const publishing = usePublishingStore();
 const { t } = useI18n();
 const { isDark, toggle: toggleTheme } = useTheme();
 
@@ -57,12 +59,32 @@ const { isDark, toggle: toggleTheme } = useTheme();
 // Best-effort — a failure is silent (the badge simply stays hidden).
 onMounted(() => {
   void approvalQueue.fetchCount().catch(() => undefined);
+  // Same reasoning for the publishing badge: warm it here so a publication that needs a
+  // decision is visible before anybody opens the module. Best-effort — a failure leaves the
+  // count null and the badge simply stays hidden (never a 0, which would be a claim).
+  void publishing.fetchCounts().catch(() => undefined);
 });
 
 /** The pending-approvals badge count (hidden when null / 0). */
 const approvalsCount = computed(() => approvalQueue.count);
 function showApprovalsBadge(item: NavLink): boolean {
   return item.key === 'approvals' && approvalsCount.value != null && approvalsCount.value > 0;
+}
+
+/**
+ * The publications-needing-a-decision badge, by the SAME mechanism.
+ *
+ * The number is `needs_attention` from `GET /publishing/counts` — computed server-side and
+ * never summed here. A client adding up three statuses it maintains itself would be right on
+ * the day it was written and quietly wrong the moment an eighth status joined that set.
+ *
+ * It is `danger` where Approvals is `primary`, and the difference is the message: Approvals
+ * says "there is work waiting for you", Publishing says "something may have gone out into
+ * the world and nobody knows".
+ */
+const publishingCount = computed(() => publishing.needsAttention);
+function showPublishingBadge(item: NavLink): boolean {
+  return item.key === 'publishing' && publishingCount.value != null && publishingCount.value > 0;
 }
 
 interface NavLink {
@@ -80,6 +102,10 @@ const primaryNav: NavLink[] = [
   // Right after Tasks: a task's deadline is the calendar's nearest semantic neighbour, and
   // it is the source most people will recognise on the grid first.
   { key: 'calendar', labelKey: 'nav.calendar', icon: 'calendar', to: '/calendar' },
+  // Right after the Calendar: the defining property of a publication in this product is a
+  // MOMENT ON A CLOCK, and the Calendar is where publications have just begun appearing as
+  // its fifth source. Same argument that put the Calendar right after Tasks.
+  { key: 'publishing', labelKey: 'nav.publishing', icon: 'send', to: '/publishing' },
   { key: 'disk', labelKey: 'nav.disk', icon: 'folder', to: '/disk' },
   { key: 'forms', labelKey: 'nav.forms', icon: 'file-text', to: '/forms' },
   { key: 'approvals', labelKey: 'nav.approvals', icon: 'git-branch', to: '/approvals' },
@@ -204,6 +230,17 @@ async function onLogout(): Promise<void> {
                 <span aria-hidden="true">{{ approvalsCount }}</span>
                 <span class="sr-only">
                   {{ t('nav.approvalsBadge', '', { count: approvalsCount ?? 0 }) }}
+                </span>
+              </Badge>
+            </template>
+
+            <!-- Publications needing a decision. `danger`, not `primary` — see
+                 `showPublishingBadge`. The digit is decorative; the sentence carries it. -->
+            <template v-else-if="showPublishingBadge(item)" #badge>
+              <Badge variant="danger" tone="solid" size="sm">
+                <span aria-hidden="true">{{ publishingCount }}</span>
+                <span class="sr-only">
+                  {{ t('nav.publishingBadge', '', { count: publishingCount ?? 0 }) }}
                 </span>
               </Badge>
             </template>

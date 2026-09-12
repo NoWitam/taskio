@@ -37,6 +37,7 @@
 // accessible name); the active link carries `aria-current="page"`; the disabled
 // nav preview is decorative and hidden from AT.
 import Surface from './Surface.vue';
+import Badge from '../primitives/Badge.vue';
 import Icon, { type IconName } from '../primitives/Icon.vue';
 import { useI18n } from '../../app/i18n';
 import type { RouteLocationRaw } from 'vue-router';
@@ -49,6 +50,18 @@ export interface ModuleNavItem {
   to?: RouteLocationRaw;
   /** Render as a disabled "coming soon" row instead of a link. */
   soon?: boolean;
+  /**
+   * A count rendered as a small solid Badge after the label (omit for none).
+   *
+   * Additive (R4): a module page can be the one place a problem is visible — a broken
+   * publishing account, say — and the reader is standing on a DIFFERENT page of the same
+   * module when it matters. Without this the only way to learn is to go and look.
+   */
+  badge?: number | string;
+  /** Badge variant; defaults to `danger` (the count means "something needs you"). */
+  badgeVariant?: 'primary' | 'danger' | 'warning' | 'info' | 'success' | 'neutral';
+  /** Screen-reader sentence carrying the count, so it is never a bare digit. */
+  badgeLabel?: string;
 }
 
 /** The selected resource shown in the top block (icon + name + short description). */
@@ -165,7 +178,17 @@ const { t } = useI18n();
               :aria-current="activeMatch(item) ? 'page' : undefined"
             >
               <Icon :name="item.icon" class="shrink-0" />
-              {{ item.label }}
+              <span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+              <Badge
+                v-if="item.badge != null && item.badge !== ''"
+                :variant="item.badgeVariant ?? 'danger'"
+                tone="solid"
+                size="sm"
+                class="shrink-0"
+              >
+                <span aria-hidden="true">{{ item.badge }}</span>
+                <span class="sr-only">{{ item.badgeLabel ?? '' }}</span>
+              </Badge>
             </RouterLink>
             <span
               v-else
@@ -213,7 +236,17 @@ const { t } = useI18n();
               :aria-current="activeMatch(item) ? 'page' : undefined"
             >
               <Icon :name="item.icon" class="shrink-0" />
-              {{ item.label }}
+              <span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+              <Badge
+                v-if="item.badge != null && item.badge !== ''"
+                :variant="item.badgeVariant ?? 'danger'"
+                tone="solid"
+                size="sm"
+                class="shrink-0"
+              >
+                <span aria-hidden="true">{{ item.badge }}</span>
+                <span class="sr-only">{{ item.badgeLabel ?? '' }}</span>
+              </Badge>
             </RouterLink>
             <span
               v-else

@@ -62,6 +62,75 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, titleKey: 'nav.calendar' },
       },
       {
+        // Publishing (R4): what goes out, where and when. TWO permanent screens with
+        // different lifecycles — the publications stream and the connected accounts — which
+        // is the shape ModuleAside exists for.
+        //
+        // ⚠ `/publishing/connections` IS PINNED IN SERVER CONFIGURATION.
+        // `config/publishing.php` → `oauth.return_path` defaults to
+        // `/next/publishing/connections` and the OAuth callback redirects a whole browser
+        // there, appending `?connection=…`. Renaming this path without changing that config
+        // means a SUCCESSFUL connect ends on the not-found screen.
+        path: 'publishing',
+        component: () => import('../../pages/publishing/PublishingModuleLayout.vue'),
+        meta: { requiresAuth: true, titleKey: 'nav.publishing' },
+        children: [
+          {
+            path: '',
+            name: 'next.publishing',
+            redirect: { name: 'next.publishing.publications' },
+          },
+          {
+            path: 'connections',
+            name: 'next.publishing.connections',
+            component: () => import('../../pages/publishing/ConnectionsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.publishing' },
+          },
+          {
+            path: 'publications',
+            name: 'next.publishing.publications',
+            component: () => import('../../pages/publishing/PublicationsView.vue'),
+            meta: { requiresAuth: true, titleKey: 'nav.publishing' },
+          },
+          {
+            // One publication, two sections. Sections are CHILD ROUTES sharing one component
+            // (the view derives the section from the route name), exactly as the Bots detail
+            // does; the `:id` record itself has no component, so the children render in the
+            // module layout's <RouterView>. The bare record keeps the
+            // `next.publishing.publication` name and redirects to the default section, so a
+            // named push with no section — and any legacy `?section=` deep link — lands on
+            // the overview. The approval section needs its own URL because that is exactly
+            // the link a review notification will want to send.
+            path: 'publications/:id',
+            children: [
+              {
+                path: '',
+                name: 'next.publishing.publication',
+                redirect: (to) =>
+                  sectionRedirect(
+                    to,
+                    'next.publishing.publication.',
+                    ['overview', 'approval'],
+                    'overview',
+                  ),
+              },
+              {
+                path: 'overview',
+                name: 'next.publishing.publication.overview',
+                component: () => import('../../pages/publishing/PublicationDetailView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.publishing' },
+              },
+              {
+                path: 'approval',
+                name: 'next.publishing.publication.approval',
+                component: () => import('../../pages/publishing/PublicationDetailView.vue'),
+                meta: { requiresAuth: true, titleKey: 'nav.publishing' },
+              },
+            ],
+          },
+        ],
+      },
+      {
         // The disk file manager. The current folder is a PATH param (`/next/disk/<id>`,
         // deep-linkable); the optional `:folder` also carries the synthetic `sys:res…` /
         // `sys:trash` ids (single segment, no slash), so one route serves the whole tree.

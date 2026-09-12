@@ -8,11 +8,11 @@
 > **Nic tutaj nie jest zmyślonym kluczem payloadu** (znany błąd Etapu 5: agenci frontendu
 > wymyślali pola, których API nie miało).
 >
-> **Rzeczy, których kontrakt nie ma, a UI ich potrzebuje, są zgłoszone jako luki**
-> w sekcji [18. Luki kontraktu](#18-luki-kontraktu) — i **nie zostały po cichu dopisane
-> do specyfikacji**. Luk jest jedenaście; trzy z nich (**L2**, **L3**, **L5**) zmieniają
-> to, co ekran w ogóle może obiecać użytkownikowi, i są opisane w miejscu, w którym
-> uderzają.
+> **Rzeczy, których kontrakt nie ma, a UI ich potrzebuje, są zgłoszone jako luki** — i **nie
+> zostały po cichu dopisane do specyfikacji**. Luk jest jedenaście; trzy z nich (**L2**,
+> **L3**, **L5**) zmieniają to, co ekran w ogóle może obiecać użytkownikowi, i są opisane
+> w miejscu, w którym uderzają. Zbiorcza sekcja „18. Luki kontraktu" **przepadła wraz
+> z końcówką dokumentu** — patrz [Aneks powykonawczy (B8)](#aneks-powykonawczy-b8).
 >
 > **Frontendu tego modułu nie ma dziś w ogóle.** Wszystko poniżej jest nowe, poza tym,
 > co jawnie wskazano jako reuse w [§16](#16-inwentarz-komponentów-reuse--extend--create).
@@ -39,11 +39,9 @@
 14. [Responsywność](#14-responsywność)
 15. [Dostępność](#15-dostępność)
 16. [Inwentarz komponentów](#16-inwentarz-komponentów-reuse--extend--create)
-17. [Mapa i18n (PL + EN)](#17-mapa-i18n-pl--en)
-18. [Luki kontraktu](#18-luki-kontraktu)
-19. [Czego NIE ma w B8](#19-czego-nie-ma-w-b8)
-20. [Ryzyka spójności](#20-ryzyka-spójności)
-21. [Handoff do frontend-agent](#21-handoff-do-frontend-agent)
+
+*(Spis odpowiada temu, co w dokumencie **jest**. Sekcje 17–21 zapowiadane w pierwotnym planie
+nie istnieją — patrz [Aneks powykonawczy (B8)](#aneks-powykonawczy-b8).)*
 
 ---
 
@@ -97,7 +95,7 @@ które interfejs ma mówić sam z siebie, a nie dopiero po kliknięciu:
 | Szkielety imitują realny element, kilka sztuk | §12.1 — szkielet listy **jest kartą publikacji**, szkielet Połączeń **jest kartą platformy**. Zakaz `Spinner` + „Ładowanie…" jako stanu głównego. |
 | Akcje przez `Button` (nigdy `<button>`) | Wszędzie, w tym zamykanie szuflady i modali. Kompaktowe: `icon-sm` / `icon-xs`. |
 | Kolejność afordancji trailing | Warunkowy `✕` / plakietka **przed** stałym kebabem. `EntityCard` robi to sam. |
-| Wszystko i18n, PL + EN | §17. `en.ts` jest źródłem typu (`MessageSchema`), `pl.ts` 1:1. |
+| Wszystko i18n, PL + EN | Katalogi `app/i18n/{en,pl}.ts`, przestrzeń `publishing.*`. `en.ts` jest źródłem typu (`MessageSchema`), `pl.ts` 1:1. |
 | Kolor nigdy jedynym sygnałem | Każdy status ma **ikonę + prozę** (§13.2). Każdy baner OAuth ma ikonę i zdanie. |
 | Importy **względne** | `import PageHeader from '../../ui/patterns/PageHeader.vue';` — `@next/*` nie ma aliasu w Vite. |
 | Zero nowych pakietów npm | §16. |
@@ -380,7 +378,7 @@ użytkownika. Reguła: renderujemy **wyłącznie** klucze, które specyfikacja z
 | `message` z 422 (przejścia i walidacja) | **serwer** | Renderować dosłownie; `code`/klucz pola tylko do wyboru naczynia. |
 | `failure_code` (publikacji i połączeń) | **katalog frontu** | Wierne kopie zdań serwera + fallback dla nieznanego. **L9.** |
 | `reason` z powrotu OAuth | **katalog frontu** | 14 kodów + fallback dla przepuszczonego kodu platformy. **L9.** |
-| Etykiety pól, przyciski, stany puste, a11y | **katalog frontu** | §17. |
+| Etykiety pól, przyciski, stany puste, a11y | **katalog frontu** | `app/i18n/{en,pl}.ts` → `publishing.*`. |
 
 ---
 
@@ -1632,3 +1630,60 @@ Router: `sectionRedirect()` (`app/router/sectionRedirect.ts`), `isPathActive()`.
 11. Kolejność mediów: `▲`/`▼` zmienia tablicę i anonsuje pozycję; payload zachowuje
     kolejność (D12).
 12. Parametry callbacku są **zdejmowane z URL** po odczycie (§10.1).
+
+---
+
+## Aneks powykonawczy (B8)
+
+> Dopisany przez `frontend-agent` **po** zbudowaniu modułu i po przeglądzie. Wszystko poniżej
+> opisuje **stan faktyczny kodu**, a nie zamiar — i tam, gdzie kod odbiega od specyfikacji,
+> mówi to wprost, zamiast zostawiać dwa dokumenty mówiące różne rzeczy o tym samym ekranie.
+
+### A.1 Dokument jest ucięty — sekcje 17–21 nie istnieją
+
+Spis treści obiecywał jeszcze pięć sekcji: **17. Mapa i18n**, **18. Luki kontraktu**,
+**19. Czego NIE ma w B8**, **20. Ryzyka spójności**, **21. Handoff do frontend-agent**.
+Treść kończy się na §16.4 — końcówka **przepadła przy awarii**, a nie została świadomie
+pominięta. Spis treści został przycięty do sekcji, które w dokumencie **są**; nikt nie ma
+szukać czegoś, czego nie ma.
+
+Co z tego wynika praktycznie:
+
+- **Mapa i18n (§17) nie jest odtwarzana w tym dokumencie.** Źródłem prawdy są katalogi
+  [`resources/js/next/app/i18n/en.ts`](../../resources/js/next/app/i18n/en.ts) i
+  [`pl.ts`](../../resources/js/next/app/i18n/pl.ts), przestrzeń `publishing.*` — jedno
+  miejsce zamiast dwóch, które by się rozjechały. Parity PL↔EN pilnuje `i18n.spec.ts`.
+- **Luki kontraktu (§18)** są nazwane w miejscach, w których uderzają (L1, L3, L5, L6
+  w docblokach `publishingMeta.ts`, `publicationActions.ts`, `ConnectionsView.vue`), plus dwie
+  nowe z A.3 poniżej.
+
+### A.2 Stan faktyczny — odstępstwa od litery specyfikacji
+
+| Rzecz | Specyfikacja | Jak jest i dlaczego |
+| --- | --- | --- |
+| Klucz szuflady kompozytora | `?edit=1` | **`?edit=<uuid>`.** Jedna szuflada obsługuje listę i szczegół („jeden komponent, dwa wejścia"), więc musi wiedzieć **którą** publikację otwiera; `=1` nie niesie tej informacji. `?new=1` zostaje bez zmian. **Nie „naprawiać" tego wstecz.** |
+| Metadane pliku z Dysku | `GET /disk/{id}` | **`GET /disk/{id}/info`.** Gołe `/disk/{id}` serwuje **bajty** pliku, nie JSON-a — kafelek mediów potrzebuje nazwy i typu, nie zawartości. |
+| Strefa czasowa przestrzeni | — | **`GET /workspaces/{id}` → `timezone`.** Kontekst `auth` jej nie niesie, a każda chwila w module jest czytana na zegarze przestrzeni. To **drugie** źródło tej samej wartości obok `calendar.meta.timezone` — nazwane tutaj, żeby nie stało się cichym rozjazdem: dwa moduły czytają tę samą strefę dwiema drogami i muszą dać tę samą odpowiedź. Wartość jest zatrzaskiwana w store i **zrzucana przy zmianie przestrzeni** (inaczej chwile nowej przestrzeni byłyby czytane na zegarze poprzedniej). |
+| Plakietki liczników w tabach | `withCount` jako dostępna nazwa | Klucz **usunięty**. `Tabs` nie przyjmuje `aria-label` per pozycja, a licznik i tak jest **wewnątrz** `<button role="tab">`, więc wchodzi do nazwy dostępnej („Szkice 3"). Klucz, którego nie da się użyć, jest kluczem, który ktoś kiedyś użyje źle. |
+
+### A.3 Dwie luki kontraktu wykryte dopiero przy budowie
+
+**L12 — „Rozłączone konta" (§9.3) są niemożliwe.** `PlatformConnectionService::index()` pyta
+**bez** `withTrashed()`, a rozłączenie ustawia status `revoked` **i** miękko usuwa wiersz —
+rozłączone konto nigdy nie wraca z `GET /publishing/connections`. Sekcja z §9.3 byłaby pusta
+z konstrukcji, więc **nie została zbudowana**, a filtr `status === 'revoked'` usunięty razem
+z kluczem `connections.revokedSection`. Jedyne miejsce, w którym rozłączone konto jest dziś
+nazwane, to szczegół publikacji: wiersz wskazuje konto, którego nie ma na wczytanej liście →
+*„Konto zostało rozłączone"* (nigdy „Nie wybrano" — to dwa różne fakty i tylko jeden z nich
+tłumaczy wstrzymanie).
+**Rekomendacja backendowa:** parametr `?include=disconnected` na `GET /publishing/connections`.
+
+**L13 — zakładka Akceptacji jest uboższa niż §11.** `PublicationResource` niesie trzy skalary:
+`approval_pipeline_id`, `is_in_approval`, `approval_state` — w przeciwieństwie do
+`TaskResource`, który wiezie `approval_pipeline` (ze stopniami), `pending_approval_process`
+**i** `approval_run_id`. Panel dociąga więc sam pipeline (`fetchPipeline(id)`, drugie żądanie)
+i rysuje **ścieżkę oraz stan**, ale **nie** konkretne decyzje, ich autorów i czasy — bo nie ma
+uruchomienia, do którego mógłby je przypiąć. Nie zmyślamy pola; zakładka mówi wprost, że
+decyzje żyją w module Akceptacji, i tam linkuje.
+**Rekomendacja backendowa:** wzorem `TaskResource` dołożyć `approval_run_id` (+ nazwę
+pipeline'u), wtedy zakładka domknie §11 bez zmiany frontu poza podpięciem pola.
