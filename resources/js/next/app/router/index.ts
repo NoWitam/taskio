@@ -533,8 +533,14 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore();
 
-  // Re-hydrate a stored token once before the first guarded navigation resolves.
-  if (!auth.ready) {
+  const isPublic = to.matched.some((r) => r.meta.public);
+
+  // Re-hydrate a stored token once before the first guarded navigation resolves — and NEVER
+  // block a PUBLIC one on it. `meta.public` is load-bearing here: a screen that needs no
+  // session must not wait on `/auth/me`, least of all when the stored token is expected to
+  // fail (a stale token is the normal state of somebody who came to reset a forgotten
+  // password). See `lib/publicRoutes` for the half of this that actually protects the URL.
+  if (!auth.ready && !isPublic) {
     await auth.init();
   }
 

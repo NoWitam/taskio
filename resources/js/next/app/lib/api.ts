@@ -15,6 +15,7 @@ import axios, {
   type AxiosError,
 } from 'axios';
 import { activeLocale } from '../i18n';
+import { isPublicPath } from './publicRoutes';
 import { authToken, TOKEN_KEY } from './token';
 
 /** Path the 401 interceptor redirects to. */
@@ -104,8 +105,15 @@ class NextApiClient {
       (response) => response,
       (error: AxiosError) => {
         if (error.response?.status === 401 && typeof window !== 'undefined') {
-          // Avoid a redirect loop if we are already on the login route.
-          if (!window.location.pathname.startsWith(LOGIN_PATH)) {
+          // A 401 IS ONLY A LOST SESSION WHEN THERE WAS SUPPOSED TO BE ONE. On a public
+          // screen it is expected traffic — a stale token still in localStorage is the
+          // NORMAL state of somebody who came to reset a forgotten password — and answering
+          // it with a navigation destroys that screen's URL. `/next/reset-password` carries
+          // `?token=&email=` from a link that arrives once, by mail; assign() throws it away
+          // and leaves the person on a login form they already could not use.
+          //
+          // This also subsumes the old redirect-loop guard: /next/login is public too.
+          if (!isPublicPath(window.location.pathname)) {
             window.location.assign(LOGIN_PATH);
           }
         }
